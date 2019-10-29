@@ -1,0 +1,4 @@
+[submodule "external/conmon"]
+	path = external/conmon
+	url = git@github.com:chombourger/conmon.git
+	branch = debian/v2.0.2
