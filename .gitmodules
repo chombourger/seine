@@ -6,3 +6,7 @@
 	path = external/slirp4netns
 	url = https://github.com/chombourger/slirp4netns.git
 	branch = debian/v0.4.2
+[submodule "external/libpod"]
+	path = external/libpod
+	url = https://github.com/chombourger/libpod.git
+	branch = debian/v1.6.2

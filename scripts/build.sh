@@ -4,6 +4,7 @@ arch=amd64
 distro=buster
 
 conmon_version=2.0.2-deb10
+podman_version=1.6.2-1
 slirp4netns_version=0.4.2-1
 
 set -e
@@ -37,6 +38,15 @@ add_ext_pkgs
 
 cd external/slirp4netns
 tarball=../slirp4netns_${slirp4netns_version/%-[a-z0-9]*/}.orig.tar.gz
+git archive --format=tar.gz HEAD >${tarball}
+do_build_deps
+debuild -uc -us
+cd ../..
+
+add_ext_pkgs
+
+cd external/libpod
+tarball=../libpod_${podman_version/%-[a-z0-9]*/}.orig.tar.gz
 git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
