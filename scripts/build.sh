@@ -26,7 +26,8 @@ apt-get install -y devscripts git reprepro
 apt-get purge
 
 cd external/conmon
-git archive --format=tar.gz HEAD > ../conmon_${conmon_version}.orig.tar.gz
+tarball=../conmon_${conmon_version/%-[a-z0-9]*}.orig.tar.gz
+git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
 cd ../..
@@ -35,7 +36,8 @@ dpkg -i external/conmon_${conmon_version}_${arch}.deb
 add_ext_pkgs
 
 cd external/slirp4netns
-git archive --format=tar.gz HEAD > ../slirp4netns_${slirp4netns_version/%-[a-z0-9]/}.orig.tar.gz
+tarball=../slirp4netns_${slirp4netns_version/%-[a-z0-9]*/}.orig.tar.gz
+git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
 cd ../..
