@@ -5,4 +5,4 @@ services:
 
 before_install:
   - docker build -t seine/buster .
-  - docker ps -a
+  - docker cp $(docker create seine/buster):apt/ .
