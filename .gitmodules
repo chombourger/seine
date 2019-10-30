@@ -2,3 +2,7 @@
 	path = external/conmon
 	url = git@github.com:chombourger/conmon.git
 	branch = debian/v2.0.2
+[submodule "external/slirp4netns"]
+	path = external/slirp4netns
+	url = git@github.com:chombourger/slirp4netns.git
+	branch = debian/v0.4.2

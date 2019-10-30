@@ -1,8 +1,10 @@
-#!/bin/sh
+#!/bin/bash
 
 arch=amd64
-conmon_version=2.0.2-deb10
 distro=buster
+
+conmon_version=2.0.2-deb10
+slirp4netns_version=0.4.2-1
 
 set -e
 set -x
@@ -14,7 +16,7 @@ add_ext_pkgs() {
 }
 
 do_build_deps() {
-    mk-build-deps -t "apt-get --no-install-recommends -y" -i -r debian/control
+    mk-build-deps -t "apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends -y" -i -r debian/control
     apt-get purge
     rm -f *.deb
 }
@@ -24,11 +26,18 @@ apt-get install -y devscripts git reprepro
 apt-get purge
 
 cd external/conmon
-git archive --format=tar HEAD > ../conmon_${conmon_version}.orig.tar
-gzip -f ../conmon_${conmon_version}.orig.tar
+git archive --format=tar.gz HEAD > ../conmon_${conmon_version}.orig.tar.gz
 do_build_deps
 debuild -uc -us
 cd ../..
 
 dpkg -i external/conmon_${conmon_version}_${arch}.deb
+add_ext_pkgs
+
+cd external/slirp4netns
+git archive --format=tar.gz HEAD > ../slirp4netns_${slirp4netns_version/%-[a-z0-9]/}.orig.tar.gz
+do_build_deps
+debuild -uc -us
+cd ../..
+
 add_ext_pkgs
