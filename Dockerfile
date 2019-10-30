@@ -6,3 +6,5 @@ COPY scripts scripts
 
 FROM buildenv AS seine
 RUN  bash scripts/build.sh
+
+CMD ["true"]
