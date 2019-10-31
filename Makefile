@@ -6,7 +6,7 @@ engine=$(if $(podman),$(podman),$(docker))
 
 .PHONY: buster
 buster: clean
-	$(engine) build -t seine/$@ .
+	$(engine) build -t seine/$@ -f scripts/$@/build-deps.dockerfile .
 	cid="$$($(engine) create seine/$@)" && \
 	$(engine) cp $$cid:apt/ . && \
 	$(engine) container rm $$cid
