@@ -4,4 +4,5 @@ services:
   - docker
 
 before_install:
-  - make buster
+  - make clean
+  - make check
