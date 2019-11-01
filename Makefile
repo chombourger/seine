@@ -10,7 +10,7 @@ product=seine
 distro=$(notdir $@)
 
 .PHONY: all
-all: build-deps
+all: build/deps
 
 .PHONY: check
 check: install/deps
