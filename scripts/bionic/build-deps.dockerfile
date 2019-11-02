@@ -1,6 +1,6 @@
-FROM debian:buster AS base
-ENV DISTRO_ID=debian
-ENV DISTRO_NAME=buster
+FROM ubuntu:bionic AS base
+ENV DISTRO_ID=ubuntu
+ENV DISTRO_NAME=bionic
 
 COPY scripts scripts
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 arch=amd64
-distro=buster
+distro=${DISTRO_NAME}
 
 conmon_version=2.0.2-deb10
 podman_version=1.6.2-1
@@ -11,8 +11,8 @@ set -e
 set -x
 
 add_ext_pkgs() {
-    reprepro -b apt -C main includedeb ${distro} external/*.deb
-    reprepro -b apt includedsc ${distro} external/*.dsc
+    reprepro -b apt -C ${distro} includedeb seine external/*.deb
+    reprepro -b apt includedsc seine external/*.dsc
     rm -f external/*.deb external/*.dsc external/*.tar.[gx]z
 }
 
@@ -23,7 +23,7 @@ do_build_deps() {
 }
 
 apt-get update
-apt-get install -y devscripts git reprepro
+apt-get install -y devscripts equivs git reprepro
 apt-get purge
 
 cd external/conmon
