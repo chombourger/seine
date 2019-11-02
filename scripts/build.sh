@@ -5,6 +5,7 @@ distro=${DISTRO_NAME}
 
 conmon_version=2.0.2-deb10
 podman_version=1.6.2-1
+python_podman_version=1.6.0-1
 slirp4netns_version=0.4.2-1
 
 set -e
@@ -12,7 +13,7 @@ set -x
 
 add_ext_pkgs() {
     reprepro -b apt -C ${distro} includedeb seine external/*.deb
-    reprepro -b apt includedsc seine external/*.dsc
+    reprepro -b apt -C ${distro} includedsc seine external/*.dsc
     rm -f external/*.deb external/*.dsc external/*.tar.[gx]z
 }
 
@@ -32,7 +33,6 @@ git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
 cd ../..
-
 dpkg -i external/conmon_${conmon_version}_${arch}.deb
 add_ext_pkgs
 
@@ -42,7 +42,6 @@ git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
 cd ../..
-
 add_ext_pkgs
 
 cd external/libpod
@@ -51,5 +50,12 @@ git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
 cd ../..
+add_ext_pkgs
 
+cd external/python-podman
+tarball=../python-podman_${python_podman_version/%-[a-z0-9]*/}.orig.tar.gz
+git archive --format=tar.gz HEAD >${tarball}
+do_build_deps
+debuild -uc -us
+cd ../..
 add_ext_pkgs
