@@ -4,7 +4,7 @@ docker=$(shell which docker 2>/dev/null)
 podman=$(shell which podman 2>/dev/null)
 engine=$(if $(podman),$(podman),$(docker))
 
-distros=buster
+distros=bionic buster
 product=seine
 
 distro=$(notdir $@)

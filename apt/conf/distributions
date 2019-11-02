@@ -1,4 +1,4 @@
-Codename: buster
+Codename: seine
 Architectures: amd64 source
-Components: main
+Components: bionic buster
 Suite: stable
