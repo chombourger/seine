@@ -53,5 +53,4 @@ apt-get purge
 pkg_build external/conmon
 pkg_build external/slirp4netns
 pkg_build external/libpod
-pkg_build external/python-podman
 pkg_build modules/seine

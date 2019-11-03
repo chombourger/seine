@@ -10,7 +10,3 @@
 	path = external/libpod
 	url = https://github.com/chombourger/libpod.git
 	branch = debian/v1.6.2
-[submodule "external/python-podman"]
-	path = external/python-podman
-	url = https://github.com/chombourger/python-podman.git
-	branch = debian/1.6.0
