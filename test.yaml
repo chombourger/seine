@@ -1,7 +1,7 @@
 distribution:
         source: debian
         release: buster
-        architecture: arm64
+        architecture: amd64
 
 image:
         - name: test-image
