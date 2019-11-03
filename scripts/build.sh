@@ -22,57 +22,36 @@ pkg_get_version() {
     head -n 1 debian/changelog | awk '{ print $2 }'| tr -d '()'
 }
 
+pkg_build() {
+    from=$(pwd)
+    pkg=$(basename ${1})
+
+    # create source tarball
+    cd ${1}
+    pv=$(pkg_get_version)
+    sv=${pv/%-[a-z0-9]*}
+    tarball=../${pkg}_${sv}.orig.tar.gz
+    if [ -e .git ]; then
+        git archive --format=tar.gz HEAD >${tarball}
+    else
+        tar -C .. --exclude='*/debian/*' -zcvf ${tarball} ${pkg}
+    fi
+
+    # resolve build dependencies and build our package
+    do_build_deps
+    debuild -uc -us
+
+    # add generated source and binary packages to repository
+    cd ${from}
+    add_ext_pkgs $(dirname ${1})
+}
+
 apt-get update
 apt-get install -y devscripts equivs git reprepro
 apt-get purge
 
-cd external/conmon
-pv=$(pkg_get_version)
-sv=${pv/%-[a-z0-9]*}
-tarball=../conmon_${sv}.orig.tar.gz
-git archive --format=tar.gz HEAD >${tarball}
-do_build_deps
-debuild -uc -us
-cd ../..
-dpkg -i external/conmon_${pv}_${arch}.deb
-add_ext_pkgs external
-
-cd external/slirp4netns
-pv=$(pkg_get_version)
-sv=${pv/%-[a-z0-9]*}
-tarball=../slirp4netns_${sv}.orig.tar.gz
-git archive --format=tar.gz HEAD >${tarball}
-do_build_deps
-debuild -uc -us
-cd ../..
-add_ext_pkgs external
-
-cd external/libpod
-pv=$(pkg_get_version)
-sv=${pv/%-[a-z0-9]*}
-tarball=../libpod_${sv}.orig.tar.gz
-git archive --format=tar.gz HEAD >${tarball}
-do_build_deps
-debuild -uc -us
-cd ../..
-add_ext_pkgs external
-
-cd external/python-podman
-pv=$(pkg_get_version)
-sv=${pv/%-[a-z0-9]*}
-tarball=../python-podman_${sv}.orig.tar.gz
-git archive --format=tar.gz HEAD >${tarball}
-do_build_deps
-debuild -uc -us
-cd ../..
-add_ext_pkgs external
-
-cd modules/seine
-pv=$(pkg_get_version)
-sv=${pv/%-[a-z0-9]*}
-tarball=../seine_${sv}.orig.tar.gz
-tar -C .. --exclude='*/debian/*' -zcvf ${tarball} seine
-do_build_deps
-debuild -uc -us
-cd ../..
-add_ext_pkgs modules
+pkg_build external/conmon
+pkg_build external/slirp4netns
+pkg_build external/libpod
+pkg_build external/python-podman
+pkg_build modules/seine
