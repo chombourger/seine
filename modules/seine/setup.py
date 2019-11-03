@@ -7,4 +7,7 @@ setup(
     author_email="chombourger@gmail.com",
     packages=find_packages(),
     scripts=['seine'],
+    install_requires=[
+        'pyyaml>=3.12',
+    ],
 )
