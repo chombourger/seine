@@ -3,12 +3,6 @@
 arch=amd64
 distro=${DISTRO_NAME}
 
-conmon_version=2.0.2-deb10
-podman_version=1.6.2-1
-python_podman_version=1.6.0-1
-seine_version=0.1-1
-slirp4netns_version=0.4.2-1
-
 set -e
 set -x
 
@@ -24,21 +18,29 @@ do_build_deps() {
     rm -f *.deb
 }
 
+pkg_get_version() {
+    head -n 1 debian/changelog | awk '{ print $2 }'| tr -d '()'
+}
+
 apt-get update
 apt-get install -y devscripts equivs git reprepro
 apt-get purge
 
 cd external/conmon
-tarball=../conmon_${conmon_version/%-[a-z0-9]*}.orig.tar.gz
+pv=$(pkg_get_version)
+sv=${pv/%-[a-z0-9]*}
+tarball=../conmon_${sv}.orig.tar.gz
 git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
 cd ../..
-dpkg -i external/conmon_${conmon_version}_${arch}.deb
+dpkg -i external/conmon_${pv}_${arch}.deb
 add_ext_pkgs external
 
 cd external/slirp4netns
-tarball=../slirp4netns_${slirp4netns_version/%-[a-z0-9]*/}.orig.tar.gz
+pv=$(pkg_get_version)
+sv=${pv/%-[a-z0-9]*}
+tarball=../slirp4netns_${sv}.orig.tar.gz
 git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
@@ -46,7 +48,9 @@ cd ../..
 add_ext_pkgs external
 
 cd external/libpod
-tarball=../libpod_${podman_version/%-[a-z0-9]*/}.orig.tar.gz
+pv=$(pkg_get_version)
+sv=${pv/%-[a-z0-9]*}
+tarball=../libpod_${sv}.orig.tar.gz
 git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
@@ -54,19 +58,21 @@ cd ../..
 add_ext_pkgs external
 
 cd external/python-podman
-tarball=../python-podman_${python_podman_version/%-[a-z0-9]*/}.orig.tar.gz
+pv=$(pkg_get_version)
+sv=${pv/%-[a-z0-9]*}
+tarball=../python-podman_${sv}.orig.tar.gz
 git archive --format=tar.gz HEAD >${tarball}
 do_build_deps
 debuild -uc -us
 cd ../..
 add_ext_pkgs external
 
-cd modules
-tarball=seine_${seine_version/%-[a-z0-9]*/}.orig.tar.gz
-tar --exclude='*/debian/*' -zcvf ${tarball} seine
-cd seine
+cd modules/seine
+pv=$(pkg_get_version)
+sv=${pv/%-[a-z0-9]*}
+tarball=../seine_${sv}.orig.tar.gz
+tar -C .. --exclude='*/debian/*' -zcvf ${tarball} seine
 do_build_deps
 debuild -uc -us
 cd ../..
 add_ext_pkgs modules
-
