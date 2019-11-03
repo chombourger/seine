@@ -1,0 +1,15 @@
+Source: seine
+Section: devel
+Priority: optional
+Maintainer: Cedric Hombourger <chombourger@gmail.com>
+Build-Depends: debhelper (>=11~), python3-all, python3-setuptools, dh-python
+Standards-Version: 4.1.4
+Homepage: https://github.com/chombourger/seine
+X-Python-Version: >= 3.5
+
+Package: python3-seine
+Architecture: all
+Multi-Arch: foreign
+Depends: ${misc:Depends}, ${python3:Depends}, podman
+Description: the seine image builder
+ This package provides seine build scripts
