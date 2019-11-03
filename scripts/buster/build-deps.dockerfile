@@ -8,6 +8,7 @@ FROM base AS buildsrc
 COPY .git .git
 COPY apt apt
 COPY external external
+COPY modules modules
 
 FROM buildsrc AS build
 RUN  bash scripts/build.sh
