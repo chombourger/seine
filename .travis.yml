@@ -12,3 +12,6 @@ services:
 before_install:
   - make clean
   - make check
+  - sed -e "s,/apt,$TRAVIS_BUILD_DIR/apt,g" scripts/bionic/seine.list | sudo tee -a /etc/apt/sources.list.d/seine.list
+  - sudo apt-get update && sudo apt-get install -y python3-seine
+  - seine build test.yaml
