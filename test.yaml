@@ -1,0 +1,14 @@
+distribution:
+        source: debian
+        release: buster
+        architecture: arm64
+
+image:
+        - name: test-image
+          tasks:
+                - name: install vim
+                  apt:
+                          name: vim
+                          state: present
+                          update_cache: true
+                  become: true

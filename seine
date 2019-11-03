@@ -1,0 +1,142 @@
+#!/usr/bin/python3
+
+import getopt
+import os
+import subprocess
+import sys
+import tempfile
+import yaml
+
+def pod_image_exists(name):
+    result = subprocess.run(["podman", "image", "exists", name], check=False)
+    return result.returncode == 0
+
+def create_bootstrap(image, distro, options):
+    dockerfile = tempfile.NamedTemporaryFile(delete=False)
+    dockerfile.write(str.encode("""
+        FROM {0}:{1}
+        RUN apt-get update -qy
+        RUN apt-get install -qy debootstrap
+        RUN apt-get purge
+    """
+    .format(distro["source"], distro["release"])))
+    dockerfile.close()
+    subprocess.run(["podman", "build", "--rm", "-t", image, "-f", dockerfile.name])
+    os.unlink(dockerfile.name)
+
+def create_image(spec, bootstrap, options):
+    distro = spec["distribution"]
+    image = spec["image"][0]["name"]
+    ansible = spec["image"]
+
+    ansible[0]["hosts"] = "localhost"
+    ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+    yaml.dump(ansible, ansiblefile)
+    ansiblefile.close()
+
+    dockerfile = tempfile.NamedTemporaryFile(delete=False)
+    dockerfile.write(str.encode("""
+        FROM {0} AS bootstrap
+        RUN export container=lxc; debootstrap --arch {1} {2} rootfs {3}
+        RUN cp /host-usr/bin/qemu-aarch64-static rootfs/usr/bin/
+        RUN cp /host-usr/bin/qemu-arm-static     rootfs/usr/bin/
+        FROM scratch AS base
+        COPY --from=bootstrap rootfs/ /
+        FROM base AS ansible
+        RUN apt-get update -qy && apt-get install -qy ansible && apt-get purge
+        FROM ansible AS playbooks
+        RUN cp /host-tmp/{4} ansible.yaml
+        RUN ansible-playbook ansible.yaml && rm -f ansible.yaml
+        FROM ansible as clean
+        RUN apt-get autoremove -qy ansible && apt-get purge
+    """
+    .format(
+        bootstrap,
+        distro["architecture"],
+        distro["release"],
+        distro["uri"],
+        os.path.basename(ansiblefile.name))))
+    dockerfile.close()
+
+    subprocess.run([
+        "podman", "build",
+        "--rm", "-t", image,
+        "-v", "/tmp:/host-tmp:ro",
+        "-v", "/usr:/host-usr:ro",
+        "-f", dockerfile.name])
+
+    os.unlink(ansiblefile.name)
+    os.unlink(dockerfile.name)
+
+def build_distro(distro, options):
+    if "source" not in distro:
+        distro["source"] = "debian"
+    if "release" not in distro:
+        distro["release"] = "buster"
+    if "architecture" not in distro:
+        distro["architecture"] = "amd64"
+    if "uri" not in distro:
+        distro["uri"] = "http://ftp.debian.org/debian"
+    bootstrap = os.path.join("seine", "bootstrap", distro["source"], distro["release"])
+    if pod_image_exists(bootstrap) == False:
+        create_bootstrap(bootstrap, distro, options)
+    return bootstrap
+
+def build_spec(spec, options):
+    if "distribution" not in spec:
+        raise ValueError("'distribution' not found in provided specification!")
+    if "image" not in spec:
+        raise ValueError("'image' not found in provided specification!")
+
+    bootstrap = build_distro(spec["distribution"], options)
+    distro = spec["distribution"]
+    if "name" not in spec["image"][0]:
+        spec["image"][0]["name"] = os.path.join("seine", "image", distro["source"], distro["release"], distro["architecture"])
+    create_image(spec, bootstrap, options)
+
+def cmd_build(argv):
+    options = {}
+    try:
+        opts, args = getopt.getopt(argv, "h", ["help"])
+    except getopt.GetoptError as err:
+        print(err)
+        cmd_build_usage()
+        sys.exit(1)
+    for o, a in opts:
+        if o in ("-h", "--help"):
+            cmd_build_usage()
+            sys.exit()
+        else:
+            assert False, "unhandled option"
+
+    if len(args) == 0:
+        sys.stderr.write("error: build command expects a YAML file\n")
+        sys.exit(1)
+
+    try:
+        file = open(args[0], "r")
+        spec = yaml.load(file)
+        sys.exit(build_spec(spec, options))
+    except OSError as e:
+        stderr.write("error: couldn't open build YAML file: {0}\n".format(e))
+        sys.exit(2)
+    except ValueError as e:
+        stderr.write("error:YAML file is invalid: {0}\n".format(e))
+        sys.exit(3)
+
+def main():
+    argv = sys.argv[1:]
+
+    if len(argv) == 0:
+        print("%s: error: missing command argument!" % sys.argv[0])
+        sys.exit(1)
+
+    cmd = argv[0]
+    if cmd == "build":
+        cmd_build(argv[1:])
+    else:
+        print("%s: unknown command '%s'!" % (sys.argv[0], cmd))
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
