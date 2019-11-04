@@ -2,9 +2,13 @@
 
 arch=amd64
 distro=${DISTRO_NAME}
+verbose=
 
 set -e
-set -x
+
+if [ -n "${verbose}" ]; then
+    set -x
+fi
 
 add_ext_pkgs() {
     reprepro -b apt -C ${distro} includedeb seine ${1}/*.deb
@@ -13,8 +17,15 @@ add_ext_pkgs() {
 }
 
 do_build_deps() {
-    mk-build-deps -t "apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends -y" -i -r debian/control
-    apt-get purge
+    local opts
+
+    if [ -n "${verbose}" ]; then
+        opts="-o Debug::pkgProblemResolver=yes -y"
+    else
+        opts="-qqy"
+    fi
+    mk-build-deps -t "apt-get ${opts} --no-install-recommends" -i -r debian/control
+    apt-get purge -qqy
     rm -f *.deb
 }
 
@@ -34,7 +45,7 @@ pkg_build() {
     if [ -e .git ]; then
         git archive --format=tar.gz HEAD >${tarball}
     else
-        tar -C .. --exclude='*/debian/*' -zcvf ${tarball} ${pkg}
+        tar -C .. --exclude='*/debian/*' -zcf ${tarball} ${pkg}
     fi
 
     # resolve build dependencies and build our package
@@ -46,9 +57,9 @@ pkg_build() {
     add_ext_pkgs $(dirname ${1})
 }
 
-apt-get update
-apt-get install -y devscripts equivs git reprepro
-apt-get purge
+apt-get update -qqy
+apt-get install -qqy devscripts equivs git reprepro
+apt-get purge -qqy
 
 pkg_build external/conmon
 pkg_build external/slirp4netns
