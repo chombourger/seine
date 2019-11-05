@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import getopt
+import glob
 import os
 import subprocess
 import sys
@@ -15,13 +16,13 @@ def create_bootstrap(image, distro, options):
     dockerfile = tempfile.NamedTemporaryFile(delete=False)
     dockerfile.write(str.encode("""
         FROM {0}:{1}
-        RUN apt-get update -qy
-        RUN apt-get install -qy debootstrap
-        RUN apt-get purge
+        RUN apt-get update -qqy
+        RUN apt-get install -qqy debootstrap
+        RUN apt-get purge -qqy
     """
     .format(distro["source"], distro["release"])))
     dockerfile.close()
-    subprocess.run(["podman", "build", "--rm", "-t", image, "-f", dockerfile.name])
+    subprocess.run(["podman", "build", "--rm", "--squash", "-t", image, "-f", dockerfile.name])
     os.unlink(dockerfile.name)
 
 def create_image(spec, bootstrap, options):
@@ -34,28 +35,36 @@ def create_image(spec, bootstrap, options):
     yaml.dump(ansible, ansiblefile)
     ansiblefile.close()
 
-    dockerfile = tempfile.NamedTemporaryFile(delete=False)
-    dockerfile.write(str.encode("""
+    dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+    dockerfile.write("""
         FROM {0} AS bootstrap
         RUN export container=lxc; debootstrap --arch {1} {2} rootfs {3}
-        RUN cp /host-usr/bin/qemu-aarch64-static rootfs/usr/bin/
-        RUN cp /host-usr/bin/qemu-arm-static     rootfs/usr/bin/
-        FROM scratch AS base
-        COPY --from=bootstrap rootfs/ /
-        FROM base AS ansible
-        RUN apt-get update -qy && apt-get install -qy ansible && apt-get purge
-        FROM ansible AS playbooks
-        RUN cp /host-tmp/{4} ansible.yaml
-        RUN ansible-playbook ansible.yaml && rm -f ansible.yaml
-        FROM ansible as clean
-        RUN apt-get autoremove -qy ansible && apt-get purge
     """
     .format(
         bootstrap,
         distro["architecture"],
         distro["release"],
-        distro["uri"],
-        os.path.basename(ansiblefile.name))))
+        distro["uri"]
+    ))
+
+    qemu_bins = glob.glob("/usr/bin/qemu-*-static")
+    if len(qemu_bins) > 0:
+         dockerfile.write("""
+             RUN cp /host-usr/bin/qemu-*-static rootfs/usr/bin/
+         """)
+
+    dockerfile.write("""
+        FROM scratch AS base
+        COPY --from=bootstrap rootfs/ /
+        FROM base AS ansible
+        RUN apt-get update -qqy && apt-get install -qqy ansible && apt-get purge -qqy
+        FROM ansible AS playbooks
+        RUN cp /host-tmp/{0} ansible.yaml
+        RUN ansible-playbook ansible.yaml && rm -f ansible.yaml
+        FROM ansible as clean
+        RUN apt-get autoremove -qy ansible && apt-get purge
+    """
+    .format(os.path.basename(ansiblefile.name)))
     dockerfile.close()
 
     subprocess.run([
