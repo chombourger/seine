@@ -16,9 +16,10 @@ def create_bootstrap(image, distro, options):
     dockerfile = tempfile.NamedTemporaryFile(delete=False)
     dockerfile.write(str.encode("""
         FROM {0}:{1}
-        RUN apt-get update -qqy
-        RUN apt-get install -qqy debootstrap
-        RUN apt-get purge -qqy
+        RUN                                                       \
+             apt-get update -qqy &&                               \
+             apt-get install -qqy debootstrap qemu-user-static && \
+             apt-get purge -qqy
     """
     .format(distro["source"], distro["release"])))
     dockerfile.close()
@@ -38,7 +39,10 @@ def create_image(spec, bootstrap, options):
     dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
     dockerfile.write("""
         FROM {0} AS bootstrap
-        RUN export container=lxc; debootstrap --arch {1} {2} rootfs {3}
+        RUN                                           \
+            export container=lxc;                     \
+            debootstrap --arch {1} {2} rootfs {3} &&  \
+            cp /usr/bin/qemu-*-static rootfs/usr/bin/
     """
     .format(
         bootstrap,
@@ -46,12 +50,6 @@ def create_image(spec, bootstrap, options):
         distro["release"],
         distro["uri"]
     ))
-
-    qemu_bins = glob.glob("/usr/bin/qemu-*-static")
-    if len(qemu_bins) > 0:
-         dockerfile.write("""
-             RUN cp /host-usr/bin/qemu-*-static rootfs/usr/bin/
-         """)
 
     dockerfile.write("""
         FROM scratch AS base
