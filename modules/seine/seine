@@ -12,7 +12,7 @@ def pod_image_exists(name):
     result = subprocess.run(["podman", "image", "exists", name], check=False)
     return result.returncode == 0
 
-def create_bootstrap(image, distro, options):
+def create_bootstrap_host(image, distro, options):
     dockerfile = tempfile.NamedTemporaryFile(delete=False)
     dockerfile.write(str.encode("""
         FROM {0}:{1}
@@ -31,8 +31,39 @@ def create_bootstrap(image, distro, options):
     finally:
         os.unlink(dockerfile.name)
 
+def create_bootstrap_target(image, bootstrap, distro, options):
+    dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+    dockerfile.write("""
+        FROM {0} AS bootstrap
+        RUN                                           \
+            export container=lxc;                     \
+            debootstrap --arch {1} {2} rootfs {3} &&  \
+            cp /usr/bin/qemu-*-static rootfs/usr/bin/
+        FROM scratch AS base
+        COPY --from=bootstrap rootfs/ /
+        FROM base AS ansible
+        RUN apt-get update -qqy && apt-get install -qqy ansible && apt-get purge -qqy
+    """
+    .format(
+        bootstrap,
+        distro["architecture"],
+        distro["release"],
+        distro["uri"]
+    ))
+    dockerfile.close()
+
+    try: 
+        subprocess.run([
+            "podman", "build",
+            "--rm", "-t", image,
+            "-f", dockerfile.name],
+            check=True)
+    except subprocess.CalledProcessError:
+        raise
+    finally:    
+        os.unlink(dockerfile.name)
+
 def create_image(spec, bootstrap, options):
-    distro = spec["distribution"]
     image = spec["image"][0]["name"]
     ansible = spec["image"]
 
@@ -43,31 +74,13 @@ def create_image(spec, bootstrap, options):
 
     dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
     dockerfile.write("""
-        FROM {0} AS bootstrap
-        RUN                                           \
-            export container=lxc;                     \
-            debootstrap --arch {1} {2} rootfs {3} &&  \
-            cp /usr/bin/qemu-*-static rootfs/usr/bin/
-    """
-    .format(
-        bootstrap,
-        distro["architecture"],
-        distro["release"],
-        distro["uri"]
-    ))
-
-    dockerfile.write("""
-        FROM scratch AS base
-        COPY --from=bootstrap rootfs/ /
-        FROM base AS ansible
-        RUN apt-get update -qqy && apt-get install -qqy ansible && apt-get purge -qqy
-        FROM ansible AS playbooks
-        RUN cp /host-tmp/{0} ansible.yaml
+        FROM {0} AS playbooks
+        RUN cp /host-tmp/{1} ansible.yaml
         RUN ansible-playbook ansible.yaml && rm -f ansible.yaml
-        FROM ansible as clean
+        FROM playbooks as clean
         RUN apt-get autoremove -qy ansible && apt-get purge
     """
-    .format(os.path.basename(ansiblefile.name)))
+    .format(bootstrap, os.path.basename(ansiblefile.name)))
     dockerfile.close()
 
     try: 
@@ -93,10 +106,13 @@ def build_distro(distro, options):
         distro["architecture"] = "amd64"
     if "uri" not in distro:
         distro["uri"] = "http://ftp.debian.org/debian"
-    bootstrap = os.path.join("seine", "bootstrap", distro["source"], distro["release"])
-    if pod_image_exists(bootstrap) == False:
-        create_bootstrap(bootstrap, distro, options)
-    return bootstrap
+    bootstrap_host = os.path.join("seine", "bootstrap", distro["source"], distro["release"], "all")
+    if pod_image_exists(bootstrap_host) == False:
+        create_bootstrap_host(bootstrap_host, distro, options)
+    bootstrap_target = os.path.join("seine", "bootstrap", distro["source"], distro["release"], distro["architecture"])
+    if pod_image_exists(bootstrap_target) == False:
+        create_bootstrap_target(bootstrap_target, bootstrap_host, distro, options)
+    return bootstrap_target
 
 def build_spec(spec, options):
     if "distribution" not in spec:
