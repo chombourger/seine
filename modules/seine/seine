@@ -23,8 +23,13 @@ def create_bootstrap(image, distro, options):
     """
     .format(distro["source"], distro["release"])))
     dockerfile.close()
-    subprocess.run(["podman", "build", "--rm", "--squash", "-t", image, "-f", dockerfile.name])
-    os.unlink(dockerfile.name)
+
+    try:
+        subprocess.run(["podman", "build", "--rm", "--squash", "-t", image, "-f", dockerfile.name], check=True)
+    except subprocess.CalledProcessError:
+        raise
+    finally:
+        os.unlink(dockerfile.name)
 
 def create_image(spec, bootstrap, options):
     distro = spec["distribution"]
@@ -65,15 +70,19 @@ def create_image(spec, bootstrap, options):
     .format(os.path.basename(ansiblefile.name)))
     dockerfile.close()
 
-    subprocess.run([
-        "podman", "build",
-        "--rm", "-t", image,
-        "-v", "/tmp:/host-tmp:ro",
-        "-v", "/usr:/host-usr:ro",
-        "-f", dockerfile.name])
-
-    os.unlink(ansiblefile.name)
-    os.unlink(dockerfile.name)
+    try: 
+        subprocess.run([
+            "podman", "build",
+            "--rm", "-t", image,
+            "-v", "/tmp:/host-tmp:ro",
+            "-v", "/usr:/host-usr:ro",
+            "-f", dockerfile.name],
+            check=True)
+    except subprocess.CalledProcessError:
+        raise
+    finally:    
+        os.unlink(ansiblefile.name)
+        os.unlink(dockerfile.name)
 
 def build_distro(distro, options):
     if "source" not in distro:
@@ -125,11 +134,14 @@ def cmd_build(argv):
         spec = yaml.load(file)
         sys.exit(build_spec(spec, options))
     except OSError as e:
-        stderr.write("error: couldn't open build YAML file: {0}\n".format(e))
+        sys.stderr.write("error: couldn't open build YAML file: {0}\n".format(e))
         sys.exit(2)
     except ValueError as e:
-        stderr.write("error:YAML file is invalid: {0}\n".format(e))
+        sys.stderr.write("error: YAML file is invalid: {0}\n".format(e))
         sys.exit(3)
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write("error: build failed: {0}\n".format(e))
+        sys.exit(4)
 
 def main():
     argv = sys.argv[1:]
