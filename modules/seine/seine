@@ -12,7 +12,7 @@ def pod_image_exists(name):
     result = subprocess.run(["podman", "image", "exists", name], check=False)
     return result.returncode == 0
 
-def create_bootstrap_host(image, distro, options):
+def create_bootstrap_host(distro, options):
     dockerfile = tempfile.NamedTemporaryFile(delete=False)
     dockerfile.write(str.encode("""
         FROM {0}:{1}
@@ -25,13 +25,16 @@ def create_bootstrap_host(image, distro, options):
     dockerfile.close()
 
     try:
-        subprocess.run(["podman", "build", "--rm", "--squash", "-t", image, "-f", dockerfile.name], check=True)
+        subprocess.run([
+            "podman", "build", "--rm", "--squash",
+            "-t", options["bootstrap"]["host"], "-f",
+            dockerfile.name], check=True)
     except subprocess.CalledProcessError:
         raise
     finally:
         os.unlink(dockerfile.name)
 
-def create_bootstrap_target(image, bootstrap, distro, options):
+def create_bootstrap_target(distro, options):
     dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
     dockerfile.write("""
         FROM {0} AS bootstrap
@@ -45,7 +48,7 @@ def create_bootstrap_target(image, bootstrap, distro, options):
         RUN apt-get update -qqy && apt-get install -qqy ansible && apt-get purge -qqy
     """
     .format(
-        bootstrap,
+        options["bootstrap"]["host"],
         distro["architecture"],
         distro["release"],
         distro["uri"]
@@ -54,16 +57,15 @@ def create_bootstrap_target(image, bootstrap, distro, options):
 
     try: 
         subprocess.run([
-            "podman", "build",
-            "--rm", "-t", image,
-            "-f", dockerfile.name],
-            check=True)
+            "podman", "build", "--rm",
+            "-t", options["bootstrap"]["target"],
+            "-f", dockerfile.name], check=True)
     except subprocess.CalledProcessError:
         raise
     finally:    
         os.unlink(dockerfile.name)
 
-def create_image(spec, bootstrap, options):
+def create_image(spec, options):
     image = spec["image"][0]["name"]
     ansible = spec["image"]
 
@@ -75,12 +77,11 @@ def create_image(spec, bootstrap, options):
     dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
     dockerfile.write("""
         FROM {0} AS playbooks
-        RUN cp /host-tmp/{1} ansible.yaml
-        RUN ansible-playbook ansible.yaml && rm -f ansible.yaml
+        RUN ansible-playbook /host-tmp/{1}
         FROM playbooks as clean
         RUN apt-get autoremove -qy ansible && apt-get purge
     """
-    .format(bootstrap, os.path.basename(ansiblefile.name)))
+    .format(options["bootstrap"]["target"], os.path.basename(ansiblefile.name)))
     dockerfile.close()
 
     try: 
@@ -88,7 +89,6 @@ def create_image(spec, bootstrap, options):
             "podman", "build",
             "--rm", "-t", image,
             "-v", "/tmp:/host-tmp:ro",
-            "-v", "/usr:/host-usr:ro",
             "-f", dockerfile.name],
             check=True)
     except subprocess.CalledProcessError:
@@ -106,13 +106,17 @@ def build_distro(distro, options):
         distro["architecture"] = "amd64"
     if "uri" not in distro:
         distro["uri"] = "http://ftp.debian.org/debian"
+
+    # Configure bootstrap images
     bootstrap_host = os.path.join("seine", "bootstrap", distro["source"], distro["release"], "all")
-    if pod_image_exists(bootstrap_host) == False:
-        create_bootstrap_host(bootstrap_host, distro, options)
     bootstrap_target = os.path.join("seine", "bootstrap", distro["source"], distro["release"], distro["architecture"])
+    options["bootstrap"] = { "host" : bootstrap_host, "target" : bootstrap_target }
+
+    # Create required bootstrap images
+    if pod_image_exists(bootstrap_host) == False:
+        create_bootstrap_host(distro, options)
     if pod_image_exists(bootstrap_target) == False:
-        create_bootstrap_target(bootstrap_target, bootstrap_host, distro, options)
-    return bootstrap_target
+        create_bootstrap_target(distro, options)
 
 def build_spec(spec, options):
     if "distribution" not in spec:
@@ -120,11 +124,11 @@ def build_spec(spec, options):
     if "image" not in spec:
         raise ValueError("'image' not found in provided specification!")
 
-    bootstrap = build_distro(spec["distribution"], options)
+    build_distro(spec["distribution"], options)
     distro = spec["distribution"]
     if "name" not in spec["image"][0]:
         spec["image"][0]["name"] = os.path.join("seine", "image", distro["source"], distro["release"], distro["architecture"])
-    create_image(spec, bootstrap, options)
+    create_image(spec, options)
 
 def cmd_build(argv):
     options = {}
