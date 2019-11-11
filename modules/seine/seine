@@ -118,8 +118,8 @@ class Image:
     def parse(self):
         if "distribution" not in self.spec:
             raise ValueError("'distribution' not found in provided specification!")
-        if "image" not in self.spec:
-            raise ValueError("'image' not found in provided specification!")
+        if "playbook" not in self.spec:
+            raise ValueError("'playbook' not found in provided specification!")
 
         distro = self.spec["distribution"]
         if "source" not in distro:
@@ -131,11 +131,11 @@ class Image:
         if "uri" not in distro:
             distro["uri"] = "http://ftp.debian.org/debian"
 
-        if "name" not in self.spec["image"][0]:
-            self.spec["image"][0]["name"] = os.path.join("seine", "image", distro["source"], distro["release"], distro["architecture"])
+        if "name" not in self.spec["playbook"][0]:
+            self.spec["playbook"][0]["name"] = os.path.join("seine", "image", distro["source"], distro["release"], distro["architecture"])
 
     def rootfs(self):
-        ansible = self.spec["image"]
+        ansible = self.spec["playbook"]
         ansible[0]["hosts"] = "localhost"
         ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         yaml.dump(ansible, ansiblefile)
@@ -172,7 +172,7 @@ class Image:
             os.unlink(iidfile.name)
 
     def tarball(self):
-        image = self.spec["image"][0]["name"] + ".tar"
+        image = self.spec["playbook"][0]["name"] + ".tar"
         try:
             self.cid = subprocess.check_output(["podman", "container", "create", self.iid]).strip()
             subprocess.run(["podman", "container", "export", "-o", image, self.cid], check=True)
