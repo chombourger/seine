@@ -112,6 +112,7 @@ class Image:
         self.spec = spec
         self.options = options
         self.hostBootstrap = None
+        self.iid = None
         self.targetBootstrap = None
 
     def parse(self):
@@ -134,13 +135,13 @@ class Image:
             self.spec["image"][0]["name"] = os.path.join("seine", "image", distro["source"], distro["release"], distro["architecture"])
 
     def rootfs(self):
-        image = self.spec["image"][0]["name"]
         ansible = self.spec["image"]
-
         ansible[0]["hosts"] = "localhost"
         ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         yaml.dump(ansible, ansiblefile)
         ansiblefile.close()
+
+        iidfile = tempfile.NamedTemporaryFile(mode="r", delete=False)
 
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write("""
@@ -148,22 +149,43 @@ class Image:
             RUN ansible-playbook /host-tmp/{1}
             FROM playbooks as clean
             RUN apt-get autoremove -qy ansible && apt-get purge
+            CMD /bin/true
         """
         .format(self.targetBootstrap.name, os.path.basename(ansiblefile.name)))
         dockerfile.close()
 
         try:
+            self.iid = None
             subprocess.run([
-                "podman", "build",
-                "--rm", "-t", image,
+                "podman", "build", "--rm",
+                "--iidfile", iidfile.name,
                 "-v", "/tmp:/host-tmp:ro",
                 "-f", dockerfile.name],
                 check=True)
+            iidfile.seek(0)
+            self.iid = iidfile.readline()
         except subprocess.CalledProcessError:
             raise
         finally:
             os.unlink(ansiblefile.name)
             os.unlink(dockerfile.name)
+            os.unlink(iidfile.name)
+
+    def tarball(self):
+        image = self.spec["image"][0]["name"] + ".tar"
+        try:
+            self.cid = subprocess.check_output(["podman", "container", "create", self.iid]).strip()
+            subprocess.run(["podman", "container", "export", "-o", image, self.cid], check=True)
+        except subprocess.CalledProcessError:
+            os.unlink(image)
+            raise
+        finally:
+            if self.cid:
+                subprocess.run(["podman", "container", "rm", self.cid], check=False)
+                self.cid = None
+            if self.iid:
+                subprocess.run(["podman", "image", "rm", self.iid], check=False)
+                self.iid = None
 
     def build(self):
         # Create required bootstrap images
@@ -177,6 +199,7 @@ class Image:
 
         # Assemble the root file-system
         self.rootfs()
+        self.tarball()
 
 class Cmd(ABC):
     def __init__(self):
