@@ -1,5 +1,7 @@
 #!/usr/bin/python3
 
+from abc import ABC, abstractmethod
+
 import getopt
 import glob
 import os
@@ -8,163 +10,218 @@ import sys
 import tempfile
 import yaml
 
-def pod_image_exists(name):
-    result = subprocess.run(["podman", "image", "exists", name], check=False)
-    return result.returncode == 0
+class ContainerEngine:
+    def hasImage(name):
+        result = subprocess.run(["podman", "image", "exists", name], check=False)
+        return result.returncode == 0
 
-def create_bootstrap_host(distro, options):
-    dockerfile = tempfile.NamedTemporaryFile(delete=False)
-    dockerfile.write(str.encode("""
-        FROM {0}:{1}
-        RUN                                                       \
-             apt-get update -qqy &&                               \
-             apt-get install -qqy debootstrap qemu-user-static && \
-             apt-get purge -qqy
-    """
-    .format(distro["source"], distro["release"])))
-    dockerfile.close()
+class Bootstrap(ABC):
+    def __init__(self, distro, options):
+        self._name = None
+        self.distro = distro
+        self.options = options
+        super().__init__()
 
-    try:
-        subprocess.run([
-            "podman", "build", "--rm", "--squash",
-            "-t", options["bootstrap"]["host"], "-f",
-            dockerfile.name], check=True)
-    except subprocess.CalledProcessError:
-        raise
-    finally:
-        os.unlink(dockerfile.name)
+    @abstractmethod
+    def create(self):
+        pass
 
-def create_bootstrap_target(distro, options):
-    dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-    dockerfile.write("""
-        FROM {0} AS bootstrap
-        RUN                                           \
-            export container=lxc;                     \
-            debootstrap --arch {1} {2} rootfs {3} &&  \
-            cp /usr/bin/qemu-*-static rootfs/usr/bin/
-        FROM scratch AS base
-        COPY --from=bootstrap rootfs/ /
-        FROM base AS ansible
-        RUN apt-get update -qqy && apt-get install -qqy ansible && apt-get purge -qqy
-        FROM base AS clean-base
-        RUN rm -rf rootfs /usr/share/doc /usr/share/info /usr/share/man
-        FROM ansible AS final
-    """
-    .format(
-        options["bootstrap"]["host"],
-        distro["architecture"],
-        distro["release"],
-        distro["uri"]
-    ))
-    dockerfile.close()
+    @abstractmethod
+    def defaultName(self):
+        pass
 
-    try: 
-        subprocess.run([
-            "podman", "build", "--rm",
-            "-t", options["bootstrap"]["target"],
-            "-f", dockerfile.name], check=True)
-    except subprocess.CalledProcessError:
-        raise
-    finally:    
-        os.unlink(dockerfile.name)
+    def getName(self):
+        if self._name is None:
+            self._name = self.defaultName()
+        return self._name
 
-def create_image(spec, options):
-    image = spec["image"][0]["name"]
-    ansible = spec["image"]
+    def setName(self, name):
+        self._name = name
 
-    ansible[0]["hosts"] = "localhost"
-    ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-    yaml.dump(ansible, ansiblefile)
-    ansiblefile.close()
+    name = property(getName, setName)
 
-    dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-    dockerfile.write("""
-        FROM {0} AS playbooks
-        RUN ansible-playbook /host-tmp/{1}
-        FROM playbooks as clean
-        RUN apt-get autoremove -qy ansible && apt-get purge
-    """
-    .format(options["bootstrap"]["target"], os.path.basename(ansiblefile.name)))
-    dockerfile.close()
+class HostBootstrap(Bootstrap):
+    def create(self):
+        dockerfile = tempfile.NamedTemporaryFile(delete=False)
+        dockerfile.write(str.encode("""
+            FROM {0}:{1}
+            RUN                                                       \
+                 apt-get update -qqy &&                               \
+                 apt-get install -qqy debootstrap qemu-user-static && \
+                 apt-get purge -qqy
+        """
+        .format(self.distro["source"], self.distro["release"])))
+        dockerfile.close()
 
-    try: 
-        subprocess.run([
-            "podman", "build",
-            "--rm", "-t", image,
-            "-v", "/tmp:/host-tmp:ro",
-            "-f", dockerfile.name],
-            check=True)
-    except subprocess.CalledProcessError:
-        raise
-    finally:    
-        os.unlink(ansiblefile.name)
-        os.unlink(dockerfile.name)
+        try:
+            subprocess.run([
+                "podman", "build", "--rm", "--squash",
+                "-t", self.name, "-f", dockerfile.name],
+                check=True)
+        except subprocess.CalledProcessError:
+            raise
+        finally:
+            os.unlink(dockerfile.name)
+        return self
 
-def build_distro(distro, options):
-    if "source" not in distro:
-        distro["source"] = "debian"
-    if "release" not in distro:
-        distro["release"] = "buster"
-    if "architecture" not in distro:
-        distro["architecture"] = "amd64"
-    if "uri" not in distro:
-        distro["uri"] = "http://ftp.debian.org/debian"
+    def defaultName(self):
+        return os.path.join("seine", "bootstrap", self.distro["source"], self.distro["release"], "all")
 
-    # Configure bootstrap images
-    bootstrap_host = os.path.join("seine", "bootstrap", distro["source"], distro["release"], "all")
-    bootstrap_target = os.path.join("seine", "bootstrap", distro["source"], distro["release"], distro["architecture"])
-    options["bootstrap"] = { "host" : bootstrap_host, "target" : bootstrap_target }
+class TargetBootstrap(Bootstrap):
+    def create(self, hostBootstrap):
+        self.hostBootstrap = hostBootstrap
+        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        dockerfile.write("""
+            FROM {0} AS bootstrap
+            RUN                                           \
+                export container=lxc;                     \
+                debootstrap --arch {1} {2} rootfs {3} &&  \
+                cp /usr/bin/qemu-*-static rootfs/usr/bin/
+            FROM scratch AS base
+            COPY --from=bootstrap rootfs/ /
+            FROM base AS ansible
+            RUN apt-get update -qqy && apt-get install -qqy ansible && apt-get purge -qqy
+            FROM base AS clean-base
+            RUN rm -rf rootfs /usr/share/doc /usr/share/info /usr/share/man
+            FROM ansible AS final
+        """
+        .format(
+            self.hostBootstrap.name,
+            self.distro["architecture"],
+            self.distro["release"],
+            self.distro["uri"]
+        ))
+        dockerfile.close()
 
-    # Create required bootstrap images
-    if pod_image_exists(bootstrap_host) == False:
-        create_bootstrap_host(distro, options)
-    if pod_image_exists(bootstrap_target) == False:
-        create_bootstrap_target(distro, options)
+        try:
+            subprocess.run([
+                "podman", "build", "--rm",
+                "-t", self.name,
+                "-f", dockerfile.name], check=True)
+        except subprocess.CalledProcessError:
+            raise
+        finally:
+            os.unlink(dockerfile.name)
+        return self
 
-def build_spec(spec, options):
-    if "distribution" not in spec:
-        raise ValueError("'distribution' not found in provided specification!")
-    if "image" not in spec:
-        raise ValueError("'image' not found in provided specification!")
+    def defaultName(self):
+        return os.path.join("seine", "bootstrap", self.distro["source"], self.distro["release"], self.distro["architecture"])
 
-    build_distro(spec["distribution"], options)
-    distro = spec["distribution"]
-    if "name" not in spec["image"][0]:
-        spec["image"][0]["name"] = os.path.join("seine", "image", distro["source"], distro["release"], distro["architecture"])
-    create_image(spec, options)
+class Image:
+    def __init__(self, spec, options):
+        self.spec = spec
+        self.options = options
+        self.hostBootstrap = None
+        self.targetBootstrap = None
 
-def cmd_build(argv):
-    options = {}
-    try:
-        opts, args = getopt.getopt(argv, "h", ["help"])
-    except getopt.GetoptError as err:
-        print(err)
-        cmd_build_usage()
-        sys.exit(1)
-    for o, a in opts:
-        if o in ("-h", "--help"):
+    def parse(self):
+        if "distribution" not in self.spec:
+            raise ValueError("'distribution' not found in provided specification!")
+        if "image" not in self.spec:
+            raise ValueError("'image' not found in provided specification!")
+
+        distro = self.spec["distribution"]
+        if "source" not in distro:
+            distro["source"] = "debian"
+        if "release" not in distro:
+            distro["release"] = "buster"
+        if "architecture" not in distro:
+            distro["architecture"] = "amd64"
+        if "uri" not in distro:
+            distro["uri"] = "http://ftp.debian.org/debian"
+
+        if "name" not in self.spec["image"][0]:
+            self.spec["image"][0]["name"] = os.path.join("seine", "image", distro["source"], distro["release"], distro["architecture"])
+
+    def rootfs(self):
+        image = self.spec["image"][0]["name"]
+        ansible = self.spec["image"]
+
+        ansible[0]["hosts"] = "localhost"
+        ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        yaml.dump(ansible, ansiblefile)
+        ansiblefile.close()
+
+        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        dockerfile.write("""
+            FROM {0} AS playbooks
+            RUN ansible-playbook /host-tmp/{1}
+            FROM playbooks as clean
+            RUN apt-get autoremove -qy ansible && apt-get purge
+        """
+        .format(self.targetBootstrap.name, os.path.basename(ansiblefile.name)))
+        dockerfile.close()
+
+        try:
+            subprocess.run([
+                "podman", "build",
+                "--rm", "-t", image,
+                "-v", "/tmp:/host-tmp:ro",
+                "-f", dockerfile.name],
+                check=True)
+        except subprocess.CalledProcessError:
+            raise
+        finally:
+            os.unlink(ansiblefile.name)
+            os.unlink(dockerfile.name)
+
+    def build(self):
+        # Create required bootstrap images
+        distro = self.spec["distribution"]
+        self.hostBootstrap = HostBootstrap(distro, self.options)
+        self.targetBootstrap = TargetBootstrap(distro, self.options)
+        if ContainerEngine.hasImage(self.hostBootstrap.name) == False:
+            self.hostBootstrap.create()
+        if ContainerEngine.hasImage(self.targetBootstrap.name) == False:
+            self.targetBootstrap.create(self.hostBootstrap)
+
+        # Assemble the root file-system
+        self.rootfs()
+
+class Cmd(ABC):
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def main(self, argv):
+        pass
+
+class BuildCmd(Cmd):
+    def main(self, argv):
+        options = {}
+        try:
+            opts, args = getopt.getopt(argv, "h", ["help"])
+        except getopt.GetoptError as err:
+            print(err)
             cmd_build_usage()
-            sys.exit()
-        else:
-            assert False, "unhandled option"
+            sys.exit(1)
+        for o, a in opts:
+            if o in ("-h", "--help"):
+                cmd_build_usage()
+                sys.exit()
+            else:
+                assert False, "unhandled option"
 
-    if len(args) == 0:
-        sys.stderr.write("error: build command expects a YAML file\n")
-        sys.exit(1)
+        if len(args) == 0:
+            sys.stderr.write("error: build command expects a YAML file\n")
+            sys.exit(1)
 
-    try:
-        file = open(args[0], "r")
-        spec = yaml.load(file)
-        sys.exit(build_spec(spec, options))
-    except OSError as e:
-        sys.stderr.write("error: couldn't open build YAML file: {0}\n".format(e))
-        sys.exit(2)
-    except ValueError as e:
-        sys.stderr.write("error: YAML file is invalid: {0}\n".format(e))
-        sys.exit(3)
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write("error: build failed: {0}\n".format(e))
-        sys.exit(4)
+        try:
+            file = open(args[0], "r")
+            spec = yaml.load(file)
+
+            image = Image(spec, options)
+            image.parse()
+            sys.exit(image.build())
+        except OSError as e:
+            sys.stderr.write("error: couldn't open build YAML file: {0}\n".format(e))
+            sys.exit(2)
+        except ValueError as e:
+            sys.stderr.write("error: YAML file is invalid: {0}\n".format(e))
+            sys.exit(3)
+        except subprocess.CalledProcessError as e:
+            sys.stderr.write("error: build failed: {0}\n".format(e))
+            sys.exit(4)
 
 def main():
     argv = sys.argv[1:]
@@ -175,7 +232,7 @@ def main():
 
     cmd = argv[0]
     if cmd == "build":
-        cmd_build(argv[1:])
+        BuildCmd().main(argv[1:])
     else:
         print("%s: unknown command '%s'!" % (sys.argv[0], cmd))
         sys.exit(1)
