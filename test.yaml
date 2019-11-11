@@ -1,14 +1,23 @@
 distribution:
-        source: debian
-        release: buster
-        architecture: amd64
+    source: debian
+    release: buster
+    architecture: amd64
+
+playbook:
+    -  name: test-image
+       tasks:
+           - name: install vim
+             apt:
+                 name: vim
+                 state: present
+                 update_cache: true
+             become: true
 
 image:
-        - name: test-image
-          tasks:
-                - name: install vim
-                  apt:
-                          name: vim
-                          state: present
-                          update_cache: true
-                  become: true
+    filename: test-image.img
+    size: 2G
+    table: gpt
+    partitions:
+        - label: rootfs
+          type: ext4
+          where: /
