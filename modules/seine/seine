@@ -44,11 +44,13 @@ class HostBootstrap(Bootstrap):
     def create(self):
         dockerfile = tempfile.NamedTemporaryFile(delete=False)
         dockerfile.write(str.encode("""
-            FROM {0}:{1}
+            FROM {0}:{1} AS base
             RUN                                                       \
                  apt-get update -qqy &&                               \
                  apt-get install -qqy debootstrap qemu-user-static && \
                  apt-get purge -qqy
+            FROM base AS clean-base
+            RUN rm -rf /usr/share/doc /usr/share/info /usr/share/man
         """
         .format(self.distro["source"], self.distro["release"])))
         dockerfile.close()
@@ -107,6 +109,155 @@ class TargetBootstrap(Bootstrap):
     def defaultName(self):
         return os.path.join("seine", "bootstrap", self.distro["source"], self.distro["release"], self.distro["architecture"])
 
+class Imager(Bootstrap):
+    def __init__(self, source):
+        self.source = source
+        self.imageName = "imager.squashfs"
+        super().__init__(source.spec["distribution"], source.options)
+
+    def container_id(self):
+        return self.image_id().replace("/", "-")
+
+    def image_id(self):
+        return self.name
+
+    def defaultName(self):
+        return os.path.join("seine", "imager", self.distro["source"], self.distro["release"], "all")
+
+    def build_imager(self):
+        hostBootstrap = self.source.hostBootstrap
+
+        unitfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        unitfile.write(IMAGER_SYSTEMD_UNIT)
+        unitfile.close()
+
+        scriptfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        scriptfile.write(IMAGER_SYSTEMD_SCRIPT)
+        print(IMAGER_SYSTEMD_SCRIPT)
+        scriptfile.close()
+
+        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        dockerfile.write("""
+            FROM {0} AS bootstrap
+            RUN                                                              \
+                apt-get update -qqy &&                                       \
+                apt-get install -qqy squashfs-tools &&                       \
+                export container=lxc;                                        \
+                debootstrap --include=parted                                 \
+                    {1} rootfs {2} &&                                        \
+                cp /host-tmp/{3} rootfs/etc/systemd/system/imager.service && \
+                install -m 755 /host-tmp/{4} rootfs/usr/sbin/imager &&       \
+                chroot rootfs systemctl disable systemd-timesyncd &&         \
+                chroot rootfs systemctl disable systemd-update-utmp &&       \
+                chroot rootfs systemctl enable imager &&                     \
+                rm -rf rootfs/usr/share/doc                                  \
+                       rootfs/usr/share/info                                 \
+                       rootfs/usr/share/man                                  \
+                && mksquashfs rootfs {5} &&                                  \
+                rm -rf rootfs
+            FROM scratch AS image
+            COPY --from=bootstrap {5} {5}
+            CMD /bin/true
+        """
+        .format(
+            hostBootstrap.name,
+            self.distro["release"],
+            self.distro["uri"],
+            os.path.basename(unitfile.name),
+            os.path.basename(scriptfile.name),
+            self.imageName
+        ))
+        dockerfile.close()
+
+        imageCreated = False
+        try:
+            subprocess.run([
+                "podman", "build", "--rm",
+                "-t", self.image_id(),
+                "-v", "/tmp:/host-tmp:ro",
+                "-f", dockerfile.name], check=True)
+            imageCreated = True
+            subprocess.run([
+                "podman", "container", "create",
+                "--name", self.container_id(), self.image_id()], check=True)
+        except subprocess.CalledProcessError:
+            if imageCreated == True:
+                subprocess.run(["podman", "image", "rm", self.image_id()], check=False)
+            raise
+        finally:
+            os.unlink(dockerfile.name)
+            os.unlink(scriptfile.name)
+            os.unlink(unitfile.name)
+        return self
+
+    def get_imager(self):
+        output_file = tempfile.NamedTemporaryFile(mode="wb", delete=False)
+        try:
+            podman_proc = subprocess.Popen(
+                [ "podman", "container", "export", self.container_id() ],
+                stdout=subprocess.PIPE)
+            tar_proc = subprocess.Popen(
+                [ "tar", "-Oxf", "-" ],
+                stdin=podman_proc.stdout,
+                stdout=output_file)
+            out, err = tar_proc.communicate(input=300)
+            podman_proc.wait()
+            return output_file.name
+        except:
+            os.unlink(output_file.name)
+            raise
+
+    def build_script(self):
+        script_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        script_file.write("#!/bin/bash")
+        script_file.write("echo tarball=${tarball}")
+        script_file.close()
+        return script_file.name
+
+    def create(self):
+        imager_rootfs = None
+        log_file = None
+        script_file = None
+        try:
+            print("Creating imager script...")
+            script_file = self.build_script()
+
+            print("Preparing imager...")
+            if ContainerEngine.hasImage(self.image_id()) == False:
+                self.build_imager()
+            imager_rootfs = self.get_imager()
+
+            print("Starting imager...")
+            log_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
+            subprocess.run([
+                "linux", "ubd0=%s" % imager_rootfs, "con=pty", "quiet",
+                "root=/dev/ubda", "mem=512M", "selinux=disable",
+                "log=%s" % log_file.name,
+                "tarball=%s" % self.source._tarball,
+                "script=%s" % script_file], check=True)
+
+            # Extract exit code from log file
+            log_file.close()
+            with open(log_file.name, "r") as f:
+                for log in f.readlines():
+                    if log.startswith("IMAGER EXIT ="):
+                        result = int(log.split("=")[1].strip())
+                        if result != 0:
+                            raise subprocess.CalledProcessError(result, [
+                                script_file,
+                                "log=%s" % log_file.name,
+                                "tarball=%s" % self.source._tarball])
+            print("Done.")
+        except subprocess.CalledProcessError:
+            raise
+        finally:
+            if imager_rootfs:
+                os.unlink(imager_rootfs)
+            if log_file:
+                os.unlink(log_file.name)
+            if script_file:
+                os.unlink(script_file)
+
 class Image:
     def __init__(self, spec, options):
         self.spec = spec
@@ -114,6 +265,10 @@ class Image:
         self.hostBootstrap = None
         self.iid = None
         self.targetBootstrap = None
+
+    def __del__(self):
+        if self._tarball:
+            os.unlink(self._tarball)
 
     def parse(self):
         if "distribution" not in self.spec:
@@ -171,13 +326,15 @@ class Image:
             os.unlink(dockerfile.name)
             os.unlink(iidfile.name)
 
-    def tarball(self):
-        image = self.spec["playbook"][0]["name"] + ".tar"
+    def build_tarball(self):
         try:
+            self._tarball = None
+            image = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd())
             self.cid = subprocess.check_output(["podman", "container", "create", self.iid]).strip()
-            subprocess.run(["podman", "container", "export", "-o", image, self.cid], check=True)
+            subprocess.run(["podman", "container", "export", "-o", image.name, self.cid], check=True)
+            self._tarball = image.name
         except subprocess.CalledProcessError:
-            os.unlink(image)
+            os.unlink(image.name)
             raise
         finally:
             if self.cid:
@@ -199,7 +356,11 @@ class Image:
 
         # Assemble the root file-system
         self.rootfs()
-        self.tarball()
+        self.build_tarball()
+
+        # Produce the target image
+        imager = Imager(self)
+        imager.create()
 
 class Cmd(ABC):
     def __init__(self):
@@ -259,6 +420,38 @@ def main():
     else:
         print("%s: unknown command '%s'!" % (sys.argv[0], cmd))
         sys.exit(1)
+
+IMAGER_SYSTEMD_UNIT = """[Unit]
+Description=Seine Imager Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/imager
+
+[Install]
+WantedBy=multi-user.target"""
+
+IMAGER_SYSTEMD_SCRIPT = """#!/bin/bash
+mount none /mnt -t hostfs
+for x in $(cat /proc/cmdline); do
+    if [[ ${x} =~ ^log=.* ]] || [[ ${x} =~ ^script=.* ]] || [[ ${x} =~ ^tarball=.* ]]; then
+        eval ${x}
+    fi
+done
+if [ -n "${log}" ]; then
+    exec 1>/mnt${log}
+    exec 2>&1
+fi
+result=1
+if [ -n "${script}" ] && [ -e /mnt${script} ]; then
+    export log script tarball
+    set -x
+    PS4='# ' bash -x /mnt${script}
+    result=${?}
+fi
+echo "IMAGER EXIT = ${result}"
+halt"""
 
 if __name__ == "__main__":
     main()
