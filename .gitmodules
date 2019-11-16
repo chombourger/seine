@@ -10,3 +10,7 @@
 	path = external/libpod
 	url = https://github.com/chombourger/libpod.git
 	branch = debian/v1.6.2
+[submodule "support/bionic/user-mode-linux"]
+	path = support/bionic/user-mode-linux
+	url = https://github.com/chombourger/user-mode-linux.git
+	branch = bionic/5.3.0
