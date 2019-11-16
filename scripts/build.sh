@@ -39,7 +39,7 @@ _pkg_build() {
     # resolve build dependencies and build our package
     cd ${1}
     do_build_deps
-    dpkg-buildpackage -uc -us
+    dpkg-buildpackage -uc -us -jauto
 
     # add generated source and binary packages to repository
     cd ${from}
