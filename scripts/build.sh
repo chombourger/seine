@@ -33,6 +33,19 @@ pkg_get_version() {
     head -n 1 debian/changelog | awk '{ print $2 }'| tr -d '()'
 }
 
+_pkg_build() {
+    from=$(pwd)
+
+    # resolve build dependencies and build our package
+    cd ${1}
+    do_build_deps
+    dpkg-buildpackage -uc -us
+
+    # add generated source and binary packages to repository
+    cd ${from}
+    add_ext_pkgs $(dirname ${1})
+}
+
 pkg_build() {
     from=$(pwd)
     pkg=$(basename ${1})
@@ -47,14 +60,9 @@ pkg_build() {
     else
         tar -C .. --exclude='*/debian/*' -zcf ${tarball} ${pkg}
     fi
-
-    # resolve build dependencies and build our package
-    do_build_deps
-    debuild -uc -us
-
-    # add generated source and binary packages to repository
     cd ${from}
-    add_ext_pkgs $(dirname ${1})
+
+    _pkg_build ${1}
 }
 
 apt-get update -qqy
@@ -64,4 +72,9 @@ apt-get purge -qqy
 pkg_build external/conmon
 pkg_build external/slirp4netns
 pkg_build external/libpod
+
+if [ "${DISTRO_NAME}" = "bionic" ]; then
+    _pkg_build support/bionic/user-mode-linux
+fi
+
 pkg_build modules/seine
