@@ -18,3 +18,7 @@
 	path = support/bionic/conmon
 	url = https://github.com/chombourger/conmon.git
 	branch = bionic/v2.0.2
+[submodule "support/bionic/slirp4netns"]
+	path = support/bionic/slirp4netns
+	url = https://github.com/chombourger/slirp4netns.git
+	branch = bionic/v0.4.2
