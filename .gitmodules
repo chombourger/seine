@@ -14,3 +14,7 @@
 	path = support/bionic/user-mode-linux
 	url = https://github.com/chombourger/user-mode-linux.git
 	branch = bionic/5.3.0
+[submodule "support/bionic/conmon"]
+	path = support/bionic/conmon
+	url = https://github.com/chombourger/conmon.git
+	branch = bionic/v2.0.2
