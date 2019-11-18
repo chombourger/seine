@@ -22,3 +22,7 @@
 	path = support/bionic/slirp4netns
 	url = https://github.com/chombourger/slirp4netns.git
 	branch = bionic/v0.4.2
+[submodule "support/bionic/libpod"]
+	path = support/bionic/libpod
+	url = https://github.com/chombourger/libpod.git
+	branch = bionic/v1.6.2
