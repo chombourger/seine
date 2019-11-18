@@ -10,8 +10,6 @@ services:
   - docker
 
 before_install:
-  - make clean
-  - make distros=bionic
-  - sed -e "s,/apt,$TRAVIS_BUILD_DIR/apt,g" scripts/bionic/seine.list | sudo tee -a /etc/apt/sources.list.d/seine.list
-  - sudo apt-get update && sudo apt-get install -y python3-seine
-  - seine build test.yaml
+  - sudo add-apt-repository -y ppa:chombourger/ppa
+  - sudo apt-get update && sudo apt-get install -y podman user-mode-linux
+  - python3 modules/seine/seine build test.yaml
