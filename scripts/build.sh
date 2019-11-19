@@ -69,9 +69,9 @@ apt-get update -qqy
 apt-get install -qqy devscripts equivs git reprepro
 apt-get purge -qqy
 
-pkg_build external/conmon
-pkg_build external/slirp4netns
-pkg_build external/libpod
+pkg_build support/${DISTRO_NAME}/conmon
+pkg_build support/${DISTRO_NAME}/slirp4netns
+pkg_build support/${DISTRO_NAME}/libpod
 
 if [ "${DISTRO_NAME}" = "bionic" ]; then
     _pkg_build support/bionic/user-mode-linux
