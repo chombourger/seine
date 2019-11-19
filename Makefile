@@ -34,7 +34,7 @@ clean/build/deps: $(foreach d,$(distros),clean/build/deps/$(d))
 clean/install/deps: $(foreach d,$(distros),clean/install/deps/$(d))
 
 .PHONY: build/deps/%
-build/deps/%: scripts/%/build-deps.dockerfile
+build/deps/%: support/%/etc/build-deps.dockerfile
 	$(engine) build --rm $(squash) -t $@ -f $< .
 	cid="$$($(engine) create $@)" && \
 	$(engine) cp $$cid:apt/ . && \
@@ -42,7 +42,7 @@ build/deps/%: scripts/%/build-deps.dockerfile
 	$(engine) image rm $@
 
 .PHONY: install/deps/%
-install/deps/%: scripts/%/install-deps.dockerfile build/deps/%
+install/deps/%: support/%/etc/install-deps.dockerfile build/deps/%
 	$(engine) build --rm $(squash) -t $@ -f $< .
 	$(engine) image rm $@
 
