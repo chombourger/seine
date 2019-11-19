@@ -2,10 +2,6 @@
 	path = external/slirp4netns
 	url = https://github.com/chombourger/slirp4netns.git
 	branch = debian/v0.4.2
-[submodule "external/libpod"]
-	path = external/libpod
-	url = https://github.com/chombourger/libpod.git
-	branch = debian/v1.6.2
 [submodule "support/bionic/user-mode-linux"]
 	path = support/bionic/user-mode-linux
 	url = https://github.com/chombourger/user-mode-linux.git
@@ -26,3 +22,7 @@
 	path = support/buster/conmon
 	url = https://github.com/chombourger/conmon
 	branch = buster/v2.0.2
+[submodule "support/buster/libpod"]
+	path = support/buster/libpod
+	url = https://github.com/chombourger/libpod
+	branch = buster/v1.6.2
