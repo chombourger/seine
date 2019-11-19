@@ -1,7 +1,3 @@
-[submodule "external/conmon"]
-	path = external/conmon
-	url = https://github.com/chombourger/conmon.git
-	branch = debian/v2.0.2
 [submodule "external/slirp4netns"]
 	path = external/slirp4netns
 	url = https://github.com/chombourger/slirp4netns.git
@@ -26,3 +22,7 @@
 	path = support/bionic/libpod
 	url = https://github.com/chombourger/libpod.git
 	branch = bionic/v1.6.2
+[submodule "support/buster/conmon"]
+	path = support/buster/conmon
+	url = https://github.com/chombourger/conmon
+	branch = buster/v2.0.2
