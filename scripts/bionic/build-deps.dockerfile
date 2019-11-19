@@ -7,7 +7,6 @@ COPY scripts scripts
 FROM base AS buildsrc
 COPY .git .git
 COPY apt apt
-COPY external external
 COPY modules modules
 COPY support support
 
