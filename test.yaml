@@ -15,9 +15,11 @@ playbook:
 
 image:
     filename: test-image.img
-    size: 2G
     table: gpt
     partitions:
         - label: rootfs
           type: ext4
           where: /
+        - label: data
+          type: ext4
+          where: /var
