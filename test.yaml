@@ -20,6 +20,9 @@ image:
         - label: rootfs
           type: ext4
           where: /
+          flags:
+              - boot
+              - primary
         - label: data
           type: ext4
           where: /var
