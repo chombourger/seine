@@ -423,9 +423,11 @@ class PartitionHandler:
 
     START_OFFSET  = 1 * 1024 * 1024
     DEFAULT_EXTRA = 16 * 1024 * 1204
+    DEFAULT_TABLE = "gpt"
 
     def __init__(self):
         self._min_size = None
+        self._table = None
         self.partitions = []
         self.size = None
 
@@ -451,6 +453,23 @@ class PartitionHandler:
     def _to_rounded_mib(self, size):
         return math.ceil(size / 1024 / 1024)
 
+    def _parse_part_flags(self, part):
+        valid_flags = [ "boot", "lvm", "primary", "extended", "logical" ]
+        incompatible_flags = [
+            [ "primary", "extended", "logical" ]
+        ]
+
+        for f in part["flags"]:
+            if f not in valid_flags:
+                raise ValueError("'%s' is not a valid partition flag!" % f)
+        for set in incompatible_flags:
+            matched = []
+            for f in part["flags"]:
+                if f in set:
+                    matched.append(f)
+            if len(matched) > 1:
+                 raise ValueError("the following partition flags may not be used together: %s!" % (" ".join(matched)))
+
     def _parse_part(self, part):
         if "label" not in part:
             raise ValueError("one of the partitions does not have a 'label' defined!")
@@ -463,6 +482,10 @@ class PartitionHandler:
             part["_size"] = self._from_human_size(part["extra"])
         else:
             part["_size"] = PartitionHandler.DEFAULT_EXTRA
+
+        if "flags" in part:
+            self._parse_part_flags(part)
+
         prefix = os.path.normpath(part["where"])
         if prefix.endswith("/") == False:
             prefix = prefix + "/"
@@ -519,6 +542,12 @@ class PartitionHandler:
             raise ValueError("no 'partitions' defined in the 'image' section of the specification!")
         if "size" in image:
             self.size = self._from_human_size(image["size"])
+        if "table" in image:
+            self._table = image["table"]
+            if self._table not in [ "msdos", "gpt" ]:
+                raise ValueError("'%s' is not a supported partition table!" % self._table)
+        else:
+            self._table = PartitionHandler.DEFAULT_TABLE
 
         partitions = image["partitions"]
         for part in partitions:
@@ -528,19 +557,50 @@ class PartitionHandler:
         image["partitions"] = self.partitions
         return spec
 
+    def _script_setup_fs(self, script, part, dev):
+        script = script + "mkdir -p ${targetdir}%s\n" % part["_prefix"]
+        options = ""
+        if "label" in part:
+            options = options + " -L %s" % part["label"]
+        script = script + "mkfs.ext4 %s %s\n" % (options.strip(), dev)
+        script = script + "mount %s ${targetdir}%s\n" % (dev, part["_prefix"])
+        return script
+
     def script(self, device, targetdir):
         script = PARTITION_HANDLER_SCRIPT
-        script = script + "parted %s --script mklabel gpt\n" % device
+        script = script + "targetdir=%s\n" % targetdir
+        script = script + "parted %s --script mklabel %s\n" % (device, self._table)
         start = PartitionHandler.START_OFFSET / 1024 / 1024
+        ndx = 1
         for part in reversed(self.partitions):
+            if self._table == "msdos":
+                mkpart_arg = "primary"
+                if "flags" in part:
+                    if "extended" in part["flags"]:
+                        mkpart_arg = "extended"
+                    if "logical" in part["flags"]:
+                        mkpart_arg = "logical"
+            elif self._table == "gpt":
+                mkpart_arg = part["label"]
+
+            if "flags" in part and "lvm" in part["flags"]:
+                mkpart_type = "ext4"
+            else:
+                mkpart_type = part["type"]
+
             end = start + self._to_rounded_mib(part["_size"])
-            script = script + "parted %s --script mkpart primary ext4 %sMiB %sMiB\n" % (device, start, end)
-            script = script + "part=$(part_device %s)\n" % device
-            script = script + "[ x${part} != x ] || exit 1\n"
-            script = script + "mkfs.ext4 ${part}\n"
-            script = script + "mkdir -p %s%s\n" % (targetdir, part["_prefix"])
-            script = script + "mount ${part} %s%s\n" % (targetdir, part["_prefix"])
+            script = script + "parted %s --script mkpart %s %s %sMiB %sMiB\n" % (device, mkpart_arg, mkpart_type, start, end)
             start = end
+
+            if "flags" in part:
+                for f in part["flags"]:
+                    if f in [ "boot", "lvm" ]:
+                        script = script + "parted %s --script set %d %s on\n" % (device, ndx, f)
+
+            script = script + "dev=$(part_device %s)\n" % device
+            script = script + "[ x${dev} != x ] || exit 1\n"
+            script = self._script_setup_fs(script, part, "${dev}")
+            ndx = ndx + 1
         return script
 
 class Cmd(ABC):
