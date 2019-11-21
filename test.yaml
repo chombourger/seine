@@ -6,11 +6,15 @@ distribution:
 playbook:
     -  name: test-image
        tasks:
+           - name: install kernel
+             apt:
+                 name: linux-image-amd64
+                 state: present
+                 update_cache: true
            - name: install vim
              apt:
                  name: vim
                  state: present
-                 update_cache: true
              become: true
 
 image:
@@ -19,6 +23,7 @@ image:
     partitions:
         - label: rootfs
           type: ext4
+          size: 750MiB
           where: /
           flags:
               - boot
