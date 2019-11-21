@@ -1,5 +1,5 @@
 *.substvars
-.debhelper
+*.debhelper
 debhelper-build-stamp
 files
-python3-seine
+seine

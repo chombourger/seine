@@ -7,7 +7,7 @@ Standards-Version: 4.1.4
 Homepage: https://github.com/chombourger/seine
 X-Python-Version: >= 3.5
 
-Package: python3-seine
+Package: seine
 Architecture: all
 Multi-Arch: foreign
 Depends: ${misc:Depends},
