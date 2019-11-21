@@ -74,4 +74,4 @@ apt-get clean -qqy
  pkg_build support/${DISTRO_NAME}/libpod
 _pkg_build support/${DISTRO_NAME}/user-mode-linux
 
-pkg_build modules/seine
+pkg_build src/seine
