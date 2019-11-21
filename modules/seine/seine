@@ -474,6 +474,8 @@ class PartitionHandler:
         if "label" not in part:
             raise ValueError("one of the partitions does not have a 'label' defined!")
         label = part["label"]
+        if "size" in part:
+            part["size"] = self._from_human_size(part["size"])
         if "type" not in part:
             part["type"] = "ext4"
         if "where" not in part:
@@ -524,6 +526,8 @@ class PartitionHandler:
         self._min_size = PartitionHandler.START_OFFSET + 1 * 1024 * 1024
         for part in self.partitions:
             part["_size"] = self._to_rounded_mib(part["_size"]) * 1024 * 1024
+            if "size" in part and part["size"] > part["_size"]:
+                part["_size"] = part["size"]
             self._min_size = self._min_size + part["_size"]
 
     def print_stats(self):
