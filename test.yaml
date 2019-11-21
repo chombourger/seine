@@ -20,14 +20,21 @@ playbook:
 image:
     filename: test-image.img
     table: gpt
+    size: 960MiB
     partitions:
-        - label: rootfs
-          type: ext4
-          size: 750MiB
-          where: /
+        - label: system
+          group: vg_sys
+          size: 950MiB
           flags:
               - boot
               - primary
-        - label: data
-          type: ext4
+              - lvm
+    volumes:
+        - label: lv_root
+          group: vg_sys
+          size: 840MiB
+          where: /
+        - label: lv_data
+          group: vg_sys
+          size: 100MiB
           where: /var
