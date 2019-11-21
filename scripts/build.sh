@@ -25,7 +25,7 @@ do_build_deps() {
         opts="-qqy"
     fi
     mk-build-deps -t "apt-get ${opts} --no-install-recommends" -i -r debian/control
-    apt-get purge -qqy
+    apt-get clean -qqy
     rm -f *.deb
 }
 
@@ -67,14 +67,11 @@ pkg_build() {
 
 apt-get update -qqy
 apt-get install -qqy devscripts equivs git reprepro
-apt-get purge -qqy
+apt-get clean -qqy
 
-pkg_build support/${DISTRO_NAME}/conmon
-pkg_build support/${DISTRO_NAME}/slirp4netns
-pkg_build support/${DISTRO_NAME}/libpod
-
-if [ "${DISTRO_NAME}" = "bionic" ]; then
-    _pkg_build support/bionic/user-mode-linux
-fi
+ pkg_build support/${DISTRO_NAME}/conmon
+ pkg_build support/${DISTRO_NAME}/slirp4netns
+ pkg_build support/${DISTRO_NAME}/libpod
+_pkg_build support/${DISTRO_NAME}/user-mode-linux
 
 pkg_build modules/seine
