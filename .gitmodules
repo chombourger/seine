@@ -26,3 +26,7 @@
 	path = support/buster/slirp4netns
 	url = https://github.com/chombourger/slirp4netns
 	branch = buster/v0.4.2
+[submodule "support/buster/user-mode-linux"]
+	path = support/buster/user-mode-linux
+	url = https://github.com/chombourger/user-mode-linux
+	branch = buster/4.19
