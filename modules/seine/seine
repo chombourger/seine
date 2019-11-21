@@ -138,7 +138,6 @@ class Imager(Bootstrap):
 
         scriptfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         scriptfile.write(IMAGER_SYSTEMD_SCRIPT)
-        print(IMAGER_SYSTEMD_SCRIPT)
         scriptfile.close()
 
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
@@ -148,7 +147,7 @@ class Imager(Bootstrap):
                 apt-get update -qqy &&                                       \
                 apt-get install -qqy squashfs-tools &&                       \
                 export container=lxc;                                        \
-                debootstrap --include=parted                                 \
+                debootstrap --include=lvm2,parted                            \
                     {1} rootfs {2} &&                                        \
                 cp /host-tmp/{3} rootfs/etc/systemd/system/imager.service && \
                 install -m 755 /host-tmp/{4} rootfs/usr/sbin/imager &&       \
@@ -428,7 +427,10 @@ class PartitionHandler:
     def __init__(self):
         self._min_size = None
         self._table = None
+        self.groups = []
+        self.mounts = []
         self.partitions = []
+        self.volumes = []
         self.size = None
 
     def _from_human_size(self, size_string):
@@ -462,6 +464,9 @@ class PartitionHandler:
         for f in part["flags"]:
             if f not in valid_flags:
                 raise ValueError("'%s' is not a valid partition flag!" % f)
+            if f == "lvm":
+                part["_lvm"] = True
+
         for set in incompatible_flags:
             matched = []
             for f in part["flags"]:
@@ -470,32 +475,64 @@ class PartitionHandler:
             if len(matched) > 1:
                  raise ValueError("the following partition flags may not be used together: %s!" % (" ".join(matched)))
 
-    def _parse_part(self, part):
-        if "label" not in part:
-            raise ValueError("one of the partitions does not have a 'label' defined!")
-        label = part["label"]
-        if "size" in part:
-            part["size"] = self._from_human_size(part["size"])
-        if "type" not in part:
-            part["type"] = "ext4"
-        if "where" not in part:
-            raise ValueError("'where' not defined in partition '%s'!" % label)
+    def _parse_common(self, part):
+        part["_blksz"] = 4096
+        part["_depth"] = 0
+
         if "extra" in part:
             part["_size"] = self._from_human_size(part["extra"])
         else:
             part["_size"] = PartitionHandler.DEFAULT_EXTRA
 
+        if "where" in part:
+            prefix = os.path.normpath(part["where"])
+            if prefix.endswith("/") == False:
+                prefix = prefix + "/"
+            depth = prefix.count("/") - 1
+            part["_depth"] = depth
+            part["_prefix"] = prefix
+        if "size" in part:
+            part["size"] = self._from_human_size(part["size"])
+        if "type" not in part:
+            part["type"] = "ext4"
+
+        return part
+
+    def _parse_part(self, part):
+        part = self._parse_common(part)
+
+        part["_lvm"] = False
+
         if "flags" in part:
             self._parse_part_flags(part)
 
-        prefix = os.path.normpath(part["where"])
-        if prefix.endswith("/") == False:
-            prefix = prefix + "/"
-        depth = prefix.count("/") - 1
-        part["_depth"] = depth
-        part["_prefix"] = prefix
-        part["_blksz"] = 4096
+        if "label" not in part:
+            raise ValueError("one of the partitions does not have a 'label' defined!")
+        label = part["label"]
+
+        if "where" not in part and part["_lvm"] == False:
+            raise ValueError("'where' not defined in partition '%s'!" % label)
+        if part["_lvm"] == True:
+            if "group" not in part:
+                raise ValueError("target 'group' not defined for partition '%s'!" % label)
+            elif part["group"] not in self.groups:
+                self.groups.append(part["group"])
+            if "size" not in part:
+                raise ValueError("'size' of LVM partition '%s' was not defined!" % label)
+            else:
+                part["_size"] = part["size"]
         return part
+
+    def _parse_vol(self, vol):
+        vol = self._parse_common(vol)
+        if "label" not in vol:
+            raise ValueError("one of the volumes does not have a 'label' defined!")
+        label = vol["label"]
+        if "group" not in vol:
+            raise ValueError("no 'group' defined for volume '%s'!" % label)
+        if "where" not in vol:
+            raise ValueError("'where' not defined in volume '%s'!" % label)
+        return vol
 
     def _size_file(self, f, part):
         blksz = part["_blksz"]
@@ -516,26 +553,28 @@ class PartitionHandler:
             name = "/" + f.name
         else:
             name = f.name
-        for part in self.partitions:
-            if name.startswith(part["_prefix"]):
-                part["_size"] = part["_size"] + self._size_file(f, part)
-                return part
+        for mount in self.mounts:
+            if mount["_prefix"] is not None and name.startswith(mount["_prefix"]):
+                mount["_size"] = mount["_size"] + self._size_file(f, mount)
+                return mount
         return None
 
     def compute_sizes(self):
         self._min_size = PartitionHandler.START_OFFSET + 1 * 1024 * 1024
-        for part in self.partitions:
-            part["_size"] = self._to_rounded_mib(part["_size"]) * 1024 * 1024
-            if "size" in part and part["size"] > part["_size"]:
-                part["_size"] = part["size"]
-            self._min_size = self._min_size + part["_size"]
+        for mount in self.mounts:
+            mount["_size"] = self._to_rounded_mib(mount["_size"]) * 1024 * 1024
+            if "size" in mount and mount["size"] > mount["_size"]:
+                mount["_size"] = mount["size"]
+            self._min_size = self._min_size + mount["_size"]
 
     def print_stats(self):
+        print("mounts:")
+        print("-------")
         size = 0
-        for part in self.partitions:
-            print("%s\t%s" % (part["where"], self._to_human_size(part["_size"])))
-            size = size + part["_size"]
-        print("total\t%s" % self._to_human_size(size))
+        for mount in self.mounts:
+            print("%s\t%s" % (mount["where"], self._to_human_size(mount["_size"])))
+            size = size + mount["_size"]
+        print("total\t%s\n" % self._to_human_size(size))
         print("disk\t%s" % self._to_human_size(self.disk_size()))
 
     def parse(self, spec):
@@ -557,17 +596,26 @@ class PartitionHandler:
         for part in partitions:
             part = self._parse_part(part)
             self.partitions.append(part)
-        self.partitions = sorted(self.partitions, key=lambda part: part["_depth"], reverse=True)
+            if "where" in part:
+                self.mounts.append(part)
         image["partitions"] = self.partitions
+
+        if "volumes" in image:
+            volumes = image["volumes"]
+            for vol in volumes:
+                vol = self._parse_vol(vol)
+                self.mounts.append(vol)
+                self.volumes.append(vol)
+            image["volumes"] = self.volumes
+
+        self.mounts = sorted(self.mounts, key=lambda vol: vol["_depth"], reverse=True)
         return spec
 
     def _script_setup_fs(self, script, part, dev):
-        script = script + "mkdir -p ${targetdir}%s\n" % part["_prefix"]
         options = ""
         if "label" in part:
             options = options + " -L %s" % part["label"]
         script = script + "mkfs.ext4 %s %s\n" % (options.strip(), dev)
-        script = script + "mount %s ${targetdir}%s\n" % (dev, part["_prefix"])
         return script
 
     def script(self, device, targetdir):
@@ -576,7 +624,7 @@ class PartitionHandler:
         script = script + "parted %s --script mklabel %s\n" % (device, self._table)
         start = PartitionHandler.START_OFFSET / 1024 / 1024
         ndx = 1
-        for part in reversed(self.partitions):
+        for part in self.partitions:
             if self._table == "msdos":
                 mkpart_arg = "primary"
                 if "flags" in part:
@@ -603,8 +651,38 @@ class PartitionHandler:
 
             script = script + "dev=$(part_device %s)\n" % device
             script = script + "[ x${dev} != x ] || exit 1\n"
-            script = self._script_setup_fs(script, part, "${dev}")
+
+            if part["_lvm"] == False:
+                script = script + "id=%s\n" % part["_prefix"].replace("/", "_")
+                script = script + "mounts[${id}]=${dev}\n"
+                script = self._script_setup_fs(script, part, "${dev}")
+            else:
+                script = script + "pvcreate ${dev}\n"
+                script = script + "pvs=${groups[%s]}\n" % part["group"]
+                script = script + "groups[%s]=\"${pvs} ${dev}\"\n" % part["group"]
             ndx = ndx + 1
+
+        if len(self.groups) > 0:
+            script = script + "cp -r /etc/lvm /dev/ && mount -o bind /dev/lvm /etc/lvm\n"
+
+        for group in self.groups:
+            script = script + "pvs=${groups[%s]}\n" % group
+            script = script + "[ -n \"${pvs}\" ] || exit 1\n"
+            script = script + "vgcreate %s ${pvs}\n" % group
+
+        for vol in self.volumes:
+            script = script + "vgs\n"
+            script = script + "lvcreate -n %s -L %dM %s\n" % (vol["label"], self._to_rounded_mib(vol["size"]), vol["group"])
+            device = "/dev/mapper/%s-%s" % (vol["group"], vol["label"])
+            script = self._script_setup_fs(script, vol, device)
+            script = script + "id=%s\n" % vol["_prefix"].replace("/", "_")
+            script = script + "mounts[${id}]=%s\n" % (device)
+
+        for mount in reversed(self.mounts):
+            script = script + "dev=${mounts[%s]}\n" % mount["_prefix"].replace("/", "_")
+            script = script + "mkdir -p ${targetdir}%s\n" % mount["_prefix"]
+            script = script + "mount ${dev} ${targetdir}%s\n" % (mount["_prefix"])
+
         return script
 
 class Cmd(ABC):
@@ -713,6 +791,10 @@ part_device() {
         fi
     done
 }
+
+declare -A groups
+declare -A mounts
+
 """
 
 if __name__ == "__main__":
