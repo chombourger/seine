@@ -2,3 +2,4 @@ build
 dist
 seine.egg-info
 .pybuild
+*.img

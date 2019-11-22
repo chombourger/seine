@@ -275,8 +275,7 @@ class Imager(Bootstrap):
 class Image:
     TARGET_DIR = "/dev/image"
 
-    def __init__(self, spec, partitionHandler, options):
-        self.spec = spec
+    def __init__(self, partitionHandler, options={}):
         self.partitionHandler = partitionHandler
         self.options = options
         self.hostBootstrap = None
@@ -290,7 +289,8 @@ class Image:
         if self._tarball:
             os.unlink(self._tarball)
 
-    def parse(self):
+    def parse(self, spec):
+        self.spec = spec
         if "distribution" not in self.spec:
             raise ValueError("'distribution' not found in provided specification!")
         if "image" not in self.spec:
@@ -312,10 +312,12 @@ class Image:
         if "filename" not in image:
             raise ValueError("output 'filename' not specified in 'image' section!")
         self._output = image["filename"]
+        return self.spec
 
     def rootfs(self):
         ansible = self.spec["playbook"]
-        ansible[0]["hosts"] = "localhost"
+        for playbook in ansible:
+            playbook["hosts"] = "localhost"
         ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         yaml.dump(ansible, ansiblefile)
         ansiblefile.close()
@@ -694,8 +696,61 @@ class Cmd(ABC):
         pass
 
 class BuildCmd(Cmd):
+    def __init__(self):
+        self.image = None
+        self.options = {}
+        self.partitionHandler = PartitionHandler()
+        self.spec = None
+
+    def load(self, yaml_file):
+        with open(yaml_file, "r") as f:
+            spec = yaml.load(f)
+        if self.spec is None:
+            self.spec = spec
+        else:
+            self.merge(spec)
+        return self.spec
+
+    def _merge_distro(self, spec):
+        if "distribution" in self.spec and "distribution" in spec:
+            for setting in spec["distribution"]:
+                self.spec["distribution"][setting] = spec["distribution"][setting]
+        elif "distribution" not in self.spec:
+            self.spec["distribution"] = spec["distribution"]
+
+    def _append_playbooks(self, spec):
+        if "playbook" in self.spec and "playbook" in spec:
+            for playbook in spec["playbook"]:
+                self.spec["playbook"].append(playbook)
+        elif "playbook" not in self.spec:
+            self.spec["playbook"] = spec["playbook"]
+
+    def _merge_image(self, spec):
+        if "image" in self.spec and "image" in spec:
+            for setting in spec["image"]:
+                self.spec["image"][setting] = spec["image"][setting]
+        elif "image" not in self.spec:
+            self.spec["image"] = spec["image"]
+
+    def merge(self, spec):
+        self._merge_distro(spec)
+        self._append_playbooks(spec)
+        self._merge_image(spec)
+        return self.spec
+
+    def parse(self):
+        if self.image is None:
+            self.image = Image(self.partitionHandler, self.options)
+        self.spec = self.partitionHandler.parse(self.spec)
+        self.spec = self.image.parse(self.spec)
+        return self.spec
+
+    def build(self):
+        if self.spec is None or self.image is None:
+            raise RuntimeError("no specification was loaded or parsed!")
+        return self.image.build()
+
     def main(self, argv):
-        options = {}
         try:
             opts, args = getopt.getopt(argv, "h", ["help"])
         except getopt.GetoptError as err:
@@ -714,15 +769,10 @@ class BuildCmd(Cmd):
             sys.exit(1)
 
         try:
-            file = open(args[0], "r")
-            spec = yaml.load(file)
-
-            partitionHandler = PartitionHandler()
-            spec = partitionHandler.parse(spec)
-
-            image = Image(spec, partitionHandler, options)
-            image.parse()
-            sys.exit(image.build())
+            for spec in args:
+                self.load(spec)
+            self.parse()
+            sys.exit(self.build())
         except OSError as e:
             sys.stderr.write("error: couldn't open build YAML file: {0}\n".format(e))
             sys.exit(2)
