@@ -4,8 +4,11 @@ distribution:
 playbook:
     -  name: boot packages
        tasks:
+           - name: install boot-loader
+             apt:
+                 name: grub-efi-amd64-bin
+                 state: present
            - name: install kernel
              apt:
                  name: linux-image-amd64
                  state: present
-                 update_cache: true

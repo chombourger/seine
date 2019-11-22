@@ -86,7 +86,6 @@ class PartitionHandler:
 
     def _parse_part(self, part):
         part = self._parse_common(part)
-
         part["_lvm"] = False
 
         if "flags" in part:
@@ -111,6 +110,8 @@ class PartitionHandler:
 
     def _parse_vol(self, vol):
         vol = self._parse_common(vol)
+        vol["_lvm"] = True
+
         if "label" not in vol:
             raise ValueError("one of the volumes does not have a 'label' defined!")
         label = vol["label"]
@@ -197,14 +198,30 @@ class PartitionHandler:
         self.mounts = sorted(self.mounts, key=lambda vol: vol["_depth"], reverse=True)
         return spec
 
-    def _script_setup_fs(self, script, part, dev):
+    def _script_setup_ext(self, script, part, dev):
         options = ""
         if "label" in part:
             options = options + " -L %s" % part["label"]
-        script = script + "mkfs.ext4 %s %s\n" % (options.strip(), dev)
+        script = script + "mkfs.%s %s %s\n" % (part["type"], options.strip(), dev)
         return script
 
+    def _script_setup_vfat(self, script, part, dev):
+        options = ""
+        if "label" in part:
+            options = options + " -n %s" % part["label"]
+        script = script + "mkfs.vfat %s %s\n" % (options.strip(), dev)
+        return script
+
+    def _script_setup_fs(self, script, part, dev):
+        if part["type"].startswith("ext"):
+            return self._script_setup_ext(script, part, dev)
+        elif part["type"] == "vfat":
+            return self._script_setup_vfat(script, part, dev)
+        else:
+            raise NotImplementedError("'%s' is not a supported file-system!" % part["type"])
+
     def script(self, device, targetdir):
+        fstab = ""
         script = PARTITION_HANDLER_SCRIPT
         script = script + "targetdir=%s\n" % targetdir
         script = script + "parted %s --script mklabel %s\n" % (device, self._table)
@@ -223,6 +240,8 @@ class PartitionHandler:
 
             if "flags" in part and "lvm" in part["flags"]:
                 mkpart_type = "ext4"
+            elif part["type"] == "vfat":
+                mkpart_type = "fat32"
             else:
                 mkpart_type = part["type"]
 
@@ -257,7 +276,6 @@ class PartitionHandler:
             script = script + "vgcreate %s ${pvs}\n" % group
 
         for vol in self.volumes:
-            script = script + "vgs\n"
             script = script + "lvcreate -n %s -L %dM %s\n" % (vol["label"], self._to_rounded_mib(vol["size"]), vol["group"])
             device = "/dev/mapper/%s-%s" % (vol["group"], vol["label"])
             script = self._script_setup_fs(script, vol, device)
@@ -268,6 +286,25 @@ class PartitionHandler:
             script = script + "dev=${mounts[%s]}\n" % mount["_prefix"].replace("/", "_")
             script = script + "mkdir -p ${targetdir}%s\n" % mount["_prefix"]
             script = script + "mount ${dev} ${targetdir}%s\n" % (mount["_prefix"])
+            fstab = fstab + "    dev=${mounts[%s]}\n" % mount["_prefix"].replace("/", "_")
+            if mount["_lvm"] == False:
+                fstab = fstab + "    uuid=$(blkid -p -o export ${dev}|grep ^UUID)\n"
+                what = "${uuid}"
+            else:
+                what = "${dev}"
+            if mount["_prefix"] == "/":
+                options = "errors=remount-ro"
+                passno = 1
+            else:
+                options = "defaults"
+                passno = 2
+                if mount["type"] == "vfat":
+                    options = "umask=0077"
+            fstab = fstab + "    echo \"%s %s %s %s 0 %d\"\n" % (what, mount["_prefix"], mount["type"], options, passno)
+
+        script = script + "update_fstab() {\n"
+        script = script + fstab
+        script = script + "}\n"
 
         return script
 

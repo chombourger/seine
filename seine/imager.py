@@ -40,7 +40,7 @@ class Imager(Bootstrap):
                 apt-get update -qqy &&                                       \
                 apt-get install -qqy squashfs-tools &&                       \
                 export container=lxc;                                        \
-                debootstrap --include=lvm2,parted                            \
+                debootstrap --include=dosfstools,lvm2,parted                 \
                     {1} rootfs {2} &&                                        \
                 cp /host-tmp/{3} rootfs/etc/systemd/system/imager.service && \
                 install -m 755 /host-tmp/{4} rootfs/usr/sbin/imager &&       \
@@ -110,7 +110,12 @@ class Imager(Bootstrap):
         script_file.write("set -e\n")
         script_file.write("set -x\n")
         script_file.write(script)
-        script_file.write("\ntar -C %s -xf /mnt${tarball}\n" % targetdir)
+        script_file.write("\ncd %s\n" % targetdir)
+        script_file.write("tar -xf /mnt${tarball}\n")
+        script_file.write("update_fstab >etc/fstab\n")
+        script_file.write("df -h|grep %s\n" % targetdir)
+        script_file.write(IMAGER_POST_INSTALL_SCRIPT)
+        script_file.write(IMAGER_GRUB_INSTALL_SCRIPT)
         script_file.close()
         return script_file.name
 
@@ -195,4 +200,26 @@ if [ -n "${script}" ] && [ -e /mnt${script} ]; then
 fi
 echo "IMAGER EXIT = ${result}"
 halt
+"""
+
+IMAGER_POST_INSTALL_SCRIPT = """
+mount -o bind /dev  dev
+mount -o bind /proc proc
+mount -o bind /run  run
+mount -o bind /sys  sys
+"""
+
+IMAGER_GRUB_INSTALL_SCRIPT = """
+if [ -e usr/sbin/grub-install ]; then
+    options=""
+    if [ -d usr/lib/grub/x86_64-efi ]; then
+        options="--target x86_64-efi"
+    fi
+    chroot . /usr/sbin/grub-install ${options} /dev/ubdb
+    if [ -d usr/lib/grub/x86_64-efi ]; then
+        mkdir boot/efi/EFI/boot
+        mv boot/efi/EFI/grub/grubx64.efi boot/efi/EFI/boot/bootx64.efi
+    fi
+    chroot . /usr/sbin/update-grub
+fi
 """

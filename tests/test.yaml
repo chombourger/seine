@@ -13,19 +13,31 @@ playbook:
 image:
     filename: test-image.img
     table: gpt
-    size: 960MiB
+    size: 800MiB
     partitions:
-        - label: system
-          group: vg_sys
-          size: 950MiB
+        - label: efi
+          type: vfat
+          size: 16MiB
+          where: /boot/efi
           flags:
               - boot
+              - primary
+        - label: boot
+          type: ext2
+          size: 64MiB
+          where: /boot
+          flags:
+              - primary
+        - label: system
+          group: vg_sys
+          size: 710MiB
+          flags:
               - primary
               - lvm
     volumes:
         - label: lv_root
           group: vg_sys
-          size: 840MiB
+          size: 600MiB
           where: /
         - label: lv_data
           group: vg_sys
