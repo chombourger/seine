@@ -25,11 +25,12 @@ class BuildCmd(Cmd):
         return self.spec
 
     def _merge_distro(self, spec):
-        if "distribution" in self.spec and "distribution" in spec:
-            for setting in spec["distribution"]:
-                self.spec["distribution"][setting] = spec["distribution"][setting]
-        elif "distribution" not in self.spec:
-            self.spec["distribution"] = spec["distribution"]
+        if "distribution" in spec:
+            if "distribution" in self.spec:
+                for setting in spec["distribution"]:
+                    self.spec["distribution"][setting] = spec["distribution"][setting]
+            elif "distribution" not in self.spec:
+                self.spec["distribution"] = spec["distribution"]
 
     def _append_playbooks(self, spec):
         if "playbook" in self.spec and "playbook" in spec:
@@ -39,11 +40,12 @@ class BuildCmd(Cmd):
             self.spec["playbook"] = spec["playbook"]
 
     def _merge_image(self, spec):
-        if "image" in self.spec and "image" in spec:
-            for setting in spec["image"]:
-                self.spec["image"][setting] = spec["image"][setting]
-        elif "image" not in self.spec:
-            self.spec["image"] = spec["image"]
+        if "image" in spec:
+            if "image" in self.spec:
+                for setting in spec["image"]:
+                    self.spec["image"][setting] = spec["image"][setting]
+            elif "image" not in self.spec:
+                self.spec["image"] = spec["image"]
 
     def merge(self, spec):
         self._merge_distro(spec)
@@ -95,5 +97,3 @@ class BuildCmd(Cmd):
         except subprocess.CalledProcessError as e:
             sys.stderr.write("error: build failed: {0}\n".format(e))
             sys.exit(4)
-
-
