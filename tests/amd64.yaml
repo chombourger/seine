@@ -1,0 +1,11 @@
+distribution:
+    architecture: amd64
+
+playbook:
+    -  name: boot packages
+       tasks:
+           - name: install kernel
+             apt:
+                 name: linux-image-amd64
+                 state: present
+                 update_cache: true

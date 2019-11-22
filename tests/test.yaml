@@ -1,16 +1,9 @@
 distribution:
     source: debian
-    release: buster
-    architecture: amd64
 
 playbook:
-    -  name: test-image
+    -  name: base packages
        tasks:
-           - name: install kernel
-             apt:
-                 name: linux-image-amd64
-                 state: present
-                 update_cache: true
            - name: install vim
              apt:
                  name: vim
