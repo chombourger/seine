@@ -157,5 +157,3 @@ class Image:
             if self._image is not None:
                 os.unlink(self._image)
             raise
-
-
