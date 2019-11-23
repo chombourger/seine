@@ -4,6 +4,11 @@ distribution:
 playbook:
     -  name: base packages
        tasks:
+           - name: install core packages
+             apt:
+                 name: lvm2
+                 state: present
+             become: true
            - name: install vim
              apt:
                  name: vim
@@ -13,7 +18,7 @@ playbook:
 image:
     filename: test-image.img
     table: gpt
-    size: 800MiB
+    size: 850MiB
     partitions:
         - label: efi
           type: vfat
@@ -30,14 +35,14 @@ image:
               - primary
         - label: system
           group: vg_sys
-          size: 710MiB
+          size: 750MiB
           flags:
               - primary
               - lvm
     volumes:
         - label: lv_root
           group: vg_sys
-          size: 600MiB
+          size: 640MiB
           where: /
         - label: lv_data
           group: vg_sys
