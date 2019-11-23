@@ -11,6 +11,7 @@ class Imager(Bootstrap):
     def __init__(self, source):
         self.source = source
         self.imageName = "imager.squashfs"
+        self.verbose = source.options["verbose"]
         super().__init__(source.spec["distribution"], source.options)
 
     def container_id(self):
@@ -148,13 +149,16 @@ class Imager(Bootstrap):
             log_file.close()
             with open(log_file.name, "r") as f:
                 for log in f.readlines():
+                    if self.verbose:
+                        print(log.strip())
                     if log.startswith("IMAGER EXIT ="):
                         result = int(log.split("=")[1].strip())
                         if result != 0:
-                            f.seek(0)
-                            lines = f.readlines()[-20:]
-                            for line in lines:
-                                sys.stderr.write(line)
+                            if self.verbose == False:
+                                f.seek(0)
+                                lines = f.readlines()[-20:]
+                                for line in lines:
+                                    sys.stderr.write(line)
                             raise subprocess.CalledProcessError(result, [
                                 script_file,
                                 "log=%s" % log_file.name,

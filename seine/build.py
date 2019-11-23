@@ -66,8 +66,9 @@ class BuildCmd(Cmd):
         return self.image.build()
 
     def main(self, argv):
+        self.options["verbose"] = False
         try:
-            opts, args = getopt.getopt(argv, "h", ["help"])
+            opts, args = getopt.getopt(argv, "hv", ["help", "verbose"])
         except getopt.GetoptError as err:
             print(err)
             cmd_build_usage()
@@ -76,6 +77,8 @@ class BuildCmd(Cmd):
             if o in ("-h", "--help"):
                 cmd_build_usage()
                 sys.exit()
+            elif o in ("-v", "--verbose"):
+                self.options["verbose"] = True
             else:
                 assert False, "unhandled option"
 
