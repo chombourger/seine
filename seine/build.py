@@ -66,15 +66,19 @@ class BuildCmd(Cmd):
         return self.image.build()
 
     def main(self, argv):
+        self.options["debug"] = False
         self.options["verbose"] = False
         try:
-            opts, args = getopt.getopt(argv, "hv", ["help", "verbose"])
+            opts, args = getopt.getopt(argv, "dhv", ["debug", "help", "verbose"])
         except getopt.GetoptError as err:
             print(err)
             cmd_build_usage()
             sys.exit(1)
         for o, a in opts:
-            if o in ("-h", "--help"):
+            if o in ("-d", "--debug"):
+                self.options["debug"] = True
+                self.options["verbose"] = True
+            elif o in ("-h", "--help"):
                 cmd_build_usage()
                 sys.exit()
             elif o in ("-v", "--verbose"):

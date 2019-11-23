@@ -11,6 +11,7 @@ class Imager(Bootstrap):
     def __init__(self, source):
         self.source = source
         self.imageName = "imager.squashfs"
+        self.debug = source.options["debug"]
         self.verbose = source.options["verbose"]
         super().__init__(source.spec["distribution"], source.options)
 
@@ -109,7 +110,8 @@ class Imager(Bootstrap):
         script_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
         script_file.write("#!/bin/bash\n")
         script_file.write("set -e\n")
-        script_file.write("set -x\n")
+        if self.debug:
+            script_file.write("set -x\n")
         script_file.write(script)
         script_file.write("\ncd %s\n" % targetdir)
         script_file.write("tar -xf /mnt${tarball}\n")
@@ -199,7 +201,7 @@ fi
 result=1
 if [ -n "${script}" ] && [ -e /mnt${script} ]; then
     export log script tarball
-    bash -x /mnt${script}
+    bash /mnt${script}
     result=${?}
 fi
 echo "IMAGER EXIT = ${result}"
