@@ -1,0 +1,16 @@
+playbook:
+    -  name: configure locales to French
+       tasks:
+        - name: set default locale to fr_FR.UTF-8
+          debconf:
+              name: locales
+              question: locales/default_environment_locale
+              value: fr_FR.UTF-8
+              vtype: select
+    
+        - name: set to generate locales
+          debconf:
+              name: locales
+              question: locales/locales_to_be_generated
+              value: en_US.UTF-8 UTF-8, fr_FR.UTF-8 UTF-8
+              vtype: multiselect
