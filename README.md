@@ -92,6 +92,21 @@ playbook:
           ...
 ```
 
+Playbooks may be given a priority between `0` and `999` with `0` being the
+priority:
+
+```
+playbook:
+    - name: first playbook but apply towards the end
+      priority: 900
+      tasks:
+          ...
+    - name: second playbook but apply early
+      priority: 100
+      tasks:
+          ...
+```
+
 Frequently used tasks include:
  * `apt`
  * `debconf`
