@@ -1,0 +1,59 @@
+playbook:
+    - name: configure localepurge
+      priority: 100
+      tasks:
+        - name: purge all locales but English
+          debconf:
+              name: localepurge
+              question: localepurge/nopurge
+              value: en_US
+              vtype: multiselect
+
+        - name: whether to really remove all locales
+          debconf:
+              name: localepurge
+              question: localepurge/none_selected
+              value: false
+              vtype: boolean
+
+        - name: whether to also delete localized man pages
+          debconf:
+              name: localepurge
+              question: localepurge/mandelete
+              value: true
+              vtype: boolean
+
+        - name: localepurge will not take any action
+          debconf:
+              name: localepurge
+              question: localepurge/remove_no
+              value: false
+              vtype: boolean
+
+        - name: whether to inform about new locales
+          debconf:
+              name: localepurge
+              question: localepurge/dontbothernew
+              value: false
+              vtype: boolean
+
+        - name: whether to display verbose output
+          debconf:
+              name: localepurge
+              question: localepurge/verbose
+              value: false
+              vtype: boolean
+
+        - name: whether to display freed disk space
+          debconf:
+              name: localepurge
+              question: localepurge/showfreedspace
+              value: true
+              vtype: boolean
+
+        - name: whether to use the dpkg feature
+          debconf:
+              name: localepurge
+              question: localepurge/use-dpkg-feature
+              value: false
+              vtype: boolean
