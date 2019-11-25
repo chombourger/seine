@@ -22,6 +22,7 @@ class Image:
         self._image = None
         self._output = None
         self._tarball = None
+        self._verbose = options["verbose"]
 
     def __del__(self):
         if self._tarball:
@@ -65,24 +66,29 @@ class Image:
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write("""
             FROM {0} AS playbooks
-            RUN ansible-playbook /host-tmp/{1}
+            RUN ansible-playbook {1} /host-tmp/{2}
             FROM playbooks as clean
             RUN apt-get autoremove -qy ansible && \
                 apt-get clean -y &&               \
                 rm -f /usr/bin/qemu-*-static
             CMD /bin/true
         """
-        .format(self.targetBootstrap.name, os.path.basename(ansiblefile.name)))
+        .format(
+            self.targetBootstrap.name,
+            "-v" if self._verbose else "",
+            os.path.basename(ansiblefile.name)))
         dockerfile.close()
 
         try:
             self.iid = None
-            subprocess.run([
+            cmd = [
                 "podman", "build", "--rm",
                 "--iidfile", iidfile.name,
                 "-v", "/tmp:/host-tmp:ro",
-                "-f", dockerfile.name],
-                check=True)
+                "-f", dockerfile.name]
+            if self._verbose == False:
+                cmd.append("-q")
+            subprocess.run(cmd, check=True)
             iidfile.seek(0)
             self.iid = iidfile.readline()
         except subprocess.CalledProcessError:
