@@ -1,0 +1,9 @@
+playbook:
+    - name: configure user accounts
+      priority: 900
+      # set password for root to welcome123
+      # the encrypted password was obtained with:
+      # python3 -c 'import crypt; print(crypt.crypt("welcome123", crypt.mksalt(crypt.METHOD_SHA512)))'
+      tasks:
+        - name: set root password
+          user: name=root update_password=always password=$6$X1SbKPWJ2tkpDFZb$khtcnptnTxWEYA4qCq/SHioxz6cmw2GFnnVi7YE/kkT257HIXrTTiGDNuAnAfvG6xiXygf9XYSHZoU8JuvU4J0
