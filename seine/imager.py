@@ -215,19 +215,16 @@ mount -o bind /run  run
 mount -o bind /sys  sys
 """
 
-# FIXME: grub expects grub.cfg in EFI/debian but it is put in EFI/grub by grub-install
-# rename the "grub" directory to "debian" as a work-around
 IMAGER_GRUB_INSTALL_SCRIPT = """
 if [ -e usr/sbin/grub-install ]; then
     options=""
     if [ -d usr/lib/grub/x86_64-efi ]; then
         options="--target x86_64-efi"
     fi
-    chroot . /usr/sbin/grub-install ${options} /dev/ubdb
+    chroot . /usr/sbin/grub-install -v ${options} /dev/ubdb
     if [ -d usr/lib/grub/x86_64-efi ]; then
         mkdir boot/efi/EFI/boot
-        mv boot/efi/EFI/grub/grubx64.efi boot/efi/EFI/boot/bootx64.efi
-        mv boot/efi/EFI/grub boot/efi/EFI/debian
+        mv boot/efi/EFI/debian/grubx64.efi boot/efi/EFI/boot/bootx64.efi
     fi
     chroot . /usr/sbin/update-grub
 fi
