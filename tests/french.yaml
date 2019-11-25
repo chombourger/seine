@@ -1,6 +1,7 @@
 playbook:
-    -  name: configure locales to French
-       tasks:
+    - name: configure locales to French
+      priority: 900
+      tasks:
         - name: set default locale to fr_FR.UTF-8
           debconf:
               name: locales

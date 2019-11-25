@@ -2,13 +2,14 @@ distribution:
     architecture: amd64
 
 playbook:
-    -  name: boot packages
-       tasks:
-           - name: install boot-loader
-             apt:
-                 name: grub-efi-amd64-bin
-                 state: present
-           - name: install kernel
-             apt:
-                 name: linux-image-amd64
-                 state: present
+    - name: boot packages
+      priority: 800
+      tasks:
+          - name: install boot-loader
+            apt:
+                name: grub-efi-amd64-bin
+                state: present
+          - name: install kernel
+            apt:
+                name: linux-image-amd64
+                state: present

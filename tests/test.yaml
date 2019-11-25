@@ -2,8 +2,9 @@ distribution:
     source: debian
 
 playbook:
-    -  name: base packages
-       tasks:
+    - name: base packages
+      priority: 100
+      tasks:
            - name: install core packages
              apt:
                  name: lvm2
