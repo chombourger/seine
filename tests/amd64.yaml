@@ -5,11 +5,15 @@ playbook:
     - name: boot packages
       priority: 800
       tasks:
-          - name: install boot-loader
+          - name: install grub packages
             apt:
-                name: grub-efi-amd64-bin
+                name:
+                    - grub-efi-amd64
+                    - grub-efi-amd64-signed
                 state: present
-          - name: install kernel
+          - name: install kernel and firmware blobs
             apt:
-                name: linux-image-amd64
+                name:
+                    - linux-image-amd64
+                    - firmware-linux-free
                 state: present
