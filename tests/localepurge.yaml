@@ -1,0 +1,16 @@
+playbook:
+    - name: run localepurge to save space
+      priority: 900
+      tasks:
+        - name: install localepurge
+          apt:
+              name: localepurge
+              state: present
+
+        - name: run localepurge
+          command: localepurge
+
+        - name: remove localepurge
+          apt:
+              name: localepurge
+              state: absent

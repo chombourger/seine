@@ -1,6 +1,6 @@
 playbook:
     - name: configure locales to French
-      priority: 900
+      priority: 800
       tasks:
         - name: set default locale to fr_FR.UTF-8
           debconf:
@@ -15,3 +15,19 @@ playbook:
               question: locales/locales_to_be_generated
               value: en_US.UTF-8 UTF-8, fr_FR.UTF-8 UTF-8
               vtype: multiselect
+
+        - name: purge all locales but French and English
+          debconf:
+              name: localepurge
+              question: localepurge/nopurge
+              value: en_US, fr_FR
+              vtype: multiselect
+
+        - name: install localepurge
+          apt:
+              name: localepurge
+              state: present
+          become: true
+
+        - name: run localepurge
+          command: localepurge
