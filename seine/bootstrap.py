@@ -65,10 +65,14 @@ class TargetBootstrap(Bootstrap):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write("""
             FROM {0} AS bootstrap
-            RUN                                           \
-                export container=lxc;                     \
-                debootstrap --arch {1} {2} rootfs {3} &&  \
-                cp /usr/bin/qemu-*-static rootfs/usr/bin/
+            RUN                                                             \
+                export container=lxc;                                       \
+                debootstrap --variant=minbase --arch {1} {2} rootfs {3} &&  \
+                cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                \
+                echo 'APT::Install-Recommends "false";'                     \
+                    >rootfs/etc/apt/apt.conf.d/00-no-recommends &&          \
+                echo 'APT::Install-Suggests "false";'                       \
+                    >rootfs/etc/apt/apt.conf.d/00-no-suggests
             FROM scratch AS base
             COPY --from=bootstrap rootfs/ /
             FROM base AS ansible
