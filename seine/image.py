@@ -53,10 +53,19 @@ class Image:
         self._output = image["filename"]
         return self.spec
 
+    def _finalize_playbooks(self):
+        if "playbook" in self.spec:
+            for playbook in self.spec["playbook"]:
+                playbook["hosts"] = "localhost"
+                if "priority" not in playbook:
+                    playbook["priority"] = 500
+            self.spec["playbook"] = sorted(self.spec["playbook"], key=lambda p: p["priority"])
+            for playbook in self.spec["playbook"]:
+                playbook.pop("priority", None)
+
     def rootfs(self):
+        self._finalize_playbooks()
         ansible = self.spec["playbook"]
-        for playbook in ansible:
-            playbook["hosts"] = "localhost"
         ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         yaml.dump(ansible, ansiblefile)
         ansiblefile.close()
