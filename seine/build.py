@@ -1,5 +1,6 @@
 
 import getopt
+import os
 import subprocess
 import sys
 import yaml
@@ -18,10 +19,24 @@ class BuildCmd(Cmd):
     def load(self, yaml_file):
         with open(yaml_file, "r") as f:
             spec = yaml.load(f)
+
         if self.spec is None:
             self.spec = spec
         else:
             self.merge(spec)
+
+        if "requires" in spec:
+            for req in spec["requires"]:
+                req_path = os.path.join(os.path.dirname(yaml_file), req)
+                req_yml = "%s.yml" % req_path
+                req_yaml = "%s.yaml" % req_path
+                if os.path.isfile(req_yml):
+                    req_path = req_yml
+                elif os.path.isfile(req_yaml):
+                    req_path = req_yaml
+                else:
+                    raise FileNotFoundError("%s: '%s' could not be found in %s/!" % (yaml_file, req, os.path.dirname(req_path)))
+                self.load(req_path)
         return self.spec
 
     def _merge_distro(self, spec):

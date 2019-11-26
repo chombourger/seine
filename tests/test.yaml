@@ -1,3 +1,11 @@
+requires:
+    - accounts
+    - amd64
+    - buster
+    - conf-locales
+    - french
+    - localepurge
+
 distribution:
     source: debian
 
