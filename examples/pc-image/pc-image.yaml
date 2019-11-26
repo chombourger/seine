@@ -24,7 +24,7 @@ playbook:
                  state: present
 
 image:
-    filename: test-image.img
+    filename: pc-image.img
     table: gpt
     size: 850MiB
     partitions:
