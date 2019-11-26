@@ -65,6 +65,28 @@ of the following sections:
  * playbook
  * image
 
+The specification may be broken down into smaller files to ease maintenance and
+readability. This can be done using `requires` as shown below:
+
+```
+requires:
+    - buster
+    - amd64
+
+distribution:
+    - ...
+
+playbook:
+    - ...
+
+image:
+    - ...
+```
+
+For each module listed in the `requires` section, a corresponding file with
+either the `.yml` or `.yaml` suffix shall be found in the folder of the yaml
+file requiring them.
+
 #### distribution
 
 The `distribution` section will be used to specify the primary source of the
