@@ -267,9 +267,6 @@ class PartitionHandler:
                 script = script + "groups[%s]=\"${pvs} ${dev}\"\n" % part["group"]
             ndx = ndx + 1
 
-        if len(self.groups) > 0:
-            script = script + "cp -r /etc/lvm /dev/ && mount -o bind /dev/lvm /etc/lvm\n"
-
         for group in self.groups:
             script = script + "pvs=${groups[%s]}\n" % group
             script = script + "[ -n \"${pvs}\" ] || exit 1\n"

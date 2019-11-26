@@ -11,8 +11,6 @@ from seine.imager    import Imager
 from seine.utils     import ContainerEngine
 
 class Image:
-    TARGET_DIR = "/dev/image"
-
     def __init__(self, partitionHandler, options={}):
         self.partitionHandler = partitionHandler
         self.options = options
@@ -90,14 +88,11 @@ class Image:
 
         try:
             self.iid = None
-            cmd = [
-                "podman", "build", "--rm",
-                "--iidfile", iidfile.name,
-                "-v", "/tmp:/host-tmp:ro",
-                "-f", dockerfile.name]
+            cmd = [ "build", "--rm", "--iidfile", iidfile.name,
+                    "-v", "/tmp:/host-tmp:ro", "-f", dockerfile.name]
             if self._verbose == False:
                 cmd.append("-q")
-            subprocess.run(cmd, check=True)
+            ContainerEngine.run(cmd, check=True)
             iidfile.seek(0)
             self.iid = iidfile.readline()
         except subprocess.CalledProcessError:
@@ -111,19 +106,20 @@ class Image:
         try:
             self._tarball = None
             image = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd())
-            self.cid = subprocess.check_output(["podman", "container", "create", self.iid]).strip()
-            subprocess.run(["podman", "container", "export", "-o", image.name, self.cid], check=True)
+            self.cid = ContainerEngine.check_output(["container", "create", self.iid]).strip()
+            ContainerEngine.run(["container", "export", "-o", image.name, self.cid], check=True)
             self._tarball = image.name
         except subprocess.CalledProcessError:
             os.unlink(image.name)
             raise
         finally:
             if self.cid:
-                subprocess.run(["podman", "container", "rm", self.cid], check=False)
+                ContainerEngine.run(["container", "rm", self.cid], check=False)
                 self.cid = None
             if self.iid:
-                subprocess.run(["podman", "image", "rm", self.iid], check=False)
+                ContainerEngine.run(["image", "rm", self.iid], check=False)
                 self.iid = None
+            ContainerEngine.run(["image", "prune"], check=False)
 
     def _size_partitions(self):
         tar = tarfile.open(self._tarball, "r")
@@ -159,11 +155,11 @@ class Image:
             # Prepare target partitions and disk image
             imager = Imager(self)
             self._size_partitions()
-            script = self.partitionHandler.script("/dev/ubdb", Image.TARGET_DIR)
+            script = self.partitionHandler.script("/dev/ubdb", Imager.TARGET_DIR)
             self._empty_disk()
 
             # Produce the target image
-            imager.create(script, Image.TARGET_DIR)
+            imager.create(script, Imager.TARGET_DIR)
 
             # Rename the image
             os.rename(self._image, self._output)

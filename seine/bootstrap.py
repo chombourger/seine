@@ -5,6 +5,8 @@ import os
 import subprocess
 import tempfile
 
+from seine.utils import ContainerEngine
+
 class Bootstrap(ABC):
     def __init__(self, distro, options):
         self._name = None
@@ -46,18 +48,19 @@ class HostBootstrap(Bootstrap):
         dockerfile.close()
 
         try:
-            subprocess.run([
-                "podman", "build", "--rm", "--squash",
+            ContainerEngine.run([
+                "build", "--rm", "--squash",
                 "-t", self.name, "-f", dockerfile.name],
                 check=True)
         except subprocess.CalledProcessError:
             raise
         finally:
+            ContainerEngine.run(["image", "prune"])
             os.unlink(dockerfile.name)
         return self
 
     def defaultName(self):
-        return os.path.join("seine", "bootstrap", self.distro["source"], self.distro["release"], "all")
+        return os.path.join("bootstrap", self.distro["source"], self.distro["release"], "all")
 
 class TargetBootstrap(Bootstrap):
     def create(self, hostBootstrap):
@@ -92,17 +95,16 @@ class TargetBootstrap(Bootstrap):
         dockerfile.close()
 
         try:
-            subprocess.run([
-                "podman", "build", "--rm",
+            ContainerEngine.run([
+                "build", "--rm",
                 "-t", self.name,
                 "-f", dockerfile.name], check=True)
         except subprocess.CalledProcessError:
             raise
         finally:
+            ContainerEngine.run(["image", "prune"])
             os.unlink(dockerfile.name)
         return self
 
     def defaultName(self):
-        return os.path.join("seine", "bootstrap", self.distro["source"], self.distro["release"], self.distro["architecture"])
-
-
+        return os.path.join("bootstrap", self.distro["source"], self.distro["release"], self.distro["architecture"])

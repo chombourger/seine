@@ -8,6 +8,8 @@ from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
 
 class Imager(Bootstrap):
+    TARGET_DIR = "/tmp/image"
+
     def __init__(self, source):
         self.source = source
         self.imageName = "imager.squashfs"
@@ -22,7 +24,7 @@ class Imager(Bootstrap):
         return self.name
 
     def defaultName(self):
-        return os.path.join("seine", "imager", self.distro["source"], self.distro["release"], "all")
+        return os.path.join("imager", self.distro["source"], self.distro["release"], "all")
 
     def build_imager(self):
         hostBootstrap = self.source.hostBootstrap
@@ -70,18 +72,18 @@ class Imager(Bootstrap):
 
         imageCreated = False
         try:
-            subprocess.run([
-                "podman", "build", "--rm",
+            ContainerEngine.run([
+                "build", "--rm",
                 "-t", self.image_id(),
                 "-v", "/tmp:/host-tmp:ro",
                 "-f", dockerfile.name], check=True)
             imageCreated = True
-            subprocess.run([
-                "podman", "container", "create",
+            ContainerEngine.run([
+                "container", "create",
                 "--name", self.container_id(), self.image_id()], check=True)
         except subprocess.CalledProcessError:
             if imageCreated == True:
-                subprocess.run(["podman", "image", "rm", self.image_id()], check=False)
+                ContainerEngine.run(["image", "rm", self.image_id()], check=False)
             raise
         finally:
             os.unlink(dockerfile.name)
@@ -92,8 +94,8 @@ class Imager(Bootstrap):
     def get_imager(self):
         output_file = tempfile.NamedTemporaryFile(mode="wb", delete=False)
         try:
-            podman_proc = subprocess.Popen(
-                [ "podman", "container", "export", self.container_id() ],
+            podman_proc = ContainerEngine.Popen(
+                [ "container", "export", self.container_id() ],
                 stdout=subprocess.PIPE)
             tar_proc = subprocess.Popen(
                 [ "tar", "-Oxf", "-" ],
@@ -189,6 +191,7 @@ WantedBy=multi-user.target"""
 
 IMAGER_SYSTEMD_SCRIPT = """#!/bin/bash
 mount none /mnt -t hostfs
+mount none /tmp -t tmpfs
 for x in $(cat /proc/cmdline); do
     if [[ ${x} =~ ^log=.* ]] || [[ ${x} =~ ^script=.* ]] || [[ ${x} =~ ^tarball=.* ]]; then
         eval ${x}
@@ -198,6 +201,11 @@ if [ -n "${log}" ]; then
     exec 1>/mnt${log}
     exec 2>&1
 fi
+# our rootfs is read-only but LVM wants to update /etc/lvm
+# create a copy of /etc in /tmp and use a bind mount to
+# allow updates
+cp -r /etc /tmp/
+mount -o bind /tmp/etc /etc
 result=1
 if [ -n "${script}" ] && [ -e /mnt${script} ]; then
     export log script tarball
