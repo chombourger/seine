@@ -7,14 +7,13 @@ playbook:
       tasks:
            - name: install core packages
              apt:
-                 name: lvm2
                  state: present
-             become: true
+                 name:
+                     - lvm2
            - name: install vim
              apt:
                  name: vim
                  state: present
-             become: true
 
 image:
     filename: test-image.img
