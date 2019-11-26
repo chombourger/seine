@@ -28,15 +28,15 @@ sudo apt-get update
 sudo apt-get install podman user-mode-linux
 ```
 
-You may then either use seine in place (use the seine.py script from the top
+You may then either use seine in place (use the `seine.py` script from the top
 level directory of this source tree) or generate a binary package. To build
-a sample image without installing seine on your system, use:
+a sample image without installing `seine` on your system, use:
 
 ```
-./seine.py build tests/buster.yaml tests/amd64.yaml tests/test.yaml
+./seine.py build examples/pc-image/pc-image.yaml
 ```
 
-To produce a binary package, use the dpkg-buildpackage command as follows:
+To produce a binary package, use the `dpkg-buildpackage` command as follows:
 
 ```
 sudo mk-buyild-deps -i -r
