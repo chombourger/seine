@@ -93,7 +93,7 @@ playbook:
 ```
 
 Playbooks may be given a priority between `0` and `999` with `0` being the
-priority:
+highest priority and `500` the default:
 
 ```
 playbook:
