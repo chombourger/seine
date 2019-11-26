@@ -1,2 +1,12 @@
 distribution:
     release: buster
+
+playbook:
+    - name: init packages
+      priority: 100
+      tasks:
+           - name: install init packages
+             apt:
+                 state: present
+                 name:
+                     - init
