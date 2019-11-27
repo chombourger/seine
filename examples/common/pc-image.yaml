@@ -1,14 +1,3 @@
-requires:
-    - accounts
-    - amd64
-    - buster
-    - conf-locales
-    - french
-    - localepurge
-
-distribution:
-    source: debian
-
 playbook:
     - name: base packages
       priority: 100
@@ -18,11 +7,7 @@ playbook:
                  state: present
                  name:
                      - lvm2
-           - name: install vim
-             apt:
-                 name: vim
-                 state: present
-
+ 
 image:
     filename: pc-image.img
     table: gpt

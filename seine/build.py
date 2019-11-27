@@ -34,8 +34,8 @@ class BuildCmd(Cmd):
         if "requires" in spec:
             for req in spec["requires"]:
                 req_path = os.path.join(os.path.dirname(yaml_filename), req)
-                req_yml = "%s.yml" % req_path
-                req_yaml = "%s.yaml" % req_path
+                req_yml = os.path.normpath("%s.yml" % req_path)
+                req_yaml = os.path.normpath("%s.yaml" % req_path)
                 if os.path.isfile(req_yml):
                     req_path = req_yml
                 elif os.path.isfile(req_yaml):

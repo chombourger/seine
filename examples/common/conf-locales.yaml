@@ -1,3 +1,6 @@
+requires:
+    - localepurge
+
 playbook:
     - name: configure localepurge
       priority: 100

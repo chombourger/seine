@@ -1,0 +1,17 @@
+requires:
+    - ../common/amd64
+    - ../common/buster
+    - ../common/conf-accounts
+    - ../common/conf-locales
+    - ../common/pc-image
+    - french
+
+playbook:
+    - name: some great packages
+      priority: 250
+      tasks:
+           - name: install vim
+             apt:
+                 state: present
+                 name:
+                     - vim
