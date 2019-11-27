@@ -12,13 +12,19 @@ from seine.partition import PartitionHandler
 class BuildCmd(Cmd):
     def __init__(self):
         self.image = None
-        self.options = {}
+        self.options = { "debug": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
 
+    def loads(self, yaml_spec):
+        return self._load("<string>", yaml_spec)
+
     def load(self, yaml_file):
         with open(yaml_file, "r") as f:
-            spec = yaml.load(f)
+            return self._load(yaml_file, f)
+
+    def _load(self, yaml_filename, yaml_spec):
+        spec = yaml.load(yaml_spec)
 
         if self.spec is None:
             self.spec = spec
@@ -27,7 +33,7 @@ class BuildCmd(Cmd):
 
         if "requires" in spec:
             for req in spec["requires"]:
-                req_path = os.path.join(os.path.dirname(yaml_file), req)
+                req_path = os.path.join(os.path.dirname(yaml_filename), req)
                 req_yml = "%s.yml" % req_path
                 req_yaml = "%s.yaml" % req_path
                 if os.path.isfile(req_yml):
@@ -35,7 +41,8 @@ class BuildCmd(Cmd):
                 elif os.path.isfile(req_yaml):
                     req_path = req_yaml
                 else:
-                    raise FileNotFoundError("%s: '%s' could not be found in %s/!" % (yaml_file, req, os.path.dirname(req_path)))
+                    raise FileNotFoundError("%s: '%s' could not be found in %s/!"
+                        % (yaml_filename, req, os.path.dirname(req_path)))
                 self.load(req_path)
         return self.spec
 
@@ -81,8 +88,6 @@ class BuildCmd(Cmd):
         return self.image.build()
 
     def main(self, argv):
-        self.options["debug"] = False
-        self.options["verbose"] = False
         try:
             opts, args = getopt.getopt(argv, "dhv", ["debug", "help", "verbose"])
         except getopt.GetoptError as err:
