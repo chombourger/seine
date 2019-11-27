@@ -1,0 +1,17 @@
+requires:
+    - ../common/amd64
+    - ../common/buster
+    - ../common/conf-accounts
+    - ../common/conf-locales
+    - ../common/pc-image
+
+playbook:
+    - baseline: debian:buster
+    - name: install additional packages
+      tasks:
+           - name: install webserver packages
+             apt:
+                 state: present
+                 name:
+                     - apache2
+                     - curl

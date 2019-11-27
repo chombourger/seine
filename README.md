@@ -33,7 +33,7 @@ level directory of this source tree) or generate a binary package. To build
 a sample image without installing `seine` on your system, use:
 
 ```
-./seine.py build examples/pc-image/pc-image.yaml
+./seine.py build examples/pc-image/main.yaml
 ```
 
 To produce a binary package, use the `dpkg-buildpackage` command as follows:
@@ -141,10 +141,10 @@ playbook:
       tasks:
           - name: base set
             apt:
+                state: present
                 name:
                     - ssh
                     - vim
-                state: present
 ```
 
 and here is how the `locales` package may be configured:
@@ -161,6 +161,25 @@ playbook:
               vtype: select
 ```
 
+A minimal image that includes `apt` is used as starting point; `seine` uses
+`apt` to install `ansible` and then executes the various playbooks according
+to their `priority`. A different starting point may be specified with the
+`baseline` keyword in the `playbook`:
+
+```
+playbook:
+    - baseline: debian:buster
+    - tasks:
+      apt:
+          ...
+```
+
+As `seine` uses `podman` behind the scene to create the root file-system in
+a container, the `image` specified as `baseline` may be anything that can be
+fetched from the `podman` or `docker` registries. The `image` shall however
+have `apt` pre-installed (and `qemu-user-static` binaries for the host
+architecture when building images for a foreign architecture).
+ 
 #### image
 
 Last but not least, the 'image' section defines the partition and volumes to be

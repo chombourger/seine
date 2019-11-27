@@ -78,13 +78,8 @@ class TargetBootstrap(Bootstrap):
                     >rootfs/etc/apt/apt.conf.d/00-no-suggests
             FROM scratch AS base
             COPY --from=bootstrap rootfs/ /
-            FROM base AS ansible
-            RUN apt-get update -qqy &&          \
-                apt-get install -qqy ansible && \
-                apt-get clean -qqy
-            FROM base AS clean-base
-            RUN rm -rf rootfs /usr/share/doc /usr/share/info /usr/share/man
-            FROM ansible AS final
+            RUN  apt-get clean -qqy && \
+                 rm -rf /usr/share/doc /usr/share/info /usr/share/man
         """
         .format(
             self.hostBootstrap.name,

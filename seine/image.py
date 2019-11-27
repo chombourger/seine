@@ -17,6 +17,7 @@ class Image:
         self.hostBootstrap = None
         self.iid = None
         self.targetBootstrap = None
+        self._from = None
         self._image = None
         self._output = None
         self._tarball = None
@@ -41,29 +42,56 @@ class Image:
             distro["uri"] = "http://ftp.debian.org/debian"
         spec["distribution"] = distro
 
-        playbook = spec["playbook"] if "playbook" in spec else {}
-        spec["playbook"] = playbook
-
         image = spec["image"]
         if "filename" not in image:
             raise ValueError("output 'filename' not specified in 'image' section!")
         self._output = image["filename"]
 
+        spec = self._parse_playbooks(spec)
+
+        # Make selected 'baseline' visible in the parsed spec (for our test-suite)
+        if self._from:
+            spec["baseline"] = self._from
+
         self.spec = spec
         return self.spec
 
-    def _finalize_playbooks(self):
-        if "playbook" in self.spec:
-            for playbook in self.spec["playbook"]:
-                playbook["hosts"] = "localhost"
-                if "priority" not in playbook:
-                    playbook["priority"] = 500
-            self.spec["playbook"] = sorted(self.spec["playbook"], key=lambda p: p["priority"])
-            for playbook in self.spec["playbook"]:
-                playbook.pop("priority", None)
+    def _parse_playbooks(self, spec):
+
+        playbooks = spec["playbook"] if "playbook" in spec else []
+        if type(playbooks) != type([]):
+            raise ValueError("'playbook' shall be a list of Ansible playbooks!")
+
+        # Check provided playbooks
+        index = 1
+        for playbook in playbooks:
+            if type(playbook) != type({}):
+                raise ValueError("playbook #%d is not a dictionary!" % index)
+            playbook["hosts"] = "localhost"
+            if "priority" not in playbook:
+                playbook["priority"] = 500
+            index = index + 1
+
+        # Order them by ascending priority
+        playbooks = sorted(playbooks, key=lambda p: p["priority"])
+
+        # Get selected baseline and remove the "priority" setting since not understood
+        # by Ansible (and not needed anymore)
+        for playbook in playbooks:
+            if "baseline" in playbook:
+                if self._from is None:
+                    # highest prio 'baseline' wins
+                    self._from = playbook["baseline"]
+                playbook.pop("baseline", None)
+            playbook.pop("priority", None)
+
+        spec["playbook"] = playbooks
+        return spec
 
     def rootfs(self):
-        self._finalize_playbooks()
+        if self._from is None:
+            self._from = self.targetBootstrap.name
+
         ansible = self.spec["playbook"]
         ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         yaml.dump(ansible, ansiblefile)
@@ -72,18 +100,8 @@ class Image:
         iidfile = tempfile.NamedTemporaryFile(mode="r", delete=False)
 
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write("""
-            FROM {0} AS playbooks
-            RUN ansible-playbook {1} /host-tmp/{2}
-            FROM playbooks as clean
-            RUN apt-get autoremove -qy ansible && \
-                apt-get clean -y &&               \
-                rm -f /usr/bin/qemu-*-static
-            CMD /bin/true
-        """
-        .format(
-            self.targetBootstrap.name,
-            "-v" if self._verbose else "",
+        dockerfile.write(IMAGE_ANSIBLE_SCRIPT.format(
+            self._from, "-v" if self._verbose else "",
             os.path.basename(ansiblefile.name)))
         dockerfile.close()
 
@@ -146,7 +164,7 @@ class Image:
             self.targetBootstrap = TargetBootstrap(distro, self.options)
             if ContainerEngine.hasImage(self.hostBootstrap.name) == False:
                 self.hostBootstrap.create()
-            if ContainerEngine.hasImage(self.targetBootstrap.name) == False:
+            if self._from is None and ContainerEngine.hasImage(self.targetBootstrap.name) == False:
                 self.targetBootstrap.create(self.hostBootstrap)
 
             # Assemble the root file-system
@@ -169,3 +187,15 @@ class Image:
             if self._image is not None:
                 os.unlink(self._image)
             raise
+
+IMAGE_ANSIBLE_SCRIPT = """
+FROM {0} AS playbooks
+RUN apt-get update -qqy && \
+    apt-get install -qqy ansible && \
+    ansible-playbook {1} /host-tmp/{2}
+FROM playbooks as clean
+RUN apt-get autoremove -qy ansible && \
+    apt-get clean -y &&               \
+    rm -f /usr/bin/qemu-*-static
+CMD /bin/true
+"""

@@ -45,5 +45,67 @@ class MissingImageFilename(avocado.Test):
         except Exception as e:
             self.fail("parsing caused an unknown error: %s" % str(type(e)))
 
+class PlaybookNotAList(avocado.Test):
+    def test(self):
+        try:
+            build = BuildCmd()
+            build.loads("""
+                playbook: impossible
+                image:
+                    filename: simple-test.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+            """)
+            build.parse()
+            self.fail("parsing succeeded when it should have failed ('playbook' is not a list)!")
+        except ValueError as e:
+            if str(e) != "'playbook' shall be a list of Ansible playbooks!":
+                self.fail("parsing did not return the error we expected!")
+        except avocado.core.exceptions.TestFail:
+            raise
+        except Exception as e:
+            self.fail("parsing caused an unknown error: %s" % str(type(e)))
+
+class BaselinePlaybook(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        baseline = "sample-baseline"
+        build.loads("""
+            playbook:
+                - baseline: %s
+            image:
+                filename: simple-test.img
+                partitions:
+                    - label: rootfs
+                      where: /
+        """ % baseline)
+        spec = build.parse()
+        if spec["baseline"] != baseline:
+            self.fail("selected baseline is '%s' but expected '%s'!" % (spec["baseline"], baseline))
+
+class MultipleBaselinesWithPriorities(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        baseline = "sample-baseline"
+        build.loads("""
+            playbook:
+                - baseline: least-prio-baseline
+                  priority: 900
+                - baseline: %s
+                  priority: 100
+                - baseline: default-prio-baseline
+                - baseline: medium-prio-baseline
+                  priority: 600
+            image:
+                filename: simple-test.img
+                partitions:
+                    - label: rootfs
+                      where: /
+        """ % baseline)
+        spec = build.parse()
+        if spec["baseline"] != baseline:
+            self.fail("selected baseline is '%s' but expected '%s'!" % (spec["baseline"], baseline))
+
 if __name__ == "__main__":
     avocado.main()
