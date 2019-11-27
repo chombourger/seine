@@ -27,15 +27,10 @@ class Image:
             os.unlink(self._tarball)
 
     def parse(self, spec):
-        self.spec = spec
-        if "distribution" not in self.spec:
-            raise ValueError("'distribution' not found in provided specification!")
-        if "image" not in self.spec:
+        if "image" not in spec:
             raise ValueError("'image' not found in provided specification!")
-        if "playbook" not in self.spec:
-            raise ValueError("'playbook' not found in provided specification!")
 
-        distro = self.spec["distribution"]
+        distro = spec["distribution"] if "distribution" in spec else {}
         if "source" not in distro:
             distro["source"] = "debian"
         if "release" not in distro:
@@ -44,11 +39,17 @@ class Image:
             distro["architecture"] = "amd64"
         if "uri" not in distro:
             distro["uri"] = "http://ftp.debian.org/debian"
+        spec["distribution"] = distro
 
-        image = self.spec["image"]
+        playbook = spec["playbook"] if "playbook" in spec else {}
+        spec["playbook"] = playbook
+
+        image = spec["image"]
         if "filename" not in image:
             raise ValueError("output 'filename' not specified in 'image' section!")
         self._output = image["filename"]
+
+        self.spec = spec
         return self.spec
 
     def _finalize_playbooks(self):

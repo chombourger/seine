@@ -85,15 +85,15 @@ class PartitionHandler:
         return part
 
     def _parse_part(self, part):
+        if "label" not in part:
+            raise ValueError("one of the partitions does not have a 'label' defined!")
+        label = part["label"]
+
         part = self._parse_common(part)
         part["_lvm"] = False
 
         if "flags" in part:
             self._parse_part_flags(part)
-
-        if "label" not in part:
-            raise ValueError("one of the partitions does not have a 'label' defined!")
-        label = part["label"]
 
         if "where" not in part and part["_lvm"] == False:
             raise ValueError("'where' not defined in partition '%s'!" % label)
@@ -109,12 +109,13 @@ class PartitionHandler:
         return part
 
     def _parse_vol(self, vol):
-        vol = self._parse_common(vol)
-        vol["_lvm"] = True
-
         if "label" not in vol:
             raise ValueError("one of the volumes does not have a 'label' defined!")
         label = vol["label"]
+
+        vol = self._parse_common(vol)
+        vol["_lvm"] = True
+
         if "group" not in vol:
             raise ValueError("no 'group' defined for volume '%s'!" % label)
         if "where" not in vol:
@@ -167,6 +168,8 @@ class PartitionHandler:
     def parse(self, spec):
         if "image" not in spec:
             raise ValueError("'image' not found in provided specification!")
+        if spec["image"] is None:
+            raise ValueError("empty 'image' definition!")
         image = spec["image"]
         if "partitions" not in image:
             raise ValueError("no 'partitions' defined in the 'image' section of the specification!")
