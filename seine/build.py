@@ -55,24 +55,78 @@ class BuildCmd(Cmd):
                 self.spec["distribution"] = spec["distribution"]
 
     def _append_playbooks(self, spec):
-        if "playbook" in self.spec and "playbook" in spec:
-            for playbook in spec["playbook"]:
-                self.spec["playbook"].append(playbook)
-        elif "playbook" not in self.spec:
-            self.spec["playbook"] = spec["playbook"]
+        if "playbook" in spec:
+            if "playbook" in self.spec:
+                for playbook in spec["playbook"]:
+                    self.spec["playbook"].append(playbook)
+            elif "playbook" not in self.spec:
+                self.spec["playbook"] = spec["playbook"]
+
+    def _lookup_named_part(self, parts, label):
+        for part in parts:
+            if part["label"] == label:
+                return part
+        return None
+
+    def _update_named_part(self, parts, newpart):
+        index = 0
+        for part in parts:
+            if part["label"] == newpart["label"]:
+                parts[index] = newpart
+            index = index + 1
+        return parts
+
+    def _merge_part_flags(self, part, newpart):
+        for flag in newpart["flags"]:
+            if flag.startswith("~"):
+                flag = flag[1:]
+                if flag in part["flags"]:
+                    part["flags"].remove(flag)
+            else:
+                if not flag in part["flags"]:
+                    part["flags"].append(flag)
+        return part
+
+    def _merge_part(self, part, newpart):
+        for setting in newpart:
+            if setting == "flags":
+                if "flags" in part:
+                    part = self._merge_part_flags(part, newpart)
+                else:
+                    part["flags"] = []
+                    for flag in newpart["flags"]:
+                        if not flag.startswith("~"):
+                            part["flags"].append(flag)
+            else:
+                part[setting] = newpart[setting]
+        return part
+
+    def _merge_parts(self, spec):
+        parts = self.spec["image"]["partitions"]
+        for newpart in spec["image"]["partitions"]:
+            part = self._lookup_named_part(parts, newpart["label"])
+            if part is None:
+                parts.append(newpart)
+            else:
+                part = self._merge_part(part, newpart)
+                parts = self._update_named_part(parts, part)
+        self.spec["image"]["partitions"] = parts
 
     def _merge_image(self, spec):
-        if "image" in spec:
-            if "image" in self.spec:
-                for setting in spec["image"]:
+        if "image" in self.spec:
+            for setting in spec["image"]:
+                if setting == "partitions":
+                    self._merge_parts(spec)
+                else:
                     self.spec["image"][setting] = spec["image"][setting]
-            elif "image" not in self.spec:
-                self.spec["image"] = spec["image"]
+        elif "image" not in self.spec:
+            self.spec["image"] = spec["image"]
 
     def merge(self, spec):
         self._merge_distro(spec)
         self._append_playbooks(spec)
-        self._merge_image(spec)
+        if "image" in spec:
+            self._merge_image(spec)
         return self.spec
 
     def parse(self):
