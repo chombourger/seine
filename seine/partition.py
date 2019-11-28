@@ -65,6 +65,9 @@ class PartitionHandler:
         part["_blksz"] = 4096
         part["_depth"] = 0
 
+        if "priority" not in part:
+            part["priority"] = 500
+
         if "extra" in part:
             part["_size"] = self._from_human_size(part["extra"])
         else:
@@ -188,7 +191,7 @@ class PartitionHandler:
             self.partitions.append(part)
             if "where" in part:
                 self.mounts.append(part)
-        image["partitions"] = self.partitions
+        image["partitions"] = sorted(self.partitions, key=lambda p: p["priority"])
 
         if "volumes" in image:
             volumes = image["volumes"]
