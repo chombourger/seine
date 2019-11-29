@@ -62,13 +62,13 @@ class BuildCmd(Cmd):
             elif "playbook" not in self.spec:
                 self.spec["playbook"] = spec["playbook"]
 
-    def _lookup_named_part(self, parts, label):
+    def _lookup_named_part_or_vol(self, parts, label, kind):
         for part in parts:
             if part["label"] == label:
                 return part
         return None
 
-    def _update_named_part(self, parts, newpart):
+    def _update_named_part_or_vol(self, parts, newpart, kind):
         index = 0
         for part in parts:
             if part["label"] == newpart["label"]:
@@ -87,7 +87,7 @@ class BuildCmd(Cmd):
                     part["flags"].append(flag)
         return part
 
-    def _merge_part(self, part, newpart):
+    def _merge_part_or_vol(self, part, newpart, kind):
         for setting in newpart:
             if setting == "flags":
                 if "flags" in part:
@@ -101,22 +101,22 @@ class BuildCmd(Cmd):
                 part[setting] = newpart[setting]
         return part
 
-    def _merge_parts(self, spec):
-        parts = self.spec["image"]["partitions"]
-        for newpart in spec["image"]["partitions"]:
-            part = self._lookup_named_part(parts, newpart["label"])
+    def _merge_parts_or_vols(self, spec, kind):
+        parts = self.spec["image"][kind]
+        for newpart in spec["image"][kind]:
+            part = self._lookup_named_part_or_vol(parts, newpart["label"], kind)
             if part is None:
                 parts.append(newpart)
             else:
-                part = self._merge_part(part, newpart)
-                parts = self._update_named_part(parts, part)
-        self.spec["image"]["partitions"] = parts
+                part = self._merge_part_or_vol(part, newpart, kind)
+                parts = self._update_named_part_or_vol(parts, part, kind)
+        self.spec["image"][kind] = parts
 
     def _merge_image(self, spec):
         if "image" in self.spec:
             for setting in spec["image"]:
-                if setting == "partitions":
-                    self._merge_parts(spec)
+                if setting == "partitions" or setting == "volumes":
+                    self._merge_parts_or_vols(spec, setting)
                 else:
                     self.spec["image"][setting] = spec["image"][setting]
         elif "image" not in self.spec:

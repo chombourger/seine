@@ -199,7 +199,7 @@ class PartitionHandler:
                 vol = self._parse_vol(vol)
                 self.mounts.append(vol)
                 self.volumes.append(vol)
-            image["volumes"] = self.volumes
+            image["volumes"] = sorted(self.volumes, key=lambda p: p["priority"])
 
         self.mounts = sorted(self.mounts, key=lambda vol: vol["_depth"], reverse=True)
         return spec

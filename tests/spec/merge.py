@@ -169,5 +169,68 @@ class MergeClearPartitionFlagsButNoneSet(avocado.Test):
         if len(part["flags"]) != 0:
             self.fail("expected 0 partition flags: got %s" % part["flags"])
 
+class MergeNewVolumeWithoutPriorities(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+            image:
+                filename: simple-test.img
+                partitions:
+                    - label: main
+                      group: main
+                      size: 1GiB
+                      flags:
+                          - lvm
+                volumes:
+                    - label: rootfs
+                      group: main
+                      where: /
+        """)
+        build.loads("""
+            image:
+                volumes:
+                    - label: data
+                      group: main
+                      where: /var
+        """)
+        spec = build.parse()
+        vols = spec["image"]["volumes"]
+        if len(vols) != 2 or vols[0]["label"] != "rootfs" or vols[1]["label"] != "data":
+            self.fail("expected 2 volumes: 'rootfs' and 'data' (got %s)" % vols)
+
+class MergeNewVolumesWithPriorities(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+            image:
+                filename: simple-test.img
+                partitions:
+                    - label: main
+                      group: main
+                      size: 1GiB
+                      flags:
+                          - lvm
+                volumes:
+                    - label: rootfs
+                      group: main
+                      where: /
+        """)
+        build.loads("""
+            image:
+                volumes:
+                    - label: data
+                      group: main
+                      priority: 800
+                      where: /var
+                    - label: boot
+                      group: main
+                      priority: 100
+                      where: /boot
+        """)
+        spec = build.parse()
+        vols = spec["image"]["volumes"]
+        if len(vols) != 3 or vols[0]["label"] != "boot" or vols[1]["label"] != "rootfs" or vols[2]["label"] != "data":
+            self.fail("expected 3 volumes: 'boot', 'rootfs' and 'data' (got %s)" % vols)
+
 if __name__ == "__main__":
     avocado.main()
