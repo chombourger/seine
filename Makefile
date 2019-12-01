@@ -6,10 +6,14 @@ engine=$(if $(podman),$(podman),$(docker))
 
 squash=$(if $(podman),--squash,)
 
-distros=bionic buster
+distros=bionic buster el8
 product=seine
 
 distro=$(notdir $@)
+
+pkgdir_bionic=apt
+pkgdir_buster=apt
+pkgdir_el8=rpmbuild
 
 .PHONY: all
 all: build/deps
@@ -19,7 +23,7 @@ check: install/deps
 
 .PHONY: clean
 clean: clean/build/deps clean/install/deps
-	rm -rf apt/db apt/dists apt/pool
+	rm -rf apt/db apt/dists apt/pool rpmbuild
 
 .PHONY: build/deps
 build/deps: $(foreach d,$(distros),build/deps/$(d))
@@ -37,7 +41,7 @@ clean/install/deps: $(foreach d,$(distros),clean/install/deps/$(d))
 build/deps/%: support/%/etc/build-deps.dockerfile
 	$(engine) build --rm $(squash) -t $@ -f $< .
 	cid="$$($(engine) create $@)" && \
-	$(engine) cp $$cid:apt/ . && \
+	$(engine) cp $$cid:$(pkgdir_$(distro))/ . && \
 	$(engine) container rm $$cid
 	$(engine) image rm $@
 

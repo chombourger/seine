@@ -1,0 +1,52 @@
+
+%global debug_package   %{nil}
+
+%global provider github
+%global provider_tld com
+%global project chombourger
+%global repo seine
+%global provider_prefix %{provider}.%{provider_tld}/%{project}/%{repo}
+%global import_path %{provider_prefix}
+%global git0 https://%{provider}.%{provider_tld}/%{project}/%{repo}
+%global commit0 #COMMIT#
+%global shortcommit0 %(c=%{commit0}; echo ${c:0:8})
+
+Name:    seine
+Version: 0.1
+Release: #COMMITDATE#.git%{shortcommit0}%{?dist}
+Summary: the seine image builder
+License: Apache
+URL:     https://%{import_path}
+Source0: %{git0}/archive/%{commit0}/%{repo}-%{shortcommit0}.tar.gz
+
+BuildArch:     noarch
+BuildRequires: python3-devel
+Requires:      podman
+Requires:      slirp4netns
+Requires:      user-mode-linux
+
+%description
+This package provides seine build scripts
+
+%prep
+%autosetup -Sgit -n %{repo}-%{shortcommit0}
+
+%build
+%{__python3} setup.py build
+
+%install
+%{__python3} setup.py install --skip-build --root $RPM_BUILD_ROOT
+
+%check
+# no tests
+
+%files
+%license LICENSE
+%doc README.md
+%{python3_sitelib}/*
+%{_bindir}/seine
+
+%changelog
+* Sun Dec 1 2019 Cedric Hombourger <chombourger@gmail.com>
+- Create package
+

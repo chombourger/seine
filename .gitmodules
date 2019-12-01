@@ -30,3 +30,18 @@
 	path = support/buster/user-mode-linux
 	url = https://github.com/chombourger/user-mode-linux
 	branch = buster/4.19
+[submodule "support/el8/conmon"]
+	path = support/el8/conmon
+	url = https://github.com/chombourger/conmon
+[submodule "support/el8/go-md2man"]
+	path = support/el8/go-md2man
+	url = https://github.com/chombourger/go-md2man
+	branch = el8/v.1.0.10
+[submodule "support/el8/user-mode-linux"]
+	path = support/el8/user-mode-linux
+	url = https://github.com/chombourger/user-mode-linux
+	branch = el8/4.18.0
+[submodule "support/el8/libpod"]
+	path = support/el8/libpod
+	url = https://github.com/chombourger/libpod
+	branch = el8/v1.6.2

@@ -1,6 +1,8 @@
 __pycache__
 build
 dist
+rpmbuild
 seine.egg-info
 .pybuild
 *.img
+*.src.rpm
