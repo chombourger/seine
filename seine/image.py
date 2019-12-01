@@ -15,7 +15,8 @@ class Image:
         self.partitionHandler = partitionHandler
         self.options = options
         self.hostBootstrap = None
-        self.iid = None
+        self._cid = None
+        self._iid = None
         self.targetBootstrap = None
         self._from = None
         self._image = None
@@ -106,14 +107,14 @@ class Image:
         dockerfile.close()
 
         try:
-            self.iid = None
+            self._iid = None
             cmd = [ "build", "--rm", "--iidfile", iidfile.name,
                     "-v", "/tmp:/host-tmp:ro", "-f", dockerfile.name]
             if self._verbose == False:
                 cmd.append("-q")
             ContainerEngine.run(cmd, check=True)
             iidfile.seek(0)
-            self.iid = iidfile.readline()
+            self._iid = iidfile.readline()
         except subprocess.CalledProcessError:
             raise
         finally:
@@ -125,19 +126,19 @@ class Image:
         try:
             self._tarball = None
             image = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd())
-            self.cid = ContainerEngine.check_output(["container", "create", self.iid]).strip()
-            ContainerEngine.run(["container", "export", "-o", image.name, self.cid], check=True)
+            self._cid = ContainerEngine.check_output(["container", "create", self._iid]).strip()
+            ContainerEngine.run(["container", "export", "-o", image.name, self._cid], check=True)
             self._tarball = image.name
         except subprocess.CalledProcessError:
             os.unlink(image.name)
             raise
         finally:
-            if self.cid:
-                ContainerEngine.run(["container", "rm", self.cid], check=False)
-                self.cid = None
-            if self.iid:
-                ContainerEngine.run(["image", "rm", self.iid], check=False)
-                self.iid = None
+            if self._cid:
+                ContainerEngine.run(["container", "rm", self._cid], check=False)
+                self._cid = None
+            if self._iid:
+                ContainerEngine.run(["image", "rm", self._iid], check=False)
+                self._iid = None
             ContainerEngine.run(["image", "prune"], check=False)
 
     def _size_partitions(self):
