@@ -1,0 +1,6 @@
+[seine]
+name=seine
+baseurl=file:///rpmbuild/RPMS
+enabled=1
+gpgcheck=0
+protect=1

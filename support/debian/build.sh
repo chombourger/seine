@@ -1,6 +1,5 @@
 #!/bin/bash
 
-arch=amd64
 distro=${DISTRO_NAME}
 verbose=
 
@@ -10,13 +9,13 @@ if [ -n "${verbose}" ]; then
     set -x
 fi
 
-add_ext_pkgs() {
+deb_add_ext_pkgs() {
     reprepro -b apt -C ${distro} includedeb seine ${1}/*.deb
     reprepro -b apt -C ${distro} includedsc seine ${1}/*.dsc
     rm -f ${1}/*.deb ${1}/*.dsc ${1}/*.tar.[gx]z
 }
 
-do_build_deps() {
+deb_build_deps() {
     local opts
 
     if [ -n "${verbose}" ]; then
@@ -26,10 +25,13 @@ do_build_deps() {
     fi
     mk-build-deps -t "apt-get ${opts} --no-install-recommends" -i -r debian/control
     apt-get clean -qqy
-    rm -f *.deb
 }
 
-pkg_get_version() {
+deb_build_prepare() {
+    deb_build_deps
+}
+
+deb_get_pkg_version() {
     head -n 1 debian/changelog | awk '{ print $2 }'| tr -d '()'
 }
 
@@ -38,21 +40,21 @@ _pkg_build() {
 
     # resolve build dependencies and build our package
     cd ${1}
-    do_build_deps
+    deb_build_prepare
     dpkg-buildpackage -uc -us -jauto
 
     # add generated source and binary packages to repository
     cd ${from}
-    add_ext_pkgs $(dirname ${1})
+    deb_add_ext_pkgs $(dirname ${1})
 }
 
-pkg_build() {
+deb_build_pkg() {
     from=$(pwd)
     pkg=$(basename ${1})
 
     # create source tarball
     cd ${1}
-    pv=$(pkg_get_version)
+    pv=$(deb_get_pkg_version)
     sv=${pv/%-[a-z0-9]*}
     tarball=../${pkg}_${sv}.orig.tar.gz
     if [ -e .git ]; then
@@ -65,13 +67,15 @@ pkg_build() {
     _pkg_build ${1}
 }
 
-apt-get update -qqy
-apt-get install -qqy devscripts equivs git reprepro
-apt-get clean -qqy
+deb_setup_env() {
+    apt-get update -qqy
+    apt-get install -qqy devscripts equivs git reprepro
+    apt-get clean -qqy
+}
 
- pkg_build support/${DISTRO_NAME}/conmon
- pkg_build support/${DISTRO_NAME}/slirp4netns
- pkg_build support/${DISTRO_NAME}/libpod
-_pkg_build support/${DISTRO_NAME}/user-mode-linux
-
-pkg_build src/seine
+deb_setup_env
+deb_build_pkg support/${DISTRO_NAME}/conmon
+deb_build_pkg support/${DISTRO_NAME}/libpod
+deb_build_pkg support/${DISTRO_NAME}/slirp4netns
+_pkg_build    support/${DISTRO_NAME}/user-mode-linux
+deb_build_pkg src/seine
