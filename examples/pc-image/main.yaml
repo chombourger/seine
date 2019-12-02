@@ -5,6 +5,7 @@ requires:
     - ../common/conf-locales
     - ../common/pc-image
     - french
+    - selinux
 
 playbook:
     - name: some great packages
