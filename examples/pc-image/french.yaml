@@ -22,12 +22,3 @@ playbook:
               question: localepurge/nopurge
               value: en_US, fr_FR
               vtype: multiselect
-
-        - name: install localepurge
-          apt:
-              name: localepurge
-              state: present
-          become: true
-
-        - name: run localepurge
-          command: localepurge
