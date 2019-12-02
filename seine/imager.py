@@ -14,8 +14,15 @@ class Imager(Bootstrap):
         self.source = source
         self.imageName = "imager.ext4"
         self.debug = source.options["debug"]
+        self.keep = source.options["keep"]
         self.verbose = source.options["verbose"]
         super().__init__(source.spec["distribution"], source.options)
+
+    def _unlink(self, path, descr):
+        if self.keep:
+            print("keeping '%s' (%s) as requested" % (path, descr))
+        else:
+            os.unlink(path)
 
     def container_id(self):
         return self.image_id().replace("/", "-")
@@ -86,9 +93,9 @@ class Imager(Bootstrap):
                 ContainerEngine.run(["image", "rm", self.image_id()], check=False)
             raise
         finally:
-            os.unlink(dockerfile.name)
-            os.unlink(scriptfile.name)
-            os.unlink(unitfile.name)
+            self._unlink(dockerfile.name, "dockerfile for the imager")
+            self._unlink(scriptfile.name, "imager script")
+            self._unlink(unitfile.name, "systemd unit file for the imager")
         return self
 
     def get_imager(self):
@@ -105,7 +112,7 @@ class Imager(Bootstrap):
             podman_proc.wait()
             return output_file.name
         except:
-            os.unlink(output_file.name)
+            self._unlink(output_file.name, "imager's rootfs")
             raise
 
     def build_script(self, script, targetdir):
@@ -172,11 +179,11 @@ class Imager(Bootstrap):
             raise
         finally:
             if imager_rootfs:
-                os.unlink(imager_rootfs)
+                self._unlink(imager_rootfs, "imager's root file-system")
             if log_file:
-                os.unlink(log_file.name)
+                self._unlink(log_file.name, "imager's log")
             if script_file:
-                os.unlink(script_file)
+                self._unlink(script_file, "imager's script")
 
 IMAGER_SYSTEMD_UNIT = """[Unit]
 Description=Seine Imager Service

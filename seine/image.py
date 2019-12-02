@@ -20,13 +20,20 @@ class Image:
         self.targetBootstrap = None
         self._from = None
         self._image = None
+        self._keep = options["keep"]
         self._output = None
         self._tarball = None
         self._verbose = options["verbose"]
 
     def __del__(self):
         if self._tarball:
-            os.unlink(self._tarball)
+            self._unlink(self._tarball, "root file-system as a tarball")
+
+    def _unlink(self, path, descr):
+        if self._keep:
+            print("keeping '%s' (%s) as requested" % (path, descr))
+        else:
+            os.unlink(path)
 
     def parse(self, spec):
         if "image" not in spec:
