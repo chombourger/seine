@@ -35,9 +35,9 @@ image:
     volumes:
         - label: lv_root
           group: vg_sys
-          size: 640MiB
+          size: 620MiB
           where: /
         - label: lv_data
           group: vg_sys
-          size: 100MiB
+          size: 120MiB
           where: /var

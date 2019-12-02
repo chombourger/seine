@@ -1,0 +1,8 @@
+playbook:
+    - name: install SELinux support and reference policy
+      tasks:
+        - name: install strict and Targeted variants of the SELinux policy
+          apt:
+              state: present
+              name:
+                  - selinux-policy-default

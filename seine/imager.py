@@ -47,21 +47,21 @@ class Imager(Bootstrap):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write("""
             FROM {0} AS bootstrap
-            RUN                                                                    \
-                apt-get update -qqy &&                                             \
-                export container=lxc;                                              \
-                debootstrap --include=dosfstools,lvm2,parted {1} rootfs {2}        \
-                && cp /host-tmp/{3} rootfs/etc/systemd/system/imager.service       \
-                && install -m 755 /host-tmp/{4} rootfs/usr/sbin/imager             \
-                && chroot rootfs systemctl disable systemd-timesyncd               \
-                && chroot rootfs systemctl disable systemd-update-utmp             \
-                && chroot rootfs systemctl enable imager                           \
-                && rm -rf rootfs/usr/share/doc                                     \
-                          rootfs/usr/share/info                                    \
-                          rootfs/usr/share/man                                     \
-                && echo '/dev/ubda / ext4 errors=remount-ro 0 1' >rootfs/etc/fstab \
-                && du -sh rootfs                                                   \
-                && mkfs.ext4 -d rootfs {5} 384m                                    \
+            RUN                                                                             \
+                apt-get update -qqy &&                                                      \
+                export container=lxc;                                                       \
+                debootstrap --include=dosfstools,lvm2,parted,policycoreutils {1} rootfs {2} \
+                && cp /host-tmp/{3} rootfs/etc/systemd/system/imager.service                \
+                && install -m 755 /host-tmp/{4} rootfs/usr/sbin/imager                      \
+                && chroot rootfs systemctl disable systemd-timesyncd                        \
+                && chroot rootfs systemctl disable systemd-update-utmp                      \
+                && chroot rootfs systemctl enable imager                                    \
+                && rm -rf rootfs/usr/share/doc                                              \
+                          rootfs/usr/share/info                                             \
+                          rootfs/usr/share/man                                              \
+                && echo '/dev/ubda / ext4 errors=remount-ro 0 1' >rootfs/etc/fstab          \
+                && du -sh rootfs                                                            \
+                && mkfs.ext4 -d rootfs {5} 384m                                             \
                 && rm -rf rootfs
             FROM scratch AS image
             COPY --from=bootstrap {5} {5}
@@ -127,6 +127,7 @@ class Imager(Bootstrap):
         script_file.write("update_fstab >etc/fstab\n")
         script_file.write("df -h|grep %s\n" % targetdir)
         script_file.write(IMAGER_POST_INSTALL_SCRIPT)
+        script_file.write(IMAGER_SELINUX_SETUP_SCRIPT)
         script_file.write(IMAGER_GRUB_INSTALL_SCRIPT)
         script_file.close()
         return script_file.name
@@ -151,7 +152,7 @@ class Imager(Bootstrap):
                 "ubd0=%s" % imager_rootfs,
                 "ubd1=%s" % self.source._image,
                 "con=pty", "quiet", "root=/dev/ubda",
-                "mem=512M", "selinux=disable",
+                "mem=512M", "selinux=0",
                 "log=%s" % log_file.name,
                 "tarball=%s" % self.source._tarball,
                 "script=%s" % script_file], check=True)
@@ -237,5 +238,16 @@ if [ -e usr/sbin/grub-install ]; then
         mv boot/efi/EFI/debian/grubx64.efi boot/efi/EFI/boot/bootx64.efi
     fi
     chroot . /usr/sbin/update-grub
+fi
+"""
+
+IMAGER_SELINUX_SETUP_SCRIPT = """
+SE_FILE_CONTEXTS=/etc/selinux/default/contexts/files/file_contexts
+if [ -e .${SE_FILE_CONTEXTS} ]; then
+    if [ -f etc/default/grub ]; then
+        sed -e 's/\(^GRUB_CMDLINE_LINUX=.*\)"$/\\1 security=selinux"/' \
+            -i etc/default/grub
+    fi
+    setfiles -m -r ${PWD} ${PWD}${SE_FILE_CONTEXTS} ${PWD}
 fi
 """
