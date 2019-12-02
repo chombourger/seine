@@ -12,7 +12,7 @@ from seine.partition import PartitionHandler
 class BuildCmd(Cmd):
     def __init__(self):
         self.image = None
-        self.options = { "debug": False, "verbose": False }
+        self.options = { "debug": False, "keep": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
 
@@ -143,7 +143,7 @@ class BuildCmd(Cmd):
 
     def main(self, argv):
         try:
-            opts, args = getopt.getopt(argv, "dhv", ["debug", "help", "verbose"])
+            opts, args = getopt.getopt(argv, "dhkv", ["debug", "help", "keep", "verbose"])
         except getopt.GetoptError as err:
             print(err)
             cmd_build_usage()
@@ -155,6 +155,8 @@ class BuildCmd(Cmd):
             elif o in ("-h", "--help"):
                 cmd_build_usage()
                 sys.exit()
+            elif o in ("-k", "--keep"):
+                self.options["keep"] = True
             elif o in ("-v", "--verbose"):
                 self.options["verbose"] = True
             else:
