@@ -12,7 +12,7 @@ class Imager(Bootstrap):
 
     def __init__(self, source):
         self.source = source
-        self.imageName = "imager.squashfs"
+        self.imageName = "imager.ext4"
         self.debug = source.options["debug"]
         self.verbose = source.options["verbose"]
         super().__init__(source.spec["distribution"], source.options)
@@ -40,22 +40,22 @@ class Imager(Bootstrap):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write("""
             FROM {0} AS bootstrap
-            RUN                                                              \
-                apt-get update -qqy &&                                       \
-                apt-get install -qqy squashfs-tools &&                       \
-                export container=lxc;                                        \
-                debootstrap --include=dosfstools,lvm2,parted                 \
-                    {1} rootfs {2} &&                                        \
-                cp /host-tmp/{3} rootfs/etc/systemd/system/imager.service && \
-                install -m 755 /host-tmp/{4} rootfs/usr/sbin/imager &&       \
-                chroot rootfs systemctl disable systemd-timesyncd &&         \
-                chroot rootfs systemctl disable systemd-update-utmp &&       \
-                chroot rootfs systemctl enable imager &&                     \
-                rm -rf rootfs/usr/share/doc                                  \
-                       rootfs/usr/share/info                                 \
-                       rootfs/usr/share/man                                  \
-                && mksquashfs rootfs {5} &&                                  \
-                rm -rf rootfs
+            RUN                                                                    \
+                apt-get update -qqy &&                                             \
+                export container=lxc;                                              \
+                debootstrap --include=dosfstools,lvm2,parted {1} rootfs {2}        \
+                && cp /host-tmp/{3} rootfs/etc/systemd/system/imager.service       \
+                && install -m 755 /host-tmp/{4} rootfs/usr/sbin/imager             \
+                && chroot rootfs systemctl disable systemd-timesyncd               \
+                && chroot rootfs systemctl disable systemd-update-utmp             \
+                && chroot rootfs systemctl enable imager                           \
+                && rm -rf rootfs/usr/share/doc                                     \
+                          rootfs/usr/share/info                                    \
+                          rootfs/usr/share/man                                     \
+                && echo '/dev/ubda / ext4 errors=remount-ro 0 1' >rootfs/etc/fstab \
+                && du -sh rootfs                                                   \
+                && mkfs.ext4 -d rootfs {5} 384m                                    \
+                && rm -rf rootfs
             FROM scratch AS image
             COPY --from=bootstrap {5} {5}
             CMD /bin/true
@@ -201,11 +201,6 @@ if [ -n "${log}" ]; then
     exec 1>/mnt${log}
     exec 2>&1
 fi
-# our rootfs is read-only but LVM wants to update /etc/lvm
-# create a copy of /etc in /tmp and use a bind mount to
-# allow updates
-cp -r /etc /tmp/
-mount -o bind /tmp/etc /etc
 result=1
 if [ -n "${script}" ] && [ -e /mnt${script} ]; then
     export log script tarball
@@ -229,7 +224,7 @@ if [ -e usr/sbin/grub-install ]; then
     if [ -d usr/lib/grub/x86_64-efi ]; then
         options="--target x86_64-efi"
     fi
-    chroot . /usr/sbin/grub-install -v ${options} /dev/ubdb
+    chroot . /usr/sbin/grub-install ${options} /dev/ubdb
     if [ -d usr/lib/grub/x86_64-efi ]; then
         mkdir boot/efi/EFI/boot
         mv boot/efi/EFI/debian/grubx64.efi boot/efi/EFI/boot/bootx64.efi
