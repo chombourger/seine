@@ -1,4 +1,6 @@
 #!/usr/bin/make -f
+# seine - Singular Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
 
 docker=$(shell which docker 2>/dev/null)
 podman=$(shell which podman 2>/dev/null)

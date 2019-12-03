@@ -1,3 +1,5 @@
+# seine - Singular Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
 
 from abc import ABC, abstractmethod
 

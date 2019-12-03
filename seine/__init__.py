@@ -1,1 +1,2 @@
-# home for the seine module
+# seine - Singular Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
