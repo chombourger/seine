@@ -232,5 +232,37 @@ class MergeNewVolumesWithPriorities(avocado.Test):
         if len(vols) != 3 or vols[0]["label"] != "boot" or vols[1]["label"] != "rootfs" or vols[2]["label"] != "data":
             self.fail("expected 3 volumes: 'boot', 'rootfs' and 'data' (got %s)" % vols)
 
+class MergeVolumeAttributes(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+            image:
+                filename: simple-test.img
+                partitions:
+                    - label: main
+                      group: main
+                      size: 1GiB
+                      flags:
+                          - lvm
+                volumes:
+                    - label: rootfs
+                      group: main
+                      size: 750MiB
+                      where: /
+        """)
+        build.loads("""
+            image:
+                volumes:
+                    - label: rootfs
+                      size: 500MiB
+        """)
+        spec = build.parse()
+        vols = spec["image"]["volumes"]
+        if len(vols) != 1 or vols[0]["label"] != "rootfs":
+            self.fail("expected 1 volume: 'rootfs' (got %s)" % vols)
+        vol = vols[0]
+        if vol["size"] != 750 * 1024 * 1024:
+            self.fail("expected size of 750MiB: got %s" % vol["size"])
+
 if __name__ == "__main__":
     avocado.main()
