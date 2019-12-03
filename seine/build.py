@@ -99,7 +99,7 @@ class BuildCmd(Cmd):
                     for flag in newpart["flags"]:
                         if not flag.startswith("~"):
                             part["flags"].append(flag)
-            else:
+            elif setting not in part:
                 part[setting] = newpart[setting]
         return part
 
@@ -117,7 +117,7 @@ class BuildCmd(Cmd):
     def _merge_image(self, spec):
         if "image" in self.spec:
             for setting in spec["image"]:
-                if setting == "partitions" or setting == "volumes":
+                if (setting == "partitions" or setting == "volumes") and (setting in self.spec["image"]):
                     self._merge_parts_or_vols(spec, setting)
                 else:
                     self.spec["image"][setting] = spec["image"][setting]
