@@ -206,7 +206,7 @@ class PartitionHandler:
         self.mounts = sorted(self.mounts, key=lambda vol: vol["_depth"], reverse=True)
         return spec
 
-    def _script_setup_ext(self, script, part, dev):
+    def _script_setup_common(self, script, part, dev):
         options = ""
         if "label" in part:
             options = options + " -L %s" % part["label"]
@@ -221,8 +221,8 @@ class PartitionHandler:
         return script
 
     def _script_setup_fs(self, script, part, dev):
-        if part["type"].startswith("ext"):
-            return self._script_setup_ext(script, part, dev)
+        if part["type"].startswith("ext") or part["type"] in ["nilfs2"]:
+            return self._script_setup_common(script, part, dev)
         elif part["type"] == "vfat":
             return self._script_setup_vfat(script, part, dev)
         else:
