@@ -11,6 +11,13 @@ from seine.utils     import ContainerEngine
 
 class Imager(Bootstrap):
     TARGET_DIR = "/tmp/image"
+    PACKAGES = [
+        "dosfstools",
+        "lvm2",
+        "nilfs-tools",
+        "parted",
+        "policycoreutils"
+    ]
 
     def __init__(self, source):
         self.source = source
@@ -49,28 +56,29 @@ class Imager(Bootstrap):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write("""
             FROM {0} AS bootstrap
-            RUN                                                                             \
-                apt-get update -qqy &&                                                      \
-                export container=lxc;                                                       \
-                debootstrap --include=dosfstools,lvm2,parted,policycoreutils {1} rootfs {2} \
-                && cp /host-tmp/{3} rootfs/etc/systemd/system/imager.service                \
-                && install -m 755 /host-tmp/{4} rootfs/usr/sbin/imager                      \
-                && chroot rootfs systemctl disable systemd-timesyncd                        \
-                && chroot rootfs systemctl disable systemd-update-utmp                      \
-                && chroot rootfs systemctl enable imager                                    \
-                && rm -rf rootfs/usr/share/doc                                              \
-                          rootfs/usr/share/info                                             \
-                          rootfs/usr/share/man                                              \
-                && echo '/dev/ubda / ext4 errors=remount-ro 0 1' >rootfs/etc/fstab          \
-                && du -sh rootfs                                                            \
-                && mkfs.ext4 -d rootfs {5} 384m                                             \
+            RUN                                                                    \
+                apt-get update -qqy &&                                             \
+                export container=lxc;                                              \
+                debootstrap --include={1} {2} rootfs {3}                           \
+                && cp /host-tmp/{4} rootfs/etc/systemd/system/imager.service       \
+                && install -m 755 /host-tmp/{5} rootfs/usr/sbin/imager             \
+                && chroot rootfs systemctl disable systemd-timesyncd               \
+                && chroot rootfs systemctl disable systemd-update-utmp             \
+                && chroot rootfs systemctl enable imager                           \
+                && rm -rf rootfs/usr/share/doc                                     \
+                          rootfs/usr/share/info                                    \
+                          rootfs/usr/share/man                                     \
+                && echo '/dev/ubda / ext4 errors=remount-ro 0 1' >rootfs/etc/fstab \
+                && du -sh rootfs                                                   \
+                && mkfs.ext4 -F -d rootfs {6} 384m                                 \
                 && rm -rf rootfs
             FROM scratch AS image
-            COPY --from=bootstrap {5} {5}
+            COPY --from=bootstrap {6} {6}
             CMD /bin/true
         """
         .format(
             hostBootstrap.name,
+            ",".join(Imager.PACKAGES),
             self.distro["release"],
             self.distro["uri"],
             os.path.basename(unitfile.name),

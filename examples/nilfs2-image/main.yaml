@@ -1,0 +1,33 @@
+# seine - Singular Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+requires:
+    - ../common/amd64
+    - ../common/buster
+    - ../common/conf-accounts
+    - ../common/conf-locales
+    - ../common/pc-image
+
+playbook:
+    - name: add support for the nilfs2 file-system
+      priority: 100
+      tasks:
+        - name: install packages required for nilfs2 support
+          apt:
+              name:
+                  - initramfs-tools
+                  - nilfs-tools
+        - name: add nilfs2 support to the initramfs
+          lineinfile:
+              path: /etc/initramfs-tools/modules
+              insertafter: EOF
+              line: nilfs2
+
+image:
+    volumes:
+        - label: lv_root
+          type: nilfs2
+          size: 570MiB
+        - label: lv_data
+          type: nilfs2
+          size: 175MiB
