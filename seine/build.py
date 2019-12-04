@@ -12,9 +12,18 @@ from seine.cmd       import Cmd
 from seine.partition import PartitionHandler
 
 class BuildCmd(Cmd):
+    SHORT_OPTIONS = "dDhkv"
+    LONG_OPTIONS = [
+        "debug",
+        "dump",
+        "help",
+        "keep",
+        "verbose"
+    ]
+
     def __init__(self):
         self.image = None
-        self.options = { "debug": False, "keep": False, "verbose": False }
+        self.options = { "build": True, "debug": False, "keep": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
 
@@ -143,9 +152,41 @@ class BuildCmd(Cmd):
             raise RuntimeError("no specification was loaded or parsed!")
         return self.image.build()
 
+    def dump(self, spec):
+        if "image" in spec:
+            # hide internal attributes (_foo) but also "priority" settings
+            # from "partitions" and "volumes" sections
+            for what in [ "partitions", "volumes" ]:
+                if what not in spec["image"]:
+                    continue
+                objects = []
+                for o in spec["image"][what]:
+                    kvp = {}
+                    for k in o:
+                        if k.startswith("_") == False and k != "priority":
+                            kvp[k] = o[k]
+                    objects.append(kvp)
+                spec["image"][what] = objects
+
+        if "playbook" in spec:
+            # hide "hosts" settings from playbooks since they are added by
+            # us to make ansible happy
+            playbooks = []
+            for p in spec["playbook"]:
+                p.pop("hosts", None)
+                playbooks.append(p)
+            spec["playbook"] = playbooks
+
+        # hide the "requires" section since YAML files were supposedly merged
+        # together and we now have a consolidated specification
+        spec.pop("requires", None)
+
+        # return the spec in YAML format
+        return yaml.dump(spec)
+
     def main(self, argv):
         try:
-            opts, args = getopt.getopt(argv, "dhkv", ["debug", "help", "keep", "verbose"])
+            opts, args = getopt.getopt(argv, BuildCmd.SHORT_OPTIONS, BuildCmd.LONG_OPTIONS)
         except getopt.GetoptError as err:
             print(err)
             cmd_build_usage()
@@ -159,6 +200,8 @@ class BuildCmd(Cmd):
                 sys.exit()
             elif o in ("-k", "--keep"):
                 self.options["keep"] = True
+            elif o in ("-D", "--dump"):
+                self.options["build"] = False
             elif o in ("-v", "--verbose"):
                 self.options["verbose"] = True
             else:
@@ -171,8 +214,15 @@ class BuildCmd(Cmd):
         try:
             for spec in args:
                 self.load(spec)
-            self.parse()
-            sys.exit(self.build())
+
+            spec = self.parse()
+            result = 0
+            if self.options["build"]:
+                result = self.build()
+            else:
+                print(self.dump(spec))
+            sys.exit(result)
+
         except OSError as e:
             sys.stderr.write("error: couldn't open build YAML file: {0}\n".format(e))
             sys.exit(2)
