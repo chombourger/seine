@@ -36,29 +36,29 @@ class Bootstrap(ABC):
 
 class HostBootstrap(Bootstrap):
     def create(self):
-        dockerfile = tempfile.NamedTemporaryFile(delete=False)
-        dockerfile.write(str.encode("""
-            FROM {0}:{1} AS base
-            RUN                                                       \
-                 apt-get update -qqy &&                               \
-                 apt-get install -qqy debootstrap qemu-user-static && \
-                 apt-get clean -qqy
-            FROM base AS clean-base
-            RUN rm -rf /usr/share/doc /usr/share/info /usr/share/man
-        """
-        .format(self.distro["source"], self.distro["release"])))
+        equivsfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        equivsfile.write(EQUIVS_CONTROL_FILE)
+        equivsfile.close()
+
+        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        dockerfile.write(HOST_BOOTSTRAP_SCRIPT.format(
+            self.distro["source"],
+            self.distro["release"],
+            os.path.basename(equivsfile.name)))
         dockerfile.close()
 
         try:
             ContainerEngine.run([
                 "build", "--rm", "--squash",
-                "-t", self.name, "-f", dockerfile.name],
+                "-t", self.name, "-f", dockerfile.name,
+                "-v", "/tmp:/host-tmp:ro"],
                 check=True)
         except subprocess.CalledProcessError:
             raise
         finally:
             ContainerEngine.run(["image", "prune"])
             os.unlink(dockerfile.name)
+            os.unlink(equivsfile.name)
         return self
 
     def defaultName(self):
@@ -68,22 +68,7 @@ class TargetBootstrap(Bootstrap):
     def create(self, hostBootstrap):
         self.hostBootstrap = hostBootstrap
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write("""
-            FROM {0} AS bootstrap
-            RUN                                                             \
-                export container=lxc;                                       \
-                debootstrap --variant=minbase --arch {1} {2} rootfs {3} &&  \
-                cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                \
-                echo 'APT::Install-Recommends "false";'                     \
-                    >rootfs/etc/apt/apt.conf.d/00-no-recommends &&          \
-                echo 'APT::Install-Suggests "false";'                       \
-                    >rootfs/etc/apt/apt.conf.d/00-no-suggests
-            FROM scratch AS base
-            COPY --from=bootstrap rootfs/ /
-            RUN  apt-get clean -qqy && \
-                 rm -rf /usr/share/doc /usr/share/info /usr/share/man
-        """
-        .format(
+        dockerfile.write(TARGET_BOOTSTRAP_SCRIPT.format(
             self.hostBootstrap.name,
             self.distro["architecture"],
             self.distro["release"],
@@ -104,4 +89,52 @@ class TargetBootstrap(Bootstrap):
         return self
 
     def defaultName(self):
-        return os.path.join("bootstrap", self.distro["source"], self.distro["release"], self.distro["architecture"])
+        return os.path.join(
+                "bootstrap",
+                self.distro["source"],
+                self.distro["release"],
+                self.distro["architecture"])
+
+HOST_BOOTSTRAP_SCRIPT = """
+FROM {0}:{1} AS base
+RUN                                               \
+     apt-get update -qqy &&                       \
+     apt-get install -qqy --no-install-recommends \
+         debootstrap equivs qemu-user-static &&   \
+     mkdir -p /opt/seine &&                       \
+     cd /opt/seine &&                             \
+     equivs-build /host-tmp/{2} &&                \
+     apt-get autoremove -qqy equivs &&            \
+     apt-get clean -qqy
+FROM base AS clean-base
+RUN rm -rf /usr/share/doc                        \
+           /usr/share/info                       \
+           /usr/share/man
+"""
+
+TARGET_BOOTSTRAP_SCRIPT = """
+FROM {0} AS bootstrap
+RUN                                                             \
+    export container=lxc;                                       \
+    debootstrap --variant=minbase --arch {1} {2} rootfs {3} &&  \
+    cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                \
+    echo 'APT::Install-Recommends "false";'                     \
+        >rootfs/etc/apt/apt.conf.d/00-no-recommends &&          \
+    echo 'APT::Install-Suggests "false";'                       \
+        >rootfs/etc/apt/apt.conf.d/00-no-suggests
+FROM scratch AS base
+COPY --from=bootstrap rootfs/ /
+RUN  apt-get clean -qqy && \
+     rm -rf /usr/share/doc /usr/share/info /usr/share/man
+"""
+
+EQUIVS_CONTROL_FILE = """
+Section: misc
+Priority: optional
+Standards-Version: 3.9.2
+
+Package: seine-ansible
+Depends: ansible, python3-apt
+Architecture: all
+Description: dependencies for seine
+"""
