@@ -188,15 +188,15 @@ class BuildCmd(Cmd):
         try:
             opts, args = getopt.getopt(argv, BuildCmd.SHORT_OPTIONS, BuildCmd.LONG_OPTIONS)
         except getopt.GetoptError as err:
-            print(err)
-            cmd_build_usage()
+            sys.stderr.write(err)
+            sys.stderr.write(USAGE)
             sys.exit(1)
         for o, a in opts:
             if o in ("-d", "--debug"):
                 self.options["debug"] = True
                 self.options["verbose"] = True
             elif o in ("-h", "--help"):
-                cmd_build_usage()
+                print(USAGE)
                 sys.exit()
             elif o in ("-k", "--keep"):
                 self.options["keep"] = True
@@ -232,3 +232,27 @@ class BuildCmd(Cmd):
         except subprocess.CalledProcessError as e:
             sys.stderr.write("error: build failed: {0}\n".format(e))
             sys.exit(4)
+
+USAGE = """
+Build an image using instructions from specifications files
+
+Description:
+  Builds an Embedded Linux image using instructions from one or more specification
+  files defining the base distribution and the Ansible playbooks to execute to
+  customize the image.
+
+Usage:
+  seine build [options] SPEC... 
+
+Examples:
+  seine build demo-image.yml
+  seine build -v demo-image.yml
+
+Flags:
+  -d, --debug           print debug messages
+  -D, --dump            do not build the image, just dump the consolidated specification
+  -h, --help            print this message
+  -k, --keep            keep temporary files
+  -v, --verbose         produce verbose output while building the image
+
+"""
