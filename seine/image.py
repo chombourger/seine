@@ -111,7 +111,8 @@ class Image:
 
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write(IMAGE_ANSIBLE_SCRIPT.format(
-            self._from, "-v" if self._verbose else "",
+            self._from, self.hostBootstrap.name,
+            "-v" if self._verbose else "",
             os.path.basename(ansiblefile.name)))
         dockerfile.close()
 
@@ -200,11 +201,12 @@ class Image:
 
 IMAGE_ANSIBLE_SCRIPT = """
 FROM {0} AS playbooks
+COPY --from={1} /opt/seine /opt/seine
 RUN apt-get update -qqy && \
-    apt-get install -qqy ansible && \
-    ansible-playbook {1} /host-tmp/{2}
+    apt-get install -qqy /opt/seine/seine-ansible*.deb && \
+    ansible-playbook {2} /host-tmp/{3}
 FROM playbooks as clean
-RUN apt-get autoremove -qy ansible && \
+RUN apt-get autoremove -qy seine-ansible && \
     apt-get clean -y &&               \
     rm -f /usr/bin/qemu-*-static
 CMD /bin/true
