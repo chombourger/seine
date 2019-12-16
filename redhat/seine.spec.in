@@ -23,7 +23,7 @@ BuildArch:     noarch
 BuildRequires: python3-devel
 Requires:      podman
 Requires:      slirp4netns
-Requires:      user-mode-linux
+Requires:      seine-uml
 
 %description
 This package provides seine build scripts
