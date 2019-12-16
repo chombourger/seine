@@ -158,7 +158,7 @@ class Imager(Bootstrap):
             print("Starting imager...")
             log_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
             subprocess.run([
-                "linux",
+                "seine-uml",
                 "ubd0=%s" % imager_rootfs,
                 "ubd1=%s" % self.source._image,
                 "con=pty", "quiet", "root=/dev/ubda",
