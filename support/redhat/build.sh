@@ -41,5 +41,4 @@ rpm_build_pkg support/${DISTRO_NAME}/conmon
 rpm_build_pkg support/${DISTRO_NAME}/go-md2man
 rpm -ivh /root/rpmbuild/RPMS/*/go-md2man-*.rpm
 rpm_build_pkg support/${DISTRO_NAME}/libpod
-rpm_build_pkg support/${DISTRO_NAME}/user-mode-linux
 createrepo /root/rpmbuild/RPMS

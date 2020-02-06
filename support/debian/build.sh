@@ -77,5 +77,4 @@ deb_setup_env
 deb_build_pkg support/${DISTRO_NAME}/conmon
 deb_build_pkg support/${DISTRO_NAME}/libpod
 deb_build_pkg support/${DISTRO_NAME}/slirp4netns
-_pkg_build    support/${DISTRO_NAME}/user-mode-linux
 deb_build_pkg src/seine

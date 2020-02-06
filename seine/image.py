@@ -185,7 +185,7 @@ class Image:
             # Prepare target partitions and disk image
             imager = Imager(self)
             self._size_partitions()
-            script = self.partitionHandler.script("/dev/ubdb", Imager.TARGET_DIR)
+            script = self.partitionHandler.script("/dev/sdb", Imager.TARGET_DIR)
             self._empty_disk()
 
             # Produce the target image

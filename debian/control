@@ -14,7 +14,7 @@ Depends: ${misc:Depends},
          ${python3:Depends},
          binfmt-support,
          podman,
-         qemu-user-static,
-         seine-uml
+         qemu-kvm,
+         qemu-user-static
 Description: the seine image builder
  This package provides seine build scripts

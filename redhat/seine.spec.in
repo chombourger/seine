@@ -22,8 +22,8 @@ Source0: %{git0}/archive/%{commit0}/%{repo}-%{shortcommit0}.tar.gz
 BuildArch:     noarch
 BuildRequires: python3-devel
 Requires:      podman
+Requires:      qemu-kvm
 Requires:      slirp4netns
-Requires:      seine-uml
 
 %description
 This package provides seine build scripts
