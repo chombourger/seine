@@ -10,10 +10,10 @@ configure them.
 The tool was designed to not require elevated privileges after its installation
 (sudo isn't used or required, no bind mounts, etc.). The root file-system is
 first assembled in a container (seine uses podman because it is daemon-less and
-very similar to docker). It is then exported as a tarball and a Linux kernel
-started as a user-mode process to create the disk images including partitions
-and logical volumes that were specified. Installation of the boot-loader also
-happens there since it may require disks/partitions to be created.
+very similar to docker). It is then exported as a tarball and a Linux system
+started under qemu/kvm to create the disk images including partitions and
+logical volumes that were specified. Installation of the boot-loader also happens
+there since it may require disks/partitions to be created.
 
 ## Getting started
 
@@ -25,7 +25,8 @@ The easiest way to get started is to install the various packages to your Ubuntu
 ```
 sudo add-apt-repository ppa:chombourger/ppa
 sudo apt-get update
-sudo apt-get install podman user-mode-linux
+sudo apt-get install -y podman qemu-kvm
+sudo adduser $USER kvm
 ```
 
 You may then either use seine in place (use the `seine.py` script from the top

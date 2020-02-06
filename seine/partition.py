@@ -316,7 +316,7 @@ class PartitionHandler:
 PARTITION_HANDLER_SCRIPT = """
 part_device() {
     mkdir -p /dev/parts
-    partprobe ${1}
+    partx -a ${1}
     for d in ${1}*[0-9]; do
         l=/dev/parts/$(basename ${d})
         if [ ! -e ${l} ]; then
