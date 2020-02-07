@@ -149,7 +149,7 @@ class Image:
             if self._iid:
                 ContainerEngine.run(["image", "rm", self._iid], check=False)
                 self._iid = None
-            ContainerEngine.run(["image", "prune"], check=False)
+            ContainerEngine.run(["image", "prune", "-f"], check=False)
 
     def _size_partitions(self):
         tar = tarfile.open(self._tarball, "r")
