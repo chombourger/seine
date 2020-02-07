@@ -56,7 +56,7 @@ class HostBootstrap(Bootstrap):
         except subprocess.CalledProcessError:
             raise
         finally:
-            ContainerEngine.run(["image", "prune"])
+            ContainerEngine.run(["image", "prune", "-f"])
             os.unlink(dockerfile.name)
             os.unlink(equivsfile.name)
         return self
@@ -84,7 +84,7 @@ class TargetBootstrap(Bootstrap):
         except subprocess.CalledProcessError:
             raise
         finally:
-            ContainerEngine.run(["image", "prune"])
+            ContainerEngine.run(["image", "prune", "-f"])
             os.unlink(dockerfile.name)
         return self
 
