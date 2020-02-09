@@ -1,4 +1,4 @@
 Codename: seine
-Architectures: amd64 source
+Architectures: amd64 arm64 source
 Components: bionic buster
 Suite: stable
