@@ -25,7 +25,8 @@ The easiest way to get started is to install the various packages to your Ubuntu
 ```
 sudo add-apt-repository ppa:chombourger/ppa
 sudo apt-get update
-sudo apt-get install -y podman qemu-kvm
+sudo apt-get install -y podman python3-seine qemu-kvm
+sudo usermod --add-subuids 10000-75535 --add-subgids 10000-75535 $USER
 sudo adduser $USER kvm
 ```
 
