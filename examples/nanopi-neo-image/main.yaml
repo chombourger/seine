@@ -1,0 +1,18 @@
+# seine - Singular Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+requires:
+    - ../common/nanopi-neo-image
+    - ../common/buster
+    - ../common/conf-accounts
+    - ../common/conf-locales
+
+playbook:
+    - name: some great packages
+      priority: 250
+      tasks:
+           - name: install vim
+             apt:
+                 state: present
+                 name:
+                     - vim

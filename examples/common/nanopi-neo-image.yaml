@@ -1,0 +1,35 @@
+# seine - Singular Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+distribution:
+    architecture: armhf
+
+playbook:
+    - name: boot packages
+      priority: 800
+      tasks:
+          - name: install u-boot
+            apt:
+                name:
+                    - u-boot-sunxi
+                state: present
+          - name: install kernel
+            apt:
+                name:
+                    - linux-image-armmp
+                state: present
+ 
+image:
+    filename: nanopi-neo-image.img
+    table: msdos
+    size: 850MiB
+    bootlets:
+        - file: /usr/lib/u-boot/nanopi_neo/u-boot-sunxi-with-spl.bin
+          align: 8
+    partitions:
+        - label: rootfs
+          type: ext4
+          size: 800MiB
+          where: /
+          flags:
+              - primary
