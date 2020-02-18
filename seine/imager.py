@@ -167,11 +167,12 @@ class Imager(Bootstrap):
         script_file.write(script)
         script_file.write("\ncd %s\n" % targetdir)
         script_file.write("tar -xf /mnt${tarball}\n")
-        script_file.write("update_fstab >etc/fstab\n")
         script_file.write("df -h|grep %s\n" % targetdir)
+        script_file.write("update_fstab >etc/fstab\n")
         script_file.write(IMAGER_POST_INSTALL_SCRIPT)
         script_file.write(IMAGER_SELINUX_SETUP_SCRIPT)
         script_file.write(IMAGER_GRUB_INSTALL_SCRIPT)
+        script_file.write("copy_bootlets\n")
         script_file.close()
         return script_file.name
 

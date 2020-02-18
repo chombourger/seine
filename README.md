@@ -188,6 +188,7 @@ Last but not least, the 'image' section defines the partition and volumes to be
 created in the disk image. The following top-level attributes are supported:
 
  * `filename`
+ * `bootlets`
  * `partitions`
  * `size`
  * `table`
@@ -197,6 +198,22 @@ An `image` shall have at least one partition defined and an output `filename`
 specified. The `size` of the disk `image` may be omitted and it will then be
 estimated (as the sum of the various partition sizes plus some overhead). The
 partition `table` may either be `gpt` or `msdos`.
+
+#### bootlets
+
+Bootlets are binary firmware files placed at specific locations on the boot
+media so they can be found by the hardware boot ROM. Examples include: u-boot,
+Arm Trusted Firmware (ATF), etc.
+
+The following attributes are supported:
+
+| Attribute | Required | Description                              |
+| --------- |:--------:| ---------------------------------------- |
+| align     | no       | Expected alignment in Kilobytes (KiB)    |
+| file      | yes      | Path to the binary to be copied (*)      |
+
+(*) The specified will be copied from the image created by the `playbook`, a
+    package shoud therefore install it.
 
 #### partitions
 
