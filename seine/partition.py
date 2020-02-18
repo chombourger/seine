@@ -8,18 +8,22 @@ import sys
 
 class PartitionHandler:
 
-    START_OFFSET  = 1 * 1024 * 1024
-    DEFAULT_EXTRA = 16 * 1024 * 1204
-    DEFAULT_TABLE = "gpt"
+    START_OFFSET_KB  = 1 * 1024
+    DEFAULT_EXTRA_MB = 16
+    DEFAULT_TABLE    = "gpt"
 
     def __init__(self):
         self._min_size = None
         self._table = None
+        self.bootlets = []
         self.groups = []
         self.mounts = []
         self.partitions = []
         self.volumes = []
         self.size = None
+
+    def _align_up(self, n, align):
+        return math.ceil(n / align) * align
 
     def _from_human_size(self, size_string):
         try:
@@ -63,6 +67,20 @@ class PartitionHandler:
             if len(matched) > 1:
                  raise ValueError("the following partition flags may not be used together: %s!" % (" ".join(matched)))
 
+    def _parse_bootlet(self, bootlet):
+        if "file" not in bootlet:
+            raise ValueError("one of the bootlets does not have a 'file' defined!")
+
+        if "align" not in bootlet:
+            bootlet["_align"] = 1
+        else:
+            bootlet["_align"] = int(bootlet["align"])
+
+        if "priority" not in bootlet:
+            bootlet["priority"] = 500
+
+        return bootlet
+
     def _parse_common(self, part):
         part["_blksz"] = 4096
         part["_depth"] = 0
@@ -73,7 +91,7 @@ class PartitionHandler:
         if "extra" in part:
             part["_size"] = self._from_human_size(part["extra"])
         else:
-            part["_size"] = PartitionHandler.DEFAULT_EXTRA
+            part["_size"] = PartitionHandler.DEFAULT_EXTRA_MB
 
         if "where" in part:
             prefix = os.path.normpath(part["where"])
@@ -146,6 +164,12 @@ class PartitionHandler:
             name = "/" + f.name
         else:
             name = f.name
+
+        for bootlet in self.bootlets:
+            if name == bootlet["file"]:
+                bootlet["_size"] = f.size
+                break
+
         for mount in self.mounts:
             if mount["_prefix"] is not None and name.startswith(mount["_prefix"]):
                 mount["_size"] = mount["_size"] + self._size_file(f, mount)
@@ -153,7 +177,39 @@ class PartitionHandler:
         return None
 
     def compute_sizes(self):
-        self._min_size = PartitionHandler.START_OFFSET + 1 * 1024 * 1024
+        # check if all bootlets were found
+        for bootlet in self.bootlets:
+            if "_size" not in bootlet:
+                raise RuntimeError("bootlet '%s' was not found in the image!" % bootlet["file"])
+
+        # start offset for bootlets/partitions
+        if self._table == "msdos":
+            start = 1      # MBR is 512 bytes long, round up to 1 KiB
+        elif self._table == "gpt":
+            start = 34 * 4 # 34 LBAs of 4KiB each
+        else:
+            raise RuntimeError("'%s' is not a supported partition table!" % self._table)
+
+        # compute start offset for each bootlet (set internal "_seek" attribute)
+        for bootlet in self.bootlets:
+            start = self._align_up(start, bootlet["_align"]) # honor "align" setting
+            bootlet["_seek"] = start                         # start of this bootlet (with requested alignment)
+            size = math.ceil(bootlet["_size"] / 1024)        # size in KiB
+            start = start + size                             # start of bootlet/partition following this bootlet
+
+        # make sure partitions do not start before START_OFFSET_KB
+        # (start offset still in KiB at this point)
+        if start < PartitionHandler.START_OFFSET_KB:
+            start = PartitionHandler.START_OFFSET_KB
+
+        # compute offset to first partition in bytes and rounded to the next MiB
+        start = self._to_rounded_mib(start)
+        self._start_offset = start
+
+        # keep 1MiB at the end of the media to hold a backup copy of the partition table
+        self._min_size = (start + 1) * 1024 * 1024
+
+        # add estimated size of each partition
         for mount in self.mounts:
             mount["_size"] = self._to_rounded_mib(mount["_size"]) * 1024 * 1024
             if "size" in mount and mount["size"] > mount["_size"]:
@@ -161,6 +217,7 @@ class PartitionHandler:
             self._min_size = self._min_size + mount["_size"]
 
     def print_stats(self):
+        print("prologue:\t%s" % self._to_human_size(self._start_offset))
         print("mounts:")
         print("-------")
         size = 0
@@ -186,6 +243,14 @@ class PartitionHandler:
                 raise ValueError("'%s' is not a supported partition table!" % self._table)
         else:
             self._table = PartitionHandler.DEFAULT_TABLE
+
+        if "bootlets" in image:
+            bootlets = image["bootlets"]
+            for bootlet in bootlets:
+                bootlet = self._parse_bootlet(bootlet)
+                self.bootlets.append(bootlet)
+            self.bootlets = sorted(self.bootlets, key=lambda b: b["priority"])
+        image["bootlets"] = self.bootlets
 
         partitions = image["partitions"]
         for part in partitions:
@@ -230,11 +295,12 @@ class PartitionHandler:
 
     def script(self, device, targetdir):
         fstab = ""
+        ndx = 1
         script = PARTITION_HANDLER_SCRIPT
         script = script + "targetdir=%s\n" % targetdir
         script = script + "parted %s --script mklabel %s\n" % (device, self._table)
-        start = PartitionHandler.START_OFFSET / 1024 / 1024
-        ndx = 1
+        start = self._start_offset
+
         for part in self.partitions:
             if self._table == "msdos":
                 mkpart_arg = "primary"
@@ -282,10 +348,10 @@ class PartitionHandler:
 
         for vol in self.volumes:
             script = script + "lvcreate -n %s -L %dM %s\n" % (vol["label"], self._to_rounded_mib(vol["size"]), vol["group"])
-            device = "/dev/mapper/%s-%s" % (vol["group"], vol["label"])
-            script = self._script_setup_fs(script, vol, device)
+            voldev = "/dev/mapper/%s-%s" % (vol["group"], vol["label"])
+            script = self._script_setup_fs(script, vol, voldev)
             script = script + "id=%s\n" % vol["_prefix"].replace("/", "_")
-            script = script + "mounts[${id}]=%s\n" % (device)
+            script = script + "mounts[${id}]=%s\n" % (voldev)
 
         for mount in reversed(self.mounts):
             script = script + "dev=${mounts[%s]}\n" % mount["_prefix"].replace("/", "_")
@@ -306,6 +372,11 @@ class PartitionHandler:
                 if mount["type"] == "vfat":
                     options = "umask=0077"
             fstab = fstab + "    echo \"%s %s %s %s 0 %d\"\n" % (what, mount["_prefix"], mount["type"], options, passno)
+
+        script = script + "copy_bootlets() {\n    true\n"
+        for bootlet in self.bootlets:
+            script = script + "    dd if=${targetdir}%s of=%s bs=1024 seek=%s conv=notrunc\n" % (bootlet["file"], device, bootlet["_seek"])
+        script = script + "}\n"
 
         script = script + "update_fstab() {\n"
         script = script + fstab
