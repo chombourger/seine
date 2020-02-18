@@ -114,13 +114,13 @@ RUN rm -rf /usr/share/doc                        \
 
 TARGET_BOOTSTRAP_SCRIPT = """
 FROM {0} AS bootstrap
-RUN                                                             \
-    export container=lxc;                                       \
-    debootstrap --variant=minbase --arch {1} {2} rootfs {3} &&  \
-    cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                \
-    echo 'APT::Install-Recommends "false";'                     \
-        >rootfs/etc/apt/apt.conf.d/00-no-recommends &&          \
-    echo 'APT::Install-Suggests "false";'                       \
+RUN                                                                  \
+    export container=lxc;                                            \
+    qemu-debootstrap --variant=minbase --arch {1} {2} rootfs {3} &&  \
+    cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                     \
+    echo 'APT::Install-Recommends "false";'                          \
+        >rootfs/etc/apt/apt.conf.d/00-no-recommends &&               \
+    echo 'APT::Install-Suggests "false";'                            \
         >rootfs/etc/apt/apt.conf.d/00-no-suggests
 FROM scratch AS base
 COPY --from=bootstrap rootfs/ /
