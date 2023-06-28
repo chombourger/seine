@@ -1,6 +1,6 @@
-FROM debian:buster AS base
+FROM debian:bookworm AS base
 ENV DISTRO_ID=debian
-ENV DISTRO_NAME=buster
+ENV DISTRO_NAME=bookworm
 
 FROM base AS buildsrc
 COPY .git .git

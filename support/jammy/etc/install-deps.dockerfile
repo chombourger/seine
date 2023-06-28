@@ -1,7 +1,7 @@
-FROM debian:buster AS base
+FROM ubuntu:jammy AS base
 COPY support support
 COPY apt apt
-COPY support/buster/etc/seine.list /etc/apt/sources.list.d/
+COPY support/jammy/etc/seine.list /etc/apt/sources.list.d/
 
 RUN apt-get update -qqy && apt-get install -qqy seine
 CMD ["true"]

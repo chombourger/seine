@@ -1,27 +1,3 @@
-[submodule "support/bionic/conmon"]
-	path = support/bionic/conmon
-	url = https://github.com/chombourger/conmon.git
-	branch = bionic/v2.0.2
-[submodule "support/bionic/slirp4netns"]
-	path = support/bionic/slirp4netns
-	url = https://github.com/chombourger/slirp4netns.git
-	branch = bionic/v0.4.2
-[submodule "support/bionic/libpod"]
-	path = support/bionic/libpod
-	url = https://github.com/chombourger/libpod.git
-	branch = bionic/v1.6.2
-[submodule "support/buster/conmon"]
-	path = support/buster/conmon
-	url = https://github.com/chombourger/conmon
-	branch = buster/v2.0.2
-[submodule "support/buster/libpod"]
-	path = support/buster/libpod
-	url = https://github.com/chombourger/libpod
-	branch = buster/v1.6.2
-[submodule "support/buster/slirp4netns"]
-	path = support/buster/slirp4netns
-	url = https://github.com/chombourger/slirp4netns
-	branch = buster/v0.4.2
 [submodule "support/el8/conmon"]
 	path = support/el8/conmon
 	url = https://github.com/chombourger/conmon

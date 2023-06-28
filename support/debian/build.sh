@@ -24,6 +24,7 @@ deb_build_deps() {
         opts="-qqy"
     fi
     mk-build-deps -t "apt-get ${opts} --no-install-recommends" -i -r debian/control
+    rm -f seine-build-deps_*
     apt-get clean -qqy
 }
 
@@ -60,7 +61,7 @@ deb_build_pkg() {
     if [ -e .git ]; then
         git archive --format=tar.gz HEAD >${tarball}
     else
-        tar -C .. --exclude='*/debian/*' -zcf ${tarball} ${pkg}
+        tar -C .. --exclude='*/debian/*'  -zcf ${tarball} ${pkg}
     fi
     cd ${from}
 
@@ -73,8 +74,6 @@ deb_setup_env() {
     apt-get clean -qqy
 }
 
+rm -rf src/seine/__pycache__
 deb_setup_env
-deb_build_pkg support/${DISTRO_NAME}/conmon
-deb_build_pkg support/${DISTRO_NAME}/libpod
-deb_build_pkg support/${DISTRO_NAME}/slirp4netns
 deb_build_pkg src/seine

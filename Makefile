@@ -8,13 +8,13 @@ engine=$(if $(podman),$(podman),$(docker))
 
 squash=$(if $(podman),--squash,)
 
-distros=bionic buster el8
+distros=jammy bookworm el8
 product=seine
 
 distro=$(notdir $@)
 
-pkgdir_bionic=apt
-pkgdir_buster=apt
+pkgdir_jammy=apt
+pkgdir_bookworm=apt
 pkgdir_el8=rpmbuild
 
 .PHONY: all

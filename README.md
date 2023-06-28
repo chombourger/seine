@@ -72,7 +72,7 @@ readability. This can be done using `requires` as shown below:
 
 ```
 requires:
-    - buster
+    - bookworm
     - amd64
 
 distribution:
@@ -95,7 +95,7 @@ The `distribution` section will be used to specify the primary source of the
 packages that will make the end system. The following attributes are supported:
 
  * source: either `debian` or `ubuntu`
- * release: codename of the version to be used (e.g. `buster`)
+ * release: codename of the version to be used (e.g. `bookworm`)
  * architecture: one of `amd64`, `arm64` or `armhf`
  * uri: base location of the distribution packages
 
@@ -170,7 +170,7 @@ to their `priority`. A different starting point may be specified with the
 
 ```
 playbook:
-    - baseline: debian:buster
+    - baseline: debian:bookworm
     - tasks:
       apt:
           ...

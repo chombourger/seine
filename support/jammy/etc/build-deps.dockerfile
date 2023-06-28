@@ -1,6 +1,6 @@
-FROM ubuntu:bionic AS base
+FROM ubuntu:jammy AS base
 ENV DISTRO_ID=ubuntu
-ENV DISTRO_NAME=bionic
+ENV DISTRO_NAME=jammy
 
 FROM base AS buildsrc
 COPY .git .git

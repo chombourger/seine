@@ -3,7 +3,7 @@
 
 requires:
     - ../common/nanopi-neo-image
-    - ../common/buster
+    - ../common/bookworm
     - ../common/conf-accounts
     - ../common/conf-locales
 

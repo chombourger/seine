@@ -66,7 +66,7 @@ class Imager(Bootstrap):
                 debootstrap --include={1} {2} rootfs {3}                           \
                 && cp /host-tmp/{4} rootfs/etc/systemd/system/imager.service       \
                 && install -m 755 /host-tmp/{5} rootfs/usr/sbin/imager             \
-                && chroot rootfs systemctl disable systemd-timesyncd               \
+                && chroot rootfs systemctl disable systemd-timedated               \
                 && chroot rootfs systemctl disable systemd-update-utmp             \
                 && chroot rootfs systemctl enable imager                           \
                 && echo root:root | chroot rootfs chpasswd                         \
@@ -123,7 +123,7 @@ class Imager(Bootstrap):
                 "container", "create",
                 "--name", self.container_id(), self.image_id()], check=True)
         except subprocess.CalledProcessError:
-            if imageCreated == True:
+            if imageCreated is True:
                 ContainerEngine.run(["image", "rm", self.image_id()], check=False)
             raise
         finally:
@@ -180,14 +180,13 @@ class Imager(Bootstrap):
         imager_kernel = None
         imager_initrd = None
         imager_rootfs = None
-        log_file = None
         script_file = None
         try:
             print("Creating imager script...")
             script_file = self.build_script(script, targetdir)
 
             print("Preparing imager...")
-            if ContainerEngine.hasImage(self.image_id()) == False:
+            if ContainerEngine.hasImage(self.image_id()) is False:
                 self.build_imager()
             imager_kernel = self.get_kernel()
             imager_initrd = self.get_initrd()
@@ -195,41 +194,51 @@ class Imager(Bootstrap):
 
             user_groups = [grp.getgrgid(g).gr_name for g in os.getgroups()]
             imager_vm = "kvm" if 'kvm' in user_groups else 'qemu-system-x86_64'
-
             print("Starting imager using %s..." % imager_vm)
-            log_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
-            subprocess.run([
+
+            # boot the live image with SELinux disabled
+            kernel_cmd = 'boot=live console=ttyS0 selinux=0'
+
+            # quiet the kernel and systemd
+            kernel_cmd += ' quiet loglevel=0 systemd.mask=getty.target systemd.show_status=false'
+
+            # let imager script know where to find the image tarball and imager script
+            kernel_cmd += ' tarball={} script={}'.format(self.source._tarball, script_file)
+
+            imager_cmd = [
                 imager_vm,
                 "-m", "512",
                 "-kernel", imager_kernel,
                 "-initrd", imager_initrd,
-                "-append", "boot=live quiet systemd.show_status=false console=ttyS0 selinux=0 log=%s tarball=%s script=%s" %
-                (log_file.name, self.source._tarball, script_file),
-                "-drive", "file=%s,index=0,media=disk,format=raw" % imager_rootfs,
-                "-drive", "file=%s,index=1,media=disk,format=raw" % self.source._image,
+                "-append", kernel_cmd,
+                "-drive", "file={},index=0,media=disk,format=raw".format(imager_rootfs),
+                "-drive", "file={},index=1,media=disk,format=raw".format(self.source._image),
                 "-fsdev", "local,id=hostfs_dev,path=/,security_model=none",
                 "-device", "virtio-9p-pci,fsdev=hostfs_dev,mount_tag=hostfs_mount",
                 "-display", "none",
-                "-no-reboot"], check=True)
+                "-serial", "stdio",
+                "-no-reboot"
+            ]
+
+            if self.verbose is True:
+                print(' '.join(imager_cmd))
+            result = subprocess.run(imager_cmd, capture_output=True, check=True, encoding='utf-8')
+            stdout = result.stdout.splitlines()
 
             # Extract exit code from log file
-            log_file.close()
-            with open(log_file.name, "r") as f:
-                for log in f.readlines():
-                    if self.verbose:
-                        print(log.strip())
-                    if log.startswith("IMAGER EXIT ="):
-                        result = int(log.split("=")[1].strip())
-                        if result != 0:
-                            if self.verbose == False:
-                                f.seek(0)
-                                lines = f.readlines()[-20:]
-                                for line in lines:
-                                    sys.stderr.write(line)
-                            raise subprocess.CalledProcessError(result, [
-                                script_file,
-                                "log=%s" % log_file.name,
-                                "tarball=%s" % self.source._tarball])
+            for log in stdout:
+                if self.verbose is True:
+                    print(log.strip())
+                if log.startswith("IMAGER EXIT ="):
+                    result = int(log.split("=")[1].strip())
+                    if result != 0:
+                        if self.verbose is False:
+                            lines = stdout[-20:]
+                            for line in lines:
+                                sys.stderr.write(line)
+                        raise subprocess.CalledProcessError(result, [
+                            script_file,
+                            "tarball=%s" % self.source._tarball])
             print("Done.")
         except subprocess.CalledProcessError:
             raise
@@ -240,8 +249,6 @@ class Imager(Bootstrap):
                 self._unlink(imager_initrd, "imager's initrd")
             if imager_rootfs:
                 self._unlink(imager_rootfs, "imager's root file-system")
-            if log_file:
-                self._unlink(log_file.name, "imager's log")
             if script_file:
                 self._unlink(script_file, "imager's script")
 
@@ -257,24 +264,21 @@ ExecStart=/usr/sbin/imager
 WantedBy=multi-user.target"""
 
 IMAGER_SYSTEMD_SCRIPT = """#!/bin/bash
-mount -t 9p -o trans=virtio hostfs_mount /mnt -oversion=9p2000.L,posixacl,cache=loose
+set -o pipefail
+mount -t 9p -o trans=virtio hostfs_mount /mnt -oversion=9p2000.L,posixacl,cache=loose,msize=16777216
 mount -t tmpfs none /tmp
+result=1
 for x in $(cat /proc/cmdline); do
-    if [[ ${x} =~ ^log=.* ]] || [[ ${x} =~ ^script=.* ]] || [[ ${x} =~ ^tarball=.* ]]; then
+    if [[ ${x} =~ ^script=.* ]] || [[ ${x} =~ ^tarball=.* ]]; then
         eval ${x}
     fi
 done
-if [ -n "${log}" ]; then
-    exec 1>/mnt${log}
-    exec 2>&1
-fi
-result=1
 if [ -n "${script}" ] && [ -e /mnt${script} ]; then
-    export log script tarball
-    bash /mnt${script}
+    export script tarball
+    bash /mnt${script} 2>&1 | tee /dev/ttyS0
     result=${?}
 fi
-echo "IMAGER EXIT = ${result}"
+echo "IMAGER EXIT = ${result}" > /dev/ttyS0
 /sbin/reboot
 """
 
@@ -289,12 +293,12 @@ IMAGER_GRUB_INSTALL_SCRIPT = """
 if [ -e usr/sbin/grub-install ]; then
     options=""
     if [ -d usr/lib/grub/x86_64-efi ]; then
-        options="--target x86_64-efi"
+        options="--target x86_64-efi --efi-directory=/efi"
     fi
     chroot . /usr/sbin/grub-install ${options} /dev/sdb
     if [ -d usr/lib/grub/x86_64-efi ]; then
-        mkdir boot/efi/EFI/boot
-        mv boot/efi/EFI/debian/grubx64.efi boot/efi/EFI/boot/bootx64.efi
+        mkdir -p efi/EFI/boot
+        mv efi/EFI/debian/grubx64.efi efi/EFI/boot/bootx64.efi
     fi
     chroot . /usr/sbin/update-grub
 fi

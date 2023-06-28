@@ -1,4 +1,4 @@
 Codename: seine
 Architectures: amd64 arm64 source
-Components: bionic buster
+Components: bookworm jammy
 Suite: stable

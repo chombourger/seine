@@ -3,7 +3,7 @@
 
 requires:
     - ../common/amd64
-    - ../common/buster
+    - ../common/bookworm
     - ../common/conf-accounts
     - ../common/conf-locales
     - ../common/pc-image
