@@ -286,7 +286,7 @@ class PartitionHandler:
         return script
 
     def _script_setup_fs(self, script, part, dev):
-        if part["type"].startswith("ext") or part["type"] in ["nilfs2"]:
+        if part["type"].startswith("ext") or part["type"] in ["btrfs", "nilfs2"]:
             return self._script_setup_common(script, part, dev)
         elif part["type"] == "vfat":
             return self._script_setup_vfat(script, part, dev)

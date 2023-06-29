@@ -13,6 +13,7 @@ from seine.utils     import ContainerEngine
 class Imager(Bootstrap):
     TARGET_DIR = "/tmp/image"
     PACKAGES = [
+        "btrfs-progs",
         "dosfstools",
         "linux-image-amd64",
         "live-boot",
