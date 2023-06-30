@@ -363,11 +363,12 @@ class PartitionHandler:
                 what = "${uuid}"
             else:
                 what = "${dev}"
+            options = "defaults"
             if mount["_prefix"] == "/":
-                options = "errors=remount-ro"
+                if mount["type"] != "btrfs":
+                    options = "errors=remount-ro"
                 passno = 1
             else:
-                options = "defaults"
                 passno = 2
                 if mount["type"] == "vfat":
                     options = "umask=0077"
