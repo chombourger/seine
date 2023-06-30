@@ -223,11 +223,12 @@ class Imager(Bootstrap):
 
             if self.verbose is True:
                 print(' '.join(imager_cmd))
-            result = subprocess.run(imager_cmd, capture_output=True, check=True, encoding='utf-8')
-            stdout = result.stdout.splitlines()
+            proc = subprocess.Popen(imager_cmd, stdout=subprocess.PIPE)
 
-            # Extract exit code from log file
-            for log in stdout:
+            # Extract exit code from logs
+            result = None
+            for log in proc.stdout:
+                log = log.decode()
                 if self.verbose is True:
                     print(log.strip())
                 if log.startswith("IMAGER EXIT ="):
@@ -240,9 +241,15 @@ class Imager(Bootstrap):
                         raise subprocess.CalledProcessError(result, [
                             script_file,
                             "tarball=%s" % self.source._tarball])
-            print("Done.")
-        except subprocess.CalledProcessError:
-            raise
+                    break
+            proc.stdout.close()
+            rc = proc.wait()
+            if result is None:
+                result = rc
+            if result != 0:
+                raise subprocess.CalledProcessError(result, imager_cmd)
+            else:
+                print("Done.")
         finally:
             if imager_kernel:
                 self._unlink(imager_kernel, "imager's kernel")
