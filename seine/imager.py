@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 from seine.bootstrap import Bootstrap
+from seine.qemu      import Qemu
 from seine.utils     import ContainerEngine
 
 class Imager(Bootstrap):
@@ -28,6 +29,7 @@ class Imager(Bootstrap):
         self.imageName = "imager.iso"
         self.debug = source.options["debug"]
         self.keep = source.options["keep"]
+        self.qemu = Qemu(source)
         self.verbose = source.options["verbose"]
         super().__init__(source.spec["distribution"], source.options)
 
@@ -115,7 +117,7 @@ class Imager(Bootstrap):
         imageCreated = False
         try:
             ContainerEngine.run([
-                "build", "--rm",
+                "build", "--rm", "--squash",
                 "-t", self.image_id(),
                 "-v", "/tmp:/host-tmp:ro",
                 "-f", dockerfile.name], check=True)
@@ -131,10 +133,9 @@ class Imager(Bootstrap):
             self._unlink(dockerfile.name, "dockerfile for the imager")
             self._unlink(scriptfile.name, "imager script")
             self._unlink(unitfile.name, "systemd unit file for the imager")
-        return self
 
     def get_file(self, name):
-        output_file = tempfile.NamedTemporaryFile(mode="wb", delete=False)
+        output_file = tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.getcwd())
         try:
             podman_proc = ContainerEngine.Popen(
                 [ "container", "export", self.container_id() ],
@@ -160,7 +161,7 @@ class Imager(Bootstrap):
         return self.get_file("rootfs")
 
     def build_script(self, script, targetdir):
-        script_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        script_file = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd())
         script_file.write("#!/bin/bash\n")
         script_file.write("set -e\n")
         if self.debug:
@@ -194,7 +195,25 @@ class Imager(Bootstrap):
             imager_rootfs = self.get_imager()
 
             user_groups = [grp.getgrgid(g).gr_name for g in os.getgroups()]
-            imager_vm = "kvm" if 'kvm' in user_groups else 'qemu-system-x86_64'
+            if 'kvm' in user_groups:
+                imager_proc = subprocess
+                imager_args = []
+                imager_vm = "kvm"
+            else:
+                self.qemu.create()
+                imager_proc = ContainerEngine
+                imager_args = ['run']
+                imager_vm = "qemu-system-x86_64"
+                imager_dirs = []
+                for f in [script_file, imager_kernel, imager_initrd, imager_rootfs]:
+                    d = os.path.dirname(f)
+                    if d not in imager_dirs:
+                        imager_dirs.append(d)
+                for d in imager_dirs:
+                    imager_args.append('-v')
+                    imager_args.append('{}:{}:z'.format(d, d))
+                imager_args.append(self.qemu.image_id())
+
             print("Starting imager using %s..." % imager_vm)
 
             # boot the live image with SELinux disabled
@@ -222,8 +241,10 @@ class Imager(Bootstrap):
             ]
 
             if self.verbose is True:
+                if imager_args:
+                    print(' '.join(imager_args))
                 print(' '.join(imager_cmd))
-            proc = subprocess.Popen(imager_cmd, stdout=subprocess.PIPE)
+            proc = imager_proc.Popen([*imager_args, *imager_cmd], stdout=subprocess.PIPE)
 
             # Extract exit code from logs
             result = None
@@ -242,7 +263,6 @@ class Imager(Bootstrap):
                             script_file,
                             "tarball=%s" % self.source._tarball])
                     break
-            proc.stdout.close()
             rc = proc.wait()
             if result is None:
                 result = rc
