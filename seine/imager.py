@@ -259,9 +259,6 @@ class Imager(Bootstrap):
                             lines = stdout[-20:]
                             for line in lines:
                                 sys.stderr.write(line)
-                        raise subprocess.CalledProcessError(result, [
-                            script_file,
-                            "tarball=%s" % self.source._tarball])
                     break
             rc = proc.wait()
             if result is None:
