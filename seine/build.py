@@ -35,7 +35,7 @@ class BuildCmd(Cmd):
             return self._load(yaml_file, f)
 
     def _load(self, yaml_filename, yaml_spec):
-        spec = yaml.load(yaml_spec, Loader=yaml.FullLoader)
+        spec = yaml.safe_load(yaml_spec)
 
         if self.spec is None:
             self.spec = spec
