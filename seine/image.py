@@ -207,7 +207,8 @@ RUN apt-get update -qqy && \
     ansible-playbook {2} /host-tmp/{3}
 FROM playbooks as clean
 RUN apt-get autoremove -qy seine-ansible && \
-    apt-get clean -y &&               \
+    apt-get clean -y &&                     \
+    rm -rf /var/lib/apt/lists/* &&          \
     rm -f /usr/bin/qemu-*-static
 CMD /bin/true
 """
