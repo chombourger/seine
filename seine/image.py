@@ -10,6 +10,7 @@ import yaml
 from seine.bootstrap import HostBootstrap
 from seine.bootstrap import TargetBootstrap
 from seine.imager    import Imager
+from seine.sbom      import SBOM
 from seine.utils     import ContainerEngine
 
 class Image:
@@ -135,7 +136,7 @@ class Image:
     def build_tarball(self):
         try:
             self._tarball = None
-            image = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd())
+            image = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd(), prefix='root-', suffix='.tar')
             self._cid = ContainerEngine.check_output(["container", "create", self._iid]).strip()
             ContainerEngine.run(["container", "export", "-o", image.name, self._cid], check=True)
             self._tarball = image.name
@@ -181,6 +182,10 @@ class Image:
             # Assemble the root file-system
             self.rootfs()
             self.build_tarball()
+
+            # Generate SBOM
+            sbom = SBOM(self.options)
+            sbom.generate(self._output)
 
             # Prepare target partitions and disk image
             imager = Imager(self)

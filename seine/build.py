@@ -18,12 +18,13 @@ class BuildCmd(Cmd):
         "dump",
         "help",
         "keep",
+        "sbom",
         "verbose"
     ]
 
     def __init__(self):
         self.image = None
-        self.options = { "build": True, "debug": False, "keep": False, "verbose": False }
+        self.options = { "build": True, "debug": False, "keep": False, "sbom": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
 
@@ -202,6 +203,8 @@ class BuildCmd(Cmd):
                 self.options["keep"] = True
             elif o in ("-D", "--dump"):
                 self.options["build"] = False
+            elif o in ("--sbom"):
+                self.options["sbom"] = True
             elif o in ("-v", "--verbose"):
                 self.options["verbose"] = True
             else:
@@ -253,6 +256,7 @@ Flags:
   -D, --dump            do not build the image, just dump the consolidated specification
   -h, --help            print this message
   -k, --keep            keep temporary files
+  --sbom                produce a Software Bill of Materials (SBOM) using syft
   -v, --verbose         produce verbose output while building the image
 
 """
