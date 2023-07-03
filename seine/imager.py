@@ -169,6 +169,7 @@ class Imager(Bootstrap):
             script_file.write("set -x\n")
         script_file.write(script)
         script_file.write("\ncd %s\n" % targetdir)
+        script_file.write("echo '# Extracting rootfs'\n")
         script_file.write("tar -xf /mnt${tarball}\n")
         script_file.write("df -h|grep %s\n" % targetdir)
         script_file.write("update_fstab >etc/fstab\n")
@@ -251,7 +252,11 @@ class Imager(Bootstrap):
             result = None
             for log in proc.stdout:
                 log = log.decode()
-                if self.verbose is True:
+                print_log = self.verbose
+                if log.startswith('# '):
+                    log = log[2:]
+                    print_log = True
+                if print_log is True:
                     print(log.strip())
                 if log.startswith("IMAGER EXIT ="):
                     result = int(log.split("=")[1].strip())
@@ -311,7 +316,7 @@ echo "IMAGER EXIT = ${result}" > /dev/ttyS0
 IMAGER_POST_INSTALL_SCRIPT = """
 rootfs_xattr=var/lib/seine/rootfs.xattr
 if test -e ${rootfs_xattr}; then
-    echo '# restoring extended attributes'
+    echo '# Restoring extended attributes'
     setfattr --restore=${rootfs_xattr}
     rm -f ${rootfs_xattr}
     rmdir --ignore-fail-on-non-empty $(dirname ${rootfs_xattr})
@@ -325,6 +330,7 @@ mount -o bind /sys  sys
 IMAGER_GRUB_INSTALL_SCRIPT = """
 if [ -e usr/sbin/grub-install ]; then
     options=""
+    echo "# Installing grub"
     if [ -d usr/lib/grub/x86_64-efi ]; then
         options="--target x86_64-efi --efi-directory=/efi"
     fi
@@ -340,6 +346,7 @@ fi
 IMAGER_SELINUX_SETUP_SCRIPT = """
 SE_FILE_CONTEXTS=/etc/selinux/default/contexts/files/file_contexts
 if [ -e .${SE_FILE_CONTEXTS} ]; then
+    echo "# Setting file contexts for SELinux"
     if [ -f etc/default/grub ]; then
         sed -e 's/\(^GRUB_CMDLINE_LINUX=.*\)"$/\\1 security=selinux"/' \
             -i etc/default/grub
