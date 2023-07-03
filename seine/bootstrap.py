@@ -134,7 +134,7 @@ Priority: optional
 Standards-Version: 3.9.2
 
 Package: seine-ansible
-Depends: ansible, python3-apt
+Depends: ansible, attr, python3-apt
 Architecture: all
 Description: dependencies for seine
 """

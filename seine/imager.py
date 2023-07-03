@@ -14,6 +14,7 @@ from seine.utils     import ContainerEngine
 class Imager(Bootstrap):
     TARGET_DIR = "/tmp/image"
     PACKAGES = [
+        "attr",
         "btrfs-progs",
         "dosfstools",
         "linux-image-amd64",
@@ -308,6 +309,13 @@ echo "IMAGER EXIT = ${result}" > /dev/ttyS0
 """
 
 IMAGER_POST_INSTALL_SCRIPT = """
+rootfs_xattr=var/lib/seine/rootfs.xattr
+if test -e ${rootfs_xattr}; then
+    echo '# restoring extended attributes'
+    setfattr --restore=${rootfs_xattr}
+    rm -f ${rootfs_xattr}
+    rmdir --ignore-fail-on-non-empty $(dirname ${rootfs_xattr})
+fi
 mount -o bind /dev  dev
 mount -o bind /proc proc
 mount -o bind /run  run

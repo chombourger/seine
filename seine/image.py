@@ -209,7 +209,15 @@ FROM {0} AS playbooks
 COPY --from={1} /opt/seine /opt/seine
 RUN apt-get update -qqy && \
     apt-get install -qqy /opt/seine/seine-ansible*.deb && \
-    ansible-playbook {2} /host-tmp/{3}
+    ansible-playbook {2} /host-tmp/{3} && \
+    mkdir -p /var/lib/seine && \
+    getfattr -Rh -m '' -d $(find / -mindepth 1 -maxdepth 1 -type d \
+        -not -name host-tmp \
+        -not -name proc \
+        -not -name sys \
+        -not -name tmp \
+        -printf '%P\\n') \
+    > /var/lib/seine/rootfs.xattr
 FROM playbooks as clean
 RUN apt-get autoremove -qy seine-ansible && \
     apt-get clean -y &&                     \
