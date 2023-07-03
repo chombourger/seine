@@ -16,7 +16,7 @@ class SBOM:
             suffix = '-sbom.json'
             output = os.path.realpath(image)
             if output.endswith('.img'):
-                output = output.removesuffix('.img')
+                output = output[:-len('.img')]
             output = output + suffix
         return output
 
