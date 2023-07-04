@@ -32,13 +32,8 @@ rpm_build_pkg() {
 rpm_setup_env() {
     dnf update -y
     dnf install -y createrepo dnf-plugins-core make rpm-build
-    yum config-manager --set-enabled PowerTools
 }
 
 rpm_setup_env
 rpm_build_pkg src/seine
-rpm_build_pkg support/${DISTRO_NAME}/conmon
-rpm_build_pkg support/${DISTRO_NAME}/go-md2man
-rpm -ivh /root/rpmbuild/RPMS/*/go-md2man-*.rpm
-rpm_build_pkg support/${DISTRO_NAME}/libpod
 createrepo /root/rpmbuild/RPMS

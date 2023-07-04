@@ -1,6 +1,6 @@
-FROM centos:8 AS base
-ENV DISTRO_ID=centos
-ENV DISTRO_NAME=el8
+FROM rockylinux:8 AS base
+ENV DISTRO_ID=rhel
+ENV DISTRO_NAME=8
 
 FROM base AS buildsrc
 COPY .git .git
