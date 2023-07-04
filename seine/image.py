@@ -217,7 +217,7 @@ RUN apt-get update -qqy && \
         -not -name sys \
         -not -name tmp \
         -printf '%P\\n') \
-    > /var/lib/seine/rootfs.xattr
+    > /rootfs.xattr
 FROM playbooks as clean
 RUN apt-get autoremove -qy seine-ansible && \
     apt-get clean -y &&                     \

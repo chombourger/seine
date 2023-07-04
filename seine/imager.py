@@ -5,6 +5,7 @@ import grp
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 
 from seine.bootstrap import Bootstrap
@@ -135,31 +136,32 @@ class Imager(Bootstrap):
             self._unlink(scriptfile.name, "imager script")
             self._unlink(unitfile.name, "systemd unit file for the imager")
 
-    def get_file(self, name):
-        output_file = tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.getcwd())
-        try:
-            podman_proc = ContainerEngine.Popen(
-                [ "container", "export", self.container_id() ],
-                stdout=subprocess.PIPE)
-            tar_proc = subprocess.Popen(
-                [ "tar", "-Oxf", "-", name ],
-                stdin=podman_proc.stdout,
-                stdout=output_file)
-            out, err = tar_proc.communicate(input=300)
-            podman_proc.wait()
-            return output_file.name
-        except:
-            os.unlink(output_file.name)
-            raise
+    def get_file(self, name, output_dir):
+        output = os.path.join(output_dir, name)
+        with open(output, "w") as output_file:
+            try:
+                podman_proc = ContainerEngine.Popen(
+                    [ "container", "export", self.container_id() ],
+                    stdout=subprocess.PIPE)
+                tar_proc = subprocess.Popen(
+                    [ "tar", "-Oxf", "-", name ],
+                    stdin=podman_proc.stdout,
+                    stdout=output_file)
+                out, err = tar_proc.communicate(input=300)
+                podman_proc.wait()
+                return output
+            except:
+                os.unlink(output)
+                raise
 
-    def get_kernel(self):
-        return self.get_file("vmlinuz")
+    def get_kernel(self, output_dir):
+        return self.get_file("vmlinuz", output_dir)
 
-    def get_initrd(self):
-        return self.get_file("initrd.img")
+    def get_initrd(self, output_dir):
+        return self.get_file("initrd.img", output_dir)
 
-    def get_imager(self):
-        return self.get_file("rootfs")
+    def get_imager(self, output_dir):
+        return self.get_file("rootfs", output_dir)
 
     def build_script(self, script, targetdir):
         script_file = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd())
@@ -180,21 +182,54 @@ class Imager(Bootstrap):
         script_file.close()
         return script_file.name
 
+    def _process_xattrs(self, output_dir):
+        output = os.path.join(output_dir, "rootfs.xattr")
+        with tarfile.open(self.source._tarball) as tar:
+            files = []
+            for f in tar.getmembers():
+                if f.issym() or f.isdir():
+                    continue
+                files.append(f.name)
+            content = tar.extractfile('rootfs.xattr').readlines()
+            f = open(output, "w")
+            lines = []
+            present = False
+            for line in content:
+                line = line.decode().strip()
+                if line.startswith("# file: "):
+                    if lines:
+                        f.write("\n".join(lines))
+                        f.write("\n")
+                        lines = []
+                    target = line[8:]
+                    present = (target in files)
+                if present is True:
+                    lines.append(line)
+            f.close()
+            return output
+
     def create(self, script, targetdir):
+        output_dir = None
         imager_kernel = None
         imager_initrd = None
         imager_rootfs = None
         script_file = None
+        xattrs = None
         try:
+            output_dir = tempfile.mkdtemp(dir=os.getcwd())
+
+            print("Processing extended attributes...")
+            xattrs = self._process_xattrs(output_dir)
+
             print("Creating imager script...")
             script_file = self.build_script(script, targetdir)
 
             print("Preparing imager...")
             if ContainerEngine.hasImage(self.image_id()) is False:
                 self.build_imager()
-            imager_kernel = self.get_kernel()
-            imager_initrd = self.get_initrd()
-            imager_rootfs = self.get_imager()
+            imager_kernel = self.get_kernel(output_dir)
+            imager_initrd = self.get_initrd(output_dir)
+            imager_rootfs = self.get_imager(output_dir)
 
             user_groups = [grp.getgrgid(g).gr_name for g in os.getgroups()]
             if 'kvm' in user_groups:
@@ -207,7 +242,7 @@ class Imager(Bootstrap):
                 imager_args = ['run']
                 imager_vm = "qemu-system-x86_64"
                 imager_dirs = []
-                for f in [script_file, imager_kernel, imager_initrd, imager_rootfs]:
+                for f in [script_file, imager_kernel, imager_initrd, imager_rootfs, xattrs]:
                     d = os.path.dirname(f)
                     if d not in imager_dirs:
                         imager_dirs.append(d)
@@ -225,7 +260,7 @@ class Imager(Bootstrap):
             kernel_cmd += ' quiet loglevel=0 systemd.mask=getty.target systemd.show_status=false'
 
             # let imager script know where to find the image tarball and imager script
-            kernel_cmd += ' tarball={} script={}'.format(self.source._tarball, script_file)
+            kernel_cmd += ' tarball={} script={} xattrs={}'.format(self.source._tarball, script_file, xattrs)
 
             imager_cmd = [
                 imager_vm,
@@ -274,14 +309,12 @@ class Imager(Bootstrap):
             else:
                 print("Done.")
         finally:
-            if imager_kernel:
-                self._unlink(imager_kernel, "imager's kernel")
-            if imager_kernel:
-                self._unlink(imager_initrd, "imager's initrd")
-            if imager_rootfs:
-                self._unlink(imager_rootfs, "imager's root file-system")
-            if script_file:
-                self._unlink(script_file, "imager's script")
+            if self.keep is False:
+                for f in [imager_kernel, imager_initrd, imager_rootfs, script_file, xattrs]:
+                    if f is not None:
+                        os.unlink(f)
+                if output_dir:
+                    os.rmdir(output_dir)
 
 IMAGER_SYSTEMD_UNIT = """[Unit]
 Description=Seine Imager Service
@@ -300,12 +333,12 @@ mount -t 9p -o trans=virtio hostfs_mount /mnt -oversion=9p2000.L,posixacl,cache=
 mount -t tmpfs none /tmp
 result=1
 for x in $(cat /proc/cmdline); do
-    if [[ ${x} =~ ^script=.* ]] || [[ ${x} =~ ^tarball=.* ]]; then
+    if [[ ${x} =~ ^script=.* ]] || [[ ${x} =~ ^tarball=.* ]] || [[ ${x} =~ ^xattrs=.* ]]; then
         eval ${x}
     fi
 done
 if [ -n "${script}" ] && [ -e /mnt${script} ]; then
-    export script tarball
+    export script tarball xattrs
     bash /mnt${script} 2>&1 | tee /dev/ttyS0
     result=${?}
 fi
@@ -314,12 +347,10 @@ echo "IMAGER EXIT = ${result}" > /dev/ttyS0
 """
 
 IMAGER_POST_INSTALL_SCRIPT = """
-rootfs_xattr=var/lib/seine/rootfs.xattr
-if test -e ${rootfs_xattr}; then
+if test -e /mnt${xattrs}; then
     echo '# Restoring extended attributes'
-    setfattr --restore=${rootfs_xattr}
-    rm -f ${rootfs_xattr}
-    rmdir --ignore-fail-on-non-empty $(dirname ${rootfs_xattr})
+    setfattr --restore=/mnt${xattrs}
+    rm -f rootfs.xattr
 fi
 mount -o bind /dev  dev
 mount -o bind /proc proc
