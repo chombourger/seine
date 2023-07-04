@@ -1,4 +1,4 @@
-# seine: Singular Embedded Images Now Easy
+# seine: Slim Embedded Images Now Easy
 
 ## Introduction
 
