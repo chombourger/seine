@@ -17,7 +17,7 @@ class ContainerEngine:
         return cmd
     def run(cmd, check=False):
         cmd = ContainerEngine._podman_cmd(cmd)
-        return subprocess.run(cmd, check)
+        return subprocess.run(cmd, check=check)
     def check_output(cmd):
         cmd = ContainerEngine._podman_cmd(cmd)
         return subprocess.check_output(cmd)
