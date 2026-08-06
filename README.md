@@ -23,7 +23,7 @@ The easiest way to get started is to install the following packages, all
 available from your distribution:
 
 ```
-sudo apt-get install -y podman qemu-kvm crun python3-venv
+sudo apt-get install -y podman qemu-kvm crun python3-venv python3-guestfs
 sudo adduser $USER kvm
 ```
 
@@ -115,6 +115,19 @@ packages that will make the end system. The following attributes are supported:
  * uri: base location of the distribution packages
 
 When multiple YAML files are parsed, the last parsed value will be used.
+
+#### imager
+
+Producing the disk image (partitioning, formatting, installing the boot
+loader) is done by booting a throwaway [libguestfs](https://libguestfs.org/)
+appliance, which needs a kernel of its own. This is unrelated to the kernel
+package installed into the produced image by the `playbook` section -- a
+board needing a custom/vendor kernel still installs it via its own playbook
+as usual, while the imager itself is happy with a stock Debian kernel.
+
+ * kernel: Debian kernel package to boot the imager appliance with (e.g.
+   `linux-image-amd64`). Defaults to a sensible package for the target
+   `architecture` if not specified.
 
 #### playbook
 

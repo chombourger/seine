@@ -66,6 +66,14 @@ class BuildCmd(Cmd):
             elif "distribution" not in self.spec:
                 self.spec["distribution"] = spec["distribution"]
 
+    def _merge_imager(self, spec):
+        if "imager" in spec:
+            if "imager" in self.spec:
+                for setting in spec["imager"]:
+                    self.spec["imager"][setting] = spec["imager"][setting]
+            else:
+                self.spec["imager"] = spec["imager"]
+
     def _append_playbooks(self, spec):
         if "playbook" in spec:
             if "playbook" in self.spec:
@@ -136,6 +144,7 @@ class BuildCmd(Cmd):
 
     def merge(self, spec):
         self._merge_distro(spec)
+        self._merge_imager(spec)
         self._append_playbooks(spec)
         if "image" in spec:
             self._merge_image(spec)

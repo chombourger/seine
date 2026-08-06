@@ -1,0 +1,99 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+import os
+import subprocess
+import tarfile
+import tempfile
+
+from seine.bootstrap import Bootstrap
+from seine.utils     import ContainerEngine
+
+# Fallback kernel package per architecture, used when the spec does not set
+# 'imager: kernel:'. This is the kernel that boots the (throwaway) guestfs
+# appliance used to partition/format/install-grub -- it has nothing to do
+# with the kernel installed into the produced image by the user's playbook.
+DEFAULT_PACKAGES = {
+    "amd64": "linux-image-amd64",
+    "arm64": "linux-image-arm64",
+    "armhf": "linux-image-armmp",
+}
+
+class ImagerKernel(Bootstrap):
+    def __init__(self, source):
+        self.source = source
+        self.targetBootstrap = source.targetBootstrap
+        self.keep = source.options["keep"]
+        distro = source.spec["distribution"]
+        imager_spec = source.spec.get("imager") or {}
+        self.package = imager_spec.get("kernel") or DEFAULT_PACKAGES.get(distro["architecture"])
+        if self.package is None:
+            raise ValueError(
+                "no 'imager: kernel:' package configured in the specification and no "
+                "default is known for architecture '%s'" % distro["architecture"])
+        super().__init__(distro, source.options)
+
+    def defaultName(self):
+        return os.path.join("imager-kernel", self.distro["source"], self.distro["release"], self.distro["architecture"])
+
+    def container_id(self):
+        return self.name.replace("/", "-")
+
+    def create(self):
+        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        dockerfile.write(IMAGER_KERNEL_SCRIPT.format(self.targetBootstrap.name, self.package))
+        dockerfile.close()
+        try:
+            ContainerEngine.run([
+                "build", "--rm",
+                "-t", self.name,
+                "-f", dockerfile.name], check=True)
+        finally:
+            if self.keep:
+                print("keeping '%s' (dockerfile for the imager kernel) as requested" % dockerfile.name)
+            else:
+                os.unlink(dockerfile.name)
+
+    # Extracts vmlinuz and the matching /lib/modules/<version> tree from the
+    # image built by create() into output_dir. Returns (vmlinuz, moduledir,
+    # version).
+    def extract(self, output_dir):
+        cid = self.container_id()
+        try:
+            ContainerEngine.run(["container", "create", "--name", cid, self.name], check=True)
+            podman_proc = ContainerEngine.Popen(["container", "export", cid], stdout=subprocess.PIPE)
+            with tarfile.open(fileobj=podman_proc.stdout, mode="r|") as tar:
+                for member in tar:
+                    # /lib is usually a symlink to /usr/lib (usrmerge), so the
+                    # tar member itself is named usr/lib/modules/... -- handle
+                    # both in case a non-usrmerge distro is ever targeted.
+                    if member.name.startswith("boot/vmlinuz-") or \
+                       member.name.startswith("lib/modules/") or \
+                       member.name.startswith("usr/lib/modules/"):
+                        tar.extract(member, path=output_dir)
+            podman_proc.wait()
+        finally:
+            ContainerEngine.run(["container", "rm", cid], check=False)
+
+        candidates = [os.path.join(output_dir, "usr", "lib", "modules"),
+                      os.path.join(output_dir, "lib", "modules")]
+        found = {}  # version -> modules_root actually containing it
+        for modules_root in candidates:
+            if os.path.isdir(modules_root):
+                for version in os.listdir(modules_root):
+                    found[version] = modules_root
+        if len(found) != 1:
+            raise RuntimeError(
+                "expected exactly one kernel under /lib/modules in the imager kernel "
+                "image (package '%s'), found: %s" % (self.package, sorted(found)))
+        version, modules_root = next(iter(found.items()))
+        vmlinuz = os.path.join(output_dir, "boot", "vmlinuz-%s" % version)
+        return vmlinuz, os.path.join(modules_root, version), version
+
+IMAGER_KERNEL_SCRIPT = """
+FROM {0}
+RUN apt-get update -qqy && \\
+    apt-get install -qqy --no-install-recommends {1} && \\
+    apt-get clean
+CMD /bin/true
+"""

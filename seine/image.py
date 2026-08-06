@@ -170,13 +170,16 @@ class Image:
 
     def build(self):
         try:
-            # Create required bootstrap images
+            # Create required bootstrap images. TargetBootstrap is now always
+            # needed even when a custom 'baseline' is used for the rootfs
+            # itself: it is also the target-arch anchor the imager's own
+            # kernel gets fetched from (see ImagerKernel).
             distro = self.spec["distribution"]
             self.hostBootstrap = HostBootstrap(distro, self.options)
             self.targetBootstrap = TargetBootstrap(distro, self.options)
             if ContainerEngine.hasImage(self.hostBootstrap.name) == False:
                 self.hostBootstrap.create()
-            if self._from is None and ContainerEngine.hasImage(self.targetBootstrap.name) == False:
+            if ContainerEngine.hasImage(self.targetBootstrap.name) == False:
                 self.targetBootstrap.create(self.hostBootstrap)
 
             # Assemble the root file-system
@@ -188,13 +191,12 @@ class Image:
             sbom.generate(self._output)
 
             # Prepare target partitions and disk image
-            imager = Imager(self)
             self._size_partitions()
-            script = self.partitionHandler.script("/dev/sdb", Imager.TARGET_DIR)
             self._empty_disk()
 
             # Produce the target image
-            imager.create(script, Imager.TARGET_DIR)
+            imager = Imager(self)
+            imager.create()
 
             # Rename the image
             os.rename(self._image, self._output)
@@ -211,7 +213,7 @@ RUN apt-get update -qqy && \
     apt-get install -qqy /opt/seine/seine-ansible*.deb && \
     ansible-playbook {2} /host-tmp/{3} && \
     mkdir -p /var/lib/seine && \
-    getfattr -Rh -m '' -d $(find / -mindepth 1 -maxdepth 1 -type d \
+    getfattr -Rh -m '' -d -e hex $(find / -mindepth 1 -maxdepth 1 -type d \
         -not -name host-tmp \
         -not -name proc \
         -not -name sys \

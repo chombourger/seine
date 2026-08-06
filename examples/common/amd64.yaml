@@ -4,6 +4,9 @@
 distribution:
     architecture: amd64
 
+imager:
+    kernel: linux-image-amd64
+
 playbook:
     - name: boot packages
       priority: 800

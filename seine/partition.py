@@ -4,7 +4,6 @@
 import math
 import os
 import re
-import sys
 
 class PartitionHandler:
 
@@ -216,6 +215,16 @@ class PartitionHandler:
                 mount["_size"] = mount["size"]
             self._min_size = self._min_size + mount["_size"]
 
+        # compute the physical placement (start/end, in MiB) of each partition
+        # on the device now that every partition's final _size is known (note
+        # self.mounts and self.partitions share the same dicts for mountable
+        # partitions, so the rounding above already updated part["_size"] too)
+        layout_start = self._start_offset
+        for part in self.partitions:
+            part["_start_mib"] = layout_start
+            layout_start = layout_start + self._to_rounded_mib(part["_size"])
+            part["_end_mib"] = layout_start
+
     def print_stats(self):
         print("prologue:\t%s" % self._to_human_size(self._start_offset))
         print("mounts:")
@@ -271,135 +280,3 @@ class PartitionHandler:
         self.mounts = sorted(self.mounts, key=lambda vol: vol["_depth"], reverse=True)
         return spec
 
-    def _script_setup_common(self, script, part, dev):
-        options = ""
-        if "label" in part:
-            options = options + " -L %s" % part["label"]
-        script = script + "mkfs.%s %s %s\n" % (part["type"], options.strip(), dev)
-        return script
-
-    def _script_setup_vfat(self, script, part, dev):
-        options = ""
-        if "label" in part:
-            options = options + " -n %s" % part["label"]
-        script = script + "mkfs.vfat %s %s\n" % (options.strip(), dev)
-        return script
-
-    def _script_setup_fs(self, script, part, dev):
-        if part["type"].startswith("ext") or part["type"] in ["btrfs", "nilfs2"]:
-            return self._script_setup_common(script, part, dev)
-        elif part["type"] == "vfat":
-            return self._script_setup_vfat(script, part, dev)
-        else:
-            raise NotImplementedError("'%s' is not a supported file-system!" % part["type"])
-
-    def script(self, device, targetdir):
-        fstab = ""
-        ndx = 1
-        script = PARTITION_HANDLER_SCRIPT
-        script = script + "targetdir=%s\n" % targetdir
-        script = script + "parted %s --script mklabel %s\n" % (device, self._table)
-        start = self._start_offset
-
-        for part in self.partitions:
-            if self._table == "msdos":
-                mkpart_arg = "primary"
-                if "flags" in part:
-                    if "extended" in part["flags"]:
-                        mkpart_arg = "extended"
-                    if "logical" in part["flags"]:
-                        mkpart_arg = "logical"
-            elif self._table == "gpt":
-                mkpart_arg = part["label"]
-
-            if "flags" in part and "lvm" in part["flags"]:
-                mkpart_type = "ext4"
-            elif part["type"] == "vfat":
-                mkpart_type = "fat32"
-            else:
-                mkpart_type = part["type"]
-
-            end = start + self._to_rounded_mib(part["_size"])
-            script = script + "parted %s --script mkpart %s %s %sMiB %sMiB\n" % (device, mkpart_arg, mkpart_type, start, end)
-            start = end
-
-            if "flags" in part:
-                for f in part["flags"]:
-                    if f in [ "boot", "lvm" ]:
-                        script = script + "parted %s --script set %d %s on\n" % (device, ndx, f)
-
-            script = script + "dev=$(part_device %s)\n" % device
-            script = script + "[ x${dev} != x ] || exit 1\n"
-
-            if part["_lvm"] == False:
-                script = script + "id=%s\n" % part["_prefix"].replace("/", "_")
-                script = script + "mounts[${id}]=${dev}\n"
-                script = self._script_setup_fs(script, part, "${dev}")
-            else:
-                script = script + "pvcreate ${dev}\n"
-                script = script + "pvs=${groups[%s]}\n" % part["group"]
-                script = script + "groups[%s]=\"${pvs} ${dev}\"\n" % part["group"]
-            ndx = ndx + 1
-
-        for group in self.groups:
-            script = script + "pvs=${groups[%s]}\n" % group
-            script = script + "[ -n \"${pvs}\" ] || exit 1\n"
-            script = script + "vgcreate %s ${pvs}\n" % group
-
-        for vol in self.volumes:
-            script = script + "lvcreate -n %s -L %dM %s\n" % (vol["label"], self._to_rounded_mib(vol["size"]), vol["group"])
-            voldev = "/dev/mapper/%s-%s" % (vol["group"], vol["label"])
-            script = self._script_setup_fs(script, vol, voldev)
-            script = script + "id=%s\n" % vol["_prefix"].replace("/", "_")
-            script = script + "mounts[${id}]=%s\n" % (voldev)
-
-        for mount in reversed(self.mounts):
-            script = script + "dev=${mounts[%s]}\n" % mount["_prefix"].replace("/", "_")
-            script = script + "mkdir -p ${targetdir}%s\n" % mount["_prefix"]
-            script = script + "mount ${dev} ${targetdir}%s\n" % (mount["_prefix"])
-            fstab = fstab + "    dev=${mounts[%s]}\n" % mount["_prefix"].replace("/", "_")
-            if mount["_lvm"] == False:
-                fstab = fstab + "    uuid=$(blkid -p -o export ${dev}|grep ^UUID)\n"
-                what = "${uuid}"
-            else:
-                what = "${dev}"
-            options = "defaults"
-            if mount["_prefix"] == "/":
-                if mount["type"] != "btrfs":
-                    options = "errors=remount-ro"
-                passno = 1
-            else:
-                passno = 2
-                if mount["type"] == "vfat":
-                    options = "umask=0077"
-            fstab = fstab + "    echo \"%s %s %s %s 0 %d\"\n" % (what, mount["_prefix"], mount["type"], options, passno)
-
-        script = script + "copy_bootlets() {\n    true\n"
-        for bootlet in self.bootlets:
-            script = script + "    dd if=${targetdir}%s of=%s bs=1024 seek=%s conv=notrunc\n" % (bootlet["file"], device, bootlet["_seek"])
-        script = script + "}\n"
-
-        script = script + "update_fstab() {\n"
-        script = script + fstab
-        script = script + "}\n"
-
-        return script
-
-PARTITION_HANDLER_SCRIPT = """
-part_device() {
-    mkdir -p /dev/parts
-    partx -a ${1}
-    for d in ${1}*[0-9]; do
-        l=/dev/parts/$(basename ${d})
-        if [ ! -e ${l} ]; then
-            ln -s ${d} ${l}
-            echo ${d}
-            return
-        fi
-    done
-}
-
-declare -A groups
-declare -A mounts
-
-"""

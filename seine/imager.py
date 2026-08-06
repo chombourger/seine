@@ -1,389 +1,230 @@
 # seine - Slim Embedded Images Now Easy
-# SPDX-License-Identifier Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 
-import grp
 import os
-import subprocess
-import sys
+import re
+import shutil
 import tarfile
 import tempfile
 
-from seine.bootstrap import Bootstrap
-from seine.qemu      import Qemu
-from seine.utils     import ContainerEngine
+import guestfs
 
-class Imager(Bootstrap):
-    TARGET_DIR = "/tmp/image"
-    PACKAGES = [
-        "attr",
-        "btrfs-progs",
-        "dosfstools",
-        "linux-image-amd64",
-        "live-boot",
-        "lvm2",
-        "nilfs-tools",
-        "parted",
-        "policycoreutils",
-    ]
+from seine.imager_kernel import ImagerKernel
+from seine.utils         import ContainerEngine
 
+DEVICE = "/dev/sda"
+
+# GPT partition type GUIDs.
+GPT_TYPE_ESP = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+GPT_TYPE_LVM = "E6D6D379-F507-44C2-A23C-238F2A3DF928"
+
+class Imager:
     def __init__(self, source):
         self.source = source
-        self.imageName = "imager.iso"
-        self.debug = source.options["debug"]
         self.keep = source.options["keep"]
-        self.qemu = Qemu(source)
         self.verbose = source.options["verbose"]
-        super().__init__(source.spec["distribution"], source.options)
 
-    def _unlink(self, path, descr):
-        if self.keep:
-            print("keeping '%s' (%s) as requested" % (path, descr))
-        else:
-            os.unlink(path)
+    # Filters a `getfattr -Rh -d -e hex` dump down to entries for files that
+    # actually made it into the tarball (getfattr walked the ansible
+    # container's live filesystem, which includes things -- like the
+    # ansible/seine-ansible packages themselves -- that were later removed
+    # before the tarball was exported).
+    def _filter_xattr_dump(self, text, known_files):
+        blocks = []
+        current = []
+        keep = False
+        for line in text.splitlines():
+            if line.startswith("# file: "):
+                if keep and current:
+                    blocks.append("\n".join(current))
+                current = [line]
+                keep = line[len("# file: "):] in known_files
+            elif keep:
+                current.append(line)
+        if keep and current:
+            blocks.append("\n".join(current))
+        return "\n\n".join(blocks) + "\n"
 
-    def container_id(self):
-        return self.image_id().replace("/", "-")
-
-    def image_id(self):
-        return self.name
-
-    def defaultName(self):
-        return os.path.join("imager", self.distro["source"], self.distro["release"], "all")
-
-    def build_imager(self):
-        hostBootstrap = self.source.hostBootstrap
-
-        unitfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        unitfile.write(IMAGER_SYSTEMD_UNIT)
-        unitfile.close()
-
-        scriptfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        scriptfile.write(IMAGER_SYSTEMD_SCRIPT)
-        scriptfile.close()
-
-        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write("""
-            FROM {0} AS bootstrap
-            RUN                                                                    \
-                apt-get update -qqy &&                                             \
-                apt-get install -qqy squashfs-tools xorriso &&                     \
-                export container=lxc;                                              \
-                debootstrap --include={1} {2} rootfs {3}                           \
-                && cp /host-tmp/{4} rootfs/etc/systemd/system/imager.service       \
-                && install -m 755 /host-tmp/{5} rootfs/usr/sbin/imager             \
-                && chroot rootfs systemctl disable systemd-timedated               \
-                && chroot rootfs systemctl disable systemd-update-utmp             \
-                && chroot rootfs systemctl enable imager                           \
-                && echo root:root | chroot rootfs chpasswd                         \
-                && cp rootfs/vmlinuz vmlinuz                                       \
-                && cp rootfs/initrd.img initrd.img                                 \
-                && rm -rf rootfs/boot                                              \
-                          rootfs/lib/modules/*/kernel/drivers/android              \
-                          rootfs/lib/modules/*/kernel/drivers/bluetooth            \
-                          rootfs/lib/modules/*/kernel/drivers/firewire             \
-                          rootfs/lib/modules/*/kernel/drivers/gpu                  \
-                          rootfs/lib/modules/*/kernel/drivers/infiniband           \
-                          rootfs/lib/modules/*/kernel/drivers/isdn                 \
-                          rootfs/lib/modules/*/kernel/drivers/media                \
-                          rootfs/lib/modules/*/kernel/drivers/parport              \
-                          rootfs/lib/modules/*/kernel/drivers/pcmcia               \
-                          rootfs/lib/modules/*/kernel/drivers/thunderbolt          \
-                          rootfs/lib/modules/*/kernel/drivers/video                \
-                          rootfs/lib/modules/*/kernel/sound                        \
-                          rootfs/usr/share/doc                                     \
-                          rootfs/usr/share/info                                    \
-                          rootfs/usr/share/man                                     \
-                && mkdir -p iso/live                                               \
-                && mksquashfs rootfs iso/live/filesystem.squashfs                  \
-                && rm -rf rootfs                                                   \
-                && xorriso -as mkisofs -iso-level 3 -full-iso9660-filenames        \
-                           -output {6} -graft-points iso                           \
-                && rm -rf iso
-            FROM scratch AS image
-            COPY --from=bootstrap {6} rootfs
-            COPY --from=bootstrap /vmlinuz vmlinuz
-            COPY --from=bootstrap /initrd.img initrd.img
-            CMD /bin/true
-        """
-        .format(
-            hostBootstrap.name,
-            ",".join(Imager.PACKAGES),
-            self.distro["release"],
-            self.distro["uri"],
-            os.path.basename(unitfile.name),
-            os.path.basename(scriptfile.name),
-            self.imageName
-        ))
-        dockerfile.close()
-
-        imageCreated = False
-        try:
-            ContainerEngine.run([
-                "build", "--rm", "--squash",
-                "-t", self.image_id(),
-                "-v", "/tmp:/host-tmp:ro",
-                "-f", dockerfile.name], check=True)
-            imageCreated = True
-            ContainerEngine.run([
-                "container", "create",
-                "--name", self.container_id(), self.image_id()], check=True)
-        except subprocess.CalledProcessError:
-            if imageCreated is True:
-                ContainerEngine.run(["image", "rm", self.image_id()], check=False)
-            raise
-        finally:
-            self._unlink(dockerfile.name, "dockerfile for the imager")
-            self._unlink(scriptfile.name, "imager script")
-            self._unlink(unitfile.name, "systemd unit file for the imager")
-
-    def get_file(self, name, output_dir):
-        output = os.path.join(output_dir, name)
-        with open(output, "w") as output_file:
-            try:
-                podman_proc = ContainerEngine.Popen(
-                    [ "container", "export", self.container_id() ],
-                    stdout=subprocess.PIPE)
-                tar_proc = subprocess.Popen(
-                    [ "tar", "-Oxf", "-", name ],
-                    stdin=podman_proc.stdout,
-                    stdout=output_file)
-                out, err = tar_proc.communicate(timeout=300)
-                podman_proc.wait()
-                return output
-            except:
-                os.unlink(output)
-                raise
-
-    def get_kernel(self, output_dir):
-        return self.get_file("vmlinuz", output_dir)
-
-    def get_initrd(self, output_dir):
-        return self.get_file("initrd.img", output_dir)
-
-    def get_imager(self, output_dir):
-        return self.get_file("rootfs", output_dir)
-
-    def build_script(self, script, targetdir):
-        script_file = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd())
-        script_file.write("#!/bin/bash\n")
-        script_file.write("set -e\n")
-        if self.debug:
-            script_file.write("set -x\n")
-        script_file.write(script)
-        script_file.write("\ncd %s\n" % targetdir)
-        script_file.write("echo '# Extracting rootfs'\n")
-        script_file.write("tar -xf /mnt${tarball}\n")
-        script_file.write("update_fstab >etc/fstab\n")
-        script_file.write(IMAGER_POST_INSTALL_SCRIPT)
-        script_file.write(IMAGER_SELINUX_SETUP_SCRIPT)
-        script_file.write(IMAGER_GRUB_INSTALL_SCRIPT)
-        script_file.write("copy_bootlets\n")
-        script_file.write("df -h|grep -e '^Filesystem' -e {0}|sed -e 's,{0},/,g'|sed -e 's,^,# ,g' -e 's,//,/,g'\n".format(targetdir))
-        script_file.close()
-        return script_file.name
-
-    def _process_xattrs(self, output_dir):
-        output = os.path.join(output_dir, "rootfs.xattr")
+    def _restore_xattrs(self, g):
         with tarfile.open(self.source._tarball) as tar:
-            files = []
-            for f in tar.getmembers():
-                if f.issym() or f.isdir():
+            known_files = set()
+            xattr_member = None
+            for member in tar.getmembers():
+                if member.name == "rootfs.xattr":
+                    xattr_member = member
                     continue
-                files.append(f.name)
-            content = tar.extractfile('rootfs.xattr').readlines()
-            f = open(output, "w")
-            lines = []
-            present = False
-            for line in content:
-                line = line.decode().strip()
-                if line.startswith("# file: "):
-                    if lines:
-                        f.write("\n".join(lines))
-                        f.write("\n")
-                        lines = []
-                    target = line[8:]
-                    present = (target in files)
-                if present is True:
-                    lines.append(line)
-            f.close()
-            return output
+                if member.issym() or member.isdir():
+                    continue
+                known_files.add(member.name)
+            if xattr_member is None:
+                return
+            dump = tar.extractfile(xattr_member).read().decode()
 
-    def create(self, script, targetdir):
-        output_dir = None
-        imager_kernel = None
-        imager_initrd = None
-        imager_rootfs = None
-        script_file = None
-        xattrs = None
+        if not g.is_file("/usr/bin/setfattr"):
+            print("  note: 'attr' is not installed in the target image, "
+                  "skipping restore of extended attributes (e.g. file capabilities)")
+            return
+
+        # Extended attribute values (e.g. security.capability) are arbitrary
+        # bytes and may contain embedded NULs, which the setxattr API calls
+        # can't carry as Python str -- go through setfattr --restore instead,
+        # using the target's own binary against a file we upload, since a
+        # file transfer is NUL-safe where a str argument isn't.
+        filtered = self._filter_xattr_dump(dump, known_files)
+        g.write("/rootfs.xattr", filtered.encode())
+        g.sh("setfattr --restore=/rootfs.xattr")
+        g.rm("/rootfs.xattr")
+
+    def _mkfs(self, g, part, dev):
+        g.mkfs(part["type"], dev)
+        if "label" in part:
+            g.set_label(dev, part["label"])
+
+    def _partition_device(self, g, table, part, index):
+        start_sect = part["_start_mib"] * 2048
+        end_sect = part["_end_mib"] * 2048 - 1
+        flags = part.get("flags", [])
+        prlogex = "primary"
+        if table == "msdos":
+            if "extended" in flags:
+                prlogex = "extended"
+            if "logical" in flags:
+                prlogex = "logical"
+        g.part_add(DEVICE, prlogex, start_sect, end_sect)
+        if table == "gpt":
+            g.part_set_name(DEVICE, index, part["label"])
+            if "boot" in flags:
+                g.part_set_gpt_type(DEVICE, index, GPT_TYPE_ESP)
+            elif "lvm" in flags:
+                g.part_set_gpt_type(DEVICE, index, GPT_TYPE_LVM)
+        elif "boot" in flags:
+            g.part_set_bootable(DEVICE, index, True)
+        return DEVICE + str(index)
+
+    def _prepare_kernel(self, output_dir):
+        print("Preparing imager kernel...")
+        imagerKernel = ImagerKernel(self.source)
+        if ContainerEngine.hasImage(imagerKernel.name) is False:
+            imagerKernel.create()
+        vmlinuz, modules, version = imagerKernel.extract(output_dir)
+        os.environ["SUPERMIN_KERNEL"] = vmlinuz
+        os.environ["SUPERMIN_KERNEL_VERSION"] = version
+        os.environ["SUPERMIN_MODULES"] = modules
+        if self.verbose:
+            print("  package: %s" % imagerKernel.package)
+            print("  version: %s" % version)
+
+    def create(self):
+        ph = self.source.partitionHandler
+        disk = self.source._image
+        output_dir = tempfile.mkdtemp(dir=os.getcwd())
         try:
-            output_dir = tempfile.mkdtemp(dir=os.getcwd())
+            self._prepare_kernel(output_dir)
 
-            print("Processing extended attributes...")
-            xattrs = self._process_xattrs(output_dir)
+            print("Starting imager appliance...")
+            g = guestfs.GuestFS(python_return_dict=True)
+            g.add_drive_opts(disk, format="raw", readonly=False)
+            g.launch()
 
-            print("Creating imager script...")
-            script_file = self.build_script(script, targetdir)
-
-            print("Preparing imager...")
-            if ContainerEngine.hasImage(self.image_id()) is False:
-                self.build_imager()
-            imager_kernel = self.get_kernel(output_dir)
-            imager_initrd = self.get_initrd(output_dir)
-            imager_rootfs = self.get_imager(output_dir)
-
-            user_groups = [grp.getgrgid(g).gr_name for g in os.getgroups()]
-            if 'kvm' in user_groups:
-                imager_proc = subprocess
-                imager_args = []
-                imager_vm = "kvm"
-            else:
-                self.qemu.create()
-                imager_proc = ContainerEngine
-                imager_args = ['run']
-                imager_vm = "qemu-system-x86_64"
-                imager_dirs = []
-                for f in [script_file, imager_kernel, imager_initrd, imager_rootfs, xattrs]:
-                    d = os.path.dirname(f)
-                    if d not in imager_dirs:
-                        imager_dirs.append(d)
-                for d in imager_dirs:
-                    imager_args.append('-v')
-                    imager_args.append('{}:{}:z'.format(d, d))
-                imager_args.append(self.qemu.image_id())
-
-            print("Starting imager using %s..." % imager_vm)
-
-            # boot the live image with SELinux disabled
-            kernel_cmd = 'boot=live console=ttyS0 selinux=0'
-
-            # quiet the kernel and systemd
-            kernel_cmd += ' quiet loglevel=0 systemd.mask=getty.target systemd.show_status=false'
-
-            # let imager script know where to find the image tarball and imager script
-            kernel_cmd += ' tarball={} script={} xattrs={}'.format(self.source._tarball, script_file, xattrs)
-
-            imager_cmd = [
-                imager_vm,
-                "-m", "512",
-                "-kernel", imager_kernel,
-                "-initrd", imager_initrd,
-                "-append", kernel_cmd,
-                "-drive", "file={},index=0,media=disk,format=raw".format(imager_rootfs),
-                "-drive", "file={},index=1,media=disk,format=raw".format(self.source._image),
-                "-fsdev", "local,id=hostfs_dev,path=/,security_model=none",
-                "-device", "virtio-9p-pci,fsdev=hostfs_dev,mount_tag=hostfs_mount",
-                "-display", "none",
-                "-serial", "stdio",
-                "-no-reboot"
-            ]
-
-            if self.verbose is True:
-                if imager_args:
-                    print(' '.join(imager_args))
-                print(' '.join(imager_cmd))
-            proc = imager_proc.Popen([*imager_args, *imager_cmd], stdout=subprocess.PIPE)
-
-            # Extract exit code from logs
-            result = None
-            lines = []
-            for log in proc.stdout:
-                log = log.decode()
-                print_log = self.verbose
-                if log.startswith('# '):
-                    log = log[2:]
-                    print_log = True
-                if print_log is True:
-                    print(log.strip())
+            print("Partitioning (%s)..." % ph._table)
+            g.part_init(DEVICE, ph._table)
+            part_devices = {}
+            index = 1
+            for part in ph.partitions:
+                dev = self._partition_device(g, ph._table, part, index)
+                part_devices[id(part)] = dev
+                if part["_lvm"]:
+                    g.pvcreate(dev)
                 else:
-                    lines.append(log)
-                if log.startswith("IMAGER EXIT ="):
-                    result = int(log.split("=")[1].strip())
-                    if result != 0:
-                        if self.verbose is False:
-                            for line in lines[-20:]:
-                                sys.stderr.write(line)
-                    break
-            rc = proc.wait()
-            if result is None:
-                result = rc
-            if result != 0:
-                raise subprocess.CalledProcessError(result, imager_cmd)
-            else:
-                print("Done.")
+                    self._mkfs(g, part, dev)
+                index = index + 1
+
+            for group in ph.groups:
+                pvs = [part_devices[id(p)] for p in ph.partitions
+                       if p["_lvm"] and p.get("group") == group]
+                if not pvs:
+                    raise RuntimeError("no physical volume found for LVM group '%s'!" % group)
+                g.vgcreate(group, pvs)
+
+            vol_devices = {}
+            for vol in ph.volumes:
+                g.lvcreate(vol["label"], vol["group"], ph._to_rounded_mib(vol["size"]))
+                voldev = "/dev/%s/%s" % (vol["group"], vol["label"])
+                self._mkfs(g, vol, voldev)
+                vol_devices[id(vol)] = voldev
+
+            print("Mounting target file-systems...")
+            mount_order = sorted(ph.mounts, key=lambda m: m["_depth"])
+            mount_devices = {}
+            for m in mount_order:
+                dev = part_devices.get(id(m)) or vol_devices.get(id(m))
+                mount_devices[id(m)] = dev
+                if m["_prefix"] != "/":
+                    g.mkmountpoint(m["_prefix"].rstrip("/"))
+                g.mount(dev, m["_prefix"])
+
+            print("Extracting root file-system...")
+            g.tar_in(self.source._tarball, "/")
+
+            print("Restoring extended attributes...")
+            self._restore_xattrs(g)
+
+            print("Writing fstab...")
+            fstab = []
+            for m in mount_order:
+                dev = mount_devices[id(m)]
+                what = dev if m["_lvm"] else "UUID=%s" % g.vfs_uuid(dev)
+                options = "defaults"
+                passno = 2
+                if m["_prefix"] == "/":
+                    if m["type"] != "btrfs":
+                        options = "errors=remount-ro"
+                    passno = 1
+                elif m["type"] == "vfat":
+                    options = "umask=0077"
+                fstab.append("%s %s %s %s 0 %d" % (what, m["_prefix"], m["type"], options, passno))
+            g.write("/etc/fstab", ("\n".join(fstab) + "\n").encode())
+
+            print("Copying bootlets...")
+            for bootlet in ph.bootlets:
+                data = g.read_file(bootlet["file"])
+                g.pwrite_device(DEVICE, data, bootlet["_seek"] * 1024)
+
+            se_contexts = "/etc/selinux/default/contexts/files/file_contexts"
+            if g.is_file(se_contexts) and g.is_file("/usr/sbin/setfiles"):
+                print("Setting file contexts for SELinux...")
+                if g.is_file("/etc/default/grub"):
+                    grub_cfg = g.read_file("/etc/default/grub").decode()
+                    grub_cfg = re.sub(r'^(GRUB_CMDLINE_LINUX=.*)"$', r'\1 security=selinux"',
+                                       grub_cfg, flags=re.MULTILINE)
+                    g.write("/etc/default/grub", grub_cfg.encode())
+                g.sh("setfiles -m %s /" % se_contexts)
+
+            if g.is_file("/usr/sbin/grub-install"):
+                print("Installing grub...")
+                options = ""
+                if g.is_dir("/usr/lib/grub/x86_64-efi"):
+                    options = "--target x86_64-efi --efi-directory=/efi"
+                g.sh("grub-install %s %s" % (options, DEVICE))
+                if g.is_dir("/usr/lib/grub/x86_64-efi"):
+                    g.mkdir_p("/efi/EFI/boot")
+                    g.mv("/efi/EFI/debian/grubx64.efi", "/efi/EFI/boot/bootx64.efi")
+                g.sh("update-grub")
+
+            print("Disk usage:")
+            for m in mount_order:
+                st = g.statvfs(m["_prefix"])
+                total = st["blocks"] * st["frsize"]
+                used = total - st["bfree"] * st["frsize"]
+                print("%s\t%s used / %s total" % (
+                    m["_prefix"], ph._to_human_size(used), ph._to_human_size(total)))
+
+            g.umount_all()
+            g.shutdown()
+            g.close()
+            print("Done.")
         finally:
-            if self.keep is False:
-                for f in [imager_kernel, imager_initrd, imager_rootfs, script_file, xattrs]:
-                    if f is not None:
-                        os.unlink(f)
-                if output_dir:
-                    os.rmdir(output_dir)
-
-IMAGER_SYSTEMD_UNIT = """[Unit]
-Description=Seine Imager Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/sbin/imager
-
-[Install]
-WantedBy=multi-user.target"""
-
-IMAGER_SYSTEMD_SCRIPT = """#!/bin/bash
-set -o pipefail
-mount -t 9p -o trans=virtio hostfs_mount /mnt -oversion=9p2000.L,posixacl,cache=loose,msize=16777216
-mount -t tmpfs none /tmp
-result=1
-for x in $(cat /proc/cmdline); do
-    if [[ ${x} =~ ^script=.* ]] || [[ ${x} =~ ^tarball=.* ]] || [[ ${x} =~ ^xattrs=.* ]]; then
-        eval ${x}
-    fi
-done
-if [ -n "${script}" ] && [ -e /mnt${script} ]; then
-    export script tarball xattrs
-    bash /mnt${script} 2>&1 | tee /dev/ttyS0
-    result=${?}
-fi
-echo "IMAGER EXIT = ${result}" > /dev/ttyS0
-/sbin/reboot
-"""
-
-IMAGER_POST_INSTALL_SCRIPT = """
-if test -e /mnt${xattrs}; then
-    echo '# Restoring extended attributes'
-    setfattr --restore=/mnt${xattrs}
-    rm -f rootfs.xattr
-fi
-mount -o bind /dev  dev
-mount -o bind /proc proc
-mount -o bind /run  run
-mount -o bind /sys  sys
-"""
-
-IMAGER_GRUB_INSTALL_SCRIPT = """
-if [ -e usr/sbin/grub-install ]; then
-    options=""
-    echo "# Installing grub"
-    if [ -d usr/lib/grub/x86_64-efi ]; then
-        options="--target x86_64-efi --efi-directory=/efi"
-    fi
-    chroot . /usr/sbin/grub-install ${options} /dev/sdb
-    if [ -d usr/lib/grub/x86_64-efi ]; then
-        mkdir -p efi/EFI/boot
-        mv efi/EFI/debian/grubx64.efi efi/EFI/boot/bootx64.efi
-    fi
-    chroot . /usr/sbin/update-grub
-fi
-"""
-
-IMAGER_SELINUX_SETUP_SCRIPT = r"""
-SE_FILE_CONTEXTS=/etc/selinux/default/contexts/files/file_contexts
-if [ -e .${SE_FILE_CONTEXTS} ]; then
-    echo "# Setting file contexts for SELinux"
-    if [ -f etc/default/grub ]; then
-        sed -e 's/\(^GRUB_CMDLINE_LINUX=.*\)"$/\1 security=selinux"/' \
-            -i etc/default/grub
-    fi
-    setfiles -m -r ${PWD} ${PWD}${SE_FILE_CONTEXTS} ${PWD}
-fi
-"""
+            if self.keep:
+                print("keeping '%s' (imager kernel files) as requested" % output_dir)
+            else:
+                shutil.rmtree(output_dir, ignore_errors=True)
