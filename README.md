@@ -19,15 +19,30 @@ there since it may require disks/partitions to be created.
 
 ### Installation
 
-The easiest way to get started is to install the various packages to your Ubuntu
-18.04 host using the following ppa:
+The easiest way to get started is to install the following packages, all
+available from your distribution:
 
 ```
-sudo add-apt-repository ppa:chombourger/ppa
-sudo apt-get update
-sudo apt-get install -y podman python3-seine qemu-kvm
-sudo usermod --add-subuids 10000-75535 --add-subgids 10000-75535 $USER
+sudo apt-get install -y podman qemu-kvm crun python3-venv
 sudo adduser $USER kvm
+```
+
+If `/tmp` is its own mount (e.g. tmpfs with `nosuid,nodev`), rootless podman's
+default `runc` fails bind-mounting it with `operation not permitted`; `crun`
+does not have this issue. Make it the default runtime:
+
+```
+mkdir -p ~/.config/containers
+printf '[engine]\nruntime = "crun"\n' > ~/.config/containers/containers.conf
+```
+
+Python dependencies (just `pyyaml`) can be installed in a virtual environment
+instead of system-wide:
+
+```
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 You may then either use seine in place (use the `seine.py` script from the top
@@ -41,7 +56,7 @@ a sample image without installing `seine` on your system, use:
 To produce a binary package, use the `dpkg-buildpackage` command as follows:
 
 ```
-sudo mk-buyild-deps -i -r
+sudo mk-build-deps -i -r
 dpkg-buildpackage -b -uc
 ```
 
@@ -171,9 +186,10 @@ to their `priority`. A different starting point may be specified with the
 ```
 playbook:
     - baseline: debian:bookworm
-    - tasks:
-      apt:
-          ...
+      tasks:
+          - name: ...
+            apt:
+                ...
 ```
 
 As `seine` uses `podman` behind the scene to create the root file-system in
@@ -212,8 +228,8 @@ The following attributes are supported:
 | align     | no       | Expected alignment in Kilobytes (KiB)    |
 | file      | yes      | Path to the binary to be copied (*)      |
 
-(*) The specified will be copied from the image created by the `playbook`, a
-    package shoud therefore install it.
+(*) The specified file will be copied from the image created by the `playbook`,
+    a package should therefore install it.
 
 #### partitions
 
