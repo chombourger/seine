@@ -7,8 +7,8 @@ import subprocess
 from seine.utils import ContainerEngine
 
 class SBOM:
-    def __init__(self, options={}):
-        self.options = options
+    def __init__(self, options=None):
+        self.options = options if options is not None else {}
 
     def _output_file(self, image):
         output = None

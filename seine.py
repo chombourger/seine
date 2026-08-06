@@ -1,13 +1,13 @@
 #!/usr/bin/python3
 # seine - Slim Embedded Images Now Easy
-# SPDX-License-Identifier Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 
 import os
 import sys
 
 path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.dirname(path_to_self)
-sys.path.append(path_to_sources)
+sys.path.insert(0, path_to_sources)
 
 from seine.cli import main
 

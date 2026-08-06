@@ -5,9 +5,11 @@ import os
 import subprocess
 
 class ContainerEngine:
+    @staticmethod
     def hasImage(name):
         result = ContainerEngine.run(["image", "exists", name], check=False)
         return result.returncode == 0
+    @staticmethod
     def _podman_cmd(cmd):
         home = os.path.expanduser("~")
         root = os.path.join(home, ".local", "share", "seine")
@@ -15,12 +17,15 @@ class ContainerEngine:
         cmd.insert(0, "--root")
         cmd.insert(0, "podman")
         return cmd
+    @staticmethod
     def run(cmd, check=False):
         cmd = ContainerEngine._podman_cmd(cmd)
         return subprocess.run(cmd, check=check)
+    @staticmethod
     def check_output(cmd):
         cmd = ContainerEngine._podman_cmd(cmd)
         return subprocess.check_output(cmd)
+    @staticmethod
     def Popen(cmd, stdin=None, stdout=None, stderr=None):
         cmd = ContainerEngine._podman_cmd(cmd)
         return subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr)

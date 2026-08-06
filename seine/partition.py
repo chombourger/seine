@@ -28,8 +28,8 @@ class PartitionHandler:
     def _from_human_size(self, size_string):
         try:
             size_string = size_string.lower().replace(',', '')
-            size = re.search('^(\d+)[a-z]i?b$', size_string).groups()[0]
-            suffix = re.search('^\d+([kmgtp])i?b$', size_string).groups()[0]
+            size = re.search(r'^(\d+)[a-z]i?b$', size_string).groups()[0]
+            suffix = re.search(r'^\d+([kmgtp])i?b$', size_string).groups()[0]
         except AttributeError:
             raise ValueError("%s is not a valid size!" % size_string)
         shft = suffix.translate(str.maketrans('kmgtp', '12345')) + '0'
@@ -91,7 +91,7 @@ class PartitionHandler:
         if "extra" in part:
             part["_size"] = self._from_human_size(part["extra"])
         else:
-            part["_size"] = PartitionHandler.DEFAULT_EXTRA_MB
+            part["_size"] = self._from_human_size("%dMiB" % PartitionHandler.DEFAULT_EXTRA_MB)
 
         if "where" in part:
             prefix = os.path.normpath(part["where"])

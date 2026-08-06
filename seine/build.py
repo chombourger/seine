@@ -189,7 +189,7 @@ class BuildCmd(Cmd):
         try:
             opts, args = getopt.getopt(argv, BuildCmd.SHORT_OPTIONS, BuildCmd.LONG_OPTIONS)
         except getopt.GetoptError as err:
-            sys.stderr.write(err)
+            sys.stderr.write(str(err))
             sys.stderr.write(USAGE)
             sys.exit(1)
         for o, a in opts:

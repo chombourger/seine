@@ -147,7 +147,7 @@ class Imager(Bootstrap):
                     [ "tar", "-Oxf", "-", name ],
                     stdin=podman_proc.stdout,
                     stdout=output_file)
-                out, err = tar_proc.communicate(input=300)
+                out, err = tar_proc.communicate(timeout=300)
                 podman_proc.wait()
                 return output
             except:
@@ -285,6 +285,7 @@ class Imager(Bootstrap):
 
             # Extract exit code from logs
             result = None
+            lines = []
             for log in proc.stdout:
                 log = log.decode()
                 print_log = self.verbose
@@ -293,12 +294,13 @@ class Imager(Bootstrap):
                     print_log = True
                 if print_log is True:
                     print(log.strip())
+                else:
+                    lines.append(log)
                 if log.startswith("IMAGER EXIT ="):
                     result = int(log.split("=")[1].strip())
                     if result != 0:
                         if self.verbose is False:
-                            lines = stdout[-20:]
-                            for line in lines:
+                            for line in lines[-20:]:
                                 sys.stderr.write(line)
                     break
             rc = proc.wait()
@@ -374,12 +376,12 @@ if [ -e usr/sbin/grub-install ]; then
 fi
 """
 
-IMAGER_SELINUX_SETUP_SCRIPT = """
+IMAGER_SELINUX_SETUP_SCRIPT = r"""
 SE_FILE_CONTEXTS=/etc/selinux/default/contexts/files/file_contexts
 if [ -e .${SE_FILE_CONTEXTS} ]; then
     echo "# Setting file contexts for SELinux"
     if [ -f etc/default/grub ]; then
-        sed -e 's/\(^GRUB_CMDLINE_LINUX=.*\)"$/\\1 security=selinux"/' \
+        sed -e 's/\(^GRUB_CMDLINE_LINUX=.*\)"$/\1 security=selinux"/' \
             -i etc/default/grub
     fi
     setfiles -m -r ${PWD} ${PWD}${SE_FILE_CONTEXTS} ${PWD}

@@ -14,9 +14,9 @@ from seine.sbom      import SBOM
 from seine.utils     import ContainerEngine
 
 class Image:
-    def __init__(self, partitionHandler, options={}):
+    def __init__(self, partitionHandler, options=None):
         self.partitionHandler = partitionHandler
-        self.options = options
+        self.options = options if options is not None else {}
         self.hostBootstrap = None
         self._cid = None
         self._iid = None
@@ -125,7 +125,7 @@ class Image:
                 cmd.append("-q")
             ContainerEngine.run(cmd, check=True)
             iidfile.seek(0)
-            self._iid = iidfile.readline()
+            self._iid = iidfile.readline().strip()
         except subprocess.CalledProcessError:
             raise
         finally:
