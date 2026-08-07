@@ -277,7 +277,11 @@ class Imager:
                 dev = part_devices.get(id(m)) or vol_devices.get(id(m))
                 mount_devices[id(m)] = dev
                 if m["_prefix"] != "/":
-                    g.mkmountpoint(m["_prefix"].rstrip("/"))
+                    prefix = m["_prefix"].rstrip("/")
+                    parent = os.path.dirname(prefix)
+                    if parent and parent != "/":
+                        g.mkdir_p(parent)
+                    g.mkmountpoint(prefix)
                 g.mount(dev, m["_prefix"])
 
             print("Extracting root file-system...")
