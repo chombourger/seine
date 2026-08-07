@@ -1,0 +1,42 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+playbook:
+    - name: boot packages
+      priority: 800
+      tasks:
+          - name: enable the non-free-firmware component (raspi-firmware lives there)
+            copy:
+                dest: /etc/apt/sources.list.d/non-free-firmware.list
+                content: "deb http://deb.debian.org/debian trixie non-free-firmware\n"
+          - name: install the Raspberry Pi boot firmware and kernel
+            apt:
+                update_cache: true
+                state: present
+                name:
+                    - raspi-firmware
+                    - linux-image-arm64
+          - name: boot the upstream (mainline) kernel directly, no u-boot needed
+            lineinfile:
+                path: /boot/firmware/config.txt
+                line: upstream_kernel=1
+                create: true
+
+image:
+    filename: rpi4-image.img
+    table: gpt
+    partitions:
+        - label: firmware
+          type: vfat
+          where: /boot/firmware
+          flags:
+              - boot
+              - primary
+        - label: rootfs
+          type: ext4
+          where: /
+          # kernel + modules push this well past the default 16MiB slack;
+          # ext4's own journal/inode-table overhead needs headroom too
+          extra: 128MiB
+          flags:
+              - primary
