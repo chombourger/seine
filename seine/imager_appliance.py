@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import subprocess
-import tarfile
 import tempfile
 
 from seine.bootstrap import Bootstrap
@@ -32,9 +30,6 @@ class ImagerAppliance(Bootstrap):
     def defaultName(self):
         return os.path.join("imager-appliance", self.distro["source"], self.distro["release"], self.distro["architecture"])
 
-    def container_id(self):
-        return self.name.replace("/", "-")
-
     def create(self):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write(IMAGER_APPLIANCE_SCRIPT.format(self.imagerKernel.name))
@@ -54,17 +49,7 @@ class ImagerAppliance(Bootstrap):
     # create() into output_dir/appliance. Returns that directory, suitable
     # for LIBGUESTFS_PATH.
     def extract(self, output_dir):
-        cid = self.container_id()
-        try:
-            ContainerEngine.run(["container", "create", "--name", cid, self.name], check=True)
-            podman_proc = ContainerEngine.Popen(["container", "export", cid], stdout=subprocess.PIPE)
-            with tarfile.open(fileobj=podman_proc.stdout, mode="r|") as tar:
-                for member in tar:
-                    if member.name.startswith("appliance/"):
-                        tar.extract(member, path=output_dir)
-            podman_proc.wait()
-        finally:
-            ContainerEngine.run(["container", "rm", cid], check=False)
+        ContainerEngine.extractImage(self.name, output_dir, lambda n: n.startswith("appliance/"))
 
         appliance_dir = os.path.join(output_dir, "appliance")
         missing = [f for f in APPLIANCE_FILES if not os.path.isfile(os.path.join(appliance_dir, f))]

@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import subprocess
-import tarfile
 import tempfile
 
 from seine.bootstrap import Bootstrap
@@ -36,9 +34,6 @@ class ImagerKernel(Bootstrap):
     def defaultName(self):
         return os.path.join("imager-kernel", self.distro["source"], self.distro["release"], self.distro["architecture"])
 
-    def container_id(self):
-        return self.name.replace("/", "-")
-
     def create(self):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write(IMAGER_KERNEL_SCRIPT.format(self.targetBootstrap.name, self.package))
@@ -58,22 +53,13 @@ class ImagerKernel(Bootstrap):
     # image built by create() into output_dir. Returns (vmlinuz, moduledir,
     # version).
     def extract(self, output_dir):
-        cid = self.container_id()
-        try:
-            ContainerEngine.run(["container", "create", "--name", cid, self.name], check=True)
-            podman_proc = ContainerEngine.Popen(["container", "export", cid], stdout=subprocess.PIPE)
-            with tarfile.open(fileobj=podman_proc.stdout, mode="r|") as tar:
-                for member in tar:
-                    # /lib is usually a symlink to /usr/lib (usrmerge), so the
-                    # tar member itself is named usr/lib/modules/... -- handle
-                    # both in case a non-usrmerge distro is ever targeted.
-                    if member.name.startswith("boot/vmlinuz-") or \
-                       member.name.startswith("lib/modules/") or \
-                       member.name.startswith("usr/lib/modules/"):
-                        tar.extract(member, path=output_dir)
-            podman_proc.wait()
-        finally:
-            ContainerEngine.run(["container", "rm", cid], check=False)
+        # /lib is usually a symlink to /usr/lib (usrmerge), so the tar member
+        # itself is named usr/lib/modules/... -- handle both in case a
+        # non-usrmerge distro is ever targeted.
+        ContainerEngine.extractImage(self.name, output_dir, lambda n:
+            n.startswith("boot/vmlinuz-") or
+            n.startswith("lib/modules/") or
+            n.startswith("usr/lib/modules/"))
 
         candidates = [os.path.join(output_dir, "usr", "lib", "modules"),
                       os.path.join(output_dir, "lib", "modules")]
