@@ -211,7 +211,8 @@ FROM {0} AS playbooks
 COPY --from={1} /opt/seine /opt/seine
 RUN apt-get update -qqy && \
     apt-get install -qqy /opt/seine/seine-ansible*.deb && \
-    ansible-playbook {2} /host-tmp/{3} && \
+    INITRD=No ansible-playbook {2} /host-tmp/{3} && \
+    if ls /boot/vmlinuz-* >/dev/null 2>&1; then update-initramfs -c -k all; fi && \
     mkdir -p /var/lib/seine && \
     getfattr -Rh -m '' -d -e hex $(find / -mindepth 1 -maxdepth 1 -type d \
         -not -name host-tmp \

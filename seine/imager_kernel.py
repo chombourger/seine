@@ -76,10 +76,15 @@ class ImagerKernel(Bootstrap):
         vmlinuz = os.path.join(output_dir, "boot", "vmlinuz-%s" % version)
         return vmlinuz, os.path.join(modules_root, version), version
 
+# The kernel's postinst hook (initramfs-tools) runs 'update-initramfs -c'
+# unconditionally on a fresh kernel install -- the only thing it checks is
+# the INITRD=No environment variable, not update-initramfs.conf. We never
+# read the initrd this package produces (only vmlinuz + modules), so skip
+# generating it at all.
 IMAGER_KERNEL_SCRIPT = """
 FROM {0}
 RUN apt-get update -qqy && \\
-    apt-get install -qqy --no-install-recommends {1} && \\
+    INITRD=No apt-get install -qqy --no-install-recommends {1} && \\
     apt-get clean
 CMD /bin/true
 """
