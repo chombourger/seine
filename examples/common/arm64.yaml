@@ -1,0 +1,9 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+distribution:
+    architecture: arm64
+
+imager:
+    kernel: linux-image-arm64
+    hypervisor: /usr/bin/qemu-system-aarch64

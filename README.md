@@ -10,10 +10,11 @@ configure them.
 The tool was designed to not require elevated privileges after its installation
 (sudo isn't used or required, no bind mounts, etc.). The root file-system is
 first assembled in a container (seine uses podman because it is daemon-less and
-very similar to docker). It is then exported as a tarball and a Linux system
-started under qemu/kvm to create the disk images including partitions and
-logical volumes that were specified. Installation of the boot-loader also happens
-there since it may require disks/partitions to be created.
+very similar to docker). It is then exported as a tarball and a throwaway
+[libguestfs](https://libguestfs.org/) appliance (running under qemu/kvm) is
+used to create the disk images including partitions and logical volumes that
+were specified. Installation of the boot-loader also happens there since it
+may require disks/partitions to be created.
 
 ## Getting started
 
@@ -25,6 +26,14 @@ available from your distribution:
 ```
 sudo apt-get install -y podman qemu-kvm crun python3-venv python3-guestfs
 sudo adduser $USER kvm
+```
+
+Building for an `architecture` other than the host's (e.g. `arm64` images on
+an `amd64` host) additionally needs that architecture's qemu system emulator,
+e.g.:
+
+```
+sudo apt-get install -y qemu-system-arm
 ```
 
 If `/tmp` is its own mount (e.g. tmpfs with `nosuid,nodev`), rootless podman's
@@ -148,6 +157,18 @@ as usual, while the imager itself is happy with a stock Debian kernel.
  * kernel: Debian kernel package to boot the imager appliance with (e.g.
    `linux-image-amd64`). Defaults to a sensible package for the target
    `architecture` if not specified.
+ * hypervisor: path to the qemu system emulator to boot the appliance
+   with (e.g. `/usr/bin/qemu-system-aarch64`). Only needed when
+   cross-building for an `architecture` other than the host's; defaults
+   to a sensible binary for the target `architecture` if not specified.
+
+When cross-building (target `architecture` different from the host's),
+seine automatically builds a libguestfs "fixed appliance" for the target
+architecture instead of relying on the host's own kernel (which supermin,
+libguestfs's appliance builder, cannot cross-build). This runs the target
+architecture under emulation to build the appliance once, then caches it --
+the first cross-arch build is noticeably slower than same-arch builds, but
+that cost isn't paid again on subsequent builds.
 
 #### playbook
 

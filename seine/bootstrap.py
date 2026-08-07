@@ -116,7 +116,7 @@ TARGET_BOOTSTRAP_SCRIPT = """
 FROM {0} AS bootstrap
 RUN                                                                  \
     export container=lxc;                                            \
-    qemu-debootstrap --variant=minbase --arch {1} {2} rootfs {3} &&  \
+    qemu-debootstrap --variant=minbase --include=zstd --arch {1} {2} rootfs {3} &&  \
     cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                     \
     echo 'APT::Install-Recommends "false";'                          \
         >rootfs/etc/apt/apt.conf.d/00-no-recommends &&               \
