@@ -114,6 +114,66 @@ class Package:
     def patch_files(self):
         return [os.path.normpath(os.path.join(self.dirname, p)) for p in self.patches]
 
+# Where the source of a package is fetched and, later, built. Everything
+# happens inside the builder container: the tools involved (apt-get source,
+# dget, git) are installed there rather than on the machine seine runs on,
+# and the working directory is a host-side directory bind-mounted into it so
+# the fetched source outlives the container that fetched it.
+WORKDIR = "/src"
+
+class Builder:
+    def __init__(self, distro, options, builderImage):
+        self.builderImage = builderImage
+        self.distro = distro
+        self.options = options
+
+    def fetch(self, package, workdir):
+        volumes = [(workdir, WORKDIR)]
+        self.builderImage.exec(
+            self._fetch_args(package), volumes=volumes, workdir=WORKDIR)
+        return self._source_dir(package, workdir)
+
+    def _fetch_args(self, package):
+        if package.scheme == "apt":
+            source = package.name
+            if package.version is not None:
+                source = "%s=%s" % (package.name, package.version)
+            return ["apt-get", "source", source]
+
+        if package.scheme == "https":
+            # -u: the .dsc of a rebuilt or third-party package is not
+            # necessarily signed by a key we have, and refusing to fetch it
+            # on those grounds would make the scheme useless. What it is
+            # allowed to do to the image is the specification's call.
+            return ["dget", "-u", package.source]
+
+        # git:// says nothing about how to reach the remote; bitbake spells
+        # that ';protocol=', and https is the sane default.
+        protocol = package.parameters.get("protocol", "https")
+        location = package.source.split("://", 1)[1].split(";")[0]
+        url = "%s://%s" % (protocol, location)
+
+        args = ["git", "clone"]
+        if "branch" in package.parameters:
+            args += ["--branch", package.parameters["branch"]]
+        args += [url, package.name]
+        # The revision is what the specification pinned; the branch only
+        # says where to look for it.
+        return ["sh", "-c", "%s && cd %s && git checkout --detach %s" % (
+            " ".join(args), package.name, package.parameters["rev"])]
+
+    # Every scheme leaves exactly one unpacked source tree behind, next to
+    # the .dsc/tarballs it came from, but only apt-get source and dget name
+    # it after the upstream version rather than the package.
+    def _source_dir(self, package, workdir):
+        directories = [d for d in sorted(os.listdir(workdir))
+                       if os.path.isdir(os.path.join(workdir, d))]
+        if len(directories) != 1:
+            raise ValueError(
+                "fetching '%s' produced %d source directories, expected one: %s"
+                % (package.source, len(directories), ", ".join(directories)))
+        return os.path.join(workdir, directories[0])
+
 # Validates the 'packages' section and returns it as Package objects,
 # ordered the way they will be built. Packages that build-depend on one
 # another are ordered by 'priority', as playbooks are.

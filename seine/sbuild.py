@@ -41,6 +41,15 @@ SBUILD_RUN_OPTIONS = [
     "--security-opt", "unmask=ALL",
 ]
 
+# Keyring the distribution's own sources are signed by. Our deb-src line
+# has to name it: when it points at the same mirror and suite the base
+# image already has, apt sees two entries for one source disagreeing about
+# who signs it and refuses to read any of them.
+KEYRINGS = {
+    "debian": "/usr/share/keyrings/debian-archive-keyring.gpg",
+    "ubuntu": "/usr/share/keyrings/ubuntu-archive-keyring.gpg",
+}
+
 class BuilderImage(Bootstrap):
     def create(self, hostBootstrap):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
@@ -49,7 +58,8 @@ class BuilderImage(Bootstrap):
             self.distro["source"],
             self.distro["release"],
             self.distro["uri"],
-            "apt-{}".format(self.distro["release"])))
+            "apt-{}".format(self.distro["release"]),
+            KEYRINGS.get(self.distro["source"], KEYRINGS["debian"])))
         dockerfile.close()
 
         try:
@@ -70,15 +80,19 @@ class BuilderImage(Bootstrap):
 
     # Runs 'args' inside a throwaway builder container with the namespace
     # privileges sbuild needs. 'volumes' is a list of (host, container)
-    # pairs. The chroot cache is always mounted where sbuild looks for its
-    # tarballs by default, so neither mmdebstrap nor sbuild needs telling
-    # where the chroot lives.
-    def exec(self, args, architecture, volumes=None, check=True):
+    # pairs. Passing an 'architecture' mounts that architecture's chroot
+    # cache where sbuild looks for its tarballs by default, so neither
+    # mmdebstrap nor sbuild needs telling where the chroot lives; steps
+    # that do not enter a chroot at all leave it out.
+    def exec(self, args, architecture=None, volumes=None, workdir=None, check=True):
         cmd = ["container", "run", "--rm"] + SBUILD_RUN_OPTIONS
-        cmd += ["-v", "%s:/root/.cache/sbuild" %
-                ContainerEngine.chroots(self.distro["release"], architecture)]
+        if architecture is not None:
+            cmd += ["-v", "%s:/root/.cache/sbuild" %
+                    ContainerEngine.chroots(self.distro["release"], architecture)]
         for host, container in volumes or []:
             cmd += ["-v", "%s:%s" % (host, container)]
+        if workdir is not None:
+            cmd += ["-w", workdir]
         cmd += [self.name] + args
         return ContainerEngine.run(cmd, check=check)
 
@@ -143,11 +157,12 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
      apt-get install -qqy --no-install-recommends \
          sbuild mmdebstrap uidmap zstd            \
          dpkg-dev devscripts quilt git            \
-         iproute2
+         ca-certificates curl iproute2
 # iproute2 is not optional: sbuild brings the loopback interface up with
 # 'ip link set lo up' when it takes the network away from the build, and
 # dies rather than warns when 'ip' is missing.
-RUN echo 'deb-src {3} {2} main' > /etc/apt/sources.list.d/seine-source.list && \
+RUN echo 'deb-src [signed-by={5}] {3} {2} main' \
+        > /etc/apt/sources.list.d/seine-source.list && \
     apt-get update -qqy
 RUN echo 'root:1:65535' > /etc/subuid && \
     echo 'root:1:65535' > /etc/subgid
