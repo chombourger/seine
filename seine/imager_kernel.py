@@ -4,6 +4,7 @@
 import os
 import tempfile
 
+from seine           import packages
 from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
 
@@ -36,11 +37,14 @@ class ImagerKernel(Bootstrap):
 
     def create(self):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write(IMAGER_KERNEL_SCRIPT.format(self.targetBootstrap.name, self.package))
+        dockerfile.write(IMAGER_KERNEL_SCRIPT.format(
+            self.targetBootstrap.name, self.package,
+            packages.apt_setup_layer(self.distro)))
         dockerfile.close()
         try:
             ContainerEngine.run([
-                "build", "--rm",
+                "build", "--rm"] +
+                packages.build_volumes(self.distro) + [
                 "-t", self.name,
                 "-f", dockerfile.name], check=True)
         finally:
@@ -83,7 +87,7 @@ class ImagerKernel(Bootstrap):
 # generating it at all.
 IMAGER_KERNEL_SCRIPT = """
 FROM {0}
-RUN apt-get update -qqy && \\
+{2}RUN apt-get update -qqy && \\
     INITRD=No apt-get install -qqy --no-install-recommends {1} && \\
     apt-get clean
 CMD /bin/true

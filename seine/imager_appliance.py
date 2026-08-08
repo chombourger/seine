@@ -4,6 +4,7 @@
 import os
 import tempfile
 
+from seine           import packages
 from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
 
@@ -61,8 +62,12 @@ class ImagerAppliance(Bootstrap):
             self.imagerKernel.name, info["host_cpu"], info["triplet"]))
         dockerfile.close()
         try:
+            # This image is built FROM the imager kernel's, which may carry
+            # a sources.list pointing at the rebuilt packages: without the
+            # same mount its own 'apt-get update' would fail.
             ContainerEngine.run([
-                "build", "--rm",
+                "build", "--rm"] +
+                packages.build_volumes(self.distro) + [
                 "-t", self.name,
                 "-f", dockerfile.name], check=True)
         finally:

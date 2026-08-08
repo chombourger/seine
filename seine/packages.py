@@ -345,6 +345,17 @@ class Builder:
             args += ["--arch=%s" % self.distro["architecture"]]
         if len(package.profiles) > 0:
             args += ["--profiles=%s" % ",".join(package.profiles)]
+
+        # A package may build-depend on one rebuilt before it. sbuild's
+        # chroot cannot see the repository -- it pivots into an unpacked
+        # root of its own -- so the .debs are handed to it individually
+        # instead, and it makes an archive of them inside the chroot. That
+        # archive is file:// based like ours, so the same pin applies.
+        for deb in sorted(os.listdir(self.repository())):
+            if deb.endswith(".deb"):
+                args += ["--extra-package=%s/%s" % (REPOSITORY, deb)]
+        args += ["--chroot-setup-commands=%s" % apt_preferences_command()]
+
         args += ["%s/%s" % (WORKDIR, dsc[0])]
 
         # sbuild bind-mounts a handful of device nodes into its chroot and
@@ -361,8 +372,17 @@ class Builder:
             volumes=volumes, workdir=REPOSITORY, environment=environment)
 
     def repository(self):
-        return ContainerEngine.packages(
-            self.distro["release"], self.distro["architecture"])
+        return repository(self.distro)
+
+    # Turns the directory the builds dropped their .debs in into something
+    # apt can read: a flat repository with a Packages index. Both the plain
+    # and the gzipped index are written, as apt looks for several
+    # compressions and complains about each one it does not find.
+    def index(self):
+        self.builderImage.exec(
+            ["sh", "-c", "dpkg-scanpackages --multiversion . > Packages && "
+                         "gzip -9 -c Packages > Packages.gz"],
+            volumes=[(self.repository(), REPOSITORY)], workdir=REPOSITORY)
 
     # Rebuilds every package the specification asked for, in the order they
     # were sorted into. Each gets a working directory of its own, thrown
@@ -395,11 +415,67 @@ class Builder:
                 else:
                     shutil.rmtree(workdir, ignore_errors=True)
 
+        self.index()
+
 # Identity the patch commits are made under. Fixed, like their date: a
 # commit made by whoever happens to be running the build is a commit whose
 # hash cannot be reproduced by anyone else.
 GIT_NAME  = "seine"
 GIT_EMAIL = "seine@localhost"
+
+# Making the rebuilt packages visible to apt, wherever apt is being run:
+# the chroot packages are built in, the container the root file-system is
+# composed in, and the imager's own containers.
+#
+# Both files are written the same way everywhere so there is one answer to
+# "why is this version being installed": the repository is trusted, since
+# it is unsigned and was produced locally moments ago, and it is pinned
+# above everything else. The pin matches on an empty origin, which is what
+# a file:// repository has, and 1001 rather than 1000 is what allows a
+# rebuilt package to replace a *higher* version from the archive -- the
+# usual case, since a distribution that has since rebuilt the package will
+# have a binNMU of it.
+SOURCES_LIST = "/etc/apt/sources.list.d/seine-packages.list"
+PREFERENCES  = "/etc/apt/preferences.d/seine-packages"
+
+def apt_preferences_command():
+    return " && ".join([
+        "echo 'Package: *' > %s" % PREFERENCES,
+        "echo 'Pin: origin \"\"' >> %s" % PREFERENCES,
+        "echo 'Pin-Priority: 1001' >> %s" % PREFERENCES,
+    ])
+
+def apt_configuration(mountpoint):
+    return "echo 'deb [trusted=yes] file:%s ./' > %s && %s" % (
+        mountpoint, SOURCES_LIST, apt_preferences_command())
+
+def apt_deconfiguration():
+    return "rm -f %s %s" % (SOURCES_LIST, PREFERENCES)
+
+# The same configuration for images built from a Dockerfile: a layer that
+# sets apt up, and the bind mount that makes the repository readable while
+# that image is being built. Both are empty when the specification rebuilt
+# nothing, so an image that has no use for the repository is not given a
+# sources.list pointing at a directory that will not be there.
+def apt_setup_layer(distro):
+    if has_packages(distro) == False:
+        return ""
+    return "RUN %s\n" % apt_configuration(REPOSITORY)
+
+def build_volumes(distro):
+    if has_packages(distro) == False:
+        return []
+    return ["-v", "%s:%s:ro" % (repository(distro), REPOSITORY)]
+
+# Where the rebuilt packages of a specification are kept, and whether there
+# is anything there to install: a specification with no 'packages' section
+# leaves the directory without an index, and pointing apt at it would only
+# earn a failed 'apt-get update'.
+def repository(distro):
+    return ContainerEngine.packages(distro["release"], distro["architecture"])
+
+def has_packages(distro):
+    return os.path.isfile(os.path.join(repository(distro), "Packages"))
 
 # Validates the 'packages' section and returns it as Package objects,
 # ordered the way they will be built. Packages that build-depend on one

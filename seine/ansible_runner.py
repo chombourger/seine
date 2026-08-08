@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import yaml
 
+from seine                      import packages
 from seine.transport_bootstrap import TransportBootstrap
 from seine.utils                import ContainerEngine
 
@@ -37,11 +38,18 @@ class AnsibleContainerRunner:
         if ContainerEngine.hasImage(transport.name) is False:
             transport.create()
 
-        self.cid = ContainerEngine.check_output(
-            ["container", "run", "-d",
-             "-v", "%s:/var/cache/apt/archives" % ContainerEngine.downloads(self.distro["release"]),
-             transport.name, "sleep", "infinity"]).strip()
+        cmd = ["container", "run", "-d",
+               "-v", "%s:/var/cache/apt/archives" % ContainerEngine.downloads(self.distro["release"])]
+        # Packages rebuilt from the spec's 'packages' section, if any, so the
+        # playbooks can install them with a plain apt task.
+        if packages.has_packages(self.distro):
+            cmd += ["-v", "%s:%s" % (packages.repository(self.distro), packages.REPOSITORY)]
+        cmd += [transport.name, "sleep", "infinity"]
+
+        self.cid = ContainerEngine.check_output(cmd).strip()
         try:
+            if packages.has_packages(self.distro):
+                self._exec(["sh", "-c", packages.apt_configuration(packages.REPOSITORY)])
             # Keep apt's package index in sync with what TransportBootstrap
             # baked in, same as the Dockerfile-based path used to do before
             # running its own playbooks.
@@ -95,4 +103,8 @@ class AnsibleContainerRunner:
         # autoremove sweeps them away here without this runner needing to
         # know what TransportBootstrap actually installed.
         self._exec(["apt-get", "autoremove", "-qqy"])
+        # The rebuilt packages are installed by now; leaving apt pointed at
+        # a repository that only exists on the machine that built the image
+        # would break the first 'apt-get update' run on the target.
+        self._exec(["sh", "-c", packages.apt_deconfiguration()])
         self._exec(["sh", "-c", "rm -rf /var/lib/apt/lists/*"])
