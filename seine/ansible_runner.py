@@ -38,7 +38,9 @@ class AnsibleContainerRunner:
             transport.create()
 
         self.cid = ContainerEngine.check_output(
-            ["container", "run", "-d", transport.name, "sleep", "infinity"]).strip()
+            ["container", "run", "-d",
+             "-v", "%s:/var/cache/apt/archives" % ContainerEngine.downloads(self.distro["release"]),
+             transport.name, "sleep", "infinity"]).strip()
         try:
             # Keep apt's package index in sync with what TransportBootstrap
             # baked in, same as the Dockerfile-based path used to do before
@@ -93,5 +95,4 @@ class AnsibleContainerRunner:
         # autoremove sweeps them away here without this runner needing to
         # know what TransportBootstrap actually installed.
         self._exec(["apt-get", "autoremove", "-qqy"])
-        self._exec(["apt-get", "clean", "-qqy"])
         self._exec(["sh", "-c", "rm -rf /var/lib/apt/lists/*"])

@@ -39,6 +39,16 @@ class ContainerEngine:
     def root():
         home = os.path.expanduser("~")
         return os.path.join(home, ".local", "share", "seine")
+    # Host-side apt archives cache, bind-mounted into ansible's target
+    # container so package downloads survive across builds/releases.
+    # Scoped per release: package filenames already carry the architecture,
+    # so arm64/amd64 fetches for the same release safely share one dir.
+    @staticmethod
+    def downloads(release):
+        home = os.path.expanduser("~")
+        path = os.path.join(home, ".cache", "seine", "downloads", release)
+        os.makedirs(path, exist_ok=True)
+        return path
     @staticmethod
     def _podman_cmd(cmd):
         cmd.insert(0, ContainerEngine.root())
