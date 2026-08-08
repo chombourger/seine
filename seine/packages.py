@@ -2,7 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import shlex
 import shutil
+import tempfile
+
+from seine.sbuild import BuilderImage
+from seine.sbuild import SbuildChroot
+from seine.utils  import ContainerEngine
+from seine.utils  import HOST_ARCH
 
 # A source package to rebuild, as described by one entry of the spec's
 # 'packages' section. Where the source comes from is given as a URI:
@@ -121,6 +128,7 @@ class Package:
 # and the working directory is a host-side directory bind-mounted into it so
 # the fetched source outlives the container that fetched it.
 WORKDIR = "/src"
+REPOSITORY = "/packages"
 
 class Builder:
     def __init__(self, distro, options, builderImage):
@@ -276,6 +284,116 @@ class Builder:
             ["dpkg-parsechangelog", "-STimestamp"],
             volumes=[(os.path.dirname(sourcedir), WORKDIR)], workdir=source)
         return int(timestamp.strip())
+
+    # Cross-compiling is the default whenever the target is not the machine
+    # seine runs on: emulating a foreign architecture for a whole package
+    # build is slow enough to be worth avoiding, even though not every
+    # package can be cross-built. 'cross: false' asks for the slow, always
+    # working way instead.
+    def cross(self, package):
+        if package.cross is not None:
+            return package.cross
+        return self.distro["architecture"] != HOST_ARCH
+
+    # The architecture of the chroot the build runs in: the host's when
+    # cross-compiling, since that is what runs the compiler, and the
+    # target's when emulating it.
+    def chroot_architecture(self, package):
+        if self.cross(package):
+            return HOST_ARCH
+        return self.distro["architecture"]
+
+    # Rebuilds one package and leaves the .debs, .changes and .buildinfo it
+    # produced in the host-side repository. The source tree is turned back
+    # into a source package first: patches added to a quilt series are
+    # applied by dpkg-source on the way, and sbuild wants a .dsc anyway.
+    def build(self, package, sourcedir, epoch):
+        workdir = os.path.dirname(sourcedir)
+        volumes = [(workdir, WORKDIR), (self.repository(), REPOSITORY)]
+
+        self.builderImage.exec(
+            ["dpkg-source", "--build", os.path.basename(sourcedir)],
+            volumes=[(workdir, WORKDIR)], workdir=WORKDIR)
+
+        dsc = [f for f in sorted(os.listdir(workdir)) if f.endswith(".dsc")]
+        if len(dsc) != 1:
+            raise ValueError(
+                "building the source package for '%s' produced %d .dsc files, "
+                "expected one" % (package.source, len(dsc)))
+
+        # SOURCE_DATE_EPOCH and DEB_BUILD_OPTIONS are passed in the
+        # environment: sbuild forwards both into the build, as they are on
+        # dpkg's list of variables allowed to reach it. dpkg-buildpackage
+        # would work the date out from the changelog by itself, but not
+        # when the specification pinned a different one.
+        environment = {"SOURCE_DATE_EPOCH": epoch}
+        if len(package.options) > 0:
+            environment["DEB_BUILD_OPTIONS"] = " ".join(package.options)
+
+        args = [
+            "sbuild", "--chroot-mode=unshare",
+            "--dist=%s" % self.distro["release"],
+            # None of these are seine's business: they check the packaging
+            # rather than build it, and would need tooling in the chroot
+            # we have no reason to install.
+            "--no-run-lintian", "--no-run-piuparts", "--no-run-autopkgtest",
+        ]
+        if self.cross(package):
+            args += ["--build=%s" % HOST_ARCH,
+                     "--host=%s" % self.distro["architecture"]]
+        else:
+            args += ["--arch=%s" % self.distro["architecture"]]
+        if len(package.profiles) > 0:
+            args += ["--profiles=%s" % ",".join(package.profiles)]
+        args += ["%s/%s" % (WORKDIR, dsc[0])]
+
+        # sbuild bind-mounts a handful of device nodes into its chroot and
+        # complains about each one the container does not have. podman only
+        # creates /dev/console when it allocates a terminal, which we have
+        # no other use for, so point it at /dev/null: nothing in a build
+        # has any business writing to a console, and the alternative is a
+        # warning per invocation drowning the output that matters.
+        script = "ln -sf /dev/null /dev/console; exec %s" % shlex.join(args)
+
+        # Run from the repository so sbuild drops what it built there.
+        self.builderImage.exec(
+            ["sh", "-c", script], architecture=self.chroot_architecture(package),
+            volumes=volumes, workdir=REPOSITORY, environment=environment)
+
+    def repository(self):
+        return ContainerEngine.packages(
+            self.distro["release"], self.distro["architecture"])
+
+    # Rebuilds every package the specification asked for, in the order they
+    # were sorted into. Each gets a working directory of its own, thrown
+    # away afterwards unless --keep was asked for: what is worth keeping
+    # (the .debs) is in the repository by then.
+    def run(self, packages, hostBootstrap):
+        if len(packages) == 0:
+            return
+
+        if ContainerEngine.hasImage(self.builderImage.name) == False:
+            self.builderImage.create(hostBootstrap)
+
+        for package in packages:
+            chroot = SbuildChroot(self.distro, self.options,
+                                  self.chroot_architecture(package))
+            chroot.create(self.builderImage)
+
+            workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
+                                       prefix="source-")
+            try:
+                print("rebuilding '%s'" % package.source)
+                sourcedir = self.fetch(package, workdir)
+                epoch = self.source_date_epoch(package, sourcedir)
+                self.patch(package, sourcedir, epoch)
+                self.build(package, sourcedir, epoch)
+            finally:
+                if self.options.get("keep"):
+                    print("keeping '%s' (source of '%s') as requested"
+                          % (workdir, package.name))
+                else:
+                    shutil.rmtree(workdir, ignore_errors=True)
 
 # Identity the patch commits are made under. Fixed, like their date: a
 # commit made by whoever happens to be running the build is a commit whose

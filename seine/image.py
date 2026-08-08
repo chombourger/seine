@@ -12,6 +12,7 @@ from seine.bootstrap      import HostBootstrap
 from seine.bootstrap      import TargetBootstrap
 from seine.imager         import Imager
 from seine.sbom           import SBOM
+from seine.sbuild         import BuilderImage
 from seine.utils          import ContainerEngine
 
 class Image:
@@ -158,6 +159,12 @@ class Image:
                 self.hostBootstrap.create()
             if ContainerEngine.hasImage(self.targetBootstrap.name) == False:
                 self.targetBootstrap.create(self.hostBootstrap)
+
+            # Rebuild the packages the specification asked for, before the
+            # playbooks that may want to install them run.
+            builder = packages.Builder(
+                distro, self.options, BuilderImage(distro, self.options))
+            builder.run(self.packages, self.hostBootstrap)
 
             # Assemble the root file-system
             self.rootfs()
