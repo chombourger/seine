@@ -233,10 +233,13 @@ playbook:
               vtype: select
 ```
 
-A minimal image that includes `apt` is used as starting point; `seine` uses
-`apt` to install `ansible` and then executes the various playbooks according
-to their `priority`. A different starting point may be specified with the
-`baseline` keyword in the `playbook`:
+A minimal image that includes `apt` is used as starting point; `seine` adds
+just `python3`/`python3-apt`/`attr` to it (removed again once the build is
+done) and runs `ansible-playbook` from the host, connecting into the
+container instead of installing `ansible` there -- this keeps ansible
+itself off the (possibly foreign-architecture, emulated) target entirely.
+Playbooks execute according to their `priority`. A different starting point
+may be specified with the `baseline` keyword in the `playbook`:
 
 ```
 playbook:
