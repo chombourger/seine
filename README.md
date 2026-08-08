@@ -103,6 +103,25 @@ avocado run tests/spec/*.py
 `setuptools<81` is for avocado itself, which still imports `pkg_resources`;
 without it every test errors out before it runs.
 
+### Using an HTTP proxy
+
+If `http_proxy` / `https_proxy` (and optionally `no_proxy`) are set in your
+environment, they are used for every network access a build makes: base image
+pulls, the host bootstrap's `apt-get`, `mmdebstrap` fetching the target
+root file-system, and the packages your playbooks install. Nothing needs to be
+set in the specification file, and the proxy is not baked into the image that
+is produced.
+
+```
+export http_proxy=http://proxy.example.com:3128
+export https_proxy=$http_proxy
+seine build spec.yaml
+```
+
+Note that the proxy must be reachable from inside a container: a proxy on
+`localhost` will not work, use the address the host is known by on the network
+(or the container gateway) instead.
+
 ### Specification files
 
 A system specification may be written in one or several YAML files comprised
