@@ -152,6 +152,77 @@ class PackageReferencingItself(avocado.Test):
         except ValueError:
             pass
 
+class KernelExtension(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              config:
+                                  - configs/embedded.fragment
+                              flavour: arm64
+        """)
+        package = build.image.packages[0]
+        self.assertEqual(package.kernel, True)
+        self.assertEqual(package.kernel_flavour, "arm64")
+        self.assertEqual(package.kernel_config, ["configs/embedded.fragment"])
+
+class PackageWithoutExtensions(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://busybox
+        """)
+        package = build.image.packages[0]
+        self.assertEqual(package.kernel, False)
+        self.assertEqual(package.kernel_config, [])
+        self.assertEqual(package.kernel_flavour, None)
+
+class UnknownExtension(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      extends:
+                          bootloader:
+                              config: [x]
+            """)
+            self.fail("parsing succeeded for an unknown 'extends' build type!")
+        except ValueError:
+            pass
+
+class UnknownKernelSetting(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  - typo.fragment
+            """)
+            self.fail("parsing succeeded for an unknown 'kernel' setting!")
+        except ValueError:
+            pass
+
+class KernelFlavourNotAString(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour:
+                                  - arm64
+            """)
+            self.fail("parsing succeeded for a non-string 'flavour'!")
+        except ValueError:
+            pass
+
 class LocalRevision(avocado.Test):
     def test(self):
         build = parse("""

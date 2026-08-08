@@ -31,6 +31,15 @@ from seine.utils  import HOST_ARCH
 # taken from somewhere else is a second source this does not model yet.
 SCHEMES = ["apt", "git", "https"]
 
+# Build types 'extends' knows about, and the settings each of them takes.
+# A kernel is configured rather than patched: Debian builds its kernels
+# from a stack of kconfig files under debian/, so a fragment appended to
+# the right one is both easier to write and less likely to conflict with
+# the next point release than a patch would be.
+EXTENSIONS = {
+    "kernel": ["config", "flavour"],
+}
+
 # Appended to the version of every package rebuilt here, so it sorts above
 # the distribution's own and says plainly that it is not it. 'revision'
 # overrides it per package.
@@ -49,6 +58,7 @@ class Package:
         self.priority = spec.get("priority", 500)
 
         self._parse_source(spec["source"])
+        self.extends = self._parse_extends(spec)
         self.after = self._parse_list(spec, "after")
         self.before = self._parse_list(spec, "before")
         self.cross = self._parse_bool(spec, "cross")
@@ -111,6 +121,38 @@ class Package:
                     "same specification always rebuilds the same source")
             self.name = os.path.basename(location).removesuffix(".git")
 
+    # Settings that only mean something for a particular kind of package go
+    # under 'extends', named after the kind. A kernel's configuration and
+    # flavour would be silently meaningless on a busybox entry; naming the
+    # kind makes both the intent and the mistake visible.
+    def _parse_extends(self, spec):
+        extends = spec.get("extends", {})
+        if type(extends) != type({}):
+            raise self._error("'extends' shall be a dictionary of build types")
+
+        for kind in extends:
+            if kind not in EXTENSIONS:
+                raise self._error(
+                    "'extends' has no '%s' build type, expected one of %s"
+                    % (kind, ", ".join(sorted(EXTENSIONS))))
+            settings = extends[kind]
+            if type(settings) != type({}):
+                raise self._error("'extends: %s' shall be a dictionary" % kind)
+            for setting in settings:
+                if setting not in EXTENSIONS[kind]:
+                    raise self._error(
+                        "'extends: %s' has no '%s' setting, expected one of %s"
+                        % (kind, setting, ", ".join(sorted(EXTENSIONS[kind]))))
+
+        kernel = extends.get("kernel", {})
+        self.kernel_config = self._parse_list(kernel, "config")
+        self.kernel_flavour = kernel.get("flavour")
+        if self.kernel_flavour is not None and \
+           type(self.kernel_flavour) != type(""):
+            raise self._error("'extends: kernel: flavour' shall be a string")
+        self.kernel = "kernel" in extends
+        return extends
+
     def _parse_bool(self, spec, key):
         value = spec.get(key)
         if value is not None and type(value) != type(True):
@@ -138,7 +180,13 @@ class Package:
     # not necessarily the one being built: specifications are assembled from
     # several files through 'requires'.
     def patch_files(self):
-        return [os.path.normpath(os.path.join(self.dirname, p)) for p in self.patches]
+        return self._files(self.patches)
+
+    def kernel_config_files(self):
+        return self._files(self.kernel_config)
+
+    def _files(self, names):
+        return [os.path.normpath(os.path.join(self.dirname, n)) for n in names]
 
 # Where the source of a package is fetched and, later, built. Everything
 # happens inside the builder container: the tools involved (apt-get source,
