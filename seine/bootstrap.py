@@ -66,7 +66,8 @@ class TargetBootstrap(Bootstrap):
             self.hostBootstrap.name,
             self.distro["architecture"],
             self.distro["release"],
-            self.distro["uri"]
+            self.distro["uri"],
+            "mmdebstrap-{}".format(self.distro["release"])
         ))
         dockerfile.close()
 
@@ -105,10 +106,14 @@ RUN rm -rf /usr/share/doc                        \
 
 TARGET_BOOTSTRAP_SCRIPT = """
 FROM {0} AS bootstrap
-RUN                                                                  \
+RUN --mount=type=cache,target=/var/cache/mmdebstrap,id={4},sharing=locked \
     export container=lxc;                                            \
     mkdir -p rootfs &&                                               \
     mmdebstrap --mode=root --variant=minbase --include=zstd          \
+        --skip=essential/unlink                                      \
+        --setup-hook='mkdir -p "$1"/var/cache/apt/archives/'         \
+        --setup-hook='sync-in /var/cache/mmdebstrap /var/cache/apt/archives/' \
+        --customize-hook='sync-out /var/cache/apt/archives /var/cache/mmdebstrap' \
         --arch {1} {2} rootfs {3} &&                                 \
     cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                     \
     echo 'APT::Install-Recommends "false";'                          \
