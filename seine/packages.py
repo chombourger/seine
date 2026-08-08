@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import shutil
 
 # A source package to rebuild, as described by one entry of the spec's
 # 'packages' section. Where the source comes from is given as a URI:
@@ -164,15 +165,123 @@ class Builder:
 
     # Every scheme leaves exactly one unpacked source tree behind, next to
     # the .dsc/tarballs it came from, but only apt-get source and dget name
-    # it after the upstream version rather than the package.
+    # it after the upstream version rather than the package. Directories we
+    # put there ourselves are hidden, and skipped here.
     def _source_dir(self, package, workdir):
         directories = [d for d in sorted(os.listdir(workdir))
-                       if os.path.isdir(os.path.join(workdir, d))]
+                       if os.path.isdir(os.path.join(workdir, d))
+                       and not d.startswith(".")]
         if len(directories) != 1:
             raise ValueError(
                 "fetching '%s' produced %d source directories, expected one: %s"
                 % (package.source, len(directories), ", ".join(directories)))
         return os.path.join(workdir, directories[0])
+
+    # Where the patches listed by the specification are staged for the
+    # container to reach them. Hidden so _source_dir() does not mistake it
+    # for the unpacked source.
+    PATCHES = ".patches"
+
+    # Applies the specification's patches to a fetched source tree.
+    #
+    # A "3.0 (quilt)" package keeps its changes to upstream files in
+    # debian/patches and refuses to build with any others in the tree, so
+    # patches are added to its series rather than applied to it -- whether
+    # or not the source came from git.
+    #
+    # Anything else (native formats, and the packaging trees kept in git
+    # that tend to use them) takes the patch directly. In a git tree that
+    # means a commit, since leaving the tree dirty is how gbp-style
+    # packaging loses track of what was built; the commit is dated at
+    # SOURCE_DATE_EPOCH, with a fixed identity, or the commit hash -- and
+    # anything embedding it -- would differ on every rebuild.
+    def patch(self, package, sourcedir, epoch):
+        if len(package.patches) == 0:
+            return
+
+        workdir = os.path.dirname(sourcedir)
+        staged = os.path.join(workdir, Builder.PATCHES)
+        os.makedirs(staged, exist_ok=True)
+        for patch in package.patch_files():
+            if not os.path.isfile(patch):
+                raise ValueError("package '%s': no such patch file: %s"
+                                 % (package.source, patch))
+            shutil.copy(patch, staged)
+
+        if self._is_quilt(sourcedir):
+            self._patch_series(package, sourcedir)
+        else:
+            self._patch_tree(package, sourcedir, epoch)
+
+    def _is_quilt(self, sourcedir):
+        path = os.path.join(sourcedir, "debian", "source", "format")
+        if not os.path.isfile(path):
+            # No debian/source/format means the ancient "1.0" format, which
+            # has no series to add to.
+            return False
+        with open(path, "r") as f:
+            return "quilt" in f.read()
+
+    def _patch_series(self, package, sourcedir):
+        patches = os.path.join(sourcedir, "debian", "patches")
+        os.makedirs(patches, exist_ok=True)
+        for patch in package.patch_files():
+            shutil.copy(patch, patches)
+
+        series = os.path.join(patches, "series")
+        # A series file not ending in a newline would otherwise have its
+        # last patch glued to the first one added here.
+        existing = ""
+        if os.path.isfile(series):
+            with open(series, "r") as f:
+                existing = f.read()
+        if len(existing) > 0 and not existing.endswith("\n"):
+            existing += "\n"
+        with open(series, "w") as f:
+            f.write(existing)
+            for patch in package.patch_files():
+                f.write("%s\n" % os.path.basename(patch))
+
+    def _patch_tree(self, package, sourcedir, epoch):
+        git = os.path.isdir(os.path.join(sourcedir, ".git"))
+        source = os.path.join(WORKDIR, os.path.basename(sourcedir))
+        for patch in package.patch_files():
+            staged = "%s/%s/%s" % (WORKDIR, Builder.PATCHES, os.path.basename(patch))
+            if git:
+                script = ("git apply %s && "
+                          "git -c user.name='%s' -c user.email='%s' "
+                          "commit --quiet --all --message '%s'"
+                          % (staged, GIT_NAME, GIT_EMAIL, os.path.basename(patch)))
+                environment = {
+                    "GIT_AUTHOR_DATE":    "@%d +0000" % epoch,
+                    "GIT_COMMITTER_DATE": "@%d +0000" % epoch,
+                }
+            else:
+                script = "patch -p1 < %s" % staged
+                environment = None
+            self.builderImage.exec(
+                ["sh", "-c", script],
+                volumes=[(os.path.dirname(sourcedir), WORKDIR)],
+                workdir=source, environment=environment)
+
+    # The date the build is pinned to. dpkg-buildpackage derives one from
+    # the changelog on its own, and sbuild passes it down, but a patch
+    # committed to a git tree is dated before any of that runs -- so the
+    # same value has to be known here.
+    def source_date_epoch(self, package, sourcedir):
+        if package.source_date_epoch is not None:
+            return package.source_date_epoch
+        source = os.path.join(WORKDIR, os.path.basename(sourcedir))
+        timestamp = self.builderImage.output(
+            ["dpkg-parsechangelog", "-STimestamp"],
+            volumes=[(os.path.dirname(sourcedir), WORKDIR)], workdir=source)
+        return int(timestamp.strip())
+
+# Identity the patch commits are made under. Fixed, like their date: a
+# commit made by whoever happens to be running the build is a commit whose
+# hash cannot be reproduced by anyone else.
+GIT_NAME  = "seine"
+GIT_EMAIL = "seine@localhost"
 
 # Validates the 'packages' section and returns it as Package objects,
 # ordered the way they will be built. Packages that build-depend on one

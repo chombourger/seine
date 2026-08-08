@@ -84,17 +84,32 @@ class BuilderImage(Bootstrap):
     # cache where sbuild looks for its tarballs by default, so neither
     # mmdebstrap nor sbuild needs telling where the chroot lives; steps
     # that do not enter a chroot at all leave it out.
-    def exec(self, args, architecture=None, volumes=None, workdir=None, check=True):
+    def exec(self, args, architecture=None, volumes=None, workdir=None,
+             environment=None, check=True):
+        return ContainerEngine.run(
+            self._args(args, architecture, volumes, workdir, environment),
+            check=check)
+
+    # As exec(), but returns what the command printed. Used for the small
+    # questions only the source tree can answer, such as the date its
+    # changelog was last touched.
+    def output(self, args, architecture=None, volumes=None, workdir=None,
+               environment=None):
+        return ContainerEngine.check_output(
+            self._args(args, architecture, volumes, workdir, environment))
+
+    def _args(self, args, architecture, volumes, workdir, environment):
         cmd = ["container", "run", "--rm"] + SBUILD_RUN_OPTIONS
         if architecture is not None:
             cmd += ["-v", "%s:/root/.cache/sbuild" %
                     ContainerEngine.chroots(self.distro["release"], architecture)]
         for host, container in volumes or []:
             cmd += ["-v", "%s:%s" % (host, container)]
+        for name, value in (environment or {}).items():
+            cmd += ["-e", "%s=%s" % (name, value)]
         if workdir is not None:
             cmd += ["-w", workdir]
-        cmd += [self.name] + args
-        return ContainerEngine.run(cmd, check=check)
+        return cmd + [self.name] + args
 
 # The buildd chroot sbuild unpacks for every package it builds. Producing
 # one is a full mmdebstrap run, so it is kept in the host-side cache and
