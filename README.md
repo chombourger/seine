@@ -211,6 +211,8 @@ The following attributes are supported:
 | Attribute         | Required | Description                                     |
 | ----------------- |:--------:| ----------------------------------------------- |
 | source            | yes      | URI the source is fetched from (see below)      |
+| after             | no       | Packages that shall be built before this one    |
+| before            | no       | Packages that shall be built after this one     |
 | cross             | no       | Cross-compile (see below), defaults to the sane |
 | options           | no       | Debian build options (`DEB_BUILD_OPTIONS`)      |
 | patches           | no       | Patches to apply, relative to this YAML file    |
@@ -231,8 +233,25 @@ Three kinds of `source` are understood:
    `protocol` says otherwise, and `rev` is required: a branch name moves,
    and a build that cannot be repeated is not worth calling reproducible.
 
-Packages are built in the order given by their `priority`, so a package may
-be built before another that build-depends on it.
+A package that build-depends on another has to be built after it. Say so
+with `after` (or `before`), naming the other package:
+
+```
+packages:
+    - source: apt://application
+      after:
+          - library
+    - source: apt://library
+```
+
+Naming a package that the specification does not build is an error rather
+than a constraint that is quietly ignored, as is a set of packages whose
+constraints depend on each other in a circle.
+
+`priority` decides the order of packages that no `before`/`after` separates,
+between `0` and `999`, `500` by default, lowest first -- as it does for
+playbooks. Constraints win over it, so adding one does not rearrange the
+packages around it.
 
 Patches are applied in the way the source format calls for. A
 `3.0 (quilt)` package gets them added to `debian/patches/series`; anything
@@ -249,7 +268,11 @@ only on the machine that builds the image and is removed from the image's
 apt configuration before it is packed up.
 
 A package is not rebuilt again while nothing about it has changed --
-including the content of its patches. Use `--rebuild` to force one.
+including the content of its patches, and including anything it is built
+after. A package compiled and linked against another has to be rebuilt
+when that one changes, so a change to a library rebuilds what `before`
+and `after` say is built on it, however many packages down the chain.
+Use `--rebuild` to force one.
 
 ##### Cross-compiling
 

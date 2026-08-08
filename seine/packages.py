@@ -39,6 +39,8 @@ class Package:
         self.priority = spec.get("priority", 500)
 
         self._parse_source(spec["source"])
+        self.after = self._parse_list(spec, "after")
+        self.before = self._parse_list(spec, "before")
         self.cross = self._parse_bool(spec, "cross")
         self.options = self._parse_list(spec, "options")
         self.patches = self._parse_list(spec, "patches")
@@ -410,7 +412,7 @@ class Builder:
     # built against the buildd chroot, which is made from the distribution
     # settings above; the image the root file-system is later composed from
     # has no bearing on what comes out of the build.
-    def stamp(self, package):
+    def stamp(self, package, depends=None):
         digest = hashlib.sha256()
         for part in [package.source,
                      ",".join(package.profiles),
@@ -427,8 +429,30 @@ class Builder:
             with open(patch, "rb") as f:
                 digest.update(f.read())
 
+        # A package built against another has to be rebuilt when that one
+        # changes: it was compiled and linked against what that package
+        # installed. Folding the dependency's digest in says so, and says
+        # it transitively, since that digest already carries its own.
+        for name in sorted(depends or {}):
+            digest.update(depends[name].encode())
+
         return os.path.join(self._stamps(),
                             "%s_%s" % (package.name, digest.hexdigest()[:16]))
+
+    # The stamp of every package, in build order, each one folding in the
+    # stamps of what it is built after. The order is what makes that
+    # possible: a package's dependencies have been given their digest
+    # before it is given its own.
+    def stamps(self, packages):
+        digests = {}
+        stamps = []
+        for package in packages:
+            depends = {d.name: digests[d.name] for d in getattr(package, "depends", [])
+                       if d.name in digests}
+            stamp = self.stamp(package, depends)
+            digests[package.name] = os.path.basename(stamp).rsplit("_", 1)[1]
+            stamps.append((package, stamp))
+        return stamps
 
     def _stamps(self):
         stamps = os.path.join(self.repository(), STAMPS)
@@ -502,7 +526,7 @@ class Builder:
         # would leave a stamp claiming a kernel that was never built --
         # which the next build would then skip.
         rebuild = self.options.get("rebuild", False)
-        pending = [(p, self.stamp(p)) for p in packages]
+        pending = [(p, s) for p, s in self.stamps(packages)]
         pending = [(p, s) for p, s in pending
                    if rebuild or os.path.isfile(s) == False]
         if len(pending) == 0:
@@ -613,12 +637,75 @@ def has_packages(distro):
     return os.path.isfile(os.path.join(repository(distro), "Packages"))
 
 # Validates the 'packages' section and returns it as Package objects,
-# ordered the way they will be built. Packages that build-depend on one
-# another are ordered by 'priority', as playbooks are.
+# ordered the way they will be built.
 def parse(spec):
     packages = spec.get("packages", [])
     if type(packages) != type([]):
         raise ValueError("'packages' shall be a list of source packages!")
 
     parsed = [Package(p, i + 1) for i, p in enumerate(packages)]
-    return sorted(parsed, key=lambda p: p.priority)
+    return order(parsed)
+
+# Orders packages for building. 'priority' says which package would rather
+# go first; 'before' and 'after' say which package *has* to, naming the
+# other by its package name.
+#
+# Both are needed. A package that build-depends on another has to be built
+# after it, and saying so by giving the two of them priorities that happen
+# to sort the right way records the conclusion rather than the reason --
+# and quietly stops holding when a third package is added between them.
+#
+# Constraints win over priority, and priority decides between packages that
+# no constraint separates, so adding a 'before' to a specification does not
+# rearrange the packages around it.
+def order(packages):
+    indexes = {}
+    for index, package in enumerate(packages):
+        indexes.setdefault(package.name, []).append(index)
+
+    # predecessors[i]: packages that have to be built before packages[i].
+    predecessors = [set() for _ in packages]
+    for index, package in enumerate(packages):
+        for name in package.after:
+            for other in _referenced(indexes, package, name, "after"):
+                predecessors[index].add(other)
+        for name in package.before:
+            for other in _referenced(indexes, package, name, "before"):
+                predecessors[other].add(index)
+
+    # Kahn's algorithm, taking the highest priority package among those
+    # whose predecessors have all been built, and the earliest listed among
+    # those of equal priority. Quadratic in the number of packages, which
+    # is a handful.
+    ordered = []
+    remaining = set(range(len(packages)))
+    while len(remaining) > 0:
+        ready = [i for i in remaining if len(predecessors[i] & remaining) == 0]
+        if len(ready) == 0:
+            raise ValueError(
+                "'before'/'after' settings of these packages depend on each "
+                "other in a circle: %s" % ", ".join(
+                    sorted(packages[i].name for i in remaining)))
+        ready.sort(key=lambda i: (packages[i].priority, i))
+        chosen = ready[0]
+        # What this package is built after, kept so a rebuild of any of
+        # them can be seen in its digest. Reachability is not needed here:
+        # the digest of a direct dependency already carries its own.
+        packages[chosen].depends = [packages[i] for i in predecessors[chosen]]
+        ordered.append(packages[chosen])
+        remaining.discard(chosen)
+    return ordered
+
+# A 'before'/'after' entry names another package of the same specification.
+# Naming something that is not there is a typo worth reporting rather than
+# a constraint worth ignoring -- the build would otherwise go ahead in an
+# order the specification did not ask for.
+def _referenced(indexes, package, name, setting):
+    if name not in indexes:
+        raise package._error(
+            "'%s' names '%s', which no package in this specification builds"
+            % (setting, name))
+    others = [i for i in indexes[name] if i != package.index - 1]
+    if len(others) == 0:
+        raise package._error("'%s' names the package itself" % setting)
+    return others

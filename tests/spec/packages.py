@@ -58,6 +58,130 @@ class PackagesOrderedByPriority(avocado.Test):
         names = [p.name for p in build.image.packages]
         self.assertEqual(names, ["first", "default", "last"])
 
+class PackagesOrderedByAfter(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://application
+                      after:
+                          - library
+                    - source: apt://library
+        """)
+        self.assertEqual([p.name for p in build.image.packages],
+                         ["library", "application"])
+
+class PackagesOrderedByBefore(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://application
+                    - source: apt://library
+                      before:
+                          - application
+        """)
+        self.assertEqual([p.name for p in build.image.packages],
+                         ["library", "application"])
+
+class ConstraintsWinOverPriority(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://application
+                      priority: 100
+                      after:
+                          - library
+                    - source: apt://library
+                      priority: 900
+        """)
+        self.assertEqual([p.name for p in build.image.packages],
+                         ["library", "application"])
+
+class PriorityDecidesWhenUnconstrained(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://application
+                      after:
+                          - library
+                    - source: apt://library
+                    - source: apt://early
+                      priority: 100
+        """)
+        self.assertEqual([p.name for p in build.image.packages],
+                         ["early", "library", "application"])
+
+class UnknownPackageReferenced(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://application
+                      after:
+                          - nosuchpackage
+            """)
+            self.fail("parsing succeeded for an 'after' naming an unknown package!")
+        except ValueError:
+            pass
+
+class CircularConstraints(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://one
+                      after:
+                          - two
+                    - source: apt://two
+                      after:
+                          - one
+            """)
+            self.fail("parsing succeeded for packages depending on each other!")
+        except ValueError:
+            pass
+
+class PackageReferencingItself(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://one
+                      after:
+                          - one
+            """)
+            self.fail("parsing succeeded for a package listed after itself!")
+        except ValueError:
+            pass
+
+class DependentsRebuildWithTheirDependencies(avocado.Test):
+    def stamps(self, profiles):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        build = parse("""
+                packages:
+                    - source: apt://base
+                      profiles: [%s]
+                    - source: apt://middle
+                      after:
+                          - base
+                    - source: apt://top
+                      after:
+                          - middle
+        """ % profiles)
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        return {p.name: os.path.basename(s).rsplit("_", 1)[1]
+                for p, s in builder.stamps(build.image.packages)}
+
+    def test(self):
+        before = self.stamps("")
+        after = self.stamps("nocheck")
+        # The change is to 'base' alone; what is built against it, directly
+        # or through another package, has to be rebuilt too.
+        for name in ["base", "middle", "top"]:
+            self.assertNotEqual(before[name], after[name],
+                                "%s was not invalidated" % name)
+
 class PackagesNotAList(avocado.Test):
     def test(self):
         try:
