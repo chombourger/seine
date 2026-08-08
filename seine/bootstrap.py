@@ -39,7 +39,8 @@ class HostBootstrap(Bootstrap):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write(HOST_BOOTSTRAP_SCRIPT.format(
             self.distro["source"],
-            self.distro["release"]))
+            self.distro["release"],
+            "apt-{}".format(self.distro["release"])))
         dockerfile.close()
 
         try:
@@ -90,12 +91,12 @@ class TargetBootstrap(Bootstrap):
 
 HOST_BOOTSTRAP_SCRIPT = """
 FROM {0}:{1} AS base
-RUN                                               \
+RUN --mount=type=cache,target=/var/cache/apt/archives,id={2},sharing=shared \
+     rm -f /etc/apt/apt.conf.d/docker-clean &&    \
      apt-get update -qqy &&                       \
      apt-get install -qqy --no-install-recommends \
          arch-test debian-archive-keyring gpg     \
-         mmdebstrap qemu-user-static &&           \
-     apt-get clean -qqy
+         mmdebstrap qemu-user-static
 FROM base AS clean-base
 RUN rm -rf /usr/share/doc                        \
            /usr/share/info                       \
