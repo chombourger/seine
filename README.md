@@ -45,13 +45,14 @@ mkdir -p ~/.config/containers
 printf '[engine]\nruntime = "crun"\n' > ~/.config/containers/containers.conf
 ```
 
-Python dependencies (just `pyyaml`) can be installed in a virtual environment
-instead of system-wide:
+Python dependencies (`pyyaml`, `ansible-core`) can be installed in a virtual
+environment instead of system-wide:
 
 ```
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
+ansible-galaxy collection install containers.podman
 ```
 
 You may then either use seine in place (use the `seine.py` script from the top

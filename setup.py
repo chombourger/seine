@@ -11,5 +11,6 @@ setup(
     },
     install_requires=[
         'pyyaml>=3.12',
+        'ansible-core>=2.15',
     ],
 )
