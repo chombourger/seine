@@ -24,7 +24,7 @@ ARCH_INFO = {
 # on a machine that IS the target arch, then point libguestfs at the
 # pre-built kernel/initrd/root via LIBGUESTFS_PATH, skipping its own
 # supermin auto-build entirely. We get a "machine that is the target arch"
-# for free via TargetBootstrap (a qemu-debootstrap'd rootfs that already
+# for free via TargetBootstrap (a mmdebstrap'd rootfs that already
 # runs its own binaries transparently under binfmt).
 #
 # libguestfs-make-fixed-appliance builds this by running `guestfish -a

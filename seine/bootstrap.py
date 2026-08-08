@@ -93,7 +93,8 @@ FROM {0}:{1} AS base
 RUN                                               \
      apt-get update -qqy &&                       \
      apt-get install -qqy --no-install-recommends \
-         debootstrap qemu-user-static &&          \
+         arch-test debian-archive-keyring gpg     \
+         mmdebstrap qemu-user-static &&           \
      apt-get clean -qqy
 FROM base AS clean-base
 RUN rm -rf /usr/share/doc                        \
@@ -105,7 +106,9 @@ TARGET_BOOTSTRAP_SCRIPT = """
 FROM {0} AS bootstrap
 RUN                                                                  \
     export container=lxc;                                            \
-    qemu-debootstrap --variant=minbase --include=zstd --arch {1} {2} rootfs {3} &&  \
+    mkdir -p rootfs &&                                               \
+    mmdebstrap --mode=root --variant=minbase --include=zstd          \
+        --arch {1} {2} rootfs {3} &&                                 \
     cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                     \
     echo 'APT::Install-Recommends "false";'                          \
         >rootfs/etc/apt/apt.conf.d/00-no-recommends &&               \
