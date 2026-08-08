@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 import tempfile
 
+from seine               import packages
 from seine.ansible_runner import AnsibleContainerRunner
 from seine.bootstrap      import HostBootstrap
 from seine.bootstrap      import TargetBootstrap
@@ -56,6 +57,10 @@ class Image:
         if "filename" not in image:
             raise ValueError("output 'filename' not specified in 'image' section!")
         self._output = image["filename"]
+
+        # Validated here so a bad 'packages' section is reported when the
+        # specification is parsed rather than once the build reaches it.
+        self.packages = packages.parse(spec)
 
         spec = self._parse_playbooks(spec)
 

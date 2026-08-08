@@ -38,6 +38,13 @@ class BuildCmd(Cmd):
     def _load(self, yaml_filename, yaml_spec):
         spec = yaml.safe_load(yaml_spec)
 
+        # Patches are listed relative to the file listing them, which merging
+        # would otherwise lose: 'requires' pulls sections in from files in
+        # other directories.
+        for package in (spec or {}).get("packages", []) or []:
+            if type(package) == type({}):
+                package["_dirname"] = os.path.dirname(yaml_filename)
+
         if self.spec is None:
             self.spec = spec
         else:
@@ -81,6 +88,14 @@ class BuildCmd(Cmd):
                     self.spec["playbook"].append(playbook)
             elif "playbook" not in self.spec:
                 self.spec["playbook"] = spec["playbook"]
+
+    def _append_packages(self, spec):
+        if "packages" in spec:
+            if "packages" in self.spec:
+                for package in spec["packages"]:
+                    self.spec["packages"].append(package)
+            else:
+                self.spec["packages"] = spec["packages"]
 
     def _lookup_named_part_or_vol(self, parts, label, kind):
         for part in parts:
@@ -145,6 +160,7 @@ class BuildCmd(Cmd):
     def merge(self, spec):
         self._merge_distro(spec)
         self._merge_imager(spec)
+        self._append_packages(spec)
         self._append_playbooks(spec)
         if "image" in spec:
             self._merge_image(spec)
@@ -177,6 +193,15 @@ class BuildCmd(Cmd):
                             kvp[k] = o[k]
                     objects.append(kvp)
                 spec["image"][what] = objects
+
+        if "packages" in spec:
+            # hide internal attributes (_foo) and the "priority" settings,
+            # as done above for partitions and volumes
+            packages = []
+            for p in spec["packages"]:
+                packages.append({k: v for k, v in p.items()
+                                 if k.startswith("_") == False and k != "priority"})
+            spec["packages"] = packages
 
         if "playbook" in spec:
             # hide "hosts" settings from playbooks since they are added by
