@@ -41,6 +41,12 @@ SBUILD_RUN_OPTIONS = [
     "--security-opt", "unmask=ALL",
 ]
 
+# Where the repository of rebuilt packages is mounted, both in the builder
+# container and -- through sbuild's own bind mount -- inside the chroot it
+# builds in. The same path in both, so one sources.list entry works in
+# either place.
+REPOSITORY = "/packages"
+
 # Keyring the distribution's own sources are signed by. Our deb-src line
 # has to name it: when it points at the same mirror and suite the base
 # image already has, apt sees two entries for one source disagreeing about
@@ -59,6 +65,7 @@ class BuilderImage(Bootstrap):
             self.distro["release"],
             self.distro["uri"],
             "apt-{}".format(self.distro["release"]),
+            REPOSITORY,
             KEYRINGS.get(self.distro["source"], KEYRINGS["debian"])))
         dockerfile.close()
 
@@ -176,9 +183,18 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
 # iproute2 is not optional: sbuild brings the loopback interface up with
 # 'ip link set lo up' when it takes the network away from the build, and
 # dies rather than warns when 'ip' is missing.
-RUN echo 'deb-src [signed-by={5}] {3} {2} main' \
+RUN echo 'deb-src [signed-by={6}] {3} {2} main' \
         > /etc/apt/sources.list.d/seine-source.list && \
     apt-get update -qqy
 RUN echo 'root:1:65535' > /etc/subuid && \
     echo 'root:1:65535' > /etc/subgid
+# The chroot sbuild builds in is a root of its own that our bind mounts do
+# not reach into, so the repository of rebuilt packages is bind-mounted a
+# second time, by sbuild, at the same path -- letting a package build
+# against one rebuilt before it through an ordinary sources.list entry.
+# The trailing 1 is what a perl configuration file has to evaluate to.
+RUN mkdir -p /etc/sbuild && \
+    echo '$unshare_bind_mounts = [ {{ directory => "{5}", mountpoint => "{5}" }} ];' \
+        > /etc/sbuild/sbuild.conf && \
+    echo '1;' >> /etc/sbuild/sbuild.conf
 """

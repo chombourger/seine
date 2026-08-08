@@ -1,12 +1,15 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import os
 import shlex
 import shutil
 import tempfile
+import time
 
 from seine.sbuild import BuilderImage
+from seine.sbuild import REPOSITORY
 from seine.sbuild import SbuildChroot
 from seine.utils  import ContainerEngine
 from seine.utils  import HOST_ARCH
@@ -128,7 +131,11 @@ class Package:
 # and the working directory is a host-side directory bind-mounted into it so
 # the fetched source outlives the container that fetched it.
 WORKDIR = "/src"
-REPOSITORY = "/packages"
+
+# Where the "this has been built" markers live, inside the repository so
+# they are thrown away with it. Hidden, and not .debs, so neither apt nor
+# dpkg-scanpackages pays them any attention.
+STAMPS = ".stamps"
 
 class Builder:
     def __init__(self, distro, options, builderImage):
@@ -346,15 +353,12 @@ class Builder:
         if len(package.profiles) > 0:
             args += ["--profiles=%s" % ",".join(package.profiles)]
 
-        # A package may build-depend on one rebuilt before it. sbuild's
-        # chroot cannot see the repository -- it pivots into an unpacked
-        # root of its own -- so the .debs are handed to it individually
-        # instead, and it makes an archive of them inside the chroot. That
-        # archive is file:// based like ours, so the same pin applies.
-        for deb in sorted(os.listdir(self.repository())):
-            if deb.endswith(".deb"):
-                args += ["--extra-package=%s/%s" % (REPOSITORY, deb)]
-        args += ["--chroot-setup-commands=%s" % apt_preferences_command()]
+        # A package may build-depend on one rebuilt before it. The chroot
+        # reaches the repository through the bind mount configured in the
+        # builder image, so it is an ordinary sources.list entry there --
+        # same repository, same pin, same behaviour as everywhere else.
+        args += ["--extra-repository=deb [trusted=yes] file:%s ./" % REPOSITORY,
+                 "--chroot-setup-commands=%s" % apt_preferences_command()]
 
         args += ["%s/%s" % (WORKDIR, dsc[0])]
 
@@ -384,6 +388,105 @@ class Builder:
                          "gzip -9 -c Packages > Packages.gz"],
             volumes=[(self.repository(), REPOSITORY)], workdir=REPOSITORY)
 
+    # What a rebuild of this package would depend on, as a file whose
+    # presence means it has already been done. Everything the specification
+    # says about the package goes into the name, patches included by
+    # content, so editing a patch is enough to ask for a rebuild.
+    #
+    # What is deliberately not in it is the version an unpinned apt://
+    # source would resolve to today: knowing it means fetching the source,
+    # which is most of the cost this is here to avoid. A specification that
+    # pins its versions is therefore exact, and one that does not will keep
+    # its first rebuild until --rebuild or a change to the entry. The .debs
+    # of a stale build are still there and still installable, so the image
+    # is built from something real either way.
+    # Everything that would change the .debs goes into the digest: what the
+    # specification says about the package, the patches by content, and the
+    # distribution the chroot it builds in is made of -- a package built
+    # for another release, architecture, or from another mirror is not the
+    # same package.
+    #
+    # The rootfs 'baseline' is deliberately not part of it. Packages are
+    # built against the buildd chroot, which is made from the distribution
+    # settings above; the image the root file-system is later composed from
+    # has no bearing on what comes out of the build.
+    def stamp(self, package):
+        digest = hashlib.sha256()
+        for part in [package.source,
+                     ",".join(package.profiles),
+                     ",".join(package.options),
+                     str(self.cross(package)),
+                     str(package.source_date_epoch),
+                     self.distro["source"],
+                     self.distro["release"],
+                     self.distro["architecture"],
+                     self.distro["uri"],
+                     self.chroot_architecture(package)]:
+            digest.update(part.encode())
+        for patch in package.patch_files():
+            with open(patch, "rb") as f:
+                digest.update(f.read())
+
+        return os.path.join(self._stamps(),
+                            "%s_%s" % (package.name, digest.hexdigest()[:16]))
+
+    def _stamps(self):
+        stamps = os.path.join(self.repository(), STAMPS)
+        os.makedirs(stamps, exist_ok=True)
+        return stamps
+
+    # What a previous build of this source package left in the repository.
+    # Each stamp lists the files its build produced, so an older build can
+    # be undone without having to guess which binary packages came from
+    # which source -- the names rarely match, and one source package
+    # commonly produces several.
+    def _previous(self, package):
+        previous = {}
+        for stamp in sorted(os.listdir(self._stamps())):
+            if stamp.startswith("%s_" % package.name) == False:
+                continue
+            path = os.path.join(self._stamps(), stamp)
+            with open(path, "r") as f:
+                previous[path] = [line.strip() for line in f if len(line.strip()) > 0]
+        return previous
+
+    # Drops what an earlier build of the same source package left behind,
+    # keeping anything the build that just ran produced -- rebuilding the
+    # same version overwrites its own files rather than replacing them, and
+    # they would otherwise be deleted right after being written.
+    #
+    # Without this the repository would keep every version ever built and
+    # go on offering them: the index lists all of them, and apt installs
+    # the highest version it is offered, which after a downgrade is the one
+    # that was meant to be replaced.
+    def _forget(self, package, produced):
+        for stamp, files in self._previous(package).items():
+            for name in files:
+                if name in produced:
+                    continue
+                path = os.path.join(self.repository(), name)
+                if os.path.isfile(path):
+                    os.unlink(path)
+            os.unlink(stamp)
+
+    # Files in the repository written since 'started'. The index is left
+    # out: it is regenerated from whatever the repository holds once every
+    # package has been built, and belongs to none of them.
+    def _produced(self, started):
+        produced = []
+        for name in sorted(os.listdir(self.repository())):
+            path = os.path.join(self.repository(), name)
+            if os.path.isfile(path) == False or name.startswith("Packages"):
+                continue
+            if os.path.getmtime(path) >= started:
+                produced.append(name)
+        return produced
+
+    def _record(self, stamp, produced):
+        with open(stamp, "w") as f:
+            for name in produced:
+                f.write("%s\n" % name)
+
     # Rebuilds every package the specification asked for, in the order they
     # were sorted into. Each gets a working directory of its own, thrown
     # away afterwards unless --keep was asked for: what is worth keeping
@@ -392,10 +495,30 @@ class Builder:
         if len(packages) == 0:
             return
 
+        # The digest is taken once, here, and carried through to the end:
+        # it describes the inputs this build is about to use. Recomputing
+        # it afterwards would record whatever the patches and fragments
+        # say by then, and a fragment edited while its kernel was building
+        # would leave a stamp claiming a kernel that was never built --
+        # which the next build would then skip.
+        rebuild = self.options.get("rebuild", False)
+        pending = [(p, self.stamp(p)) for p in packages]
+        pending = [(p, s) for p, s in pending
+                   if rebuild or os.path.isfile(s) == False]
+        if len(pending) == 0:
+            return
+
         if ContainerEngine.hasImage(self.builderImage.name) == False:
             self.builderImage.create(hostBootstrap)
 
-        for package in packages:
+        # Every build has the repository in its sources.list, including the
+        # first one, when nothing has been rebuilt yet: apt needs an index
+        # to read there, even an empty one, or the build fails before it
+        # starts. It is refreshed after each package so the next one can
+        # build against what came out of the last.
+        self.index()
+
+        for package, stamp in pending:
             chroot = SbuildChroot(self.distro, self.options,
                                   self.chroot_architecture(package))
             chroot.create(self.builderImage)
@@ -407,15 +530,27 @@ class Builder:
                 sourcedir = self.fetch(package, workdir)
                 epoch = self.source_date_epoch(package, sourcedir)
                 self.patch(package, sourcedir, epoch)
+
+                # Everything written while the build ran is what it
+                # produced, whether it is a new file or one it overwrote.
+                started = time.time()
                 self.build(package, sourcedir, epoch)
+                produced = self._produced(started)
+
+                # Both only once it built. A stamp left by a failed build
+                # would skip the package next time and compose the image
+                # from whatever the repository happened to hold, and
+                # dropping the previous build before this one succeeds
+                # would leave the repository with neither.
+                self._forget(package, produced)
+                self._record(stamp, produced)
+                self.index()
             finally:
                 if self.options.get("keep"):
                     print("keeping '%s' (source of '%s') as requested"
                           % (workdir, package.name))
                 else:
                     shutil.rmtree(workdir, ignore_errors=True)
-
-        self.index()
 
 # Identity the patch commits are made under. Fixed, like their date: a
 # commit made by whoever happens to be running the build is a commit whose
