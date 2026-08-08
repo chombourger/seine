@@ -29,11 +29,19 @@ class ContainerEngine:
             proc.wait()
         finally:
             ContainerEngine.run(["container", "rm", cid], check=False)
+    # Rootless podman's default graph-root is shared with every other user of
+    # podman on the machine; seine relocates it under its own directory so
+    # concurrent builds/tests don't collide with (or get confused by) images
+    # from unrelated podman use. External tools that need to reach the same
+    # storage (e.g. ansible's podman connection plugin) must be pointed at
+    # this same path, hence it being its own method rather than inlined.
+    @staticmethod
+    def root():
+        home = os.path.expanduser("~")
+        return os.path.join(home, ".local", "share", "seine")
     @staticmethod
     def _podman_cmd(cmd):
-        home = os.path.expanduser("~")
-        root = os.path.join(home, ".local", "share", "seine")
-        cmd.insert(0, root)
+        cmd.insert(0, ContainerEngine.root())
         cmd.insert(0, "--root")
         cmd.insert(0, "podman")
         return cmd
