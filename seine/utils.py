@@ -2,8 +2,19 @@
 # SPDX-License-Identifier Apache-2.0
 
 import os
+import platform
 import subprocess
 import tarfile
+
+# Debian architecture of the machine seine itself runs on. Anything the
+# specification asks for that differs from this is a cross build, whether
+# that means emulating the target or compiling for it.
+HOST_MACHINE_TO_ARCH = {
+    "x86_64":  "amd64",
+    "aarch64": "arm64",
+    "armv7l":  "armhf",
+}
+HOST_ARCH = HOST_MACHINE_TO_ARCH.get(platform.machine(), platform.machine())
 
 class ContainerEngine:
     @staticmethod

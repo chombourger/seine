@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import platform
 import re
 import shutil
 import stat
@@ -14,6 +13,7 @@ import guestfs
 from seine.imager_appliance import ImagerAppliance
 from seine.imager_kernel    import ImagerKernel
 from seine.utils            import ContainerEngine
+from seine.utils            import HOST_ARCH
 
 DEVICE = "/dev/sda"
 
@@ -32,13 +32,6 @@ DEFAULT_HYPERVISORS = {
     "arm64": "/usr/bin/qemu-system-aarch64",
     "armhf": "/usr/bin/qemu-system-arm",
 }
-
-HOST_MACHINE_TO_ARCH = {
-    "x86_64":  "amd64",
-    "aarch64": "arm64",
-    "armv7l":  "armhf",
-}
-HOST_ARCH = HOST_MACHINE_TO_ARCH.get(platform.machine(), platform.machine())
 
 # libguestfs's launch-command construction hardcodes several x86-only
 # assumptions (machine type, CPU properties, serial console name) for *any*
