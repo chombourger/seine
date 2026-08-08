@@ -39,6 +39,17 @@ class ContainerEngine:
     def root():
         home = os.path.expanduser("~")
         return os.path.join(home, ".local", "share", "seine")
+    # Where large, short-lived files go while a build is running. Not
+    # /tmp, which is commonly a tmpfs and so memory -- a kernel source
+    # tree is several gigabytes and unpacking one there has been known to
+    # take the machine down with it. Not the working directory either,
+    # which is someone's checkout. TMPDIR wins if it is set, as it should.
+    @staticmethod
+    def scratch():
+        path = os.environ.get("TMPDIR") or "/var/tmp"
+        path = os.path.join(path, "seine")
+        os.makedirs(path, exist_ok=True)
+        return path
     # Host-side apt archives cache, bind-mounted into ansible's target
     # container so package downloads survive across builds/releases.
     # Scoped per release: package filenames already carry the architecture,
@@ -47,6 +58,29 @@ class ContainerEngine:
     def downloads(release):
         home = os.path.expanduser("~")
         path = os.path.join(home, ".cache", "seine", "downloads", release)
+        os.makedirs(path, exist_ok=True)
+        return path
+    # Host-side apt repository holding the packages rebuilt from the spec's
+    # 'packages' section, bind-mounted into ansible's target container so
+    # the playbooks can install them like any other package. Unlike the
+    # downloads cache this one is scoped per architecture as well: it is
+    # served as a flat repository whose Packages index describes exactly
+    # one architecture.
+    @staticmethod
+    def packages(release, architecture):
+        home = os.path.expanduser("~")
+        path = os.path.join(home, ".cache", "seine", "packages", release, architecture)
+        os.makedirs(path, exist_ok=True)
+        return path
+    # Host-side cache for the buildd chroot tarballs sbuild unpacks for
+    # every package it builds. Producing one costs a full mmdebstrap run
+    # (~150MB, minutes), so it is kept out of the container and reused.
+    # The architecture here is the chroot's own, which for a cross build
+    # is the build architecture rather than the target's.
+    @staticmethod
+    def chroots(release, architecture):
+        home = os.path.expanduser("~")
+        path = os.path.join(home, ".cache", "seine", "chroots", release, architecture)
         os.makedirs(path, exist_ok=True)
         return path
     @staticmethod
