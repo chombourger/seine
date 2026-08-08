@@ -92,10 +92,10 @@ class Imager:
         self.verbose = source.options["verbose"]
 
     # Filters a `getfattr -Rh -d -e hex` dump down to entries for files that
-    # actually made it into the tarball (getfattr walked the ansible
+    # actually made it into the tarball (getfattr walked the target
     # container's live filesystem, which includes things -- like the
-    # ansible/seine-ansible packages themselves -- that were later removed
-    # before the tarball was exported).
+    # python3/python3-apt/attr transport packages themselves -- that were
+    # later removed before the tarball was exported).
     def _filter_xattr_dump(self, text, known_files):
         blocks = []
         current = []

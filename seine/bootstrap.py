@@ -36,29 +36,22 @@ class Bootstrap(ABC):
 
 class HostBootstrap(Bootstrap):
     def create(self):
-        equivsfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        equivsfile.write(EQUIVS_CONTROL_FILE)
-        equivsfile.close()
-
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
         dockerfile.write(HOST_BOOTSTRAP_SCRIPT.format(
             self.distro["source"],
-            self.distro["release"],
-            os.path.basename(equivsfile.name)))
+            self.distro["release"]))
         dockerfile.close()
 
         try:
             ContainerEngine.run([
                 "build", "--rm", "--squash",
-                "-t", self.name, "-f", dockerfile.name,
-                "-v", "/tmp:/host-tmp:ro"],
+                "-t", self.name, "-f", dockerfile.name],
                 check=True)
         except subprocess.CalledProcessError:
             raise
         finally:
             ContainerEngine.run(["image", "prune", "-f"])
             os.unlink(dockerfile.name)
-            os.unlink(equivsfile.name)
         return self
 
     def defaultName(self):
@@ -100,11 +93,7 @@ FROM {0}:{1} AS base
 RUN                                               \
      apt-get update -qqy &&                       \
      apt-get install -qqy --no-install-recommends \
-         debootstrap equivs qemu-user-static &&   \
-     mkdir -p /opt/seine &&                       \
-     cd /opt/seine &&                             \
-     equivs-build /host-tmp/{2} &&                \
-     apt-get autoremove -qqy equivs &&            \
+         debootstrap qemu-user-static &&          \
      apt-get clean -qqy
 FROM base AS clean-base
 RUN rm -rf /usr/share/doc                        \
@@ -126,15 +115,4 @@ FROM scratch AS base
 COPY --from=bootstrap rootfs/ /
 RUN  apt-get clean -qqy && \
      rm -rf /usr/share/doc /usr/share/info /usr/share/man
-"""
-
-EQUIVS_CONTROL_FILE = """
-Section: misc
-Priority: optional
-Standards-Version: 3.9.2
-
-Package: seine-ansible
-Depends: ansible, attr, python3-apt
-Architecture: all
-Description: dependencies for seine
 """
