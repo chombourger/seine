@@ -128,6 +128,7 @@ A system specification may be written in one or several YAML files comprised
 of the following sections:
 
  * distribution
+ * packages
  * playbook
  * image
 
@@ -189,6 +190,97 @@ libguestfs's appliance builder, cannot cross-build). This runs the target
 architecture under emulation to build the appliance once, then caches it --
 the first cross-arch build is noticeably slower than same-arch builds, but
 that cost isn't paid again on subsequent builds.
+
+#### packages
+
+The `packages` section lists Debian source packages to rebuild before the
+image is composed, for instance to carry a patch the distribution does not
+have. Each entry says where its source comes from:
+
+```
+packages:
+    - source: apt://busybox
+      profiles:
+          - nocheck
+      patches:
+          - patches/0001-mark-the-banner-as-rebuilt.patch
+```
+
+The following attributes are supported:
+
+| Attribute         | Required | Description                                     |
+| ----------------- |:--------:| ----------------------------------------------- |
+| source            | yes      | URI the source is fetched from (see below)      |
+| cross             | no       | Cross-compile (see below), defaults to the sane |
+| options           | no       | Debian build options (`DEB_BUILD_OPTIONS`)      |
+| patches           | no       | Patches to apply, relative to this YAML file    |
+| priority          | no       | Build order, `0`-`999`, `500` by default        |
+| profiles          | no       | Debian build profiles (`--profiles`)            |
+| source_date_epoch | no       | Date to build at, seconds since the epoch       |
+
+Three kinds of `source` are understood:
+
+ * `apt://<package>[=<version>]` takes the distribution's own source
+   package, at the version specified or the current one.
+ * `https://.../<package>_<version>.dsc` takes a source package published
+   elsewhere. It has to be a `.dsc`: an upstream tarball on its own has no
+   `debian/` directory to build from.
+ * `git://<host>/<path>[;branch=<branch>][;rev=<commit>][;protocol=<proto>]`
+   takes a packaging tree that carries its own `debian/` directory, in the
+   same notation bitbake uses. The remote is reached over https unless
+   `protocol` says otherwise, and `rev` is required: a branch name moves,
+   and a build that cannot be repeated is not worth calling reproducible.
+
+Packages are built in the order given by their `priority`, so a package may
+be built before another that build-depends on it.
+
+Patches are applied in the way the source format calls for. A
+`3.0 (quilt)` package gets them added to `debian/patches/series`; anything
+else has them applied to the tree, and committed if that tree came from
+git, so that packaging which records its own revision keeps working.
+
+Rebuilt packages are made available to the rest of the build through a
+local apt repository under `~/.cache/seine/packages/`: the playbooks
+install them with an ordinary `apt` task, later packages build against
+them, and the imager can boot a kernel from them. They are pinned above
+the distribution's own copies, so a rebuild is installed even when the
+archive has a higher version of the same package. The repository exists
+only on the machine that builds the image and is removed from the image's
+apt configuration before it is packed up.
+
+A package is not rebuilt again while nothing about it has changed --
+including the content of its patches. Use `--rebuild` to force one.
+
+##### Cross-compiling
+
+When the target `architecture` differs from the host's, packages are
+cross-compiled by default: sbuild builds them in a chroot of the host's
+architecture, having pulled in `crossbuild-essential` for the target.
+
+Not every package can be cross-built. Setting `cross: false` builds it in a
+chroot of the target's own architecture instead, running its binaries under
+`qemu-user-static` -- much slower, but it works for anything. This needs the
+host's binfmt registration to use the `F` (fix-binary) flag, which is what
+Debian's `qemu-user-static` package sets up.
+
+##### Reproducibility
+
+Builds are given a `SOURCE_DATE_EPOCH`, taken from the package's changelog
+unless `source_date_epoch` says otherwise, and sbuild builds under a fixed
+path. Patches committed to a git tree are committed at that same date under
+a fixed identity, so their commit hashes -- and anything embedding them --
+do not change from one rebuild to the next.
+
+##### A note on privileges
+
+Packages are built by `sbuild` in its `unshare` mode, inside a container
+that is given `CAP_SYS_ADMIN` and an unmasked `/proc`, which the nested
+user namespaces it creates need. This container is more privileged than
+the others seine builds and is used only to build packages. It remains
+unprivileged as far as the kernel is concerned: uid 0 inside it is the
+unprivileged user running seine, so what it can reach is that user's own
+files rather than the machine's. No `sudo` is used or required, as
+elsewhere in seine.
 
 #### playbook
 

@@ -1,0 +1,19 @@
+Description: mark the banner as rebuilt
+ Appends a marker to the version string busybox prints, so that a busybox
+ built from this specification can be told apart at runtime from the one
+ the distribution ships. This is here to make the example verifiable, not
+ because the change is useful in itself.
+Author: seine
+Forwarded: not-needed
+
+--- a/libbb/messages.c
++++ b/libbb/messages.c
+@@ -14,7 +14,7 @@
+ #define BB_EXTRA_VERSION " ("BB_BUILD_TAG")"
+ #endif
+ 
+-const char bb_banner[] ALIGN1 = "BusyBox v" BB_VER BB_EXTRA_VERSION;
++const char bb_banner[] ALIGN1 = "BusyBox v" BB_VER BB_EXTRA_VERSION " rebuilt-by-seine";
+ 
+ 
+ const char bb_msg_memory_exhausted[] ALIGN1 = "out of memory";
