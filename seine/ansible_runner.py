@@ -54,7 +54,6 @@ class AnsibleContainerRunner:
 
     def _run_playbooks(self, playbooks):
         for playbook in playbooks:
-            playbook["hosts"] = "all"
             # INITRD=No mirrors the old in-container 'RUN INITRD=No
             # ansible-playbook ...' -- individual package installs skip
             # their own initramfs regen, _finalize() does one pass instead.

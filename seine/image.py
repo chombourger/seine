@@ -5,13 +5,13 @@ import os
 import subprocess
 import tarfile
 import tempfile
-import yaml
 
-from seine.bootstrap import HostBootstrap
-from seine.bootstrap import TargetBootstrap
-from seine.imager    import Imager
-from seine.sbom      import SBOM
-from seine.utils     import ContainerEngine
+from seine.ansible_runner import AnsibleContainerRunner
+from seine.bootstrap      import HostBootstrap
+from seine.bootstrap      import TargetBootstrap
+from seine.imager         import Imager
+from seine.sbom           import SBOM
+from seine.utils          import ContainerEngine
 
 class Image:
     def __init__(self, partitionHandler, options=None):
@@ -19,7 +19,6 @@ class Image:
         self.options = options if options is not None else {}
         self.hostBootstrap = None
         self._cid = None
-        self._iid = None
         self.targetBootstrap = None
         self._from = None
         self._image = None
@@ -78,7 +77,7 @@ class Image:
         for playbook in playbooks:
             if type(playbook) != type({}):
                 raise ValueError("playbook #%d is not a dictionary!" % index)
-            playbook["hosts"] = "localhost"
+            playbook["hosts"] = "all"
             if "priority" not in playbook:
                 playbook["priority"] = 500
             index = index + 1
@@ -103,41 +102,14 @@ class Image:
         if self._from is None:
             self._from = self.targetBootstrap.name
 
-        ansible = self.spec["playbook"]
-        ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        yaml.dump(ansible, ansiblefile)
-        ansiblefile.close()
-
-        iidfile = tempfile.NamedTemporaryFile(mode="r", delete=False)
-
-        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write(IMAGE_ANSIBLE_SCRIPT.format(
-            self._from, self.hostBootstrap.name,
-            "-v" if self._verbose else "",
-            os.path.basename(ansiblefile.name)))
-        dockerfile.close()
-
-        try:
-            self._iid = None
-            cmd = [ "build", "--rm", "--iidfile", iidfile.name,
-                    "-v", "/tmp:/host-tmp:ro", "-f", dockerfile.name]
-            if self._verbose == False:
-                cmd.append("-q")
-            ContainerEngine.run(cmd, check=True)
-            iidfile.seek(0)
-            self._iid = iidfile.readline().strip()
-        except subprocess.CalledProcessError:
-            raise
-        finally:
-            os.unlink(ansiblefile.name)
-            os.unlink(dockerfile.name)
-            os.unlink(iidfile.name)
+        runner = AnsibleContainerRunner(
+            self._from, self.spec["distribution"], self.options, verbose=self._verbose)
+        self._cid = runner.run(self.spec["playbook"])
 
     def build_tarball(self):
         try:
             self._tarball = None
             image = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd(), prefix='root-', suffix='.tar')
-            self._cid = ContainerEngine.check_output(["container", "create", self._iid]).strip()
             ContainerEngine.run(["container", "export", "-o", image.name, self._cid], check=True)
             self._tarball = image.name
         except subprocess.CalledProcessError:
@@ -145,11 +117,11 @@ class Image:
             raise
         finally:
             if self._cid:
-                ContainerEngine.run(["container", "rm", self._cid], check=False)
+                # The container is still running ('sleep infinity', kept
+                # alive for ansible to connect into) at this point, so it
+                # needs a forceful removal rather than a plain 'rm'.
+                ContainerEngine.run(["container", "rm", "-f", self._cid], check=False)
                 self._cid = None
-            if self._iid:
-                ContainerEngine.run(["image", "rm", self._iid], check=False)
-                self._iid = None
             ContainerEngine.run(["image", "prune", "-f"], check=False)
 
     def _size_partitions(self):
@@ -205,26 +177,3 @@ class Image:
             if self._image is not None:
                 os.unlink(self._image)
             raise
-
-IMAGE_ANSIBLE_SCRIPT = """
-FROM {0} AS playbooks
-COPY --from={1} /opt/seine /opt/seine
-RUN apt-get update -qqy && \
-    apt-get install -qqy /opt/seine/seine-ansible*.deb && \
-    INITRD=No ansible-playbook {2} /host-tmp/{3} && \
-    if ls /boot/vmlinuz-* >/dev/null 2>&1; then update-initramfs -c -k all; fi && \
-    mkdir -p /var/lib/seine && \
-    getfattr -Rh -m '' -d -e hex $(find / -mindepth 1 -maxdepth 1 -type d \
-        -not -name host-tmp \
-        -not -name proc \
-        -not -name sys \
-        -not -name tmp \
-        -printf '%P\\n') \
-    > /rootfs.xattr
-FROM playbooks as clean
-RUN apt-get autoremove -qy seine-ansible && \
-    apt-get clean -y &&                     \
-    rm -rf /var/lib/apt/lists/* &&          \
-    rm -f /usr/bin/qemu-*-static
-CMD /bin/true
-"""
