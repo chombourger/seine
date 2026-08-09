@@ -29,6 +29,10 @@ HOST_ARCH = HOST_MACHINE_TO_ARCH.get(platform.machine(), platform.machine())
 # is what an archive normally serves and what rebuilding a package needs.
 # 'sources: false' says otherwise, for the vendor feeds that ship
 # binaries alone.
+#
+# 'valid-until: false' is for archives meant to stay expired -- a
+# snapshot.debian.org timestamp, or a frozen mirror -- which apt would
+# otherwise refuse.
 def feeds(distro):
     entries = distro.get("feeds")
     if entries is None:
@@ -43,27 +47,35 @@ def feeds(distro):
         if "suite" not in entry:
             raise ValueError("feed #%d has no 'suite' specified!" % (index + 1))
         for setting in entry:
-            if setting not in ["components", "sources", "suite", "uri"]:
+            if setting not in ["components", "sources", "suite", "uri",
+                               "valid-until"]:
                 raise ValueError(
                     "feed #%d ('%s') has no '%s' setting, expected one of "
-                    "components, sources, suite, uri"
+                    "components, sources, suite, uri, valid-until"
                     % (index + 1, entry["suite"], setting))
         parsed.append({
-            "uri":        entry.get("uri", distro["uri"]),
-            "suite":      entry["suite"],
-            "components": entry.get("components", "main"),
-            "sources":    entry.get("sources", True),
+            "uri":         entry.get("uri", distro["uri"]),
+            "suite":       entry["suite"],
+            "components":  entry.get("components", "main"),
+            "sources":     entry.get("sources", True),
+            "valid_until": entry.get("valid-until", True),
         })
     return parsed
 
 # Those feeds as apt would write them down. 'sources' adds a deb-src line
 # for every feed that has said it carries any.
+#
+# An expired feed says so in the entry rather than in an apt.conf.d
+# fragment: these lines reach every container a build talks to an archive
+# from, and the option stays scoped to the feed that asked for it.
 def apt_sources(distro, sources=False):
     lines = []
     for feed in feeds(distro):
-        lines.append("deb %(uri)s %(suite)s %(components)s" % feed)
+        feed = dict(feed, options="" if feed["valid_until"]
+                                    else "[check-valid-until=no] ")
+        lines.append("deb %(options)s%(uri)s %(suite)s %(components)s" % feed)
         if sources and feed["sources"]:
-            lines.append("deb-src %(uri)s %(suite)s %(components)s" % feed)
+            lines.append("deb-src %(options)s%(uri)s %(suite)s %(components)s" % feed)
     return lines
 
 # Label carrying the digest of what an image was built from.

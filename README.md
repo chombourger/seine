@@ -207,6 +207,46 @@ none, for vendor archives that ship binaries alone:
           sources: false
 ```
 
+##### Building from a snapshot
+
+A suite moves: the same specification built a week apart is built from
+different packages. To pin what a build sees, point the feeds at an
+archive frozen in time, such as
+[snapshot.debian.org](https://snapshot.debian.org/). There is no separate
+setting for it -- a snapshot is a `uri` like any other, and Debian serves
+its security archive from a path of its own:
+
+```
+distribution:
+    release: bookworm
+    uri: https://snapshot.debian.org/archive/debian/20260801T000000Z
+    feeds:
+        - suite: bookworm
+          valid-until: false
+        - suite: bookworm-updates
+          valid-until: false
+        - suite: bookworm-security
+          uri: https://snapshot.debian.org/archive/debian-security/20260801T000000Z
+          valid-until: false
+```
+
+`valid-until: false` is what makes it work. A snapshot serves the Release
+file as it stood at that timestamp, `Valid-Until` included, so apt sees an
+archive that expired long ago and refuses it. That refusal is right for an
+archive that is meant to be current and wrong for one deliberately held in
+the past, and the setting says which of the two this is. It is not
+specific to snapshots: any frozen or archived mirror needs it.
+
+The feeds pin the image and the rebuilds alike -- the bootstrap, the buildd
+chroot the packages are built in, and the sources fetched by `apt://` all
+come from them. Moving the timestamp changes the digest every rebuild is
+stamped with, so the packages are rebuilt against the new snapshot rather
+than kept from the old one.
+
+Snapshots are slow and rate-limited compared to a mirror. The downloads
+cache under `~/.cache/seine/downloads` takes most of that cost off the
+second build.
+
 When multiple YAML files are parsed, the last parsed value will be used.
 
 #### imager
@@ -443,6 +483,12 @@ unless `source_date_epoch` says otherwise, and sbuild builds under a fixed
 path. Patches committed to a git tree are committed at that same date under
 a fixed identity, so their commit hashes -- and anything embedding them --
 do not change from one rebuild to the next.
+
+What is left is the archive the source and the build dependencies come
+from, which moves under an unpinned rebuild the same way it moves under an
+unpinned image. Pin the versions in the `apt://` sources, or pin the whole
+archive by building from a snapshot (see
+[Building from a snapshot](#building-from-a-snapshot)).
 
 ##### A note on privileges
 
