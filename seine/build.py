@@ -295,7 +295,8 @@ Flags:
   -k, --keep            keep temporary files
   --rebuild             rebuild the packages of the 'packages' section even if
                         they were built before
-  --sbom                produce a Software Bill of Materials (SBOM) using syft
+  --sbom                produce a Software Bill of Materials (SBOM) using
+                        debsbom
   -v, --verbose         produce verbose output while building the image
 
 """

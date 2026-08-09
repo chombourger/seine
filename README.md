@@ -85,9 +85,7 @@ seine build spec.yaml
 
 ### Running the tests
 
-The specification tests under `tests/spec/` parse YAML and check what comes
-out of it, so they need neither containers nor a kvm-capable machine and run
-in about a second. They use
+The tests under `tests/spec/` use
 [avocado](https://avocado-framework.github.io/), which Debian does not
 package -- install it in a virtual environment that can still see the
 system's `python3-guestfs`, which pip cannot install:
@@ -102,6 +100,19 @@ avocado run tests/spec/*.py
 `--system-site-packages` is what makes `guestfs` importable in there.
 `setuptools<81` is for avocado itself, which still imports `pkg_resources`;
 without it every test errors out before it runs.
+
+Most of them parse a specification and check what comes out of it, needing
+neither containers nor a kvm-capable machine. The ones that do build
+something -- the SBOM test bootstraps a root file-system and runs debsbom on
+it for real -- are tagged `container`, take minutes on a cold cache, and
+cancel themselves where podman is missing. Leave them out with:
+
+```
+avocado run --filter-by-tags='-container' --filter-by-tags-include-empty tests/spec/*.py
+```
+
+`--filter-by-tags-include-empty` is needed because avocado otherwise drops
+every test that carries no tag at all, which is all the others.
 
 ### Using an HTTP proxy
 
@@ -694,3 +705,25 @@ more specifically:
 | size      | no       | Size of the partition                    |
 | type      | no       | File-system type (e.g. `ext4`)           |
 | where     | yes      | Where to mount the volume file-system    |
+
+## Software Bill of Materials
+
+`--sbom` makes a build write a Software Bill of Materials next to the image
+it produced:
+
+```
+./seine.py build --sbom examples/pc-image/main.yaml
+```
+
+leaves `pc-image-sbom.spdx.json` beside `pc-image.img`, in SPDX format.
+
+The list is taken from dpkg's own record of what was installed rather than
+from a scan of the files in the image, so it says what the package manager
+says. It is produced by [debsbom](https://github.com/siemens/debsbom), which
+reports the source package every binary package was built from as well as
+the binary packages themselves -- which is what a Debian CVE is filed
+against, and what makes the SBOM answerable to a security advisory.
+
+debsbom runs from the container image its authors publish, pulled on first
+use. Only the few files it reads are taken out of the root file-system, so
+nothing else about the image is exposed to it.

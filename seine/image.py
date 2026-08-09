@@ -174,9 +174,11 @@ class Image:
             self.rootfs()
             self.build_tarball()
 
-            # Generate SBOM
-            sbom = SBOM(self.options)
-            sbom.generate(self._output)
+            # Generate SBOM, from the exported root file-system rather than
+            # from the disk image: debsbom reads dpkg's own package list,
+            # which the tarball has and a not-yet-assembled image has not.
+            sbom = SBOM(distro, self.options)
+            sbom.generate(self._tarball, self._output)
 
             # Prepare target partitions and disk image
             self._size_partitions()
