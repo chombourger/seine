@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 
 from seine               import packages
+from seine               import utils
 from seine.ansible_runner import AnsibleContainerRunner
 from seine.bootstrap      import HostBootstrap
 from seine.bootstrap      import TargetBootstrap
@@ -53,6 +54,11 @@ class Image:
         if "uri" not in distro:
             distro["uri"] = "http://ftp.debian.org/debian"
         spec["distribution"] = distro
+
+        # Validated here rather than when a bootstrap first reads them, so
+        # a mistyped feed is reported against the specification instead of
+        # halfway through building an image from it.
+        utils.feeds(distro)
 
         image = spec["image"]
         if "filename" not in image:

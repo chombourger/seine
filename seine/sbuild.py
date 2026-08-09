@@ -7,6 +7,7 @@ import tempfile
 
 from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
+from seine.utils     import apt_sources
 
 # Rebuilding source packages happens under sbuild's "unshare" backend, the
 # one Debian's own buildds use: it needs no schroot, no daemon and no root,
@@ -47,15 +48,6 @@ SBUILD_RUN_OPTIONS = [
 # either place.
 REPOSITORY = "/packages"
 
-# Keyring the distribution's own sources are signed by. Our deb-src line
-# has to name it: when it points at the same mirror and suite the base
-# image already has, apt sees two entries for one source disagreeing about
-# who signs it and refuses to read any of them.
-KEYRINGS = {
-    "debian": "/usr/share/keyrings/debian-archive-keyring.gpg",
-    "ubuntu": "/usr/share/keyrings/ubuntu-archive-keyring.gpg",
-}
-
 class BuilderImage(Bootstrap):
     def create(self, hostBootstrap):
         dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
@@ -63,10 +55,9 @@ class BuilderImage(Bootstrap):
             hostBootstrap.name,
             self.distro["source"],
             self.distro["release"],
-            self.distro["uri"],
+            self._sources(),
             "apt-{}".format(self.distro["release"]),
-            REPOSITORY,
-            KEYRINGS.get(self.distro["source"], KEYRINGS["debian"])))
+            REPOSITORY))
         dockerfile.close()
 
         try:
@@ -79,6 +70,17 @@ class BuilderImage(Bootstrap):
             ContainerEngine.run(["image", "prune", "-f"])
             os.unlink(dockerfile.name)
         return self
+
+    # The builder installs build dependencies and fetches sources from the
+    # same places the image itself is built from, with deb-src alongside so
+    # 'apt-get source' has somewhere to look. Anything else rebuilds a
+    # package from a different version than the one the image would have
+    # installed -- which for the security suite means rebuilding a source
+    # that is missing the fixes apt would otherwise have given it.
+    def _sources(self):
+        sources = apt_sources(self.distro, sources=True)
+        return " && ".join(
+            "echo '%s' >> /etc/apt/sources.list.d/seine.list" % s for s in sources)
 
     # No architecture in the name: this image is always of the host's own
     # architecture, and it is the chroot inside it that carries the target's.
@@ -158,8 +160,7 @@ class SbuildChroot:
             "--customize-hook=sync-out /var/cache/apt/archives /var/cache/mmdebstrap",
             self.distro["release"],
             "/root/.cache/sbuild/%s" % self.filename,
-            self.distro["uri"],
-        ]
+        ] + apt_sources(self.distro)
         volumes = [(ContainerEngine.downloads(self.distro["release"]),
                     "/var/cache/mmdebstrap")]
         try:
@@ -188,8 +189,9 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
 # iproute2 is not optional: sbuild brings the loopback interface up with
 # 'ip link set lo up' when it takes the network away from the build, and
 # dies rather than warns when 'ip' is missing.
-RUN echo 'deb-src [signed-by={6}] {3} {2} main' \
-        > /etc/apt/sources.list.d/seine-source.list && \
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \
+           /etc/apt/sources.list.d/*.list && \
+    {3} && \
     apt-get update -qqy
 RUN echo 'root:1:65535' > /etc/subuid && \
     echo 'root:1:65535' > /etc/subgid

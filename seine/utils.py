@@ -16,6 +16,56 @@ HOST_MACHINE_TO_ARCH = {
 }
 HOST_ARCH = HOST_MACHINE_TO_ARCH.get(platform.machine(), platform.machine())
 
+# The apt feeds a system is built from. A specification lists them
+# explicitly rather than having suites guessed for it: which of -updates
+# and -security a release has, and where they are served from, differs
+# between distributions and between a release and its development
+# version, and a suite that does not exist fails every build that follows.
+#
+# With none listed, the release itself is the one feed, which is what
+# seine did before feeds could be listed at all.
+#
+# Each feed is assumed to carry sources as well as binaries, since that
+# is what an archive normally serves and what rebuilding a package needs.
+# 'sources: false' says otherwise, for the vendor feeds that ship
+# binaries alone.
+def feeds(distro):
+    entries = distro.get("feeds")
+    if entries is None:
+        entries = [{"suite": distro["release"]}]
+    if type(entries) != type([]):
+        raise ValueError("'feeds' shall be a list of apt feeds!")
+
+    parsed = []
+    for index, entry in enumerate(entries):
+        if type(entry) != type({}):
+            raise ValueError("feed #%d is not a dictionary!" % (index + 1))
+        if "suite" not in entry:
+            raise ValueError("feed #%d has no 'suite' specified!" % (index + 1))
+        for setting in entry:
+            if setting not in ["components", "sources", "suite", "uri"]:
+                raise ValueError(
+                    "feed #%d ('%s') has no '%s' setting, expected one of "
+                    "components, sources, suite, uri"
+                    % (index + 1, entry["suite"], setting))
+        parsed.append({
+            "uri":        entry.get("uri", distro["uri"]),
+            "suite":      entry["suite"],
+            "components": entry.get("components", "main"),
+            "sources":    entry.get("sources", True),
+        })
+    return parsed
+
+# Those feeds as apt would write them down. 'sources' adds a deb-src line
+# for every feed that has said it carries any.
+def apt_sources(distro, sources=False):
+    lines = []
+    for feed in feeds(distro):
+        lines.append("deb %(uri)s %(suite)s %(components)s" % feed)
+        if sources and feed["sources"]:
+            lines.append("deb-src %(uri)s %(suite)s %(components)s" % feed)
+    return lines
+
 class ContainerEngine:
     @staticmethod
     def hasImage(name):

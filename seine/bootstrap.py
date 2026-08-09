@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 
 from seine.utils import ContainerEngine
+from seine.utils import apt_sources
 
 class Bootstrap(ABC):
     def __init__(self, distro, options):
@@ -66,7 +67,7 @@ class TargetBootstrap(Bootstrap):
             self.hostBootstrap.name,
             self.distro["architecture"],
             self.distro["release"],
-            self.distro["uri"],
+            " ".join("'%s'" % source for source in apt_sources(self.distro)),
             "mmdebstrap-{}".format(self.distro["release"])
         ))
         dockerfile.close()

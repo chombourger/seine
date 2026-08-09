@@ -163,6 +163,49 @@ packages that will make the end system. The following attributes are supported:
  * release: codename of the version to be used (e.g. `bookworm`)
  * architecture: one of `amd64`, `arm64` or `armhf`
  * uri: base location of the distribution packages
+ * feeds: apt feeds to build from (see below)
+
+##### feeds
+
+Without `feeds`, a system is built from the `release` alone. That is
+rarely what is wanted: it leaves out the updates accumulated since the
+release and the security suite, so the image is built from packages known
+to be superseded and cannot be brought up to date on the target either.
+List them:
+
+```
+distribution:
+    release: bookworm
+    feeds:
+        - suite: bookworm
+        - suite: bookworm-updates
+        - suite: bookworm-security
+          uri: http://security.debian.org/debian-security
+```
+
+Each feed takes `suite`, and optionally `uri` (the distribution's `uri`
+by default), `components` (`main` by default) and `sources`. They are
+listed rather than assumed because which suites a release has, and where
+they are served from, differs between distributions and between a release
+and its development version -- and a suite that does not exist fails
+every build that follows.
+
+The same feeds are used to build the image, to make the chroot packages
+are rebuilt in, and to fetch their sources. Rebuilding a package against
+different feeds than the image installs from means rebuilding a different
+version than the one it would have had, and for the security suite that
+means rebuilding a source without the fixes apt would otherwise deliver.
+
+Each feed is assumed to carry sources as well as binaries, which is what
+`apt://` sources are fetched from. `sources: false` says a feed carries
+none, for vendor archives that ship binaries alone:
+
+```
+        - suite: vendor
+          uri: https://packages.example.com/apt
+          components: non-free
+          sources: false
+```
 
 When multiple YAML files are parsed, the last parsed value will be used.
 

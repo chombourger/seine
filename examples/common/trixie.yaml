@@ -3,6 +3,16 @@
 
 distribution:
     release: trixie
+    # Listed rather than assumed: a release, the updates that have
+    # accumulated since it, and its security suite, which Debian serves
+    # from a host of its own. Without the last two an image is built
+    # from packages that are known to be superseded, and cannot be
+    # brought up to date on the target either.
+    feeds:
+        - suite: trixie
+        - suite: trixie-updates
+        - suite: trixie-security
+          uri: http://security.debian.org/debian-security
 
 playbook:
     - name: init packages
