@@ -16,6 +16,7 @@ from email.utils import format_datetime
 from seine.sbuild import BuilderImage
 from seine.sbuild import REPOSITORY
 from seine.sbuild import SbuildChroot
+from seine.utils  import apt_sources
 from seine.utils  import ContainerEngine
 from seine.utils  import HOST_ARCH
 
@@ -723,8 +724,10 @@ class Builder:
     # Everything that would change the .debs goes into the digest: what the
     # specification says about the package, the patches by content, and the
     # distribution the chroot it builds in is made of -- a package built
-    # for another release, architecture, or from another mirror is not the
-    # same package.
+    # for another release, architecture, or from another feed is not the
+    # same package. The feeds go in whole rather than the distribution's
+    # bare 'uri': moving a feed -- to another snapshot, say -- leaves that
+    # 'uri' untouched while changing every version the build would see.
     #
     # The rootfs 'baseline' is deliberately not part of it. Packages are
     # built against the buildd chroot, which is made from the distribution
@@ -743,7 +746,7 @@ class Builder:
                      self.distro["source"],
                      self.distro["release"],
                      self.distro["architecture"],
-                     self.distro["uri"],
+                     "\n".join(apt_sources(self.distro, sources=True)),
                      self.chroot_architecture(package)]:
             digest.update(part.encode())
         # Patches and kernel configuration fragments count by content, not

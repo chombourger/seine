@@ -110,3 +110,36 @@ class UnknownFeedSettingIsRejected(avocado.Test):
             self.fail("parsing succeeded for an unknown feed setting!")
         except ValueError:
             pass
+
+class RebuiltWhenAFeedMoves(avocado.Test):
+    def stamp(self, feeds):
+        from seine.build    import BuildCmd
+        from seine.packages import Builder
+        from seine.sbuild   import BuilderImage
+        build = BuildCmd()
+        build.loads("""
+                packages:
+                    - source: apt://busybox
+                image:
+                    filename: feeds-test.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        spec = distro(feeds)
+        builder = Builder(spec, {}, BuilderImage(spec, {}))
+        package = build.image.packages[0]
+        return os.path.basename(builder.stamp(package)).rsplit("_", 1)[1]
+
+    def test(self):
+        # A snapshot timestamp lives in the feed, not in the distribution's
+        # 'uri'. Moving it changes every version the build resolves, so the
+        # packages already built are not the ones this asks for.
+        before = self.stamp([{"suite": "bookworm",
+                              "uri": "https://snapshot.debian.org/archive/debian/20260801T000000Z",
+                              "valid-until": False}])
+        after  = self.stamp([{"suite": "bookworm",
+                              "uri": "https://snapshot.debian.org/archive/debian/20260901T000000Z",
+                              "valid-until": False}])
+        self.assertNotEqual(before, after, "busybox was not invalidated")
