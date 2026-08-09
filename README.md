@@ -218,6 +218,7 @@ The following attributes are supported:
 | patches           | no       | Patches to apply, relative to this YAML file    |
 | priority          | no       | Build order, `0`-`999`, `500` by default        |
 | profiles          | no       | Debian build profiles (`--profiles`)            |
+| revision          | no       | Local version suffix, `mod1` by default         |
 | source_date_epoch | no       | Date to build at, seconds since the epoch       |
 
 Three kinds of `source` are understood:
@@ -261,9 +262,9 @@ git, so that packaging which records its own revision keeps working.
 Rebuilt packages are made available to the rest of the build through a
 local apt repository under `~/.cache/seine/packages/`: the playbooks
 install them with an ordinary `apt` task, later packages build against
-them, and the imager can boot a kernel from them. They are pinned above
-the distribution's own copies, so a rebuild is installed even when the
-archive has a higher version of the same package. The repository exists
+them, and the imager can boot a kernel from them. They are preferred over
+the distribution's own copies, and carry a local revision that sorts above
+its versions, so a rebuild is what gets installed. The repository exists
 only on the machine that builds the image and is removed from the image's
 apt configuration before it is packed up.
 
@@ -273,6 +274,19 @@ after. A package compiled and linked against another has to be rebuilt
 when that one changes, so a change to a library rebuilds what `before`
 and `after` say is built on it, however many packages down the chain.
 Use `--rebuild` to force one.
+
+##### Local versions
+
+Every rebuilt package is given a version of its own: a changelog entry is
+added marking the source `UNRELEASED` and appending `revision` to the
+version, `mod1` unless the specification says otherwise. So a rebuilt
+`busybox 1:1.37.0-6` is installed as `1:1.37.0-6+mod1`.
+
+It is there so that what a machine is running can be read off `dpkg -l`
+rather than guessed at, and so that apt prefers the rebuild on version
+rather than only because of the pin. The entry is dated at
+`SOURCE_DATE_EPOCH`, so it does not change between rebuilds of the same
+source.
 
 ##### Cross-compiling
 

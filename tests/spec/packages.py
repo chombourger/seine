@@ -152,6 +152,30 @@ class PackageReferencingItself(avocado.Test):
         except ValueError:
             pass
 
+class LocalRevision(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://busybox
+                    - source: apt://linux
+                      revision: acme3
+        """)
+        packages = build.image.packages
+        self.assertEqual(packages[0].revision, "mod1")
+        self.assertEqual(packages[1].revision, "acme3")
+
+class RevisionNotAString(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      revision: 3
+            """)
+            self.fail("parsing succeeded for a non-string 'revision'!")
+        except ValueError:
+            pass
+
 class DependentsRebuildWithTheirDependencies(avocado.Test):
     def stamps(self, profiles):
         from seine.packages import Builder

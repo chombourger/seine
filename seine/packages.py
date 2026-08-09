@@ -3,10 +3,15 @@
 
 import hashlib
 import os
+import re
 import shlex
 import shutil
 import tempfile
 import time
+
+from datetime import datetime
+from datetime import timezone
+from email.utils import format_datetime
 
 from seine.sbuild import BuilderImage
 from seine.sbuild import REPOSITORY
@@ -25,6 +30,11 @@ from seine.utils  import HOST_ARCH
 # debian/ directory and so cannot be built, and pairing one with packaging
 # taken from somewhere else is a second source this does not model yet.
 SCHEMES = ["apt", "git", "https"]
+
+# Appended to the version of every package rebuilt here, so it sorts above
+# the distribution's own and says plainly that it is not it. 'revision'
+# overrides it per package.
+DEFAULT_REVISION = "mod1"
 
 class Package:
     def __init__(self, spec, index):
@@ -45,6 +55,9 @@ class Package:
         self.options = self._parse_list(spec, "options")
         self.patches = self._parse_list(spec, "patches")
         self.profiles = self._parse_list(spec, "profiles")
+        self.revision = spec.get("revision", DEFAULT_REVISION)
+        if type(self.revision) != type(""):
+            raise self._error("'revision' shall be a string")
         self.source_date_epoch = self._parse_epoch(spec)
 
     def _error(self, message):
@@ -294,6 +307,38 @@ class Builder:
             volumes=[(os.path.dirname(sourcedir), WORKDIR)], workdir=source)
         return int(timestamp.strip())
 
+    # Gives the rebuild a version of its own, above the distribution's, and
+    # says in the changelog that it is not the distribution's package. What
+    # a machine is running can then be read off its versions rather than
+    # inferred, and apt prefers ours on version alone rather than only
+    # because of the pin.
+    #
+    # It matters twice over for a kernel: the packaging refuses to disable
+    # signed code in a release build, and rightly, since what comes out is
+    # not what was released -- so without this the rebuilt kernel keeps the
+    # name only a signed build may use, and nothing ever installs it.
+    #
+    # The entry is dated at SOURCE_DATE_EPOCH, like the patches committed to
+    # a git tree, so it does not change from one rebuild to the next.
+    def local_release(self, package, sourcedir, epoch):
+        path = os.path.join(sourcedir, "debian", "changelog")
+        with open(path, "r") as f:
+            changelog = f.read()
+
+        heading = re.match(r"^(\S+) \(([^)]+)\)", changelog)
+        if heading is None:
+            raise ValueError("package '%s': debian/changelog does not start "
+                             "with a version" % package.source)
+        source, version = heading.group(1), heading.group(2)
+        date = format_datetime(datetime.fromtimestamp(epoch, timezone.utc))
+
+        entry = ("%s (%s+%s) UNRELEASED; urgency=medium\n\n"
+                 "  * Rebuilt by seine.\n\n"
+                 " -- %s <%s>  %s\n\n"
+                 % (source, version, package.revision, GIT_NAME, GIT_EMAIL, date))
+        with open(path, "w") as f:
+            f.write(entry + changelog)
+
     # Cross-compiling is the default whenever the target is not the machine
     # seine runs on: emulating a foreign architecture for a whole package
     # build is slow enough to be worth avoiding, even though not every
@@ -319,6 +364,15 @@ class Builder:
     def build(self, package, sourcedir, epoch):
         workdir = os.path.dirname(sourcedir)
         volumes = [(workdir, WORKDIR), (self.repository(), REPOSITORY)]
+
+        # The fetched source came with a .dsc of its own, and ours is about
+        # to be written beside it under a different name -- the local
+        # revision changed the version. Take the old one out of the way
+        # first, so what is left is unambiguously what we built and sbuild
+        # cannot be handed the source we started from.
+        for name in os.listdir(workdir):
+            if name.endswith(".dsc"):
+                os.unlink(os.path.join(workdir, name))
 
         self.builderImage.exec(
             ["dpkg-source", "--build", os.path.basename(sourcedir)],
@@ -419,6 +473,7 @@ class Builder:
                      ",".join(package.options),
                      str(self.cross(package)),
                      str(package.source_date_epoch),
+                     package.revision,
                      self.distro["source"],
                      self.distro["release"],
                      self.distro["architecture"],
@@ -554,6 +609,7 @@ class Builder:
                 sourcedir = self.fetch(package, workdir)
                 epoch = self.source_date_epoch(package, sourcedir)
                 self.patch(package, sourcedir, epoch)
+                self.local_release(package, sourcedir, epoch)
 
                 # Everything written while the build ran is what it
                 # produced, whether it is a new file or one it overwrote.
@@ -588,12 +644,22 @@ GIT_EMAIL = "seine@localhost"
 #
 # Both files are written the same way everywhere so there is one answer to
 # "why is this version being installed": the repository is trusted, since
-# it is unsigned and was produced locally moments ago, and it is pinned
-# above everything else. The pin matches on an empty origin, which is what
-# a file:// repository has, and 1001 rather than 1000 is what allows a
-# rebuilt package to replace a *higher* version from the archive -- the
-# usual case, since a distribution that has since rebuilt the package will
-# have a binNMU of it.
+# it is unsigned and was produced locally moments ago, and it is preferred
+# over the distribution's. The pin matches on an empty origin, which is
+# what a file:// repository has.
+#
+# 900, deliberately not the 1001 that would let a rebuild replace a
+# *higher* version from the archive. Above 1000 apt will downgrade an
+# already-installed package to match, and a repository holding anything
+# older than what a chroot already has then breaks every build in it:
+#
+#   The following packages will be DOWNGRADED: linux-libc-dev
+#   E: Packages were downgraded and -y was used without --allow-downgrades
+#
+# It is not needed for its original purpose either, now that every rebuilt
+# package carries a local revision and so sorts above the distribution's
+# own version to begin with. This only decides which of two origins to
+# prefer, and leaves installed packages alone.
 SOURCES_LIST = "/etc/apt/sources.list.d/seine-packages.list"
 PREFERENCES  = "/etc/apt/preferences.d/seine-packages"
 
@@ -601,7 +667,7 @@ def apt_preferences_command():
     return " && ".join([
         "echo 'Package: *' > %s" % PREFERENCES,
         "echo 'Pin: origin \"\"' >> %s" % PREFERENCES,
-        "echo 'Pin-Priority: 1001' >> %s" % PREFERENCES,
+        "echo 'Pin-Priority: 900' >> %s" % PREFERENCES,
     ])
 
 def apt_configuration(mountpoint):
