@@ -10,6 +10,20 @@ requires:
     - french
     - selinux
 
+packages:
+    - source: apt://linux
+      extends:
+          kernel:
+              config:
+                  - configs/slim.fragment
+              flavour: amd64
+      profiles:
+          - pkg.linux.nokerneldbginfo
+          - pkg.linux.notools
+          - pkg.linux.nosource
+          - nodoc
+          - noudeb
+
 playbook:
     - name: some great packages
       priority: 250

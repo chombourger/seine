@@ -302,6 +302,85 @@ own -- Debian derives it from the changelog, so `6.1.0-50` becomes
 `6.1.0-51` -- which is what keeps a reconfigured kernel from being
 mistaken for the distribution's.
 
+##### Rebuilding the kernel
+
+Debian's kernel is built to boot anything, which makes it large for an
+appliance that knows what it runs on. Settings that only mean something
+for one kind of package go under `extends`, named after that kind:
+
+```
+packages:
+    - source: apt://linux
+      extends:
+          kernel:
+              config:
+                  - configs/slim.fragment
+              flavour: amd64
+      profiles:
+          - pkg.linux.nokerneldbginfo
+          - pkg.linux.notools
+```
+
+`config` lists kconfig fragments, given relative to the YAML file listing
+them, in the ordinary kernel syntax:
+
+```
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_SOUND is not set
+```
+
+The fragments are appended to Debian's own configuration stack for the
+target architecture, where they have the last word, and the kernel's
+`oldconfig` then turns off whatever the disabled options were holding up
+-- so a fragment says what it means instead of listing every symbol
+underneath it. This needs no patch: a kernel's configuration lives in
+`debian/`, which the source format lets seine edit directly, so a fragment
+does not go stale the way a patch against a configuration file would.
+
+`flavour` cuts the build down to one kernel. Debian builds every kernel an
+architecture has -- on amd64 that is a cloud flavour and a realtime kernel
+besides the ordinary one -- and each is a full build.
+
+A flavour name only means something within a `featureset`, which defaults
+to `none` and is where nearly every kernel wanted lives: amd64's realtime
+kernel and its ordinary one are *both* the `amd64` flavour, of the `rt`
+and `none` featuresets. Ask for a realtime kernel with:
+
+```
+          kernel:
+              featureset: rt
+              flavour: amd64
+```
+
+Naming a featureset or flavour the architecture does not have is an error
+listing the ones it does.
+
+Build profiles matter more here than elsewhere. `noudeb` is effectively
+required once a fragment removes drivers: the debian-installer udebs are
+checked against the list of modules the stock configuration produces, and
+that check fails at the very end, once the kernel has already been built.
+The `pkg.linux.*` ones are savings rather than necessities:
+`nokerneldbginfo` drops a debug package several times the size of the
+kernel itself, and `notools` and `nosource` drop packages an image does
+not install. Documentation is dropped by the standard `nodoc`.
+
+That distinction is worth care, because a profile a package does not
+define is accepted and ignored rather than reported -- a misspelt one
+costs a full kernel build to notice, and only if you were watching what
+came out of it.
+
+Two things to keep in mind when writing a fragment. The rebuilt kernel is
+pinned above the distribution's, so seine's own imager boots it as well --
+it needs virtio and 9p to reach its disks and the host's files, and an
+image whose kernel cannot mount its root file-system will fail at the end
+of a long build rather than the start. `examples/pc-image/configs/slim.fragment`
+documents what it leaves enabled, and why, for this reason.
+
+A kernel is also where the rebuild cache earns its keep: the fragments are
+part of what decides whether a package needs rebuilding, by content, so
+editing one is enough to ask for a new kernel -- and not editing one means
+the hours are paid once.
+
 ##### Cross-compiling
 
 When the target `architecture` differs from the host's, packages are
