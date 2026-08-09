@@ -73,6 +73,26 @@ The `seine` tool should then be usable from anywhere (since installed in
 seine build spec.yaml
 ```
 
+### Running the tests
+
+The specification tests under `tests/spec/` parse YAML and check what comes
+out of it, so they need neither containers nor a kvm-capable machine and run
+in about a second. They use
+[avocado](https://avocado-framework.github.io/), which Debian does not
+package -- install it in a virtual environment that can still see the
+system's `python3-guestfs`, which pip cannot install:
+
+```
+python3 -m venv --system-site-packages .venv
+. .venv/bin/activate
+pip install -r requirements.txt avocado-framework 'setuptools<81'
+avocado run tests/spec/*.py
+```
+
+`--system-site-packages` is what makes `guestfs` importable in there.
+`setuptools<81` is for avocado itself, which still imports `pkg_resources`;
+without it every test errors out before it runs.
+
 ### Specification files
 
 A system specification may be written in one or several YAML files comprised
