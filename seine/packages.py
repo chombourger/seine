@@ -708,7 +708,11 @@ rm -rf .pc
         output = self.builderImage.output(
             ["sh", "-c", Builder.SERIES_CHECK], volumes=[(workdir, WORKDIR)],
             workdir="%s/%s" % (WORKDIR, os.path.basename(sourcedir)))
-        failed = [n.strip() for n in output.split("\n") if len(n.strip()) > 0]
+        # quilt names a patch by its path from the source tree, and the
+        # series names it from debian/patches. Reported as the series
+        # writes it, since that is what 'drop-patches' is matched against.
+        failed = [n.strip().removeprefix("debian/patches/")
+                  for n in output.decode().split("\n") if len(n.strip()) > 0]
         if len(failed) == 0:
             return
 
@@ -830,6 +834,8 @@ rm -rf .pc
 
         if package.kernel_flavour is not None:
             self._restrict_flavour(package, sourcedir, architecture)
+        if package.kernel_upstream is not None:
+            self._disable_signed(package, sourcedir, architecture)
 
         # debian/control lists a binary package per flavour and is generated
         # from the files edited above, so it has to be rebuilt before the
@@ -980,15 +986,44 @@ rm -rf .pc
     # featureset and flavour an architecture has, and for the kernel each
     # of those is a full build -- on amd64, a cloud flavour and a realtime
     # kernel besides the one an appliance wants.
+    # Says in the source that this kernel is not a signed one, which a
+    # grafted kernel cannot be. Debian's Secure Boot support is not in its
+    # packaging: CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT comes from the
+    # features/all/lockdown patches, which change C source and so are not
+    # among the patches kept, and the build stops in a check that is right
+    # to stop it. DEBIAN_KERNEL_DISABLE_SIGNED does not reach that check
+    # -- it is read when debian/control is generated, here, and the check
+    # runs later inside the chroot -- so it is said in debian/config,
+    # where everything downstream of it agrees.
+    #
+    # Nothing is lost that was there to lose: the kernel Debian signs is
+    # built from a source package of its own, from a key we do not have.
+    # An image wanting the lockdown behaviour needs those patches kept
+    # and rebased.
+    def _disable_signed(self, package, sourcedir, architecture):
+        defines = os.path.join(sourcedir, "debian", "config", architecture,
+                               "defines.toml")
+        if os.path.isfile(defines):
+            self._toml_set(defines, "build", "enable_signed", "false")
+
     # Debian described its kernels in an ini-like debian/config/*/defines
     # and moved to a defines.toml. Both are still in the archive at once,
     # so which one the source carries decides, not the release built for.
     def _restrict_flavour(self, package, sourcedir, architecture):
-        root = os.path.join(sourcedir, "debian", "config", architecture)
-        defines = os.path.join(root, "defines.toml")
-        if os.path.isfile(defines):
-            return self._restrict_flavour_toml(package, defines, architecture)
-        return self._restrict_flavour_ini(package, sourcedir, architecture)
+        config = os.path.join(sourcedir, "debian", "config")
+        defines = os.path.join(config, architecture, "defines.toml")
+        if os.path.isfile(defines) == False:
+            return self._restrict_flavour_ini(package, sourcedir, architecture)
+
+        self._restrict_flavour_toml(package, defines, architecture,
+                                    ["flavour", "featureset"])
+        # The featuresets again, where they are declared for every
+        # architecture at once. Disabling one for amd64 alone leaves the
+        # packages that do not depend on an architecture -- the headers
+        # every flavour of a kernel shares -- still being built for it,
+        # and a featureset whose patches the graft dropped cannot be.
+        self._restrict_flavour_toml(package, os.path.join(config, "defines.toml"),
+                                    architecture, ["featureset"])
 
     # The toml describes flavours and featuresets as arrays of tables, each
     # taking an 'enable' that defaults to true, and a kernel is built only
@@ -996,12 +1031,13 @@ rm -rf .pc
     # are said false rather than removed: deleting table blocks means
     # getting the boundaries of a nested one right or building something
     # else silently.
-    def _restrict_flavour_toml(self, package, path, architecture):
+    def _restrict_flavour_toml(self, package, path, architecture, kinds):
         with open(path, "rb") as f:
             defines = tomllib.load(f)
 
-        wanted = {"flavour": package.kernel_flavour,
-                  "featureset": package.kernel_featureset}
+        wanted = {kind: name for kind, name in
+                  [("flavour", package.kernel_flavour),
+                   ("featureset", package.kernel_featureset)] if kind in kinds}
         for kind, name in wanted.items():
             names = [entry["name"] for entry in defines.get(kind, [])]
             if name not in names:
@@ -1013,18 +1049,7 @@ rm -rf .pc
 
         with open(path, "r") as f:
             lines = f.readlines()
-
-        # Every table header, with the block it opens. A dotted name --
-        # [flavour.defs] under [[flavour]] -- is a table within the block
-        # rather than one of its own; an undotted one always starts a
-        # block, including the [[flavour]] that follows another [[flavour]].
-        blocks = []
-        for index, line in enumerate(lines):
-            header = re.match(r"^\s*\[\[?([A-Za-z0-9_.-]+)\]?\]\s*$", line)
-            if header is None or "." in header.group(1):
-                continue
-            blocks.append((header.group(1), index))
-        blocks.append((None, len(lines)))
+        blocks = self._toml_blocks(lines)
 
         # Back to front, so the edits do not move the blocks still to come.
         for position in reversed(range(len(blocks) - 1)):
@@ -1040,6 +1065,45 @@ rm -rf .pc
                 lines[enabled] = "enable = false\n"
             else:
                 lines.insert(start + 1, "enable = false\n")
+
+        with open(path, "w") as f:
+            f.writelines(lines)
+
+    # Every table header, with the block it opens. A dotted name --
+    # [flavour.defs] under [[flavour]] -- is a table within the block
+    # rather than one of its own; an undotted one always starts a block,
+    # including the [[flavour]] that follows another [[flavour]]. The last
+    # entry has no name and marks where the file ends.
+    def _toml_blocks(self, lines):
+        blocks = []
+        for index, line in enumerate(lines):
+            header = re.match(r"^\s*\[\[?([A-Za-z0-9_.-]+)\]?\]\s*$", line)
+            if header is None or "." in header.group(1):
+                continue
+            blocks.append((header.group(1), index))
+        blocks.append((None, len(lines)))
+        return blocks
+
+    # Sets a key at the top level of a named block, adding the block if the
+    # file has none.
+    def _toml_set(self, path, block, key, value):
+        with open(path, "r") as f:
+            lines = f.readlines()
+
+        blocks = self._toml_blocks(lines)
+        for position in range(len(blocks) - 1):
+            kind, start = blocks[position]
+            if kind != block:
+                continue
+            end = blocks[position + 1][1]
+            existing = self._toml_line(lines, start, end, key)
+            if existing is not None:
+                lines[existing] = "%s = %s\n" % (key, value)
+            else:
+                lines.insert(start + 1, "%s = %s\n" % (key, value))
+            break
+        else:
+            lines += ["\n[%s]\n" % block, "%s = %s\n" % (key, value)]
 
         with open(path, "w") as f:
             f.writelines(lines)

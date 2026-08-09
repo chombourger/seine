@@ -722,7 +722,7 @@ class RestrictsFlavoursInToml(UpstreamKernel):
         # first time rather than add another, which is a duplicate key and
         # so a file that no longer parses at all.
         for _ in range(2):
-            self.builder()._restrict_flavour_toml(package, path, "amd64")
+            self.builder()._restrict_flavour_toml(package, path, "amd64", ["flavour", "featureset"])
             self.assertEqual(self.enabled(path),
                              {"flavour": ["amd64"], "featureset": ["none"]})
 
@@ -730,7 +730,7 @@ class RestrictsToAFlavourThatExists(RestrictsFlavoursInToml):
     def test(self):
         package = self.kernel("                              flavour: nosuch")
         try:
-            self.builder()._restrict_flavour_toml(package, self.defines(), "amd64")
+            self.builder()._restrict_flavour_toml(package, self.defines(), "amd64", ["flavour", "featureset"])
             self.fail("restricted the kernel to a flavour it does not have!")
         except ValueError:
             pass
@@ -838,3 +838,65 @@ class KernelsAreCountedByTheirAbiName(UpstreamKernel):
         self.assertEqual(builder._kernel_packages(path, "arm64"),
                          ["linux-image-6.18+unreleased-arm64",
                           "linux-image-6.18+unreleased-cloud-arm64"])
+
+# The root debian/config/defines.toml, where featuresets are declared for
+# every architecture at once and one of them already carries an 'enable'.
+ROOT_DEFINES_TOML = """[[featureset]]
+name = 'none'
+
+[[featureset]]
+name = 'rt'
+enable = true
+  [featureset.description]
+  parts = ['rt']
+
+[build]
+compiler = 'gcc-12'
+"""
+
+class RestrictsFeaturesetsWhereTheyAreShared(UpstreamKernel):
+    def test(self):
+        import tomllib
+        path = os.path.join(self.workdir, "defines.toml")
+        with open(path, "w") as f:
+            f.write(ROOT_DEFINES_TOML)
+
+        package = self.kernel("                              flavour: amd64")
+        # Twice, because this file already says 'enable' for rt: the
+        # second pass has to overwrite it rather than add a second one,
+        # which is a duplicate key and a file that no longer parses.
+        for _ in range(2):
+            self.builder()._restrict_flavour_toml(package, path, "amd64",
+                                                  ["featureset"])
+            with open(path, "rb") as f:
+                defines = tomllib.load(f)
+            self.assertEqual(
+                [(e["name"], e.get("enable", True)) for e in defines["featureset"]],
+                [("none", True), ("rt", False)])
+
+class SignedCodeIsDisabledForAGraftedKernel(UpstreamKernel):
+    def test(self):
+        import tomllib
+        path = os.path.join(self.workdir, "defines.toml")
+        with open(path, "w") as f:
+            f.write("[[flavour]]\nname = 'amd64'\n\n"
+                    "[build]\nenable_signed = true\nenable_vdso = true\n")
+
+        # Twice, to be sure the second pass settles the key rather than
+        # adding a second one, and that what else the block said survives:
+        # kernel_file and kernel_stem live there too, and losing them
+        # would leave the packaging not knowing what it builds.
+        for _ in range(2):
+            self.builder()._toml_set(path, "build", "enable_signed", "false")
+            with open(path, "rb") as f:
+                defines = tomllib.load(f)
+            self.assertEqual(defines["build"],
+                             {"enable_signed": False, "enable_vdso": True})
+
+class SignedCodeIsLeftAloneWithoutAGraft(UpstreamKernel):
+    def test(self):
+        # A rebuild of the distribution's own kernel still has the
+        # lockdown patches, so the check that wants them passes and there
+        # is nothing here to turn off.
+        package = self.kernel("                              flavour: amd64")
+        self.assertEqual(package.kernel_upstream, None)
