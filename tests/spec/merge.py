@@ -266,3 +266,60 @@ class MergeVolumeAttributes(avocado.Test):
 
 if __name__ == "__main__":
     avocado.main()
+
+class FeedsAreAddedRatherThanReplaced(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    release: bookworm
+                    feeds:
+                        - suite: bookworm
+                          uri: http://snapshot.debian.org/archive/debian/20260101
+                        - suite: bookworm-security
+                          uri: http://snapshot.debian.org/archive/debian-security/20260101
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        # A fragment adding one feed keeps the others, URIs and all: a
+        # specification built from a snapshot has changed exactly those,
+        # and restating them here is what it must not have to do.
+        build.loads("""
+                distribution:
+                    feeds:
+                        - suite: bookworm-backports
+        """)
+        feeds = build.spec["distribution"]["feeds"]
+        self.assertEqual([f["suite"] for f in feeds],
+                         ["bookworm", "bookworm-security", "bookworm-backports"])
+        self.assertEqual(feeds[0]["uri"],
+                         "http://snapshot.debian.org/archive/debian/20260101")
+
+class FeedsAreOverriddenBySuite(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    release: bookworm
+                    feeds:
+                        - suite: bookworm
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        # Naming a suite that is already there settles it rather than
+        # adding a second entry for it.
+        build.loads("""
+                distribution:
+                    feeds:
+                        - suite: bookworm
+                          valid-until: false
+        """)
+        feeds = build.spec["distribution"]["feeds"]
+        self.assertEqual(len(feeds), 1)
+        self.assertEqual(feeds[0]["valid-until"], False)

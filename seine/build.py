@@ -70,9 +70,32 @@ class BuildCmd(Cmd):
         if "distribution" in spec:
             if "distribution" in self.spec:
                 for setting in spec["distribution"]:
+                    if setting == "feeds":
+                        self._merge_feeds(spec["distribution"]["feeds"])
+                        continue
                     self.spec["distribution"][setting] = spec["distribution"][setting]
             elif "distribution" not in self.spec:
                 self.spec["distribution"] = spec["distribution"]
+
+    # Feeds are merged by suite rather than replaced wholesale, the way
+    # partitions and volumes are merged by label: a file adding one feed
+    # would otherwise have to restate the others to keep them, and
+    # restating them means writing down URIs a snapshot has changed.
+    # Naming a suite already listed still overrides it.
+    def _merge_feeds(self, feeds):
+        merged = self.spec["distribution"].get("feeds")
+        if merged is None:
+            self.spec["distribution"]["feeds"] = feeds
+            return
+
+        for feed in feeds:
+            suite = feed.get("suite") if type(feed) == type({}) else None
+            existing = [f for f in merged
+                        if type(f) == type({}) and f.get("suite") == suite]
+            if suite is not None and len(existing) > 0:
+                existing[0].update(feed)
+            else:
+                merged.append(feed)
 
     def _merge_imager(self, spec):
         if "imager" in spec:
