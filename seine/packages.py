@@ -37,8 +37,15 @@ SCHEMES = ["apt", "git", "https"]
 # the right one is both easier to write and less likely to conflict with
 # the next point release than a patch would be.
 EXTENSIONS = {
-    "kernel": ["config", "flavour"],
+    "kernel": ["config", "featureset", "flavour"],
 }
+
+# Debian identifies a kernel by architecture, featureset and flavour, and
+# a flavour name only means something within its featureset -- amd64's
+# realtime kernel and its ordinary one are both the 'amd64' flavour, of
+# the 'rt' and 'none' featuresets. So both have to be named to pick one,
+# and 'none' is the one nearly everything wants.
+DEFAULT_FEATURESET = "none"
 
 # Appended to the version of every package rebuilt here, so it sorts above
 # the distribution's own and says plainly that it is not it. 'revision'
@@ -147,9 +154,12 @@ class Package:
         kernel = extends.get("kernel", {})
         self.kernel_config = self._parse_list(kernel, "config")
         self.kernel_flavour = kernel.get("flavour")
-        if self.kernel_flavour is not None and \
-           type(self.kernel_flavour) != type(""):
-            raise self._error("'extends: kernel: flavour' shall be a string")
+        self.kernel_featureset = kernel.get("featureset", DEFAULT_FEATURESET)
+        for setting, value in [("flavour", self.kernel_flavour),
+                               ("featureset", self.kernel_featureset)]:
+            if value is not None and type(value) != type(""):
+                raise self._error(
+                    "'extends: kernel: %s' shall be a string" % setting)
         self.kernel = "kernel" in extends
         return extends
 
@@ -355,6 +365,135 @@ class Builder:
             volumes=[(os.path.dirname(sourcedir), WORKDIR)], workdir=source)
         return int(timestamp.strip())
 
+    # Applies the 'extends: kernel:' settings to a fetched kernel source.
+    #
+    # Debian assembles each kernel's configuration from a stack of kconfig
+    # files, the last of which is the architecture's own -- appending to it
+    # puts the specification's fragments last, where they win. The kernel's
+    # own 'oldconfig' then turns off whatever the disabled options were
+    # holding up, so a fragment says what it means rather than having to
+    # list every symbol underneath it.
+    #
+    # None of this needs a patch: the configuration lives in debian/, which
+    # a "3.0 (quilt)" package lets us edit directly.
+    def extend_kernel(self, package, sourcedir):
+        if package.kernel == False:
+            return
+
+        architecture = self.distro["architecture"]
+        config = os.path.join(sourcedir, "debian", "config", architecture, "config")
+        if os.path.isfile(config) == False:
+            raise ValueError(
+                "package '%s' is built as a kernel, but its source has no "
+                "debian/config/%s/config to configure"
+                % (package.source, architecture))
+
+        fragments = package.kernel_config_files()
+        for fragment in fragments:
+            if os.path.isfile(fragment) == False:
+                raise ValueError("package '%s': no such kernel configuration "
+                                 "fragment: %s" % (package.source, fragment))
+        if len(fragments) > 0:
+            with open(config, "a") as f:
+                for fragment in fragments:
+                    f.write("\n# %s, added by seine\n" % os.path.basename(fragment))
+                    with open(fragment, "r") as contents:
+                        f.write(contents.read())
+
+        if package.kernel_flavour is not None:
+            self._restrict_flavour(package, sourcedir, architecture)
+
+        # debian/control lists a binary package per flavour and is generated
+        # from the files edited above, so it has to be rebuilt before the
+        # source package is; sbuild would otherwise build every flavour the
+        # unmodified control file still mentions.
+        #
+        # DEBIAN_KERNEL_DISABLE_SIGNED is what makes the rebuild reachable
+        # at all. On the architectures that ship a signed kernel, 'linux'
+        # builds linux-image-<abi>-<flavour>-unsigned, and the package the
+        # linux-image-<flavour> metapackage actually depends on --
+        # linux-image-<abi>-<flavour> -- is built by a *different* source
+        # package, linux-signed-<arch>, which takes the unsigned one and
+        # signs it with a key we do not have. Rebuilding 'linux' alone
+        # therefore produces a kernel nothing installs: apt keeps taking
+        # the distribution's signed one, and the image looks fine while
+        # containing none of the configuration asked for.
+        #
+        # Turning signing off makes 'linux' build that name itself, which
+        # the pin then prefers. A locally rebuilt kernel could not have
+        # carried Debian's signature in any case; Secure Boot with one
+        # needs a key of your own.
+        #
+        # PYTHONDONTWRITEBYTECODE: the generator is written in python and
+        # leaves __pycache__ behind in debian/, which dpkg-source then
+        # refuses to put in a source package ("unwanted binary file").
+        self.builderImage.exec(
+            ["debian/rules", "debian/control"],
+            volumes=[(os.path.dirname(sourcedir), WORKDIR)],
+            workdir="%s/%s" % (WORKDIR, os.path.basename(sourcedir)),
+            environment={"PYTHONDONTWRITEBYTECODE": "1",
+                         "DEBIAN_KERNEL_DISABLE_SIGNED": "1"},
+            check=False)
+
+        if package.kernel_flavour is not None:
+            self._check_flavour(package, sourcedir, architecture)
+
+    # Restricting the build only takes effect once the rules have been
+    # regenerated from the edited defines, and that regeneration reports
+    # success by failing -- its own message says so. Rather than read
+    # anything into its exit status, check what it produced: the generated
+    # rules carry one setup target per kernel, named by featureset and
+    # flavour, and exactly the one asked for should be left.
+    #
+    # Asking what is left, rather than confirming that particular kernels
+    # are gone, is deliberate. A flavour name is not unique on its own --
+    # amd64's realtime and ordinary kernels are both the 'amd64' flavour --
+    # so a check phrased as "these should have disappeared" has nothing to
+    # look for in exactly the case that matters.
+    def _check_flavour(self, package, sourcedir, architecture):
+        control = os.path.join(sourcedir, "debian", "control")
+        if os.path.isfile(control) == False:
+            raise ValueError(
+                "package '%s': restricting the kernel left no debian/control "
+                "behind" % package.source)
+
+        kernels = self._kernel_packages(control, architecture)
+        if len(kernels) != 1:
+            raise ValueError(
+                "package '%s': restricting the kernel to %s/%s did not take "
+                "effect, %d kernels are still built for '%s': %s"
+                % (package.source, package.kernel_featureset,
+                   package.kernel_flavour, len(kernels), architecture,
+                   ", ".join(kernels)))
+
+    # The kernel image packages debian/control builds for an architecture.
+    # It is read as the deb822 it is rather than pattern-matched, and the
+    # binary packages are asked about rather than the generated makefiles:
+    # those write a target and its dependencies on one line, name families
+    # that are not kernels at all, and are altogether the wrong thing to
+    # be parsing to answer "what will this build".
+    def _kernel_packages(self, control, architecture):
+        found = []
+        with open(control, "r") as f:
+            stanzas = f.read().split("\n\n")
+
+        for stanza in stanzas:
+            fields = {}
+            for line in stanza.split("\n"):
+                field = re.match(r"^([A-Za-z-]+):\s*(.*)$", line)
+                if field:
+                    fields[field.group(1)] = field.group(2)
+            name = fields.get("Package", "")
+            if architecture not in fields.get("Architecture", "").split():
+                continue
+            # linux-image-<version>-<abi>-<something>, the versioned image
+            # packages, one per kernel -- as opposed to the metapackages
+            # and the debug packages beside them.
+            if re.match(r"^linux-image-[0-9][0-9.]*-[0-9]+-", name) and \
+               name.endswith("-dbg") == False:
+                found.append(name)
+        return sorted(set(found))
+
     # Gives the rebuild a version of its own, above the distribution's, and
     # says in the changelog that it is not the distribution's package. What
     # a machine is running can then be read off its versions rather than
@@ -386,6 +525,83 @@ class Builder:
                  % (source, version, package.revision, GIT_NAME, GIT_EMAIL, date))
         with open(path, "w") as f:
             f.write(entry + changelog)
+
+    # Cuts the build down to the one kernel asked for. Debian builds every
+    # featureset and flavour an architecture has, and for the kernel each
+    # of those is a full build -- on amd64, a cloud flavour and a realtime
+    # kernel besides the one an appliance wants.
+    def _restrict_flavour(self, package, sourcedir, architecture):
+        root = os.path.join(sourcedir, "debian", "config", architecture)
+        featuresets = self._defines_list(os.path.join(root, "defines"),
+                                         "featuresets")
+        if package.kernel_featureset not in featuresets:
+            raise ValueError(
+                "package '%s': architecture '%s' has no '%s' kernel "
+                "featureset, expected one of %s"
+                % (package.source, architecture, package.kernel_featureset,
+                   ", ".join(sorted(featuresets))))
+
+        defines = os.path.join(root, package.kernel_featureset, "defines")
+        flavours = self._defines_list(defines, "flavours")
+        if package.kernel_flavour not in flavours:
+            raise ValueError(
+                "package '%s': the '%s' featureset of architecture '%s' has "
+                "no '%s' kernel flavour, expected one of %s"
+                % (package.source, package.kernel_featureset, architecture,
+                   package.kernel_flavour, ", ".join(sorted(flavours))))
+
+        self._defines_replace(os.path.join(root, "defines"), "featuresets",
+                              [package.kernel_featureset])
+        self._defines_replace(defines, "flavours", [package.kernel_flavour])
+        # Both may name a flavour that has just been removed.
+        self._defines_set(defines, "default-flavour", package.kernel_flavour)
+        self._defines_set(defines, "quick-flavour", package.kernel_flavour)
+
+    # debian/config/*/defines are ini-like, with list values written one
+    # per line and indented under their key.
+    def _defines_list(self, path, key):
+        values = []
+        collecting = False
+        with open(path, "r") as f:
+            for line in f:
+                if line.strip() == "%s:" % key:
+                    collecting = True
+                elif collecting:
+                    if line.startswith(" ") and len(line.strip()) > 0:
+                        values.append(line.strip())
+                    else:
+                        break
+        return values
+
+    def _defines_replace(self, path, key, values):
+        with open(path, "r") as f:
+            lines = f.readlines()
+
+        out = []
+        skipping = False
+        for line in lines:
+            if line.strip() == "%s:" % key:
+                out.append(line)
+                out += [" %s\n" % v for v in values]
+                skipping = True
+            elif skipping:
+                if line.startswith(" ") and len(line.strip()) > 0:
+                    continue
+                skipping = False
+                out.append(line)
+            else:
+                out.append(line)
+
+        with open(path, "w") as f:
+            f.writelines(out)
+
+    def _defines_set(self, path, key, value):
+        with open(path, "r") as f:
+            lines = f.readlines()
+        out = ["%s: %s\n" % (key, value) if line.startswith("%s:" % key) else line
+               for line in lines]
+        with open(path, "w") as f:
+            f.writelines(out)
 
     # Cross-compiling is the default whenever the target is not the machine
     # seine runs on: emulating a foreign architecture for a whole package
@@ -522,14 +738,21 @@ class Builder:
                      str(self.cross(package)),
                      str(package.source_date_epoch),
                      package.revision,
+                     str(package.kernel_featureset),
+                     str(package.kernel_flavour),
                      self.distro["source"],
                      self.distro["release"],
                      self.distro["architecture"],
                      self.distro["uri"],
                      self.chroot_architecture(package)]:
             digest.update(part.encode())
-        for patch in package.patch_files():
-            with open(patch, "rb") as f:
+        # Patches and kernel configuration fragments count by content, not
+        # by name: editing one without touching the specification has to be
+        # enough to ask for a rebuild, all the more for a kernel, where the
+        # alternative is silently keeping one built from the fragment as it
+        # used to read.
+        for path in package.patch_files() + package.kernel_config_files():
+            with open(path, "rb") as f:
                 digest.update(f.read())
 
         # A package built against another has to be rebuilt when that one
@@ -658,6 +881,7 @@ class Builder:
                 epoch = self.source_date_epoch(package, sourcedir)
                 self.patch(package, sourcedir, epoch)
                 self.local_release(package, sourcedir, epoch)
+                self.extend_kernel(package, sourcedir)
 
                 # Everything written while the build ran is what it
                 # produced, whether it is a new file or one it overwrote.

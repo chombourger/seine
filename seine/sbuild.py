@@ -179,7 +179,12 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
      apt-get install -qqy --no-install-recommends \
          sbuild mmdebstrap uidmap zstd            \
          dpkg-dev devscripts quilt git            \
-         ca-certificates curl iproute2
+         ca-certificates curl iproute2                \
+         debhelper python3-jinja2 kernel-wedge
+# The last three are for kernel rebuilds: regenerating debian/control
+# after restricting the flavours runs the kernel's own generator, which
+# wants jinja2, kernel-wedge and dh_listpackages behind them. None of
+# them fails in a way that names what is missing.
 # iproute2 is not optional: sbuild brings the loopback interface up with
 # 'ip link set lo up' when it takes the network away from the build, and
 # dies rather than warns when 'ip' is missing.

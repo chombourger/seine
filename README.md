@@ -288,6 +288,20 @@ rather than only because of the pin. The entry is dated at
 `SOURCE_DATE_EPOCH`, so it does not change between rebuilds of the same
 source.
 
+For a kernel it is not optional. Debian's packaging refuses to disable
+signed code in a build that claims to be a release, and without disabling
+it the rebuild is named `linux-image-<abi>-<flavour>-unsigned` -- while
+the metapackage everything installs depends on
+`linux-image-<abi>-<flavour>`, which is built by a *different* source
+package that signs it with a key nobody else has. A kernel rebuilt
+without this is a kernel nothing installs, and the image comes out with
+the distribution's own, looking exactly as it should.
+
+Marking the source unreleased also earns the kernel an ABI name of its
+own -- Debian derives it from the changelog, so `6.1.0-50` becomes
+`6.1.0-51` -- which is what keeps a reconfigured kernel from being
+mistaken for the distribution's.
+
 ##### Cross-compiling
 
 When the target `architecture` differs from the host's, packages are

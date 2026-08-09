@@ -167,6 +167,21 @@ class KernelExtension(avocado.Test):
         self.assertEqual(package.kernel, True)
         self.assertEqual(package.kernel_flavour, "arm64")
         self.assertEqual(package.kernel_config, ["configs/embedded.fragment"])
+        # A flavour means nothing without a featureset, and nearly every
+        # kernel wanted is in 'none'.
+        self.assertEqual(package.kernel_featureset, "none")
+
+class KernelFeatureset(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              featureset: rt
+                              flavour: amd64
+        """)
+        self.assertEqual(build.image.packages[0].kernel_featureset, "rt")
 
 class PackageWithoutExtensions(avocado.Test):
     def test(self):
