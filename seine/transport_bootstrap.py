@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import tempfile
 
 from seine.bootstrap import Bootstrap
-from seine.utils     import ContainerEngine
 
 # Installing python3/python3-apt/attr is the same small apt install on
 # every single build, immediately made redundant by the next build against
@@ -24,19 +22,8 @@ class TransportBootstrap(Bootstrap):
         return os.path.join("transport-bootstrap", self.distro["architecture"], baseline_id)
 
     def create(self):
-        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write(TRANSPORT_BOOTSTRAP_SCRIPT.format(self.baseline))
-        dockerfile.close()
-        try:
-            ContainerEngine.run([
-                "build", "--rm",
-                "-t", self.name,
-                "-f", dockerfile.name], check=True)
-        finally:
-            if self.options["keep"]:
-                print("keeping '%s' (dockerfile for the transport bootstrap) as requested" % dockerfile.name)
-            else:
-                os.unlink(dockerfile.name)
+        return self.build(TRANSPORT_BOOTSTRAP_SCRIPT.format(self.baseline),
+                          base=self.baseline)
 
 TRANSPORT_BOOTSTRAP_SCRIPT = """
 FROM {0}

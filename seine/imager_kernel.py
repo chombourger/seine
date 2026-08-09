@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import tempfile
 
 from seine           import packages
 from seine.bootstrap import Bootstrap
@@ -36,22 +35,12 @@ class ImagerKernel(Bootstrap):
         return os.path.join("imager-kernel", self.distro["source"], self.distro["release"], self.distro["architecture"])
 
     def create(self):
-        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write(IMAGER_KERNEL_SCRIPT.format(
-            self.targetBootstrap.name, self.package,
-            packages.apt_setup_layer(self.distro)))
-        dockerfile.close()
-        try:
-            ContainerEngine.run([
-                "build", "--rm"] +
-                packages.build_volumes(self.distro) + [
-                "-t", self.name,
-                "-f", dockerfile.name], check=True)
-        finally:
-            if self.keep:
-                print("keeping '%s' (dockerfile for the imager kernel) as requested" % dockerfile.name)
-            else:
-                os.unlink(dockerfile.name)
+        return self.build(
+            IMAGER_KERNEL_SCRIPT.format(
+                self.targetBootstrap.name, self.package,
+                packages.apt_setup_layer(self.distro)),
+            base=self.targetBootstrap.name,
+            options=packages.build_volumes(self.distro))
 
     # Extracts vmlinuz and the matching /lib/modules/<version> tree from the
     # image built by create() into output_dir. Returns (vmlinuz, moduledir,

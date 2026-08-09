@@ -35,8 +35,7 @@ class AnsibleContainerRunner:
     # the container is torn down here since there's nothing left to export.
     def run(self, playbooks):
         transport = TransportBootstrap(self.baseline, self.distro, self.options)
-        if ContainerEngine.hasImage(transport.name) is False:
-            transport.create()
+        transport.create()
 
         cmd = ["container", "run", "-d",
                "-v", "%s:/var/cache/apt/archives" % ContainerEngine.downloads(self.distro["release"])]

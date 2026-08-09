@@ -66,11 +66,32 @@ def apt_sources(distro, sources=False):
             lines.append("deb-src %(uri)s %(suite)s %(components)s" % feed)
     return lines
 
+# Label carrying the digest of what an image was built from.
+INPUTS_LABEL = "seine.inputs"
+
 class ContainerEngine:
     @staticmethod
     def hasImage(name):
         result = ContainerEngine.run(["image", "exists", name], check=False)
         return result.returncode == 0
+    # The image's own id, which changes whenever it is rebuilt even under
+    # the same name -- what tells an image built from it that it is stale.
+    @staticmethod
+    def imageId(name):
+        if ContainerEngine.hasImage(name) == False:
+            return None
+        return ContainerEngine.check_output(
+            ["image", "inspect", "-f", "{{.Id}}", name]).decode().strip()
+    # A label seine put on an image when it built it. Missing for images
+    # built by a seine that did not label them, which then rebuilds them.
+    @staticmethod
+    def imageLabel(name, label):
+        if ContainerEngine.hasImage(name) == False:
+            return None
+        value = ContainerEngine.check_output(
+            ["image", "inspect", "-f", "{{index .Labels \"%s\"}}" % label,
+             name]).decode().strip()
+        return None if value in ["", "<no value>"] else value
     # Builds a throwaway container from 'image', streams its filesystem out
     # via 'container export' and extracts it into output_dir, then removes
     # the container. 'member_filter(name)', if given, is called for every

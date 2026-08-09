@@ -161,10 +161,8 @@ class Image:
             distro = self.spec["distribution"]
             self.hostBootstrap = HostBootstrap(distro, self.options)
             self.targetBootstrap = TargetBootstrap(distro, self.options)
-            if ContainerEngine.hasImage(self.hostBootstrap.name) == False:
-                self.hostBootstrap.create()
-            if ContainerEngine.hasImage(self.targetBootstrap.name) == False:
-                self.targetBootstrap.create(self.hostBootstrap)
+            self.hostBootstrap.create()
+            self.targetBootstrap.create(self.hostBootstrap)
 
             # Rebuild the packages the specification asked for, before the
             # playbooks that may want to install them run.

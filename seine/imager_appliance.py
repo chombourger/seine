@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import tempfile
 
 from seine           import packages
 from seine.bootstrap import Bootstrap
@@ -57,24 +56,14 @@ class ImagerAppliance(Bootstrap):
                 "cross-building the imager appliance for architecture "
                 "'%s' is not yet supported (unknown multiarch triplet)" % arch)
 
-        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write(IMAGER_APPLIANCE_SCRIPT.format(
-            self.imagerKernel.name, info["host_cpu"], info["triplet"]))
-        dockerfile.close()
-        try:
-            # This image is built FROM the imager kernel's, which may carry
-            # a sources.list pointing at the rebuilt packages: without the
-            # same mount its own 'apt-get update' would fail.
-            ContainerEngine.run([
-                "build", "--rm"] +
-                packages.build_volumes(self.distro) + [
-                "-t", self.name,
-                "-f", dockerfile.name], check=True)
-        finally:
-            if self.keep:
-                print("keeping '%s' (dockerfile for the imager appliance) as requested" % dockerfile.name)
-            else:
-                os.unlink(dockerfile.name)
+        # This image is built FROM the imager kernel's, which may carry a
+        # sources.list pointing at the rebuilt packages: without the same
+        # mount its own 'apt-get update' would fail.
+        return self.build(
+            IMAGER_APPLIANCE_SCRIPT.format(
+                self.imagerKernel.name, info["host_cpu"], info["triplet"]),
+            base=self.imagerKernel.name,
+            options=packages.build_volumes(self.distro))
 
     # Extracts kernel/initrd/root/README.fixed from the image built by
     # create() into output_dir/appliance. Returns that directory, suitable

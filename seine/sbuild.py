@@ -1,9 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import os
 import subprocess
-import tempfile
 
 from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
@@ -50,26 +50,13 @@ REPOSITORY = "/packages"
 
 class BuilderImage(Bootstrap):
     def create(self, hostBootstrap):
-        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write(BUILDER_IMAGE_SCRIPT.format(
+        return self.build(BUILDER_IMAGE_SCRIPT.format(
             hostBootstrap.name,
             self.distro["source"],
             self.distro["release"],
             self._sources(),
             "apt-{}".format(self.distro["release"]),
-            REPOSITORY))
-        dockerfile.close()
-
-        try:
-            ContainerEngine.run([
-                "build", "--rm",
-                "-t", self.name, "-f", dockerfile.name], check=True)
-        except subprocess.CalledProcessError:
-            raise
-        finally:
-            ContainerEngine.run(["image", "prune", "-f"])
-            os.unlink(dockerfile.name)
-        return self
+            REPOSITORY), base=hostBootstrap.name)
 
     # The builder installs build dependencies and fetches sources from the
     # same places the image itself is built from, with deb-src alongside so
@@ -143,9 +130,22 @@ class SbuildChroot:
     def exists(self):
         return os.path.isfile(self.path)
 
+    # The tarball keeps the name sbuild looks for, so what it was made from
+    # is recorded beside it instead -- the same idea as a package's stamp.
+    # Without it a chroot made from one set of feeds goes on being used
+    # after the specification has changed them, and packages are built
+    # against an archive the image no longer has.
+    @property
+    def inputs(self):
+        return "%s.inputs" % self.path
+
+    def current(self, digest):
+        if self.exists() == False or os.path.isfile(self.inputs) == False:
+            return False
+        with open(self.inputs, "r") as f:
+            return f.read().strip() == digest
+
     def create(self, builderImage):
-        if self.exists():
-            return self
 
         # --mode=root: we are already root inside the container, so there
         # is no reason to make mmdebstrap unshare a namespace of its own
@@ -161,6 +161,10 @@ class SbuildChroot:
             self.distro["release"],
             "/root/.cache/sbuild/%s" % self.filename,
         ] + apt_sources(self.distro)
+        digest = hashlib.sha256(" ".join(args).encode()).hexdigest()[:16]
+        if self.current(digest):
+            return self
+
         volumes = [(ContainerEngine.downloads(self.distro["release"]),
                     "/var/cache/mmdebstrap")]
         try:
@@ -168,9 +172,12 @@ class SbuildChroot:
         except subprocess.CalledProcessError:
             # A half-written tarball would be picked up as a usable chroot
             # by the next build.
-            if os.path.isfile(self.path):
-                os.unlink(self.path)
+            for path in [self.path, self.inputs]:
+                if os.path.isfile(path):
+                    os.unlink(path)
             raise
+        with open(self.inputs, "w") as f:
+            f.write("%s\n" % digest)
         return self
 
 BUILDER_IMAGE_SCRIPT = """

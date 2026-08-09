@@ -858,8 +858,7 @@ class Builder:
         if len(pending) == 0:
             return
 
-        if ContainerEngine.hasImage(self.builderImage.name) == False:
-            self.builderImage.create(hostBootstrap)
+        self.builderImage.create(hostBootstrap)
 
         # Every build has the repository in its sources.list, including the
         # first one, when nothing has been rebuilt yet: apt needs an index

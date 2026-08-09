@@ -12,7 +12,6 @@ import guestfs
 
 from seine.imager_appliance import ImagerAppliance
 from seine.imager_kernel    import ImagerKernel
-from seine.utils            import ContainerEngine
 from seine.utils            import HOST_ARCH
 
 DEVICE = "/dev/sda"
@@ -193,8 +192,7 @@ class Imager:
         if target_arch == HOST_ARCH:
             print("Preparing imager kernel...")
             imagerKernel = ImagerKernel(self.source)
-            if ContainerEngine.hasImage(imagerKernel.name) is False:
-                imagerKernel.create()
+            imagerKernel.create()
             vmlinuz, modules, version = imagerKernel.extract(output_dir)
             os.environ["SUPERMIN_KERNEL"] = vmlinuz
             os.environ["SUPERMIN_KERNEL_VERSION"] = version
@@ -206,13 +204,11 @@ class Imager:
 
         print("Preparing imager kernel...")
         imagerKernel = ImagerKernel(self.source)
-        if ContainerEngine.hasImage(imagerKernel.name) is False:
-            imagerKernel.create()
+        imagerKernel.create()
 
         print("Preparing cross-arch imager appliance for '%s'..." % target_arch)
         imagerAppliance = ImagerAppliance(self.source, imagerKernel)
-        if ContainerEngine.hasImage(imagerAppliance.name) is False:
-            imagerAppliance.create()
+        imagerAppliance.create()
         appliance_dir = imagerAppliance.extract(output_dir)
         os.environ["LIBGUESTFS_PATH"] = appliance_dir
         os.environ["LIBGUESTFS_BACKEND_SETTINGS"] = "force_tcg"

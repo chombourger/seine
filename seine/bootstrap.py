@@ -3,11 +3,12 @@
 
 from abc import ABC, abstractmethod
 
+import hashlib
 import os
-import subprocess
 import tempfile
 
 from seine.utils import ContainerEngine
+from seine.utils import INPUTS_LABEL
 from seine.utils import apt_sources
 
 class Bootstrap(ABC):
@@ -25,6 +26,49 @@ class Bootstrap(ABC):
     def defaultName(self):
         pass
 
+    # What this image was built from: the Dockerfile seine would write for
+    # it now, and the id of the image it is built FROM. Recorded on the
+    # image as a label, so an image is rebuilt when either has changed.
+    #
+    # Without it an image is only ever matched by name, and every image
+    # derived from another goes stale the moment that one is rebuilt --
+    # silently, since a stale image is a working image, just not one built
+    # from what the specification now says. An image built by a seine that
+    # did not label them has no label, and is rebuilt once.
+    def digest(self, dockerfile, base=None):
+        digest = hashlib.sha256()
+        digest.update(dockerfile.encode())
+        if base is not None:
+            digest.update((ContainerEngine.imageId(base) or "").encode())
+        return digest.hexdigest()[:16]
+
+    def current(self, dockerfile, base=None):
+        return ContainerEngine.imageLabel(self.name, INPUTS_LABEL) \
+               == self.digest(dockerfile, base)
+
+    # Builds the image from 'dockerfile' unless one built from the same
+    # inputs is already there.
+    def build(self, dockerfile, base=None, options=None):
+        if self.current(dockerfile, base):
+            return self
+
+        written = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        written.write(dockerfile)
+        written.close()
+        try:
+            ContainerEngine.run(
+                ["build", "--rm"] + (options or []) +
+                ["--label", "%s=%s" % (INPUTS_LABEL, self.digest(dockerfile, base)),
+                 "-t", self.name, "-f", written.name], check=True)
+        finally:
+            ContainerEngine.run(["image", "prune", "-f"])
+            if self.options.get("keep"):
+                print("keeping '%s' (dockerfile for %s) as requested"
+                      % (written.name, self.name))
+            else:
+                os.unlink(written.name)
+        return self
+
     def getName(self):
         if self._name is None:
             self._name = self.defaultName()
@@ -37,24 +81,10 @@ class Bootstrap(ABC):
 
 class HostBootstrap(Bootstrap):
     def create(self):
-        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write(HOST_BOOTSTRAP_SCRIPT.format(
+        return self.build(HOST_BOOTSTRAP_SCRIPT.format(
             self.distro["source"],
             self.distro["release"],
-            "apt-{}".format(self.distro["release"])))
-        dockerfile.close()
-
-        try:
-            ContainerEngine.run([
-                "build", "--rm", "--squash",
-                "-t", self.name, "-f", dockerfile.name],
-                check=True)
-        except subprocess.CalledProcessError:
-            raise
-        finally:
-            ContainerEngine.run(["image", "prune", "-f"])
-            os.unlink(dockerfile.name)
-        return self
+            "apt-{}".format(self.distro["release"])), options=["--squash"])
 
     def defaultName(self):
         return os.path.join("bootstrap", self.distro["source"], self.distro["release"], "all")
@@ -62,27 +92,13 @@ class HostBootstrap(Bootstrap):
 class TargetBootstrap(Bootstrap):
     def create(self, hostBootstrap):
         self.hostBootstrap = hostBootstrap
-        dockerfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        dockerfile.write(TARGET_BOOTSTRAP_SCRIPT.format(
+        return self.build(TARGET_BOOTSTRAP_SCRIPT.format(
             self.hostBootstrap.name,
             self.distro["architecture"],
             self.distro["release"],
             " ".join("'%s'" % source for source in apt_sources(self.distro)),
-            "mmdebstrap-{}".format(self.distro["release"])
-        ))
-        dockerfile.close()
-
-        try:
-            ContainerEngine.run([
-                "build", "--rm",
-                "-t", self.name,
-                "-f", dockerfile.name], check=True)
-        except subprocess.CalledProcessError:
-            raise
-        finally:
-            ContainerEngine.run(["image", "prune", "-f"])
-            os.unlink(dockerfile.name)
-        return self
+            "mmdebstrap-{}".format(self.distro["release"])),
+            base=self.hostBootstrap.name)
 
     def defaultName(self):
         return os.path.join(
