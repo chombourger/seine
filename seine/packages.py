@@ -211,6 +211,12 @@ WORKDIR = "/src"
 # dpkg-scanpackages pays them any attention.
 STAMPS = ".stamps"
 
+# Where the container that clones finds the ssh agent of the user seine
+# runs as, and the hosts that user already trusts. Fixed names rather than
+# the paths they have on the host, which nothing here needs to preserve.
+SSH_AUTH_SOCK = "/ssh-agent/sock"
+SSH_KNOWN_HOSTS = "/root/.ssh/known_hosts"
+
 class Builder:
     def __init__(self, distro, options, builderImage):
         self.builderImage = builderImage
@@ -219,9 +225,36 @@ class Builder:
 
     def fetch(self, package, workdir):
         volumes = [(workdir, WORKDIR)]
+        ssh_volumes, environment = self._ssh(package)
         self.builderImage.exec(
-            self._fetch_args(package), volumes=volumes, workdir=WORKDIR)
+            self._fetch_args(package), volumes=volumes + ssh_volumes,
+            workdir=WORKDIR, environment=environment)
         return self._source_dir(package, workdir)
+
+    # The clone runs in the container, so what authenticates it goes in too:
+    # the agent's socket and the hosts already known. The keys stay outside
+    # -- this container runs build scripts fetched from elsewhere, with more
+    # of the namespace privileges than the others seine builds. A key the
+    # agent does not hold cannot be used: 'ssh-add' it before building.
+    def _ssh(self, package):
+        if package.parameters.get("protocol") != "ssh":
+            return [], None
+
+        sock = os.environ.get("SSH_AUTH_SOCK")
+        if sock is None:
+            raise ValueError(
+                "'%s' is fetched over ssh but SSH_AUTH_SOCK is unset: there "
+                "is no agent to authenticate with" % package.source)
+
+        volumes = [(sock, SSH_AUTH_SOCK)]
+        # An unknown host key stops the clone with a prompt no one can
+        # answer. Trusting whatever answers is not the fix: without a
+        # known_hosts file the clone fails, which is right for a host the
+        # user has never met.
+        known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+        if os.path.isfile(known_hosts):
+            volumes.append((known_hosts, SSH_KNOWN_HOSTS))
+        return volumes, {"SSH_AUTH_SOCK": SSH_AUTH_SOCK}
 
     def _fetch_args(self, package):
         if package.scheme == "apt":

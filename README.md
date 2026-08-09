@@ -317,6 +317,36 @@ Three kinds of `source` are understood:
    `protocol` says otherwise, and `rev` is required: a branch name moves,
    and a build that cannot be repeated is not worth calling reproducible.
 
+##### Fetching over ssh
+
+A `git://` source whose remote wants an ssh key says so with
+`;protocol=ssh`, and names the user to log in as -- the clone happens in a
+container, where nothing else says who you are:
+
+```
+packages:
+    - source: git://git@example.com/team/busybox.git;protocol=ssh;rev=1e4a0c9
+```
+
+seine needs no option for this. It forwards the ssh agent of the user it
+runs as into the container that clones, along with `~/.ssh/known_hosts` so
+the remote can be recognised, and does so only for the packages that asked
+for ssh. Your private keys stay on the host: the container asks the agent
+to sign and never sees a key itself, which matters because that container
+runs build scripts fetched from elsewhere with more namespace privileges
+than the others seine builds.
+
+The consequence is that a key the agent does not hold is a key seine cannot
+use, whatever `~/.ssh/config` says about it. Load it first:
+
+```sh
+ssh-add ~/.ssh/id_example
+ssh-add -l          # what the build will be able to authenticate with
+```
+
+Building with no agent running at all fails with `SSH_AUTH_SOCK is unset`
+rather than hanging on a password prompt no one can answer.
+
 A package that build-depends on another has to be built after it. Say so
 with `after` (or `before`), naming the other package:
 

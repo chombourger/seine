@@ -187,8 +187,10 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
      apt-get install -qqy --no-install-recommends \
          sbuild mmdebstrap uidmap zstd            \
          dpkg-dev devscripts quilt git            \
-         ca-certificates curl iproute2                \
+         ca-certificates curl iproute2 openssh-client \
          debhelper python3-jinja2 kernel-wedge
+# openssh-client is what git needs to clone a ';protocol=ssh' source. It
+# is only a Recommends of git, and recommends are not installed here.
 # The last three are for kernel rebuilds: regenerating debian/control
 # after restricting the flavours runs the kernel's own generator, which
 # wants jinja2, kernel-wedge and dh_listpackages behind them. None of

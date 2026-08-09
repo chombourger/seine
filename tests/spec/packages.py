@@ -373,6 +373,65 @@ class PackagesFromSeveralFilesAreAppended(avocado.Test):
         build.parse()
         self.assertEqual([p.name for p in build.image.packages], ["one", "two"])
 
+# The container that clones is given the agent's socket and nothing else,
+# so what these check is that a key never leaves the host: the volumes a
+# fetch over ssh asks for, and that a fetch not over ssh asks for none.
+class SshFetch(avocado.Test):
+    def builder(self):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        return Builder(distro, {}, BuilderImage(distro, {}))
+
+    def package(self, source):
+        build = parse("""
+                packages:
+                    - source: %s
+        """ % source)
+        return build.image.packages[0]
+
+    def setUp(self):
+        self.sock = os.path.join(self.workdir, "agent.sock")
+        with open(self.sock, "w") as f:
+            pass
+        os.environ["SSH_AUTH_SOCK"] = self.sock
+
+    def tearDown(self):
+        os.environ.pop("SSH_AUTH_SOCK", None)
+
+class SshFetchForwardsTheAgent(SshFetch):
+    def test(self):
+        from seine.packages import SSH_AUTH_SOCK
+        package = self.package(
+            "git://git@example.com/team/busybox.git;protocol=ssh;rev=deadbeef")
+        volumes, environment = self.builder()._ssh(package)
+        self.assertIn((self.sock, SSH_AUTH_SOCK), volumes)
+        self.assertEqual(environment, {"SSH_AUTH_SOCK": SSH_AUTH_SOCK})
+        # Whatever else went in, no directory holding keys did.
+        for host, _ in volumes:
+            self.assertNotIn(os.path.basename(host), ["", ".ssh"])
+
+class SshFetchWithoutAnAgentIsRejected(SshFetch):
+    def test(self):
+        os.environ.pop("SSH_AUTH_SOCK")
+        package = self.package(
+            "git://git@example.com/team/busybox.git;protocol=ssh;rev=deadbeef")
+        try:
+            self.builder()._ssh(package)
+            self.fail("fetching over ssh succeeded with no agent running!")
+        except ValueError:
+            pass
+
+class FetchWithoutSshForwardsNothing(SshFetch):
+    def test(self):
+        for source in ["apt://busybox",
+                       "git://example.com/busybox.git;rev=deadbeef"]:
+            volumes, environment = self.builder()._ssh(self.package(source))
+            self.assertEqual(volumes, [], "'%s' asked for a volume" % source)
+            self.assertEqual(environment, None,
+                             "'%s' asked for an environment" % source)
+
 class DumpHidesInternalAttributes(avocado.Test):
     def test(self):
         build = parse("""
