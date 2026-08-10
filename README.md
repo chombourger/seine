@@ -42,6 +42,7 @@ may require disks/partitions to be created.
   * [Reproducibility](#reproducibility)
   * [A note on privileges](#a-note-on-privileges)
   * [What a build keeps, and getting the space back](#what-a-build-keeps-and-getting-the-space-back)
+  * [Moving a cache to another machine](#moving-a-cache-to-another-machine)
   * [Putting seine's directories on another drive](#putting-seines-directories-on-another-drive)
 * [Software Bill of Materials](#software-bill-of-materials)
 
@@ -1325,6 +1326,62 @@ running while a cache is removed under it may fail rather than refetch.
 Container images are not caches in this sense and are not listed. They live
 in seine's own podman storage under `~/.local/share/seine`, which podman
 itself empties (`podman --root ~/.local/share/seine system reset`).
+
+### Moving a cache to another machine
+
+`seine cache export` writes the caches to a tar and `seine cache import`
+reads one back, so a machine that has never built anything -- a fresh CI
+runner, a machine with no route to the archive -- can start with the caches
+of one that has:
+
+```
+seine cache export caches.tar          # the caches worth carrying
+seine cache export chroots.tar chroots # only the buildd chroots
+seine cache import caches.tar
+```
+
+`scratch` is left out: what is in it belongs to a build that is either
+running or has died. The tar is uncompressed unless its name ends in `.gz`
+or `.tgz`, since `.deb` and the chroot tarballs are compressed already.
+
+The `packages` cache is what makes this worth doing for a kernel. It holds
+the `.deb`s a rebuild produced *and* the stamps that say what they were
+built from, so the machine that imports it does not rebuild them:
+
+```
+$ seine cache import caches.tar
+$ seine build --dry-run pc-image.yml
+already built, and not built again:
+  linux                          linux_1d68f0bc3eba4bb0
+```
+
+A stamp is the digest of the specification, the patches and the feeds --
+nothing about the machine that built it -- so it means the same thing on
+both. Change any of them, or pass `--rebuild`, and the package is built
+again as usual.
+
+What is left out is what the other machine has no use for: `sbuild`'s build
+logs, which are a third of a gigabyte for a couple of kernels and describe
+a build that happened elsewhere; `apt-ftparchive`'s hash cache, which a
+build rewrites from the `.deb`s it finds; the lock files; and apt's
+`partial` directory of half-finished downloads. For two kernels across four
+release/architecture pairs that is 1.1 GiB of cache carried as 600 MiB. The
+`.changes` and `.buildinfo` are kept -- kilobytes, and what says how the
+`.deb`s beside them were made.
+
+`-` stands for stdout or stdin, so the two ends can be piped into each
+other and nothing is written to disk twice:
+
+```
+seine cache export - | ssh builder seine cache import -
+```
+
+An imported cache merges into what is already there, and importing the same
+tar twice does nothing the second time. A tar seine did not write is not
+trusted: every member has to be a file, a directory or a link under a cache
+seine knows, and has to stay inside it -- both where it is written and,
+for a link, what it points at. A member that does not fails the import
+rather than being quietly skipped.
 
 ### Putting seine's directories on another drive
 
