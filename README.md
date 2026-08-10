@@ -16,7 +16,33 @@ used to create the disk images including partitions and logical volumes that
 were specified. Installation of the boot-loader also happens there since it
 may require disks/partitions to be created.
 
+## Contents
+
+* [Introduction](#introduction)
+* [Getting started](#getting-started)
+  * [Installation](#installation)
+  * [Using an HTTP proxy](#using-an-http-proxy)
+* [Running the tests](#running-the-tests)
+  * [The full plan](#the-full-plan)
+* [Specification files](#specification-files)
+  * [distribution](#distribution)
+  * [defaults](#defaults)
+  * [packages](#packages)
+  * [imager](#imager)
+  * [playbook](#playbook)
+  * [image](#image)
+* [Kernels](#kernels)
+  * [Rebuilding the kernel](#rebuilding-the-kernel)
+  * [Bring your own kernel](#bring-your-own-kernel)
+* [Building](#building)
+  * [Building in parallel](#building-in-parallel)
+  * [Cross-compiling](#cross-compiling)
+  * [Reproducibility](#reproducibility)
+  * [A note on privileges](#a-note-on-privileges)
+* [Software Bill of Materials](#software-bill-of-materials)
+
 ## Getting started
+
 
 ### Installation
 
@@ -83,7 +109,26 @@ The `seine` tool should then be usable from anywhere (since installed in
 seine build spec.yaml
 ```
 
-### Running the tests
+### Using an HTTP proxy
+
+If `http_proxy` / `https_proxy` (and optionally `no_proxy`) are set in your
+environment, they are used for every network access a build makes: base image
+pulls, the host bootstrap's `apt-get`, `mmdebstrap` fetching the target
+root file-system, and the packages your playbooks install. Nothing needs to be
+set in the specification file, and the proxy is not baked into the image that
+is produced.
+
+```
+export http_proxy=http://proxy.example.com:3128
+export https_proxy=$http_proxy
+seine build spec.yaml
+```
+
+Note that the proxy must be reachable from inside a container: a proxy on
+`localhost` will not work, use the address the host is known by on the network
+(or the container gateway) instead.
+
+## Running the tests
 
 The tests under `tests/spec/` use
 [avocado](https://avocado-framework.github.io/), which Debian does not
@@ -114,7 +159,7 @@ avocado run --filter-by-tags='-container' --filter-by-tags-include-empty tests/s
 `--filter-by-tags-include-empty` is needed because avocado otherwise drops
 every test that carries no tag at all, which is all the others.
 
-#### The full plan
+### The full plan
 
 `tests/spec/images.py` builds images for real -- `pc-image` and
 `rpi4-image`, each for bookworm and for trixie, each with the 6.18 kernel
@@ -147,26 +192,7 @@ since an image comes out either way.
 Expect the arm64 pair to dominate the runtime: the kernel is
 cross-compiled, and the imager appliance runs under emulation.
 
-### Using an HTTP proxy
-
-If `http_proxy` / `https_proxy` (and optionally `no_proxy`) are set in your
-environment, they are used for every network access a build makes: base image
-pulls, the host bootstrap's `apt-get`, `mmdebstrap` fetching the target
-root file-system, and the packages your playbooks install. Nothing needs to be
-set in the specification file, and the proxy is not baked into the image that
-is produced.
-
-```
-export http_proxy=http://proxy.example.com:3128
-export https_proxy=$http_proxy
-seine build spec.yaml
-```
-
-Note that the proxy must be reachable from inside a container: a proxy on
-`localhost` will not work, use the address the host is known by on the network
-(or the container gateway) instead.
-
-### Specification files
+## Specification files
 
 A system specification may be written in one or several YAML files comprised
 of the following sections:
@@ -198,7 +224,7 @@ For each module listed in the `requires` section, a corresponding file with
 either the `.yml` or `.yaml` suffix shall be found in the folder of the yaml
 file requiring them.
 
-#### distribution
+### distribution
 
 The `distribution` section will be used to specify the primary source of the
 packages that will make the end system. The following attributes are supported:
@@ -210,7 +236,7 @@ packages that will make the end system. The following attributes are supported:
  * components: archive components every feed carries (`main` by default)
  * feeds: apt feeds to build from (see below)
 
-##### feeds
+#### feeds
 
 Without `feeds`, a system is built from the `release` alone. That is
 rarely what is wanted: it leaves out the updates accumulated since the
@@ -273,7 +299,7 @@ none, for vendor archives that ship binaries alone:
           sources: false
 ```
 
-##### Building from a snapshot
+#### Building from a snapshot
 
 A suite moves: the same specification built a week apart is built from
 different packages. To pin what a build sees, point the feeds at an
@@ -315,32 +341,46 @@ second build.
 
 When multiple YAML files are parsed, the last parsed value will be used.
 
-#### imager
+### defaults
 
-Producing the disk image (partitioning, formatting, installing the boot
-loader) is done by booting a throwaway [libguestfs](https://libguestfs.org/)
-appliance, which needs a kernel of its own. This is unrelated to the kernel
-package installed into the produced image by the `playbook` section -- a
-board needing a custom/vendor kernel still installs it via its own playbook
-as usual, while the imager itself is happy with a stock Debian kernel.
+An entry under `packages` means *build this*. `defaults` holds package
+entries that only describe a package, and are used if something else asks
+for it to be built:
 
- * kernel: Debian kernel package to boot the imager appliance with (e.g.
-   `linux-image-amd64`). Defaults to a sensible package for the target
-   `architecture` if not specified.
- * hypervisor: path to the qemu system emulator to boot the appliance
-   with (e.g. `/usr/bin/qemu-system-aarch64`). Only needed when
-   cross-building for an `architecture` other than the host's; defaults
-   to a sensible binary for the target `architecture` if not specified.
+```
+# examples/common/amd64.yaml
+defaults:
+    packages:
+        - source: apt://linux
+          extends:
+              kernel:
+                  flavour: amd64
+```
 
-When cross-building (target `architecture` different from the host's),
-seine automatically builds a libguestfs "fixed appliance" for the target
-architecture instead of relying on the host's own kernel (which supermin,
-libguestfs's appliance builder, cannot cross-build). This runs the target
-architecture under emulation to build the appliance once, then caches it --
-the first cross-arch build is noticeably slower than same-arch builds, but
-that cost isn't paid again on subsequent builds.
+That file now says which kernel `amd64` means without every amd64 image
+rebuilding a kernel it never asked for. Two rules:
 
-#### packages
+ * **A default never creates a package.** If nothing under `packages`
+   names it, it describes nothing and is dropped.
+ * **The last default loaded wins**, and anything under `packages` beats
+   all of them. Files are listed from the general to the particular --
+   an architecture, then a board, then what is being built -- so the
+   particular file gets the last word, while the file actually asking
+   for the build outranks every description of it.
+
+Settings are merged one at a time, so a board naming a `featureset` keeps
+the `flavour` its architecture gave it. Entries are matched by source
+package, as under `packages`, so a default written `apt://linux` applies
+to a specification that pinned `apt://linux=6.12.101-1`.
+
+A default is parsed whether or not anything uses it: a misspelt setting
+in an architecture file is reported by the file that holds it rather than
+waiting for the one image that rebuilds a kernel.
+
+`defaults` holds package entries only. Playbooks already append rather
+than replace, and the other sections are merged by key.
+
+### packages
 
 The `packages` section lists Debian source packages to rebuild before the
 image is composed, for instance to carry a patch the distribution does not
@@ -362,7 +402,7 @@ The following attributes are supported:
 | source            | yes      | URI the source is fetched from (see below)      |
 | after             | no       | Packages that shall be built before this one    |
 | before            | no       | Packages that shall be built after this one     |
-| cross             | no       | Cross-compile (see below), defaults to the sane |
+| cross             | no       | Cross-compile (see [Cross-compiling](#cross-compiling)) |
 | options           | no       | Debian build options (`DEB_BUILD_OPTIONS`)      |
 | patches           | no       | Patches to apply, relative to this YAML file    |
 | priority          | no       | Build order, `0`-`999`, `500` by default        |
@@ -383,7 +423,7 @@ Three kinds of `source` are understood:
    `protocol` says otherwise, and `rev` is required: a branch name moves,
    and a build that cannot be repeated is not worth calling reproducible.
 
-##### Fetching over ssh
+#### Fetching over ssh
 
 A `git://` source whose remote wants an ssh key says so with
 `;protocol=ssh`, and names the user to log in as -- the clone happens in a
@@ -466,7 +506,7 @@ when that one changes, so a change to a library rebuilds what `before`
 and `after` say is built on it, however many packages down the chain.
 Use `--rebuild` to force one.
 
-##### Local versions
+#### Local versions
 
 Every rebuilt package is given a version of its own: a changelog entry is
 added marking the source `UNRELEASED` and appending `revision` to the
@@ -493,11 +533,209 @@ own -- Debian derives it from the changelog, so `6.1.0-50` becomes
 `6.1.0-51` -- which is what keeps a reconfigured kernel from being
 mistaken for the distribution's.
 
-##### Rebuilding the kernel
+### imager
+
+Producing the disk image (partitioning, formatting, installing the boot
+loader) is done by booting a throwaway [libguestfs](https://libguestfs.org/)
+appliance, which needs a kernel of its own. This is unrelated to the kernel
+package installed into the produced image by the `playbook` section -- a
+board needing a custom/vendor kernel still installs it via its own playbook
+as usual, while the imager itself is happy with a stock Debian kernel.
+
+ * kernel: Debian kernel package to boot the imager appliance with (e.g.
+   `linux-image-amd64`). Defaults to a sensible package for the target
+   `architecture` if not specified.
+ * hypervisor: path to the qemu system emulator to boot the appliance
+   with (e.g. `/usr/bin/qemu-system-aarch64`). Only needed when
+   cross-building for an `architecture` other than the host's; defaults
+   to a sensible binary for the target `architecture` if not specified.
+
+When cross-building (target `architecture` different from the host's),
+seine automatically builds a libguestfs "fixed appliance" for the target
+architecture instead of relying on the host's own kernel (which supermin,
+libguestfs's appliance builder, cannot cross-build). This runs the target
+architecture under emulation to build the appliance once, then caches it --
+the first cross-arch build is noticeably slower than same-arch builds, but
+that cost isn't paid again on subsequent builds.
+
+### playbook
+
+Ansible playbooks will be used to add packages to the system or configure them.
+The `playbook` section is a list of `name` / `tasks` pairs:
+
+```
+playbook:
+    - name: first playbook
+      tasks:
+          ...
+    - name: second playbook
+      tasks:
+          ...
+```
+
+Playbooks may be given a priority between `0` and `999` with `0` being the
+highest priority and `500` the default:
+
+```
+playbook:
+    - name: first playbook but apply towards the end
+      priority: 900
+      tasks:
+          ...
+    - name: second playbook but apply early
+      priority: 100
+      tasks:
+          ...
+```
+
+Frequently used tasks include:
+ * `apt`
+ * `debconf`
+
+Additional packages may be installed as follows:
+
+```
+playbook:
+    - name: install essential packages
+      tasks:
+          - name: base set
+            apt:
+                state: present
+                name:
+                    - ssh
+                    - vim
+```
+
+and here is how the `locales` package may be configured:
+
+```
+playbook:
+    -  name: configure locales to French
+       tasks:
+        - name: set default locale to fr_FR.UTF-8
+          debconf:
+              name: locales
+              question: locales/default_environment_locale
+              value: fr_FR.UTF-8
+              vtype: select
+```
+
+A minimal image that includes `apt` is used as starting point; `seine` adds
+just `python3`/`python3-apt`/`attr` to it (removed again once the build is
+done) and runs `ansible-playbook` from the host, connecting into the
+container instead of installing `ansible` there -- this keeps ansible
+itself off the (possibly foreign-architecture, emulated) target entirely.
+Playbooks execute according to their `priority`. A different starting point
+may be specified with the `baseline` keyword in the `playbook`:
+
+```
+playbook:
+    - baseline: debian:bookworm
+      tasks:
+          - name: ...
+            apt:
+                ...
+```
+
+As `seine` uses `podman` behind the scene to create the root file-system in
+a container, the `image` specified as `baseline` may be anything that can be
+fetched from the `podman` or `docker` registries. The `image` shall however
+have `apt` pre-installed (and `qemu-user-static` binaries for the host
+architecture when building images for a foreign architecture).
+ 
+
+### image
+
+Last but not least, the 'image' section defines the partition and volumes to be
+created in the disk image. The following top-level attributes are supported:
+
+ * `filename`
+ * `bootlets`
+ * `partitions`
+ * `size`
+ * `table`
+ * `volumes`
+
+An `image` shall have at least one partition defined and an output `filename`
+specified. The `size` of the disk `image` may be omitted and it will then be
+estimated (as the sum of the various partition sizes plus some overhead). The
+partition `table` may either be `gpt` or `msdos`.
+
+#### bootlets
+
+Bootlets are binary firmware files placed at specific locations on the boot
+media so they can be found by the hardware boot ROM. Examples include: u-boot,
+Arm Trusted Firmware (ATF), etc.
+
+The following attributes are supported:
+
+| Attribute | Required | Description                              |
+| --------- |:--------:| ---------------------------------------- |
+| align     | no       | Expected alignment in Kilobytes (KiB)    |
+| file      | yes      | Path to the binary to be copied (*)      |
+
+(*) The specified file will be copied from the image created by the `playbook`,
+    a package should therefore install it.
+
+#### partitions
+
+Disk partitions are defined with the following attributes:
+
+| Attribute | Required | Description                              |
+| --------- |:--------:| ---------------------------------------- |
+| label     | yes      | Name of the partition                    |
+| flags     | no       | Partition flags (see below)              |
+| group     | no       | Name of the LVM group to join            |
+| size      | no       | Size of the partition                    |
+| type      | no       | File-system type (e.g. `ext4`)           |
+| where     | yes*     | Where to mount the partition file-system |
+
+(*) Required unless the partition is a LVM physical volume
+
+A partition may have the following flags:
+
+| Flag     | Description                                          |
+| -------- | ---------------------------------------------------- |
+| boot     | system may boot from this partition                  |
+| lvm      | partition will be used as a physical volume for LVM  |
+
+When using a `msdos` partition table, the following flags are also available
+(but are mutually exclusive):
+
+ * primary
+ * extended
+ * logical
+
+A `group` shall be defined for every single partition using the `lvm` flag and
+may have one or several partitions attached to it. Groups implicitly defined
+in the `partitions` section may be referenced by `volumes` (see below).
+
+#### volumes
+
+Logical volumes share many of the attributes defined above for `partitions` but
+more specifically:
+
+| Attribute | Required | Description                              |
+| --------- |:--------:| ---------------------------------------- |
+| label     | yes      | Name of the volume                       |
+| group     | yes      | Name of the LVM group to join            |
+| size      | no       | Size of the partition                    |
+| type      | no       | File-system type (e.g. `ext4`)           |
+| where     | yes      | Where to mount the volume file-system    |
+
+## Kernels
 
 Debian's kernel is built to boot anything, which makes it large for an
-appliance that knows what it runs on. Settings that only mean something
-for one kind of package go under `extends`, named after that kind:
+appliance that knows what it runs on -- and the kernel it is built from
+is the one Debian happens to package. Both are things a specification
+can change: the first by reconfiguring the distribution's own kernel,
+the second by building a tree Debian does not package at all, under the
+distribution's packaging.
+
+### Rebuilding the kernel
+
+Settings that only mean something for one kind of package go under
+`extends`, named after that kind:
 
 ```
 packages:
@@ -586,7 +824,7 @@ part of what decides whether a package needs rebuilding, by content, so
 editing one is enough to ask for a new kernel -- and not editing one means
 the hours are paid once.
 
-##### Bring your own kernel
+### Bring your own kernel
 
 `upstream` builds a tree the distribution does not package -- a stable
 release from kernel.org, a release candidate, or a vendor's BSP -- under
@@ -659,7 +897,7 @@ A setting already given wins, and `requires` loads what it names after
 the file that asked for it -- so the specification reaching for a
 fragment is the one that gets to override it.
 
-###### What is kept of Debian's patches
+#### What is kept of Debian's patches
 
 Debian's series is not applied whole. What is taken automatically is the
 *packaging*: the patches without which the build does not work. What is
@@ -757,7 +995,7 @@ reports *every* patch that fails at once, with the files each one wanted
 matching nothing is an error rather than a no-op, so a list does not
 quietly go stale when the packaging is moved forward.
 
-###### Bringing your own patches
+#### Bringing your own patches
 
 `keep-patches` takes the decision over. It is a list of globs matched
 against the series, and naming it replaces the content-derived selection
@@ -810,7 +1048,7 @@ specification overrides. And signed code is turned off for a grafted
 kernel, since the Secure Boot signature is issued by a key nobody outside
 Debian holds.
 
-###### What you do not get
+#### What you do not get
 
 Worth being plain about, since the aim here is a true replacement:
 
@@ -840,7 +1078,12 @@ Worth being plain about, since the aim here is a true replacement:
    the kernel and the image itself get its headers. Usually what you
    want; worth knowing when it is not.
 
-##### Building in parallel
+## Building
+
+What a specification says is one thing; how the build that reads it
+runs is another. These apply whatever is being built.
+
+### Building in parallel
 
 A build is a handful of steps -- bootstraps, one task per package, the
 root file-system, the imager appliance, the image -- and most of them do
@@ -880,7 +1123,7 @@ partial disk image is removed. Killing a task skips all of that to save
 minutes of a build that has already failed, and leaves the mess for the
 next one. The failure is reported with the steps that never ran.
 
-##### Cross-compiling
+### Cross-compiling
 
 When the target `architecture` differs from the host's, packages are
 cross-compiled by default: sbuild builds them in a chroot of the host's
@@ -900,7 +1143,7 @@ chroot of the target's own architecture instead, running its binaries under
 host's binfmt registration to use the `F` (fix-binary) flag, which is what
 Debian's `qemu-user-static` package sets up.
 
-##### Reproducibility
+### Reproducibility
 
 Builds are given a `SOURCE_DATE_EPOCH`, taken from the package's changelog
 unless `source_date_epoch` says otherwise, and sbuild builds under a fixed
@@ -914,7 +1157,7 @@ unpinned image. Pin the versions in the `apt://` sources, or pin the whole
 archive by building from a snapshot (see
 [Building from a snapshot](#building-from-a-snapshot)).
 
-##### A note on privileges
+### A note on privileges
 
 Packages are built by `sbuild` in its `unshare` mode, inside a container
 that is given `CAP_SYS_ADMIN` and an unmasked `/proc`, which the nested
@@ -924,209 +1167,6 @@ unprivileged as far as the kernel is concerned: uid 0 inside it is the
 unprivileged user running seine, so what it can reach is that user's own
 files rather than the machine's. No `sudo` is used or required, as
 elsewhere in seine.
-
-#### defaults
-
-An entry under `packages` means *build this*. `defaults` holds package
-entries that only describe a package, and are used if something else asks
-for it to be built:
-
-```
-# examples/common/amd64.yaml
-defaults:
-    packages:
-        - source: apt://linux
-          extends:
-              kernel:
-                  flavour: amd64
-```
-
-That file now says which kernel `amd64` means without every amd64 image
-rebuilding a kernel it never asked for. Two rules:
-
- * **A default never creates a package.** If nothing under `packages`
-   names it, it describes nothing and is dropped.
- * **The last default loaded wins**, and anything under `packages` beats
-   all of them. Files are listed from the general to the particular --
-   an architecture, then a board, then what is being built -- so the
-   particular file gets the last word, while the file actually asking
-   for the build outranks every description of it.
-
-Settings are merged one at a time, so a board naming a `featureset` keeps
-the `flavour` its architecture gave it. Entries are matched by source
-package, as under `packages`, so a default written `apt://linux` applies
-to a specification that pinned `apt://linux=6.12.101-1`.
-
-A default is parsed whether or not anything uses it: a misspelt setting
-in an architecture file is reported by the file that holds it rather than
-waiting for the one image that rebuilds a kernel.
-
-`defaults` holds package entries only. Playbooks already append rather
-than replace, and the other sections are merged by key.
-
-#### playbook
-
-Ansible playbooks will be used to add packages to the system or configure them.
-The `playbook` section is a list of `name` / `tasks` pairs:
-
-```
-playbook:
-    - name: first playbook
-      tasks:
-          ...
-    - name: second playbook
-      tasks:
-          ...
-```
-
-Playbooks may be given a priority between `0` and `999` with `0` being the
-highest priority and `500` the default:
-
-```
-playbook:
-    - name: first playbook but apply towards the end
-      priority: 900
-      tasks:
-          ...
-    - name: second playbook but apply early
-      priority: 100
-      tasks:
-          ...
-```
-
-Frequently used tasks include:
- * `apt`
- * `debconf`
-
-Additional packages may be installed as follows:
-
-```
-playbook:
-    - name: install essential packages
-      tasks:
-          - name: base set
-            apt:
-                state: present
-                name:
-                    - ssh
-                    - vim
-```
-
-and here is how the `locales` package may be configured:
-
-```
-playbook:
-    -  name: configure locales to French
-       tasks:
-        - name: set default locale to fr_FR.UTF-8
-          debconf:
-              name: locales
-              question: locales/default_environment_locale
-              value: fr_FR.UTF-8
-              vtype: select
-```
-
-A minimal image that includes `apt` is used as starting point; `seine` adds
-just `python3`/`python3-apt`/`attr` to it (removed again once the build is
-done) and runs `ansible-playbook` from the host, connecting into the
-container instead of installing `ansible` there -- this keeps ansible
-itself off the (possibly foreign-architecture, emulated) target entirely.
-Playbooks execute according to their `priority`. A different starting point
-may be specified with the `baseline` keyword in the `playbook`:
-
-```
-playbook:
-    - baseline: debian:bookworm
-      tasks:
-          - name: ...
-            apt:
-                ...
-```
-
-As `seine` uses `podman` behind the scene to create the root file-system in
-a container, the `image` specified as `baseline` may be anything that can be
-fetched from the `podman` or `docker` registries. The `image` shall however
-have `apt` pre-installed (and `qemu-user-static` binaries for the host
-architecture when building images for a foreign architecture).
- 
-#### image
-
-Last but not least, the 'image' section defines the partition and volumes to be
-created in the disk image. The following top-level attributes are supported:
-
- * `filename`
- * `bootlets`
- * `partitions`
- * `size`
- * `table`
- * `volumes`
-
-An `image` shall have at least one partition defined and an output `filename`
-specified. The `size` of the disk `image` may be omitted and it will then be
-estimated (as the sum of the various partition sizes plus some overhead). The
-partition `table` may either be `gpt` or `msdos`.
-
-#### bootlets
-
-Bootlets are binary firmware files placed at specific locations on the boot
-media so they can be found by the hardware boot ROM. Examples include: u-boot,
-Arm Trusted Firmware (ATF), etc.
-
-The following attributes are supported:
-
-| Attribute | Required | Description                              |
-| --------- |:--------:| ---------------------------------------- |
-| align     | no       | Expected alignment in Kilobytes (KiB)    |
-| file      | yes      | Path to the binary to be copied (*)      |
-
-(*) The specified file will be copied from the image created by the `playbook`,
-    a package should therefore install it.
-
-#### partitions
-
-Disk partitions are defined with the following attributes:
-
-| Attribute | Required | Description                              |
-| --------- |:--------:| ---------------------------------------- |
-| label     | yes      | Name of the partition                    |
-| flags     | no       | Partition flags (see below)              |
-| group     | no       | Name of the LVM group to join            |
-| size      | no       | Size of the partition                    |
-| type      | no       | File-system type (e.g. `ext4`)           |
-| where     | yes*     | Where to mount the partition file-system |
-
-(*) Required unless the partition is a LVM physical volume
-
-A partition may have the following flags:
-
-| Flag     | Description                                          |
-| -------- | ---------------------------------------------------- |
-| boot     | system may boot from this partition                  |
-| lvm      | partition will be used as a physical volume for LVM  |
-
-When using a `msdos` partition table, the following flags are also available
-(but are mutually exclusive):
-
- * primary
- * extended
- * logical
-
-A `group` shall be defined for every single partition using the `lvm` flag and
-may have one or several partitions attached to it. Groups implicitly defined
-in the `partitions` section may be referenced by `volumes` (see below).
-
-#### volumes
-
-Logical volumes share many of the attributes defined above for `partitions` but
-more specifically:
-
-| Attribute | Required | Description                              |
-| --------- |:--------:| ---------------------------------------- |
-| label     | yes      | Name of the volume                       |
-| group     | yes      | Name of the LVM group to join            |
-| size      | no       | Size of the partition                    |
-| type      | no       | File-system type (e.g. `ext4`)           |
-| where     | yes      | Where to mount the volume file-system    |
 
 ## Software Bill of Materials
 
