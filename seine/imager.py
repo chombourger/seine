@@ -217,11 +217,26 @@ class Imager:
         real_hv = self._hypervisor(target_arch)
         return self._write_qemu_wrapper(output_dir, target_arch, real_hv)
 
-    # Writing the image: partitions, file-systems, the boot loader. It
-    # needs the disk to write into, and its own kernel comes from the
-    # repository the packages landed in.
-    def task(self):
-        return Task("image", self._build, needs=["disk", "packages"])
+    # Two steps rather than one. The appliance -- seine's own kernel and
+    # the guestfs tooling around it -- is made from the packages and the
+    # target bootstrap, and has nothing to do with the root file-system
+    # being built for the image. Kept as one step it waited for a root
+    # file-system it never reads, which for an emulated architecture is
+    # the longest part of the build.
+    #
+    # It does need the packages: its kernel is installed from the
+    # repository they land in, which is what makes it boot the kernel the
+    # specification rebuilt rather than the distribution's.
+    def tasks(self):
+        return [
+            Task("appliance", self._prepare,
+                 needs=["bootstrap-target", "packages"]),
+            Task("image", self._build, needs=["disk", "appliance"]),
+        ]
+
+    def _prepare(self):
+        self._output_dir = tempfile.mkdtemp(dir=os.getcwd())
+        self._hypervisor_path = self._prepare_appliance(self._output_dir)
 
     def _build(self):
         self.create()
@@ -230,9 +245,9 @@ class Imager:
     def create(self):
         ph = self.source.partitionHandler
         disk = self.source._image
-        output_dir = tempfile.mkdtemp(dir=os.getcwd())
+        output_dir = self._output_dir
         try:
-            hypervisor = self._prepare_appliance(output_dir)
+            hypervisor = self._hypervisor_path
 
             print("Starting imager appliance...")
             g = guestfs.GuestFS(python_return_dict=True)

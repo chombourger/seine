@@ -73,18 +73,24 @@ class TasksAreNamedOnlyOnce(avocado.Test):
         except ValueError:
             pass
 
-class ABuildRunsInTheOrderItAlwaysDid(avocado.Test):
+class ABuildRunsInTheOrderItsStepsRequire(avocado.Test):
     def test(self):
         build = BuildCmd()
         build.loads(SPEC)
         build.parse()
         names = [t.name for t in ordered(build.image.tasks())]
-        # The sequence the steps were written in before they were named,
-        # derived here from what each one needs rather than from where it
-        # sits in the source.
+        # Derived from what each step needs rather than from where it
+        # sits in the source, which is why the appliance now comes before
+        # the root file-system it has nothing to do with: it is ready to
+        # start as soon as the packages are.
         self.assertEqual(names, ["bootstrap-host", "bootstrap-target",
-                                 "packages", "rootfs", "tarball", "sbom",
-                                 "disk", "image"])
+                                 "packages", "rootfs", "appliance",
+                                 "tarball", "sbom", "disk", "image"])
+
+        tasks = {t.name: t for t in build.image.tasks()}
+        self.assertEqual(tasks["appliance"].needs,
+                         ["bootstrap-target", "packages"])
+        self.assertEqual(tasks["image"].needs, ["disk", "appliance"])
 
 class OutputGoesToTheTerminalByDefault(avocado.Test):
     def test(self):
