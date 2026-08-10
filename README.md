@@ -115,6 +115,9 @@ The `seine` tool should then be usable from anywhere (since installed in
 seine build spec.yaml
 ```
 
+`seine --help` lists the commands it has, and `seine COMMAND --help` says
+what one of them takes.
+
 ### Using an HTTP proxy
 
 If `http_proxy` / `https_proxy` (and optionally `no_proxy`) are set in your
