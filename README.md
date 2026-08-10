@@ -114,6 +114,35 @@ avocado run --filter-by-tags='-container' --filter-by-tags-include-empty tests/s
 `--filter-by-tags-include-empty` is needed because avocado otherwise drops
 every test that carries no tag at all, which is all the others.
 
+#### The full plan
+
+`tests/spec/images.py` builds images for real -- `pc-image` and
+`rpi4-image`, each for bookworm and for trixie, each with the 6.18 kernel
+of `examples/linux-6.18/`. Four kernels and four images is a long run,
+so they cancel themselves unless asked for:
+
+```
+SEINE_TEST_PLAN=full avocado run --filter-by-tags=full tests/spec/images.py
+```
+
+They build the examples as shipped rather than copies of them: the files
+under `examples/common/` composed on the command line the way a
+specification is composed, with the release chosen at the front and the
+kernel fragment at the end. The only thing the tests add is where to
+write the image, so four builds do not agree on one filename. A test that
+duplicated the metadata would pass while the examples rotted.
+
+The kernel is part of the plan on purpose. It is what exercises the graft
+against two different packagings, the flavour arriving from the
+architecture file, the cross toolchain an arm64 build selects, and the
+component `raspi-firmware` is fetched from -- none of which a build
+taking the distribution's own kernel would touch. Each test checks the
+image was produced *and* that the kernel behind it was the grafted one,
+since an image comes out either way.
+
+Expect the arm64 pair to dominate the runtime: the kernel is
+cross-compiled, and the imager appliance runs under emulation.
+
 ### Using an HTTP proxy
 
 If `http_proxy` / `https_proxy` (and optionally `no_proxy`) are set in your
