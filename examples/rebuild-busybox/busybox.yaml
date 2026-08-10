@@ -1,0 +1,25 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# The rebuild on its own, naming neither a release, an architecture nor a
+# board: what it says about busybox is true of all of them. main.yaml puts
+# it on an amd64 pc-image, and anything else -- another board, another
+# architecture, a test filling a cache -- composes it the same way, by
+# listing the fragments it wants in front of this one.
+
+packages:
+    - source: apt://busybox
+      profiles:
+          - nocheck
+      patches:
+          - patches/0001-mark-the-banner-as-rebuilt.patch
+
+playbook:
+    - name: install the rebuilt busybox
+      priority: 250
+      tasks:
+          - name: busybox
+            apt:
+                state: present
+                name:
+                    - busybox
