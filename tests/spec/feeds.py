@@ -143,3 +143,36 @@ class RebuiltWhenAFeedMoves(avocado.Test):
                               "uri": "https://snapshot.debian.org/archive/debian/20260901T000000Z",
                               "valid-until": False}])
         self.assertNotEqual(before, after, "busybox was not invalidated")
+
+class ComponentsAreADistributionWideDefault(avocado.Test):
+    def test(self):
+        # A component a board needs -- firmware, typically -- said once
+        # rather than in every feed, and without naming the suites, which
+        # is what lets a file that adds it stay release-agnostic.
+        spec = dict(distro([
+            {"suite": "trixie"},
+            {"suite": "trixie-security", "uri": "http://security.example.com"},
+        ]), components="main non-free-firmware")
+        self.assertEqual(apt_sources(spec), [
+            "deb http://example.com/debian trixie main non-free-firmware",
+            "deb http://security.example.com trixie-security main non-free-firmware",
+        ])
+
+class AFeedKeepsItsOwnComponents(avocado.Test):
+    def test(self):
+        # The default is a default: a vendor feed carrying one component
+        # is not made to claim components it does not have.
+        spec = dict(distro([
+            {"suite": "trixie"},
+            {"suite": "vendor", "uri": "https://packages.example.com/apt",
+             "components": "non-free"},
+        ]), components="main non-free-firmware")
+        self.assertEqual(apt_sources(spec), [
+            "deb http://example.com/debian trixie main non-free-firmware",
+            "deb https://packages.example.com/apt vendor non-free",
+        ])
+
+class ComponentsDefaultToMain(avocado.Test):
+    def test(self):
+        self.assertEqual(apt_sources(distro([{"suite": "trixie"}])),
+                         ["deb http://example.com/debian trixie main"])

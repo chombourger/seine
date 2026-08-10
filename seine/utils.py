@@ -56,7 +56,11 @@ def feeds(distro):
         parsed.append({
             "uri":         entry.get("uri", distro["uri"]),
             "suite":       entry["suite"],
-            "components":  entry.get("components", "main"),
+            # A distribution-wide default, so a file needing a component --
+            # firmware for a board, say -- says so once without naming the
+            # suites. A feed saying otherwise still decides for itself.
+            "components":  entry.get("components",
+                                     distro.get("components", "main")),
             "sources":     entry.get("sources", True),
             "valid_until": entry.get("valid-until", True),
         })

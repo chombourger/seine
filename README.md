@@ -174,6 +174,7 @@ packages that will make the end system. The following attributes are supported:
  * release: codename of the version to be used (e.g. `bookworm`)
  * architecture: one of `amd64`, `arm64` or `armhf`
  * uri: base location of the distribution packages
+ * components: archive components every feed carries (`main` by default)
  * feeds: apt feeds to build from (see below)
 
 ##### feeds
@@ -195,7 +196,8 @@ distribution:
 ```
 
 Each feed takes `suite`, and optionally `uri` (the distribution's `uri`
-by default), `components` (`main` by default) and `sources`. They are
+by default), `components` (the distribution's `components`, itself `main`
+by default) and `sources`. They are
 listed rather than assumed because which suites a release has, and where
 they are served from, differs between distributions and between a release
 and its development version -- and a suite that does not exist fails
@@ -206,6 +208,26 @@ are rebuilt in, and to fetch their sources. Rebuilding a package against
 different feeds than the image installs from means rebuilding a different
 version than the one it would have had, and for the security suite that
 means rebuilding a source without the fixes apt would otherwise deliver.
+
+A component that every feed carries is said once, on the distribution,
+rather than per feed:
+
+```
+distribution:
+    components: main non-free-firmware
+```
+
+That is what a file describing a board says when it needs firmware from
+`non-free-firmware`: it reaches the release, the updates and the security
+suite alike, so the file names no suite and works on whichever release
+the specification is built for. A feed that says `components` itself
+still decides for itself, which is what a vendor archive carrying one
+component needs.
+
+Asking here rather than writing a `sources.list` into the image is what
+keeps the component under the same rules as everything else: the same
+URIs, the same pinning, and a build from a snapshot takes those packages
+from the snapshot too.
 
 Each feed is assumed to carry sources as well as binaries, which is what
 `apt://` sources are fetched from. `sources: false` says a feed carries
