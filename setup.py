@@ -6,6 +6,7 @@ setup(
     author="Cedric Hombourger",
     author_email="chombourger@gmail.com",
     packages=find_packages(),
+    package_data={"seine": ["data/*.yml"]},
     entry_points = {
         'console_scripts': ['seine=seine.cli:main'],
     },

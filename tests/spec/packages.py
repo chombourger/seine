@@ -499,3 +499,300 @@ class DumpHidesInternalAttributes(avocado.Test):
         self.assertIn("apt://busybox", dumped)
         self.assertNotIn("_dirname", dumped)
         self.assertNotIn("priority", dumped)
+
+class UpstreamKernel(avocado.Test):
+    def builder(self):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "bookworm"}]}
+        return Builder(distro, {}, BuilderImage(distro, {}))
+
+    def kernel(self, settings, source="apt://linux"):
+        build = parse("""
+                packages:
+                    - source: %s
+                      extends:
+                          kernel:
+%s
+        """ % (source, settings))
+        return build.image.packages[0]
+
+class UpstreamSourcesParsed(UpstreamKernel):
+    def test(self):
+        tarball = self.kernel(
+            "                              upstream: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.43.tar.xz")
+        self.assertEqual(tarball.kernel_upstream.scheme, "https")
+        self.assertEqual(tarball.kernel_upstream.name, "linux-6.18.43.tar.xz")
+
+        tree = self.kernel(
+            "                              upstream: git://example.com/bsp.git;rev=deadbeef")
+        self.assertEqual(tree.kernel_upstream.scheme, "git")
+        self.assertEqual(tree.kernel_upstream.name, "bsp")
+        self.assertEqual(tree.kernel_upstream.parameters["rev"], "deadbeef")
+
+class UpstreamSourcesRejected(UpstreamKernel):
+    def test(self):
+        # A tree with no scheme, one named the way a source package is,
+        # a git tree that is not pinned, and a plain upstream tarball
+        # dressed as a tree: none of them names a kernel tree to build.
+        for upstream in ["linux-6.18.43.tar.xz",
+                         "apt://linux",
+                         "git://example.com/bsp.git",
+                         "https://example.com/linux-6.18.43.patch"]:
+            try:
+                self.kernel("                              upstream: %s" % upstream)
+                self.fail("'%s' was accepted as a kernel tree!" % upstream)
+            except ValueError:
+                pass
+
+class UpstreamNeedsTheDistributionsPackaging(UpstreamKernel):
+    def test(self):
+        # The graft keeps the distribution's debian/, so there has to be
+        # one to keep: a .dsc from somewhere else brought its own.
+        try:
+            self.kernel(
+                "                              upstream: git://example.com/bsp.git;rev=deadbeef",
+                source="https://example.com/linux_6.1.0-1.dsc")
+            self.fail("grafted onto a source that is not the distribution's!")
+        except ValueError:
+            pass
+
+class KeepPatchesDefaultsToTheBuildSystem(UpstreamKernel):
+    def test(self):
+        package = self.kernel("                              flavour: amd64")
+        self.assertEqual(package.kernel_keep_patches, None)
+
+        # An empty list is an answer, not an omission.
+        package = self.kernel("                              keep-patches: []")
+        self.assertEqual(package.kernel_keep_patches, [])
+
+# A patch as its '+++' lines describe it, which is all the default
+# needs to tell the packaging from Debian's own kernel changes.
+def patch_touching(*files):
+    return "".join("--- a/%s\n+++ b/%s\n" % (f, f) for f in files)
+
+PATCHES = {
+    # Packaging: the one carrying ARCH and KERNELRELEASE into the build.
+    "debian/kernelvariables.patch":       patch_touching("Makefile"),
+    "debian/kbuild-module-lds.patch":     patch_touching("scripts/Makefile.modfinal"),
+    # Debian's kernel policy, not its packaging.
+    "debian/yama-disable-by-default.patch": patch_touching("security/yama/yama_lsm.c"),
+    # Both, which counts as policy: taking it takes the C change too.
+    "debian/version.patch":               patch_touching("Makefile", "lib/dump_stack.c"),
+    # Always dropped: it describes an orig tarball we do not use.
+    "debian/dfsg/remove-firmware.patch":  patch_touching("Makefile"),
+    # A backport touching only a makefile is still a backport.
+    "bugfix/all/kbuild-btf-fix.patch":    patch_touching("Makefile"),
+}
+
+class SeriesCutDownToWhatIsKept(UpstreamKernel):
+    def series(self, package, patches=None):
+        patches = PATCHES if patches is None else patches
+        root = os.path.join(self.workdir, "debian", "patches")
+        for name, body in patches.items():
+            path = os.path.join(root, name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(body)
+        with open(os.path.join(root, "series"), "w") as f:
+            f.write("# a comment\n\n%s\n" % "\n".join(patches))
+
+        self.builder()._filter_series(package, self.workdir)
+        with open(os.path.join(root, "series"), "r") as f:
+            return [line.strip() for line in f if len(line.strip()) > 0]
+
+    def test(self):
+        package = self.kernel("                              flavour: amd64")
+        self.assertEqual(sorted(self.series(package)),
+                         ["debian/kbuild-module-lds.patch",
+                          "debian/kernelvariables.patch"])
+
+class KeepPatchesOverridesWhatIsPackaging(SeriesCutDownToWhatIsKept):
+    def test(self):
+        # Saying so takes what the default would not have kept.
+        package = self.kernel(
+            "                              keep-patches: [ 'debian/yama*' ]")
+        self.assertEqual(self.series(package),
+                         ["debian/yama-disable-by-default.patch"])
+
+class DropPatchesSubtractsFromWhatIsKept(SeriesCutDownToWhatIsKept):
+    def test(self):
+        package = self.kernel(
+            "                              drop-patches: [ 'debian/kbuild-*' ]")
+        self.assertEqual(self.series(package), ["debian/kernelvariables.patch"])
+
+class KeepPatchesMatchingNothingIsRejected(SeriesCutDownToWhatIsKept):
+    def test(self):
+        package = self.kernel(
+            "                              keep-patches: [ 'debian/renamed/*' ]")
+        try:
+            self.series(package, {"debian/kernelvariables.patch": patch_touching("Makefile")})
+            self.fail("a 'keep-patches' matching no patch was accepted!")
+        except ValueError:
+            pass
+
+# What Debian's debian/config/<arch>/defines.toml looks like where it
+# matters here: flavours and featuresets as arrays of tables, each with
+# tables of its own nested under it, and no 'enable' until we add one.
+DEFINES_TOML = """[[flavour]]
+name = 'amd64'
+[flavour.defs]
+is_default = true
+
+[[flavour]]
+name = 'cloud-amd64'
+[flavour.build]
+config = ['config.cloud']
+
+[[featureset]]
+name = 'none'
+
+[[featureset]]
+name = 'rt'
+[[featureset.flavour]]
+name = 'amd64'
+
+[build]
+enable_signed = true
+"""
+
+class RestrictsFlavoursInToml(UpstreamKernel):
+    def defines(self):
+        path = os.path.join(self.workdir, "defines.toml")
+        with open(path, "w") as f:
+            f.write(DEFINES_TOML)
+        return path
+
+    def enabled(self, path):
+        import tomllib
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        return {kind: [e["name"] for e in defines[kind] if e.get("enable", True)]
+                for kind in ["flavour", "featureset"]}
+
+    def test(self):
+        package = self.kernel("                              flavour: amd64")
+        path = self.defines()
+
+        # Twice: a second pass has to overwrite the 'enable' it wrote the
+        # first time rather than add another, which is a duplicate key and
+        # so a file that no longer parses at all.
+        for _ in range(2):
+            self.builder()._restrict_flavour_toml(package, path, "amd64")
+            self.assertEqual(self.enabled(path),
+                             {"flavour": ["amd64"], "featureset": ["none"]})
+
+class RestrictsToAFlavourThatExists(RestrictsFlavoursInToml):
+    def test(self):
+        package = self.kernel("                              flavour: nosuch")
+        try:
+            self.builder()._restrict_flavour_toml(package, self.defines(), "amd64")
+            self.fail("restricted the kernel to a flavour it does not have!")
+        except ValueError:
+            pass
+
+class UpstreamKernelIsRebuiltWhenItMoves(UpstreamKernel):
+    def test(self):
+        builder = self.builder()
+        stamps = []
+        for upstream in ["linux-6.18.43.tar.xz", "linux-6.18.44.tar.xz"]:
+            package = self.kernel(
+                "                              upstream: https://cdn.kernel.org/pub/linux/kernel/v6.x/%s"
+                % upstream)
+            stamps.append(builder.stamp(package))
+        self.assertNotEqual(stamps[0], stamps[1],
+                            "moving to another kernel tree did not ask for a rebuild")
+
+class PatchListsCountAsSetsInTheDigest(UpstreamKernel):
+    def test(self):
+        builder = self.builder()
+        stamps = []
+        for order in [["debian/gitignore.patch", "debian/version.patch"],
+                      ["debian/version.patch", "debian/gitignore.patch"]]:
+            package = self.kernel(
+                "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz\n"
+                "                              drop-patches:\n"
+                + "".join("                                  - %s\n" % p for p in order)
+                + "                              keep-patches:\n"
+                + "".join("                                  - %s\n" % p for p in order))
+            stamps.append(builder.stamp(package))
+        # Writing the same patches in another order is the same kernel,
+        # and rebuilding it would be work for nothing.
+        self.assertEqual(stamps[0], stamps[1],
+                         "reordering a patch list asked for a rebuild")
+
+class GraftedKernelsAreRebuiltWhenTheRulesChange(UpstreamKernel):
+    def test(self):
+        from seine.packages import kernel_rules
+        builder = self.builder()
+        grafted = self.kernel(
+            "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
+        ordinary = self.kernel("                              flavour: amd64")
+        before = (builder.stamp(grafted), builder.stamp(ordinary))
+
+        # The rules decide which of the distribution's patches a grafted
+        # kernel is built with, so they are part of what it is built from.
+        rules = kernel_rules()
+        kernel_rules.cache_clear()
+        try:
+            import seine.packages
+            seine.packages.kernel_rules = lambda: rules._replace(
+                content=rules.content + b"\n# moved\n")
+            after = (builder.stamp(grafted), builder.stamp(ordinary))
+        finally:
+            seine.packages.kernel_rules = kernel_rules
+            kernel_rules.cache_clear()
+
+        self.assertNotEqual(before[0], after[0],
+                            "changing the rules did not ask for a rebuild")
+        # An ordinary rebuild never consults them.
+        self.assertEqual(before[1], after[1],
+                         "a package that is not a graft was rebuilt for nothing")
+
+# What Debian's generated debian/control holds for a rebuild whose
+# changelog says UNRELEASED, which a local rebuild's has to: the ABI name
+# is '6.18+unreleased' rather than the '6.1.0-53' a released kernel gets.
+CONTROL = """Source: linux
+
+Package: linux-headers-6.18+unreleased-common
+Architecture: all
+
+Package: linux-image-6.18+unreleased-amd64
+Architecture: amd64
+
+Package: linux-image-6.18+unreleased-amd64-dbg
+Architecture: amd64
+
+Package: linux-image-amd64
+Architecture: amd64
+
+Package: linux-image-6.18+unreleased-arm64
+Architecture: arm64
+
+Package: linux-image-6.18+unreleased-cloud-arm64
+Architecture: arm64
+"""
+
+class KernelsAreCountedByTheirAbiName(UpstreamKernel):
+    def control(self):
+        path = os.path.join(self.workdir, "control")
+        with open(path, "w") as f:
+            f.write(CONTROL)
+        return path
+
+    def test(self):
+        builder = self.builder()
+        path = self.control()
+        self.assertEqual(builder._abiname([("linux-headers-6.18+unreleased-common", [])]),
+                         "6.18+unreleased")
+
+        # One kernel where the flavours were restricted, and the debug
+        # package and the metapackage beside it counted as neither.
+        self.assertEqual(builder._kernel_packages(path, "amd64"),
+                         ["linux-image-6.18+unreleased-amd64"])
+        # An architecture nothing was restricted on still has all of its.
+        self.assertEqual(builder._kernel_packages(path, "arm64"),
+                         ["linux-image-6.18+unreleased-arm64",
+                          "linux-image-6.18+unreleased-cloud-arm64"])

@@ -188,13 +188,17 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
          sbuild mmdebstrap uidmap zstd            \
          dpkg-dev devscripts quilt git            \
          ca-certificates curl iproute2 openssh-client \
-         debhelper python3-jinja2 kernel-wedge
+         debhelper python3-jinja2 python3-dacite kernel-wedge
 # openssh-client is what git needs to clone a ';protocol=ssh' source. It
 # is only a Recommends of git, and recommends are not installed here.
-# The last three are for kernel rebuilds: regenerating debian/control
+# The last four are for kernel rebuilds: regenerating debian/control
 # after restricting the flavours runs the kernel's own generator, which
 # wants jinja2, kernel-wedge and dh_listpackages behind them. None of
 # them fails in a way that names what is missing.
+#
+# dacite is what reads debian/config/*/defines.toml into the generator's
+# dataclasses, so it is needed by a 6.12 source and not by a 6.1 one --
+# and a specification may well build both.
 # iproute2 is not optional: sbuild brings the loopback interface up with
 # 'ip link set lo up' when it takes the network away from the build, and
 # dies rather than warns when 'ip' is missing.

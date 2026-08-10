@@ -1,0 +1,45 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# What seine knows about Debian's kernel patches, as data rather than as
+# code: this is the one place to edit when the packaging moves under us,
+# and its content is part of what decides whether a kernel needs
+# rebuilding -- so editing it is enough to ask for one, as editing a
+# kconfig fragment is.
+#
+# It says nothing about any particular kernel. Which patches a given tree
+# needs dropped is a property of that tree and of the packaging grafted
+# onto it, and belongs in the specification building it, under
+# 'extends: kernel: drop-patches'.
+
+# The files a patch may touch and still count as packaging, matched
+# against every path it changes -- as Python regular expressions, joined
+# with '|', against paths relative to the kernel's root.
+#
+# When Debian's debian/ is grafted onto another tree, its series is not
+# applied whole. What has to be kept is the packaging, the patches
+# without which the build does not work. What must not be kept is
+# Debian's kernel policy -- unprivileged user namespaces off, yama off,
+# protocol autoloading disabled -- since a specification that asked for
+# another tree did not ask for them.
+#
+# Debian's series says nothing about which is which, both living under
+# debian/, so it is read off what each patch touches: build files are the
+# packaging, a patch reaching into C source is changing the kernel.
+# Deciding by content rather than by name avoids a list per (packaging
+# version, tree) pair, since the debian/ set differs between releases.
+# It also keeps the rule honest about applying: build files are the part
+# of a kernel that barely moves, and net/, security/ and fs/ are not.
+build-files:
+    - '(^|/)(Makefile|Kbuild|Platform|Build)[^/]*$'
+    - '(^|/)\.gitignore$'
+    - '^scripts/'
+
+# Never kept, whatever a specification's 'keep-patches' says. These
+# disable code that Debian removed from its own orig tarball; a tree
+# fetched from upstream still has it, so they are neither needed nor
+# applicable. Not a default a specification overrides but a consequence
+# of the tree being built from, which is why it is here and not in
+# 'drop-patches'.
+drop-patches:
+    - debian/dfsg/*
