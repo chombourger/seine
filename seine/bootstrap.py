@@ -109,7 +109,7 @@ class TargetBootstrap(Bootstrap):
 
 HOST_BOOTSTRAP_SCRIPT = """
 FROM {0}:{1} AS base
-RUN --mount=type=cache,target=/var/cache/apt/archives,id={2},sharing=shared \
+RUN --mount=type=cache,target=/var/cache/apt/archives,id={2},sharing=locked \
      rm -f /etc/apt/apt.conf.d/docker-clean &&    \
      apt-get update -qqy &&                       \
      apt-get install -qqy --no-install-recommends \

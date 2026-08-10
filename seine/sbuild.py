@@ -8,6 +8,7 @@ import subprocess
 from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
 from seine.utils     import apt_sources
+from seine.utils     import locked
 
 # Rebuilding source packages happens under sbuild's "unshare" backend, the
 # one Debian's own buildds use: it needs no schroot, no daemon and no root,
@@ -146,6 +147,13 @@ class SbuildChroot:
             return f.read().strip() == digest
 
     def create(self, builderImage):
+        # Another build may be making the same chroot: they want the same
+        # bytes, so one makes it and the other finds it made rather than
+        # both writing one tarball.
+        with locked(self.path):
+            return self._create(builderImage)
+
+    def _create(self, builderImage):
 
         # --mode=root: we are already root inside the container, so there
         # is no reason to make mmdebstrap unshare a namespace of its own

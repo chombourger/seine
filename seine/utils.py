@@ -1,6 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
+import contextlib
+import fcntl
 import os
 import platform
 import subprocess
@@ -81,6 +83,24 @@ def apt_sources(distro, sources=False):
         if sources and feed["sources"]:
             lines.append("deb-src %(options)s%(uri)s %(suite)s %(components)s" % feed)
     return lines
+
+# One build at a time for the things two builds share.
+#
+# seine's caches are keyed by what they are made from, so two builds
+# wanting the same one want the same bytes. What they must not do is
+# write it at the same time: two mmdebstraps producing one tarball leave
+# a file that is neither, and the build that trips over it does so much
+# later and for no visible reason. The lock file sits beside the thing it
+# guards and is held only while it is written.
+@contextlib.contextmanager
+def locked(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open("%s.lock" % path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 # Label carrying the digest of what an image was built from.
 INPUTS_LABEL = "seine.inputs"
