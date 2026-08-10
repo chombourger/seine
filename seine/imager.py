@@ -12,6 +12,7 @@ import guestfs
 
 from seine.imager_appliance import ImagerAppliance
 from seine.imager_kernel    import ImagerKernel
+from seine.tasks import Task
 from seine.utils            import HOST_ARCH
 
 DEVICE = "/dev/sda"
@@ -215,6 +216,16 @@ class Imager:
 
         real_hv = self._hypervisor(target_arch)
         return self._write_qemu_wrapper(output_dir, target_arch, real_hv)
+
+    # Writing the image: partitions, file-systems, the boot loader. It
+    # needs the disk to write into, and its own kernel comes from the
+    # repository the packages landed in.
+    def task(self):
+        return Task("image", self._build, needs=["disk", "packages"])
+
+    def _build(self):
+        self.create()
+        os.rename(self.source._image, self.source._output)
 
     def create(self):
         ph = self.source.partitionHandler

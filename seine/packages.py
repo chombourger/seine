@@ -19,6 +19,7 @@ from datetime import timezone
 from email.utils import format_datetime
 
 from seine.sbuild import BuilderImage
+from seine.tasks  import Task
 from seine.sbuild import REPOSITORY
 from seine.sbuild import SbuildChroot
 from seine.utils  import apt_sources
@@ -1471,6 +1472,15 @@ rm -rf .pc
     # were sorted into. Each gets a working directory of its own, thrown
     # away afterwards unless --keep was asked for: what is worth keeping
     # (the .debs) is in the repository by then.
+    # Rebuilding what the specification asked for, as one step. It needs
+    # the host bootstrap and not the target one: packages are built in a
+    # chroot of the build architecture, whichever architecture the image
+    # is for.
+    def task(self, packages, hostBootstrap):
+        return Task("packages",
+                    lambda: self.run(packages, hostBootstrap),
+                    needs=["bootstrap-host"])
+
     def run(self, packages, hostBootstrap):
         if len(packages) == 0:
             return

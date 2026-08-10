@@ -7,6 +7,7 @@ import hashlib
 import os
 import tempfile
 
+from seine.tasks import Task
 from seine.utils import ContainerEngine
 from seine.utils import INPUTS_LABEL
 from seine.utils import apt_sources
@@ -80,6 +81,11 @@ class Bootstrap(ABC):
     name = property(getName, setName)
 
 class HostBootstrap(Bootstrap):
+    # The one step everything else waits for: the image every container
+    # seine builds is made from.
+    def task(self):
+        return Task("bootstrap-host", self.create)
+
     def create(self):
         return self.build(HOST_BOOTSTRAP_SCRIPT.format(
             self.distro["source"],
@@ -90,6 +96,14 @@ class HostBootstrap(Bootstrap):
         return os.path.join("bootstrap", self.distro["source"], self.distro["release"], "all")
 
 class TargetBootstrap(Bootstrap):
+    # The root file-system is assembled in this one, and the imager's own
+    # kernel is fetched through it -- so it is needed even when the
+    # specification names a 'baseline' of its own.
+    def task(self, hostBootstrap):
+        return Task("bootstrap-target",
+                    lambda: self.create(hostBootstrap),
+                    needs=["bootstrap-host"])
+
     def create(self, hostBootstrap):
         self.hostBootstrap = hostBootstrap
         return self.build(TARGET_BOOTSTRAP_SCRIPT.format(

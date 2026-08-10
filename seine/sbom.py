@@ -5,6 +5,7 @@ import os
 import tarfile
 import tempfile
 
+from seine.tasks import Task
 from seine.utils import ContainerEngine
 
 # debsbom, run from the image its authors publish. Preferred over a
@@ -47,6 +48,14 @@ class SBOM:
             for member in tar:
                 if wanted(member.name):
                     tar.extract(member, path=root)
+
+    # Made from the exported root file-system rather than from the disk
+    # image: debsbom reads dpkg's own package list, which the tarball has
+    # and a not-yet-assembled image has not.
+    def task(self, image):
+        return Task("sbom",
+                    lambda: self.generate(image._tarball, image._output),
+                    needs=["tarball"])
 
     def generate(self, tarball, image):
         output = self._output_file(image)

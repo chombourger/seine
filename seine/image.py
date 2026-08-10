@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 
 from seine               import packages
+from seine               import tasks
 from seine               import utils
 from seine.ansible_runner import AnsibleContainerRunner
 from seine.bootstrap      import HostBootstrap
@@ -14,6 +15,7 @@ from seine.bootstrap      import TargetBootstrap
 from seine.imager         import Imager
 from seine.sbom           import SBOM
 from seine.sbuild         import BuilderImage
+from seine.tasks          import Task
 from seine.utils          import ContainerEngine
 
 class Image:
@@ -152,45 +154,46 @@ class Image:
         image.close()
         self._image = image.name
 
+    # What a build is made of, and what each step waits for. The order this
+    # produces is the order the steps used to be written in; what is new is
+    # that it is derived from the dependencies rather than from the layout
+    # of the source.
+    #
+    # Two of them are worth reading twice. Packages need the host bootstrap
+    # and not the target one: they are built in a chroot of the build
+    # architecture. And the imager needs the packages -- its own kernel is
+    # installed from the repository they land in, so it boots the kernel
+    # the specification rebuilt rather than the distribution's.
+    def tasks(self):
+        distro = self.spec["distribution"]
+
+        self.hostBootstrap = HostBootstrap(distro, self.options)
+        self.targetBootstrap = TargetBootstrap(distro, self.options)
+        builder = packages.Builder(
+            distro, self.options, BuilderImage(distro, self.options))
+
+        # Each of these is declared beside the code that runs it, so what
+        # a step needs is written where someone changing that step will
+        # see it. What is left here is the handful of steps this class
+        # implements itself, and the order they make between them.
+        return [
+            self.hostBootstrap.task(),
+            self.targetBootstrap.task(self.hostBootstrap),
+            builder.task(self.packages, self.hostBootstrap),
+            Task("rootfs", self.rootfs, needs=["bootstrap-target", "packages"]),
+            Task("tarball", self.build_tarball, needs=["rootfs"]),
+            SBOM(distro, self.options).task(self),
+            Task("disk", self._prepare_disk, needs=["tarball"]),
+            Imager(self).task(),
+        ]
+
+    def _prepare_disk(self):
+        self._size_partitions()
+        self._empty_disk()
+
     def build(self):
         try:
-            # Create required bootstrap images. TargetBootstrap is now always
-            # needed even when a custom 'baseline' is used for the rootfs
-            # itself: it is also the target-arch anchor the imager's own
-            # kernel gets fetched from (see ImagerKernel).
-            distro = self.spec["distribution"]
-            self.hostBootstrap = HostBootstrap(distro, self.options)
-            self.targetBootstrap = TargetBootstrap(distro, self.options)
-            self.hostBootstrap.create()
-            self.targetBootstrap.create(self.hostBootstrap)
-
-            # Rebuild the packages the specification asked for, before the
-            # playbooks that may want to install them run.
-            builder = packages.Builder(
-                distro, self.options, BuilderImage(distro, self.options))
-            builder.run(self.packages, self.hostBootstrap)
-
-            # Assemble the root file-system
-            self.rootfs()
-            self.build_tarball()
-
-            # Generate SBOM, from the exported root file-system rather than
-            # from the disk image: debsbom reads dpkg's own package list,
-            # which the tarball has and a not-yet-assembled image has not.
-            sbom = SBOM(distro, self.options)
-            sbom.generate(self._tarball, self._output)
-
-            # Prepare target partitions and disk image
-            self._size_partitions()
-            self._empty_disk()
-
-            # Produce the target image
-            imager = Imager(self)
-            imager.create()
-
-            # Rename the image
-            os.rename(self._image, self._output)
-
+            tasks.run(self.tasks(), verbose=self.options.get("verbose", False))
         except:
             if self._image is not None:
                 os.unlink(self._image)
