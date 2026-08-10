@@ -451,7 +451,6 @@ packages:
           kernel:
               config:
                   - configs/slim.fragment
-              flavour: amd64
       profiles:
           - pkg.linux.nokerneldbginfo
           - pkg.linux.notools
@@ -488,6 +487,21 @@ and `none` featuresets. Ask for a realtime kernel with:
               flavour: amd64
 ```
 
+Neither has to be written where the kernel is: which flavour an
+architecture means is a property of the architecture, and
+`examples/common/amd64.yaml` says so under [`defaults`](#defaults). A
+file that wants another one -- a realtime kernel, a cloud flavour --
+says so the same way, in the file that wants it, and the kernel entry
+itself stays architecture-agnostic.
+
+One thing that does not follow along: the metapackage a playbook
+installs. Debian names it `linux-image-[<featureset>-]<flavour>`, so an
+`rt` kernel is installed by `linux-image-rt-amd64`, and a playbook still
+asking for `linux-image-amd64` gets the distribution's ordinary kernel
+rather than the rebuild -- which is a working image containing the wrong
+kernel, the failure that does not announce itself. A specification that
+changes flavour or featureset changes that name too.
+
 Naming a featureset or flavour the architecture does not have is an error
 listing the ones it does.
 
@@ -516,6 +530,260 @@ A kernel is also where the rebuild cache earns its keep: the fragments are
 part of what decides whether a package needs rebuilding, by content, so
 editing one is enough to ask for a new kernel -- and not editing one means
 the hours are paid once.
+
+##### Bring your own kernel
+
+`upstream` builds a tree the distribution does not package -- a stable
+release from kernel.org, a release candidate, or a vendor's BSP -- under
+the distribution's own packaging:
+
+```
+packages:
+    - source: apt://linux
+      extends:
+          kernel:
+              upstream: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.43.tar.xz
+              flavour: amd64
+```
+
+`source` says whose `debian/` to build with, `upstream` says what to build.
+Two forms are understood, the same two a package `source` takes:
+
+ * a release tarball, `https://.../linux-<version>.tar.{xz,gz,bz2}`
+ * `git://<host>/<path>;rev=<commit>`, in the notation described above,
+   `rev` required for the same reason
+
+Both are unpacked, Debian's `debian/` directory is moved onto the result,
+and the orig tarball is regenerated from it -- so what comes out is an
+ordinary source package that sbuild builds in the ordinary way. The
+packages it produces carry Debian's names: `linux-image-<abi>-<flavour>`,
+the headers packages and their `-common` half, `linux-libc-dev`, the
+metapackages, and the maintainer scripts that drive the initramfs and the
+boot loader. They replace the distribution's kernel rather than sitting
+beside it, which is the point of doing this the hard way.
+
+Naming a version is only needed when the packaging wanted is not the one
+the suite would hand you -- which is the case for bookworm below, and not
+the case when the release packages a kernel recent enough to build with.
+An unpinned `apt://linux` follows the suite's point releases; the patches
+that are kept have been in every one of them, and what changes between
+them is dropped whatever it is called. Pin it, or build from a snapshot,
+when the build has to be reproducible rather than merely repeatable.
+
+The packaging has to be one the tree can be built by, which is a weaker
+requirement than it sounds -- Debian's kernel packaging changes slowly --
+but not an empty one. Two things to weigh: the further apart the two
+versions are, the more of the series has to be dropped (see below), and
+the packaging's build dependencies have to be satisfiable in the chroot,
+which is the suite being built for. That is what `examples/linux-6.18/`
+shows: trixie takes its packaging from the release, bookworm takes the
+*same* packaging from `bookworm-backports`, because a backport
+build-depends on what the suite it was backported to has. Taking
+trixie's copy into a bookworm chroot would ask it for a newer compiler
+than bookworm carries.
+
+Which is also why that directory is two files rather than one per suite.
+`kernel.yml` holds everything that is a property of the packaging and the
+tree -- the upstream, the flavour, the patches to drop -- and is what
+trixie uses directly. `bookworm.yml` `requires` it and adds one line, the
+version that reaches into backports. Packages are merged across files by
+the source package they name, the way partitions are merged by label, so
+a file may say *what* to build without restating *how*, and the suite
+keeps only what is genuinely its own:
+
+```
+# examples/linux-6.18/bookworm.yml, in full
+requires:
+    - kernel
+
+packages:
+    - source: apt://linux=6.12.95-1~bpo12+1
+```
+
+A setting already given wins, and `requires` loads what it names after
+the file that asked for it -- so the specification reaching for a
+fragment is the one that gets to override it.
+
+###### What is kept of Debian's patches
+
+Debian's series is not applied whole. What is taken automatically is the
+*packaging*: the patches without which the build does not work. What is
+left behind is Debian's kernel *policy* -- unprivileged user namespaces
+off, yama off, autoloading of half a dozen protocols disabled, a warning
+on mounting raid5 -- along with everything under `bugfix/`, which is a
+backport a newer tree already has, and everything under `features/`,
+which is keyed to config symbols that `oldconfig` drops along with the
+patch.
+
+The series says nothing about which is which, so it is decided by what
+each patch touches: a patch under `debian/` that only touches build files
+-- `Makefile`, `Kbuild`, `.gitignore`, `scripts/` -- is packaging, and a
+patch reaching into C source is a change to the kernel. By content rather
+than by name, because the set differs between releases, so a list of
+names would be locked to one baseline.
+
+Which files count is data, not code: `seine/data/kernel.yml` holds the
+patterns, and is the one place to edit when the packaging moves under us.
+Its content is part of what decides whether a grafted kernel needs
+rebuilding, so editing it asks for one, the way editing a kconfig
+fragment does -- and only for grafted kernels, since an ordinary rebuild
+never consults it.
+
+A specification whose packaging builds through files those patterns do
+not name says so itself, without editing anything seine ships:
+
+```
+          kernel:
+              upstream: git://git.example.com/bsp/linux.git;rev=1e4a0c9
+              build-files:
+                  - '(^|/)Kconfig[^/]*$'
+```
+
+They are Python regular expressions, matched against every path a patch
+changes, and they are **added** to the shipped ones rather than replacing
+them: what makes a kernel build is the same wherever the tree came from,
+and a packaging that reaches somewhere else reaches there *as well*. A
+pattern that is not a valid expression is reported by the specification
+that wrote it rather than by the first patch it fails on, and the list
+counts in the digest, so extending it asks for the rebuild it deserves.
+
+`drop-patches` is the same arrangement seen from the other side: the
+`drop-patches` in `seine/data/kernel.yml` is a floor that a specification
+adds to, never something it has to restate.
+
+That line is drawn where it is for two reasons, and the second is the
+practical one. A specification that asked for another tree did not ask
+for another distribution's opinions about it -- but more to the point, a
+patch to C source is a patch that has to *apply*, and the whole premise
+here is a tree far enough from Debian's that it packages a different
+kernel. Build files are the part of the kernel that barely moves, which
+is why taking them automatically works at all; `net/`, `security/` and
+`fs/` are not, and a policy patch written against 6.12 more often than
+not fails against 6.18. Automatic selection would turn every one of them
+into a rebase seine cannot do for you.
+
+**So preserving Debian's semantics is the developer's job, not the
+tool's.** If the goal is a kernel that behaves like Debian's rather than
+merely one packaged like it, take the policy patches from the source
+package the packaging came from, rebase them onto your tree, and list
+them under `patches` (see below). Which ones matter is a decision about
+the product -- an appliance that runs no untrusted code has different
+answers than a general-purpose image -- and it is a decision seine
+deliberately leaves to whoever is making it. `debian/patches/series` in
+the source package, minus the patches listed below, is where that work
+starts.
+
+Of the patches that selection keeps from the packaging the examples use,
+these apply to a 6.18 tree and are what it is built with:
+
+| Patch                                            | What it does                                    |
+| ------------------------------------------------ | ----------------------------------------------- |
+| `kernelvariables.patch`                          | carries `ARCH`, `CROSS_COMPILE` and `KERNELRELEASE` into the kernel's makefiles -- the one that matters most |
+| `uname-version-timestamp.patch`                  | builds `uname -v` from `SOURCE_DATE_EPOCH`      |
+| `makefile-make-compiler-version-comparison-optional.patch` | lets a build use a compiler Debian did not test |
+| `perf-traceevent-support-asciidoctor-for-documentatio.patch` | builds perf's documentation with asciidoctor |
+| `tools-perf-install-python-bindings.patch`       | installs perf's python bindings where the packaging looks for them |
+| `tools-perf-perf-read-vdso-in-libexec.patch`     | moves `perf-read-vdso` out of `/usr/bin`        |
+| `arch-sh4-fix-uimage-build.patch`                | sh4 only                                        |
+| `mips-boston-disable-its.patch`                  | mips only                                       |
+
+The rest are dropped by the example files, upstream having since taken
+what they fixed: `gitignore.patch`,
+`documentation-drop-sphinx-version-check.patch`,
+`kbuild-look-for-module.lds-under-arch-directory-too.patch`,
+`kbuild-abort-build-if-subdirs-used.patch` and
+`fixdep-allow-overriding-hostcc-and-hostld.patch`.
+
+`drop-patches` is a list of globs subtracted from what was selected, and
+finding what belongs on it costs one build attempt rather than one per
+patch: seine applies the series itself before `dpkg-source` does, and
+reports *every* patch that fails at once, with the files each one wanted
+-- which is what says whether the tree has the change already. A glob
+matching nothing is an error rather than a no-op, so a list does not
+quietly go stale when the packaging is moved forward.
+
+###### Bringing your own patches
+
+`keep-patches` takes the decision over. It is a list of globs matched
+against the series, and naming it replaces the content-derived selection
+rather than adding to it:
+
+```
+          kernel:
+              upstream: git://git.example.com/bsp/linux.git;rev=1e4a0c9
+              flavour: arm64
+              keep-patches:
+                  - debian/kernelvariables.patch
+                  - debian/uname-version-timestamp.patch
+```
+
+Setting it to nothing at all drops Debian's series entirely, which is
+what to do when the packaging patches have been ported into the tree
+already, or when you would rather carry your own:
+
+```
+          kernel:
+              upstream: git://git.example.com/bsp/linux.git;rev=1e4a0c9
+              flavour: arm64
+              keep-patches: []
+      patches:
+          - patches/0001-kernelvariables-ported.patch
+```
+
+`patches` is the ordinary package attribute, applied after the graft, so
+what it adds ends up in the series of the source package that is built.
+It is where two rather different jobs are done. One is the escape hatch
+above: a tree far enough from Debian's that the automatic selection has
+nothing useful to say about it. The other is putting Debian's policy back
+-- `yama-disable-by-default.patch`,
+`add-sysctl-to-disallow-unprivileged-CLONE_NEWUSER-by-default.patch`,
+the `*-disable-auto-loading-as-mitigation-*` set, the lockdown series --
+rebased onto your tree, one at a time, keeping what the image actually
+wants. seine takes them as it takes any other patch; what it will not do
+is rebase them for you, or pretend a patch that no longer applies did.
+
+Note that `kernelvariables.patch` in some form is not optional whichever
+route is taken: without it the build does not pass `ARCH` down, and
+cross-building is the case that fails first.
+
+Two things are dropped whatever these say. `debian/dfsg/*` disables code
+Debian removed from its own orig tarball, which an upstream tree still
+has, so those patches are neither needed nor applicable -- that list is
+`drop-patches` in `seine/data/kernel.yml`, alongside the patterns above,
+and is a consequence of the tree being built from rather than a default a
+specification overrides. And signed code is turned off for a grafted
+kernel, since the Secure Boot signature is issued by a key nobody outside
+Debian holds.
+
+###### What you do not get
+
+Worth being plain about, since the aim here is a true replacement:
+
+ * **No Secure Boot lockdown.** The `features/all/lockdown/*` patches
+   change C source, so they are not among the packaging, and
+   `CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT` goes with them. The signature
+   was never obtainable, but the enforcement is a real difference. An
+   image that needs it has to carry those patches rebased onto its tree,
+   through `patches`.
+ * **No Debian kernel policy.** Nothing is silently changed -- the
+   kernel is simply upstream's, with upstream's defaults, and what
+   Debian would have changed is listed above. Rebase those patches and
+   list them under `patches` if the image wants them.
+ * **No featureset that Debian carries patches for.** Featuresets other
+   than the one being built are disabled, and `features/*` is not among
+   the patches kept, so asking a graft for `rt` gets the featureset's
+   *configuration* and none of Debian's realtime patches. For a 6.12 or
+   newer tree that may be enough -- `PREEMPT_RT` is upstream since 6.12
+   -- but seine has not been used that way, and against an older tree it
+   would quietly build something that is not a realtime kernel.
+ * **A distinct ABI name.** The rebuild is marked `UNRELEASED`, so a
+   6.18.43 tree comes out as `6.18+unreleased-amd64` rather than
+   borrowing an ABI number the distribution assigns. Nothing mistakes it
+   for the distribution's kernel, which is the intent.
+ * **`linux-libc-dev` from the new tree.** It is built and it is in the
+   local repository, above the distribution's, so packages built after
+   the kernel and the image itself get its headers. Usually what you
+   want; worth knowing when it is not.
 
 ##### Cross-compiling
 
