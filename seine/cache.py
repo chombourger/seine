@@ -40,10 +40,20 @@ CACHES = {
     "scratch":   ContainerEngine.scratch,
 }
 
-# The caches worth carrying to another machine. Scratch is not one of them:
-# what is in it belongs to a build that is either running or has died, and
-# neither is of use anywhere else.
+# The caches a tar can hold. Scratch is not one of them: what is in it
+# belongs to a build that is either running or has died, and neither is of
+# use anywhere else.
 PORTABLE = ["downloads", "packages", "chroots", IMAGES]
+
+# What an export carries when nothing is named. The downloads are left out:
+# a build needs the archive whatever it was sent, since apt reads its lists
+# from there and seine caches none of them, so carrying a release's .debs
+# saves bandwidth for a machine that has to reach the mirror anyway. Naming
+# 'downloads' carries them for the machine that wants that.
+#
+# An import has no such default: it takes whatever the tar holds, since
+# deciding what to send is the exporting machine's business.
+CARRIED = ["packages", "chroots", IMAGES]
 
 # Where the images ride in the tar. One archive holding all of them rather
 # than one per image, so a layer shared by every image seine builds -- and
@@ -597,8 +607,8 @@ class CacheCmd(Cmd):
 
         # Naming nothing already means all of them, but 'all' is what a
         # person types when they want to say so, and an error is a poor
-        # answer to being clear. For a tar that means the caches worth
-        # carrying, which is not quite all of them.
+        # answer to being clear. For a tar that means every cache one can
+        # hold, which is not quite all of them.
         every = PORTABLE if where is not None else list(CACHES)
         if "all" in names:
             names = list(every)
@@ -613,7 +623,10 @@ class CacheCmd(Cmd):
                                  % (name, action))
                 sys.exit(1)
 
-        names = names if len(names) > 0 else list(every)
+        # An export named nothing carries what is worth carrying; an import
+        # named nothing takes what it was sent.
+        default = CARRIED if action == "export" else every
+        names = names if len(names) > 0 else list(default)
         try:
             if action == "info":
                 sys.exit(self.info(names, entries))
@@ -647,6 +660,12 @@ Description:
   that has. The tar is uncompressed unless its name ends in .gz or .tgz;
   what is in it is compressed already. '-' stands for stdout or stdin, so
   the two can be piped into each other over ssh.
+
+  An export named no cache carries the packages, the chroots and the images.
+  The downloads are left out: a build reaches the archive whatever it was
+  sent, since apt reads its lists from there and seine caches none of them.
+  Name 'downloads', or 'all', to carry them anyway. An import named no cache
+  takes whatever the tar holds.
 
   An import extends what is already here: what the tar carries is written
   over what shares its name, and a build of a source package that arrives
@@ -700,6 +719,7 @@ Examples:
   seine cache clear chroots
   seine cache clear downloads packages
   seine cache export caches.tar
+  seine cache export caches.tar all
   seine cache export --with-image-rootfs caches.tar
   seine cache import caches.tar chroots
   seine cache import --replace caches.tar

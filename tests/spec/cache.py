@@ -94,7 +94,7 @@ class EveryCacheIsClearedWhenNoneIsNamed(Caches):
 class ACacheIsCarriedToAnotherMachine(Caches):
     def test(self):
         where = os.path.join(self.workdir, "caches.tar")
-        self.run_cmd(["export", where])
+        self.run_cmd(["export", where, "all"])
         # Scratch is not worth carrying and is left out of the tar. The
         # images are podman's here, so this machine has none.
         with tarfile.open(where) as tar:
@@ -167,7 +167,7 @@ class ACacheIsCarriedToAnotherMachine(Caches):
         os.chmod(partial, 0o000)
         try:
             where = os.path.join(self.workdir, "caches.tar")
-            self.run_cmd(["export", where])
+            self.run_cmd(["export", where, "downloads"])
             with tarfile.open(where) as tar:
                 self.assertIn("downloads/blob", tar.getnames())
                 self.assertNotIn("downloads/partial", tar.getnames())
@@ -508,3 +508,34 @@ class OnlyWhatAnotherMachineCanUseIsCarried(avocado.Test):
         self.assertIn("localhost/imager-kernel/debian/trixie/amd64:latest", carried)
         # Still nothing that cannot be named.
         self.assertNotIn("<none>:<none>", carried)
+
+# A build reaches the archive whatever it was sent -- apt reads its lists
+# from there and seine caches none of them -- so the downloads are the one
+# cache an export leaves behind unless asked for.
+class TheDownloadsAreLeftBehindUnlessAskedFor(Caches):
+    def carried(self, *args):
+        where = os.path.join(self.workdir, "caches.tar")
+        self.run_cmd(["export", where] + list(args))
+        with tarfile.open(where) as tar:
+            return set(name.split("/")[0] for name in tar.getnames())
+
+    def test(self):
+        self.assertNotIn("downloads", self.carried())
+        self.assertIn("packages", self.carried())
+
+    def test_naming_them_carries_them(self):
+        self.assertIn("downloads", self.carried("downloads"))
+
+    def test_and_so_does_all(self):
+        self.assertIn("downloads", self.carried("all"))
+
+    # An import takes what it was sent: deciding what to leave out is the
+    # exporting machine's business, and a tar that went to the trouble of
+    # carrying them is not second-guessed here.
+    def test_an_import_takes_what_it_was_sent(self):
+        where = os.path.join(self.workdir, "caches.tar")
+        self.run_cmd(["export", where, "downloads"])
+        self.run_cmd(["clear", "downloads"])
+        self.run_cmd(["import", where])
+        self.assertTrue(os.path.isfile(os.path.join(self.paths["downloads"],
+                                                    "blob")))

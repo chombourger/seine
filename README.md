@@ -1380,8 +1380,8 @@ usable. `seine cache clear images` is how it is emptied.
 
 `seine cache export` writes the caches to a tar and `seine cache import`
 reads one back, so a machine that has never built anything -- a fresh CI
-runner, a machine with no route to the archive -- can start with the caches
-of one that has:
+runner, a colleague joining the project -- can start with the caches of one
+that has:
 
 ```
 seine cache export caches.tar          # everything worth carrying
@@ -1389,7 +1389,19 @@ seine cache export chroots.tar chroots # only the buildd chroots
 seine cache import caches.tar
 ```
 
-`scratch` is left out: what is in it belongs to a build that is either
+An import spares work rather than network. The receiving machine reaches the
+mirror or the snapshot whatever it was sent: `apt` reads its package lists
+from there, and seine caches none of them. So the `downloads` cache is left
+out of an export unless it is named -- what carrying it saves is a re-fetch
+of the `.deb`s the playbooks install, for a machine that has to talk to the
+archive anyway.
+
+```
+seine cache export caches.tar downloads   # carry them anyway
+seine cache export caches.tar all         # every cache a tar can hold
+```
+
+`scratch` is left out too: what is in it belongs to a build that is either
 running or has died. The tar is uncompressed unless its name ends in `.gz`
 or `.tgz`, since `.deb` and the chroot tarballs are compressed already.
 
