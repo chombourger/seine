@@ -94,11 +94,21 @@ def apt_sources(distro, sources=False):
 # a file that is neither, and the build that trips over it does so much
 # later and for no visible reason. The lock file sits beside the thing it
 # guards and is held only while it is written.
+#
+# 'shared' is for what many may do at once but none may do while one does
+# something else: several builds may add images to a storage together, and
+# a prune that removes what none of them has tagged yet may not run while
+# any of them is.
+#
+# 'blocking' says what to do when it is not free. Unset, wait; set, raise
+# BlockingIOError rather than queue behind something long, for work that
+# another holder will end up doing anyway.
 @contextlib.contextmanager
-def locked(path):
+def locked(path, shared=False, blocking=True):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    how = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
     with open("%s.lock" % path, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, how if blocking else how | fcntl.LOCK_NB)
         try:
             yield
         finally:
@@ -271,6 +281,15 @@ class ContainerEngine:
     # TMPDIR. Unset, that is /var/tmp, so the archives end up somewhere
     # 'seine cache info' does not count and 'seine cache clear' does not
     # empty: a cleared cache that still feeds the next bootstrap.
+    # The lock a seine invocation takes on the storage it uses. Shared by
+    # what reads it or adds to it, exclusively by what sweeps it: two
+    # builds started from two terminals run beside each other, and a
+    # 'seine cache clear' typed in a third waits for both rather than
+    # removing the chroots and images they are standing on.
+    @staticmethod
+    def storage_lock():
+        return os.path.join(ContainerEngine.root(), "images")
+
     @staticmethod
     def _podman_env():
         cache = ContainerEngine.cache("bootstraps")

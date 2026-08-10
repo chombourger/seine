@@ -14,6 +14,7 @@ from seine.utils import INPUTS_LABEL
 from seine.utils import KIND_LABEL
 from seine.utils import ROOTFS_KIND
 from seine.utils import apt_sources
+from seine.utils import locked
 from seine.utils import TOOLING_KIND
 
 class Bootstrap(ABC):
@@ -83,15 +84,29 @@ class Bootstrap(ABC):
         written = tempfile.NamedTemporaryFile(mode="w", delete=False)
         written.write(dockerfile)
         written.close()
+        # One build at a time of one image, and as many different images at
+        # once as there are steps wanting them.
+        #
+        # The storage is held shared, which keeps out what sweeps it: a
+        # prune, or a 'seine cache clear' typed in another terminal, is
+        # free to take away the untagged intermediates this is standing on
+        # while it works. Held here rather than only by 'seine build',
+        # since an image can be asked for through the API as well.
+        #
+        # The image's own name is what two builds of the same image queue
+        # on. One lock for the whole storage was what this was, and it made
+        # every image on a machine wait for every other.
         try:
-            ContainerEngine.run(
-                ["build", "--rm"] + (options or []) +
-                ["--label", "%s=%s" % (INPUTS_LABEL,
-                                       self.digest(dockerfile, base)),
-                 "--label", "%s=%s" % (KIND_LABEL, self.kind),
-                 "-t", self.name, "-f", written.name], check=True)
+            with locked(ContainerEngine.storage_lock(), shared=True), \
+                 locked(os.path.join(ContainerEngine.root(), "images.d",
+                                     self.name)):
+                ContainerEngine.run(
+                    ["build", "--rm"] + (options or []) +
+                    ["--label", "%s=%s" % (INPUTS_LABEL,
+                                           self.digest(dockerfile, base)),
+                     "--label", "%s=%s" % (KIND_LABEL, self.kind),
+                     "-t", self.name, "-f", written.name], check=True)
         finally:
-            ContainerEngine.run(["image", "prune", "-f"])
             if self.options.get("keep"):
                 print("keeping '%s' (dockerfile for %s) as requested"
                       % (written.name, self.name))

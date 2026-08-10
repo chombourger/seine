@@ -142,6 +142,25 @@ class ClearingIsBestEffort(Caches):
         self.assertFalse(os.path.exists(
             os.path.join(self.paths["downloads"], "blob")))
 
+# A build holds the storage shared for as long as it runs, so a clear
+# typed in another terminal is refused rather than removing the chroots and
+# images that build is standing on.
+class ClearingWaitsForNoBuild(Caches):
+    def test_a_running_build_stops_a_clear(self):
+        from seine.utils import ContainerEngine, locked
+
+        with locked(ContainerEngine.storage_lock(), shared=True):
+            code, reported = self.run_cmd_failing(["clear"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("a build is running", reported)
+        for name, path in self.paths.items():
+            self.assertTrue(os.path.isdir(path), "'%s' was cleared" % name)
+
+    def test_nothing_running_clears_as_before(self):
+        self.run_cmd(["clear"])
+        for path in self.paths.values():
+            self.assertFalse(os.path.isdir(path))
+
 class ACacheIsCarriedToAnotherMachine(Caches):
     def test(self):
         where = os.path.join(self.workdir, "caches.tar")

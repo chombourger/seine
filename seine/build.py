@@ -13,6 +13,7 @@ import yaml
 from seine.image     import Image
 from seine.cmd       import Cmd
 from seine.partition import PartitionHandler
+from seine.utils     import ContainerEngine, locked
 
 # Specifications are rendered before they are parsed, so that one file can
 # say what is true of several architectures or releases instead of being
@@ -562,6 +563,20 @@ class BuildCmd(Cmd):
             raise RuntimeError("no specification was loaded or parsed!")
         return self.image.build()
 
+    # The intermediate images of the multi-stage builds this made, once,
+    # when there is nothing left to stand on them -- rather than after
+    # every image, which is what it was.
+    #
+    # 'podman image prune' is machine-wide, so it is taken exclusively and
+    # skipped when it is not free: another build holds the storage, has
+    # intermediates of its own, and prunes when it finishes.
+    def _prune(self):
+        try:
+            with locked(ContainerEngine.storage_lock(), blocking=False):
+                ContainerEngine.run(["image", "prune", "-f"], check=False)
+        except BlockingIOError:
+            pass
+
     def dump(self, spec):
         if "image" in spec:
             # hide internal attributes (_foo) but also "priority" settings
@@ -678,7 +693,13 @@ class BuildCmd(Cmd):
             spec = self.parse()
             result = 0
             if self.options["build"]:
-                result = self.build()
+                # Shared: a build started in another terminal runs beside
+                # this one, which is what a machine with cores to spare is
+                # for. What may not run beside it is something that sweeps
+                # the storage -- 'seine cache clear', and the prune below.
+                with locked(ContainerEngine.storage_lock(), shared=True):
+                    result = self.build()
+                self._prune()
             else:
                 print(self.dump(spec))
             sys.exit(result)

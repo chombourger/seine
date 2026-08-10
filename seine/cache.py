@@ -13,10 +13,13 @@ import tarfile
 import tempfile
 import time
 
+import contextlib
+
 from seine       import analyze
 from seine       import cache_index
 from seine.cmd   import Cmd
 from seine.utils import ContainerEngine
+from seine.utils import locked
 from seine.utils import KIND_LABEL
 from seine.utils import BUILDER_KIND
 from seine.utils import IMAGER_KIND
@@ -292,6 +295,10 @@ class CacheCmd(Cmd):
     # remove. A cache written by a seine that kept no record is left alone
     # rather than deleted on a guess about its mtimes.
     def stale(self, names, older_than):
+        with self._alone():
+            return self._stale(names, older_than)
+
+    def _stale(self, names, older_than):
         cutoff = int(time.time()) - older_than
         index = cache_index.Index()
         kinds = [kind for name in names for kind in KINDS.get(name, [])]
@@ -345,11 +352,27 @@ class CacheCmd(Cmd):
                 if os.path.isfile(path):
                     os.unlink(path)
 
+    # Nothing sweeps the caches while a build is using them. A build holds
+    # the storage shared for as long as it runs, so this waits for none of
+    # them and refuses instead: someone who has just been told a build is
+    # running can decide whether to wait for it, where a command that hung
+    # silently until the build finished says nothing at all.
+    @contextlib.contextmanager
+    def _alone(self):
+        try:
+            with locked(ContainerEngine.storage_lock(), blocking=False):
+                yield
+        except BlockingIOError:
+            raise ValueError(
+                "a build is running -- the chroots, images and packages it "
+                "is standing on would go with the caches. Clear them once "
+                "it has finished.")
+
     def clear(self, names):
-        # A build running at the same time as this loses whatever it was
-        # about to reuse and does the work again -- which is what the cache
-        # promises -- but one that is *reading* a tarball as it goes away
-        # fails. Clearing a cache is something to do between builds.
+        with self._alone():
+            return self._clear(names)
+
+    def _clear(self, names):
         # Best effort, cache by cache: a build's apt runs as a user of the
         # container's own, so what it left behind -- 'downloads/*/partial'
         # -- belongs to a uid outside the namespace that this cannot
@@ -929,6 +952,10 @@ Description:
   Named with no cache -- or with 'all' -- an action covers every cache it
   applies to. That is all of them for 'info' and 'clear'; for a tar it is
   the caches worth carrying, which excludes 'scratch'.
+
+  'clear' is refused while a build is running, here or in another
+  terminal: what it would remove is what that build is standing on. Builds
+  themselves run beside each other as they always have.
 
   'clear' is best effort. A cache holding what this user cannot unlink --
   what a container's apt left behind belongs to a user of the container's

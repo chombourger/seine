@@ -170,11 +170,10 @@ class Image:
                 # needs a forceful removal rather than a plain 'rm'.
                 ContainerEngine.run(["container", "rm", "-f", self._cid], check=False)
                 self._cid = None
-            # Not while anything else is running: 'image prune' is
-            # machine-wide, and the appliance being prepared beside this
-            # is made of images it would consider dangling.
-            if self.options.get("jobs", 1) <= 1:
-                ContainerEngine.run(["image", "prune", "-f"], check=False)
+            # No prune here. It is machine-wide -- the appliance being
+            # prepared beside this is made of images it would consider
+            # dangling -- so it happens once, when the build is done and
+            # holds nothing, and only if no other build is running.
 
     def _size_partitions(self):
         tar = tarfile.open(self._tarball, "r")
