@@ -49,7 +49,6 @@ PORTABLE = ["downloads", "packages", "chroots", IMAGES]
 # they all stand on the host bootstrap -- is written once.
 IMAGES_MEMBER = "%s/images.tar.gz" % IMAGES
 
-
 # Every image except the one an export leaves behind: the image's own root
 # file-system, which is what mmdebstrap made of the archive on the day it
 # ran and is stale as soon as the archive moves.
@@ -268,8 +267,12 @@ class CacheCmd(Cmd):
     #
     #   .lock, lock       the lock files that guard what two builds share,
     #                     seine's own and apt's own
-    #   /.packages.db     apt-ftparchive's hash cache, which a build
-    #                     rewrites from the .debs it finds
+    #   /Packages         the repository index, and its .gz, and
+    #   /Packages.gz      apt-ftparchive's hash cache beside them: all three
+    #   /.packages.db     are made from the .debs in the directory, so the
+    #                     machine that receives those makes its own in one
+    #                     pass rather than being sent a description of a
+    #                     repository it is about to change
     #   .build            sbuild's build logs, and the symlinks naming the
     #                     latest of them. A kernel's log rivals the .debs
     #                     it came with, and a log of a build that happened
@@ -281,15 +284,13 @@ class CacheCmd(Cmd):
     #                     is not an optimisation: the export cannot read
     #                     the directory at all, and stopped there before.
     #
-    # What is kept beyond the .debs themselves is the Packages index and
-    # the stamps. The index because a build only rewrites it when it has
-    # something to add, so an import where nothing needs rebuilding would
-    # otherwise leave the .debs there with apt unable to see them; the
-    # stamps because they are what says the .debs are current, which is the
-    # whole point of carrying them. The .changes and .buildinfo are kept
-    # too -- kilobytes, and what documents how the .debs beside them were
-    # made.
-    NOT_CARRIED = [".lock", "/lock", "/.packages.db", ".build", "/partial"]
+    # What is kept beyond the .debs themselves is the stamps: they are what
+    # says the .debs are current, and what names which .debs belong to which
+    # source package, which is how an import knows what it supersedes. The
+    # .changes and .buildinfo are kept too -- small, and what says how the
+    # .debs beside them were made.
+    NOT_CARRIED = [".lock", "/lock", "/.packages.db", "/Packages", "/Packages.gz",
+                   ".build", "/partial"]
 
     def _carried(self, name):
         return any(name.endswith(suffix)
@@ -476,6 +477,13 @@ Description:
   what is in it is compressed already. '-' stands for stdout or stdin, so
   the two can be piped into each other over ssh.
 
+  An import extends what is already here: what the tar carries is written
+  over what shares its name.
+
+  The repository index is not carried either way. It is made from whatever
+  the directory holds, so an import takes it away and the next build writes
+  one describing what is really there.
+
   Named with no cache -- or with 'all' -- an action covers every cache it
   applies to. That is all of them for 'info' and 'clear'; for a tar it is
   the caches worth carrying, which excludes 'scratch'.
@@ -489,7 +497,7 @@ Description:
 Usage:
   seine cache info [--entries] [CACHE...|all]
   seine cache clear [CACHE...|all]
-  seine cache export FILE|- [CACHE...|all]
+  seine cache export [--with-image-rootfs] FILE|- [CACHE...|all]
   seine cache import FILE|- [CACHE...|all]
 
 Caches:

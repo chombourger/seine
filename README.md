@@ -197,6 +197,17 @@ since an image comes out either way.
 Expect the arm64 pair to dominate the runtime: the kernel is
 cross-compiled, and the imager appliance runs under emulation.
 
+The plan also carries a cache from one machine to another, since the
+promise of `seine cache export` is not testable in pieces. It builds the
+busybox rebuild for the host's own architecture in a space of its own,
+exports what that build kept, imports it into a second space and builds the
+same specification there -- then checks the second build did none of the
+first one's work: no package rebuilt, no buildd chroot unpacked again, and
+the container images the same ones by id. The busybox rebuild rather than a
+kernel: it is a real package build, patch and stamp included, without
+spending an evening compiling. Both spaces are the test's own, so nothing
+it does touches the caches of whoever runs it.
+
 ## Specification files
 
 A system specification may be written in one or several YAML files comprised
@@ -1463,12 +1474,17 @@ seine build --packages-only pc-image.yml
 seine cache export caches.tar
 ```
 
-An imported cache merges into what is already there, and importing the same
-tar twice does nothing the second time. A tar seine did not write is not
-trusted: every member has to be a file, a directory or a link under a cache
-seine knows, and has to stay inside it -- both where it is written and,
-for a link, what it points at. A member that does not fails the import
-rather than being quietly skipped.
+An import extends what is already here rather than replacing it, and a
+second import of the same tar changes nothing.
+
+The repository index is not carried, and an import removes the one that is
+there: it describes what the directory held a moment ago, and a build writes
+one from what the directory really holds.
+
+A tar seine did not write is not trusted: every member has to be a file, a
+directory or a link under a cache seine knows, and has to stay inside it --
+both where it is written and, for a link, what it points at. A member that
+does not fails the import rather than being quietly skipped.
 
 ### Putting seine's directories on another drive
 

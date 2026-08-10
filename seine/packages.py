@@ -1634,9 +1634,18 @@ rm -rf .pc
         # of them, and a package it just made was not one it reused.
         reused = self.current(packages)
         if len(pending) == 0:
-            return [Task("packages",
-                         functools.partial(self._reused, reused),
-                         needs=["bootstrap-host"])]
+            # Nothing to build, but possibly something to index: a machine
+            # that imported a repository has the .debs and nothing to read
+            # them with until apt-ftparchive has run over them.
+            first = []
+            if self._indexable():
+                first = [Task("packages-prepare",
+                              lambda: self._prepare(hostBootstrap),
+                              needs=["bootstrap-host"])]
+            return first + [Task("packages",
+                                 functools.partial(self._reused, reused),
+                                 needs=["bootstrap-host"]
+                                       + [t.name for t in first])]
 
         tasks = [Task("packages-prepare",
                       lambda: self._prepare(hostBootstrap),
@@ -1712,6 +1721,30 @@ rm -rf .pc
         rebuild = self.options.get("rebuild", False)
         return [(p, s) for p, s in self.stamps(packages)
                 if rebuild or os.path.isfile(s) == False]
+
+    # Whether the repository is holding .debs its index does not describe.
+    #
+    # The index is made from what the directory holds, which makes it the
+    # build's to maintain rather than something worth carrying between
+    # machines: what a cache is worth carrying for is the .debs, and the
+    # machine that receives them can say what is in them in one pass of
+    # apt-ftparchive. A build with nothing to rebuild would otherwise leave
+    # those .debs sitting there with apt unable to see them.
+    def _indexable(self):
+        repository = self.repository()
+        if os.path.isdir(repository) == False:
+            return False
+        debs = [name for name in os.listdir(repository) if name.endswith(".deb")]
+        if len(debs) == 0:
+            return False
+        index = os.path.join(repository, "Packages")
+        if os.path.isfile(index) == False:
+            return True
+        # Written before the .debs it describes were, which is what an
+        # import leaves behind when it brings newer ones.
+        described = os.path.getmtime(index)
+        return any(os.path.getmtime(os.path.join(repository, name)) > described
+                   for name in debs)
 
     # Every build has the repository in its sources.list, including the
     # first one, when nothing has been rebuilt yet: apt needs an index to

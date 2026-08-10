@@ -452,3 +452,60 @@ class AFailingStepSaysWhatWentWrong(avocado.Test):
             self.fail("a failing task was not reported!")
         except Failed as e:
             self.assertIn("KeyError", str(e))
+# A machine that was handed a repository has the .debs and nothing to read
+# them with: the index is made from what the directory holds, so a build
+# with nothing to rebuild still has that to do.
+class ARepositoryWithNoIndexIsIndexed(avocado.Test):
+    def setUp(self):
+        self.environment = dict(os.environ)
+        os.environ["SEINE_CACHE_DIR"] = os.path.join(self.workdir, "cache")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.environment)
+
+    def builder(self):
+        from seine.packages import Builder
+        return Builder({"source": "debian", "release": "trixie",
+                        "architecture": "amd64",
+                        "uri": "http://example.com/debian",
+                        "feeds": [{"suite": "trixie"}]}, {}, None)
+
+    def deb(self, builder, name="linux-image-amd64_6.1_amd64.deb"):
+        path = os.path.join(builder.repository(), name)
+        with open(path, "wb") as f:
+            f.write(b"deb")
+        return path
+
+    def steps(self, builder):
+        return [t.name for t in builder.tasks([], None)]
+
+    def test_nothing_cached_is_nothing_to_index(self):
+        self.assertNotIn("packages-prepare", self.steps(self.builder()))
+
+    def test_debs_without_an_index(self):
+        builder = self.builder()
+        self.deb(builder)
+        steps = self.steps(builder)
+        self.assertIn("packages-prepare", steps)
+        # And the barrier still waits for it.
+        self.assertIn("packages-prepare",
+                      [t.needs for t in builder.tasks([], None)
+                       if t.name == "packages"][0])
+
+    def test_an_index_that_describes_them_is_left_alone(self):
+        builder = self.builder()
+        self.deb(builder)
+        index = os.path.join(builder.repository(), "Packages")
+        with open(index, "w") as f:
+            f.write("Package: linux-image-amd64\n")
+        self.assertNotIn("packages-prepare", self.steps(builder))
+
+    def test_an_index_older_than_the_debs_is_written_again(self):
+        builder = self.builder()
+        index = os.path.join(builder.repository(), "Packages")
+        with open(index, "w") as f:
+            f.write("Package: something-else\n")
+        os.utime(index, (1000, 1000))
+        self.deb(builder)
+        self.assertIn("packages-prepare", self.steps(builder))

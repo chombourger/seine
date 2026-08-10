@@ -128,12 +128,12 @@ class ACacheIsCarriedToAnotherMachine(Caches):
         self.run_cmd(["import", where])
         self.assertEqual(os.readlink(link), "blob")
 
-    # What a real packages cache holds beyond the .debs. The index and the
-    # stamps are carried -- a build only rewrites the index when it has
-    # something to add, so an import that rebuilds nothing still leaves apt
-    # something to read, and the stamps are what say the .debs are current.
-    # The rest is either a lock, a hash cache a build rewrites, or a
-    # 130MB build log belonging to a machine that is not this one.
+    # What a real packages cache holds beyond the .debs. The stamps are
+    # carried: they say the .debs are current and which of them belong to
+    # which source package, which is how an import knows what it supersedes.
+    # The index is not -- it is made from whatever the directory holds, so
+    # the machine that receives the .debs writes its own. Nor is a lock, a
+    # hash cache, or a build log belonging to another machine.
     def test_only_what_another_machine_needs_is_carried(self):
         repository = self.paths["packages"]
         os.makedirs(os.path.join(repository, ".stamps"), exist_ok=True)
@@ -154,8 +154,7 @@ class ACacheIsCarriedToAnotherMachine(Caches):
                           if name.startswith("packages/"))
         self.assertEqual(carried - {""},
                                   {".stamps", ".stamps/linux_0123456789abcdef",
-                                   "Packages", "Packages.gz", "blob",
-                                   "linux_6.1_amd64.changes",
+                                   "blob", "linux_6.1_amd64.changes",
                                    "linux_6.1_amd64.buildinfo"})
 
     # apt makes its 'partial' directory as root inside the container and
@@ -255,6 +254,49 @@ class AnUnknownCacheIsRefused(Caches):
 if __name__ == "__main__":
     avocado.main()
 
+# What is cached, one object at a time and oldest use first, which is the
+# order to read it in when the question is what to remove.
+class WhatIsCachedIsListedOneByOne(Caches):
+    def setUp(self):
+        super().setUp()
+        index = cache_index.Index()
+        index.made(cache_index.CHROOT, "bookworm-amd64")
+        index.made(cache_index.PACKAGE, "bookworm/amd64/busybox")
+        index.hit(cache_index.PACKAGE, "bookworm/amd64/busybox")
+
+    def test(self):
+        shown = self.run_cmd(["info", "--entries"])
+        self.assertIn("bookworm-amd64", shown)
+        self.assertIn("bookworm/amd64/busybox", shown)
+        # The one nothing reached for since it was made comes first.
+        self.assertLess(shown.index("bookworm-amd64"),
+                        shown.index("bookworm/amd64/busybox"))
+
+    def test_only_the_caches_asked_about(self):
+        shown = self.run_cmd(["info", "--entries", "chroots"])
+        self.assertIn("bookworm-amd64", shown)
+        self.assertNotIn("busybox", shown)
+
+    # A cleared cache stops being talked about: an entry left behind would
+    # be reported as a very old object and evicted a second time.
+    def test_clearing_a_cache_forgets_what_was_in_it(self):
+        self.run_cmd(["clear", "chroots"])
+        shown = self.run_cmd(["info", "--entries"])
+        self.assertNotIn("bookworm-amd64", shown)
+        self.assertIn("bookworm/amd64/busybox", shown)
+
+    def test_an_empty_index_says_so(self):
+        cache_index.Index().forget()
+        self.assertIn("nothing recorded yet",
+                      self.run_cmd(["info", "--entries"]))
+
+class TheEntriesFlagBelongsToInfoAlone(Caches):
+    def test(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                CacheCmd().main(["clear", "--entries"])
+        self.assertNotEqual(caught.exception.code, 0)
+
 # Every image seine builds says what it is, rather than inheriting the
 # answer from the image it was built on: podman hands an image its base's
 # labels, so the builder -- built on the tooling -- would call itself
@@ -336,45 +378,3 @@ class OnlyWhatAnotherMachineCanUseIsCarried(avocado.Test):
         self.assertIn("localhost/imager-kernel/debian/trixie/amd64:latest", carried)
         # Still nothing that cannot be named.
         self.assertNotIn("<none>:<none>", carried)
-# What is cached, one object at a time and oldest use first, which is the
-# order to read it in when the question is what to remove.
-class WhatIsCachedIsListedOneByOne(Caches):
-    def setUp(self):
-        super().setUp()
-        index = cache_index.Index()
-        index.made(cache_index.CHROOT, "bookworm-amd64")
-        index.made(cache_index.PACKAGE, "bookworm/amd64/busybox")
-        index.hit(cache_index.PACKAGE, "bookworm/amd64/busybox")
-
-    def test(self):
-        shown = self.run_cmd(["info", "--entries"])
-        self.assertIn("bookworm-amd64", shown)
-        self.assertIn("bookworm/amd64/busybox", shown)
-        # The one nothing reached for since it was made comes first.
-        self.assertLess(shown.index("bookworm-amd64"),
-                        shown.index("bookworm/amd64/busybox"))
-
-    def test_only_the_caches_asked_about(self):
-        shown = self.run_cmd(["info", "--entries", "chroots"])
-        self.assertIn("bookworm-amd64", shown)
-        self.assertNotIn("busybox", shown)
-
-    # A cleared cache stops being talked about: an entry left behind would
-    # be reported as a very old object and evicted a second time.
-    def test_clearing_a_cache_forgets_what_was_in_it(self):
-        self.run_cmd(["clear", "chroots"])
-        shown = self.run_cmd(["info", "--entries"])
-        self.assertNotIn("bookworm-amd64", shown)
-        self.assertIn("bookworm/amd64/busybox", shown)
-
-    def test_an_empty_index_says_so(self):
-        cache_index.Index().forget()
-        self.assertIn("nothing recorded yet",
-                      self.run_cmd(["info", "--entries"]))
-
-class TheEntriesFlagBelongsToInfoAlone(Caches):
-    def test(self):
-        with self.assertRaises(SystemExit) as caught:
-            with contextlib.redirect_stderr(io.StringIO()):
-                CacheCmd().main(["clear", "--entries"])
-        self.assertNotEqual(caught.exception.code, 0)
