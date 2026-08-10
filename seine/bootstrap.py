@@ -28,19 +28,33 @@ class Bootstrap(ABC):
         pass
 
     # What this image was built from: the Dockerfile seine would write for
-    # it now, and the id of the image it is built FROM. Recorded on the
-    # image as a label, so an image is rebuilt when either has changed.
+    # it now, and what the image it is built FROM was built from. Recorded on
+    # the image as a label, so an image is rebuilt when either has changed.
     #
     # Without it an image is only ever matched by name, and every image
     # derived from another goes stale the moment that one is rebuilt --
     # silently, since a stale image is a working image, just not one built
     # from what the specification now says. An image built by a seine that
     # did not label them has no label, and is rebuilt once.
+    #
+    # What the base was built from, rather than which bytes it came out as:
+    # its own label if it has one, and only otherwise its id. The two answer
+    # the same question on one machine and different questions across two,
+    # since two machines bootstrapping the same root file-system from the
+    # same specification do not produce the same bytes -- so keying on the
+    # id made every image standing on a bootstrapped one machine-specific.
+    # Keying on the label is what seine does everywhere else: a package's
+    # stamp and a chroot's digest say what went in, not what came out.
+    #
+    # An image pulled from a registry has no label of ours, and its id is
+    # already the same on both machines, so that is what is used for those.
     def digest(self, dockerfile, base=None):
         digest = hashlib.sha256()
         digest.update(dockerfile.encode())
         if base is not None:
-            digest.update((ContainerEngine.imageId(base) or "").encode())
+            inputs = ContainerEngine.imageLabel(base, INPUTS_LABEL) \
+                     or ContainerEngine.imageId(base) or ""
+            digest.update(inputs.encode())
         return digest.hexdigest()[:16]
 
     def current(self, dockerfile, base=None):
