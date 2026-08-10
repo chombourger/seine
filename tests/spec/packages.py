@@ -533,6 +533,63 @@ class CoresPerBuild(CrossBuildProfile):
         self.assertEqual(
             self.jobs({"jobs": 1, "parallel": 8}, ["parallel=1"]), 1)
 
+class DeclaredHashes(avocado.Test):
+    def builder(self):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        return Builder(distro, {}, BuilderImage(distro, {}))
+
+    def package(self, source, digest=None):
+        text = ("                packages:\n"
+                "                    - source: %s\n" % source)
+        if digest is not None:
+            text += "                      sha256: %s\n" % digest
+        return parse(text).image.packages[0]
+
+    def fetched(self, name, content):
+        path = os.path.join(self.workdir, name)
+        with open(path, "wb") as f:
+            f.write(content)
+        return path
+
+    def test(self):
+        import hashlib
+        content = b"a source package, more or less"
+        digest = hashlib.sha256(content).hexdigest()
+        name = "foo_1.0-1.dsc"
+        self.fetched(name, content)
+        builder = self.builder()
+
+        # What was declared is what arrived.
+        package = self.package("https://example.com/%s" % name, digest)
+        builder._verify(package, self.workdir, name, package.sha256, "sha256")
+
+        # And when it is not, the build stops rather than building it.
+        wrong = "f" * 64
+        package = self.package("https://example.com/%s" % name, wrong)
+        try:
+            builder._verify(package, self.workdir, name, package.sha256, "sha256")
+            self.fail("a source that did not match its hash was accepted!")
+        except ValueError as e:
+            self.assertIn(digest, str(e))
+            self.assertIn(wrong, str(e))
+
+class HashesAreCheckedWhereTheyAreWritten(avocado.Test):
+    def test(self):
+        for digest in ["nope", "abc", "a" * 63, "g" * 64]:
+            try:
+                parse("""
+                packages:
+                    - source: https://example.com/foo_1.0-1.dsc
+                      sha256: %s
+                """ % digest)
+                self.fail("'%s' was accepted as a sha256!" % digest)
+            except ValueError:
+                pass
+
 class UpstreamKernel(avocado.Test):
     def builder(self):
         from seine.packages import Builder
@@ -767,6 +824,20 @@ class RestrictsToAFlavourThatExists(RestrictsFlavoursInToml):
             self.fail("restricted the kernel to a flavour it does not have!")
         except ValueError:
             pass
+
+class WhatWasFetchedCountsInTheDigest(UpstreamKernel):
+    def test(self):
+        builder = self.builder()
+        stamps = []
+        for digest in ["a" * 64, "b" * 64]:
+            package = self.kernel(
+                "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz\n"
+                "                              upstream-sha256: %s" % digest)
+            stamps.append(builder.stamp(package))
+        # A tarball that changed under the same URL is a different kernel,
+        # which the URL alone could not say.
+        self.assertNotEqual(stamps[0], stamps[1],
+                            "a different upstream hash did not ask for a rebuild")
 
 class UpstreamKernelIsRebuiltWhenItMoves(UpstreamKernel):
     def test(self):

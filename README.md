@@ -410,6 +410,27 @@ The following attributes are supported:
 | revision          | no       | Local version suffix, `mod1` by default         |
 | source_date_epoch | no       | Date to build at, seconds since the epoch       |
 
+Anything fetched over http is checked against a hash the specification
+declares, since nothing else vouches for it:
+
+```
+packages:
+    - source: https://example.com/busybox_1.37.0-6.dsc
+      sha256: 3f5e…
+```
+
+The file is hashed where it lands, on the machine running seine rather
+than in the container that fetched it -- a container asked to verify
+itself proves nothing. A mismatch stops the build and prints both hashes.
+The hash is part of what decides whether a package needs rebuilding, so a
+file that changes under the same URL is a different package rather than a
+cached one.
+
+`apt://` and `git://` need no hash and take none: an apt source is
+checked against the archive's signed index, and a git revision is the
+hash of what it names. Both answer for themselves, more strongly than a
+hash written down beside the URL would.
+
 Three kinds of `source` are understood:
 
  * `apt://<package>[=<version>]` takes the distribution's own source
@@ -747,6 +768,15 @@ packages:
       profiles:
           - pkg.linux.nokerneldbginfo
           - pkg.linux.notools
+```
+
+`upstream-sha256` is what the tarball is checked against, exactly as
+`sha256` is for a package's own source:
+
+```
+          kernel:
+              upstream: https://cdn.kernel.org/…/linux-6.18.43.tar.xz
+              upstream-sha256: 9a1c…
 ```
 
 `config` lists kconfig fragments, given relative to the YAML file listing

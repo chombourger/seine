@@ -47,7 +47,7 @@ SCHEMES = ["apt", "git", "https"]
 # the next point release than a patch would be.
 EXTENSIONS = {
     "kernel": ["build-files", "config", "drop-patches", "featureset",
-               "flavour", "keep-patches", "upstream"],
+               "flavour", "keep-patches", "upstream", "upstream-sha256"],
 }
 
 # Where a kernel tree comes from when it is not the one the distribution
@@ -182,6 +182,7 @@ class Package:
         self.options = self._parse_list(spec, "options")
         self.patches = self._parse_list(spec, "patches")
         self.profiles = self._parse_list(spec, "profiles")
+        self.sha256 = self._parse_digest(spec, "sha256")
         self.revision = spec.get("revision", DEFAULT_REVISION)
         if type(self.revision) != type(""):
             raise self._error("'revision' shall be a string")
@@ -273,6 +274,7 @@ class Package:
                     "debian/ onto another tree, so the package it is set on "
                     "has to be the distribution's own kernel source")
             self.kernel_upstream = Upstream(kernel["upstream"], self._error)
+        self.kernel_upstream_sha256 = self._parse_digest(kernel, "upstream-sha256")
         # None, not a list of globs: with nothing said, which patches are
         # the packaging is decided by what they touch rather than by their
         # names. An explicit empty list is a different answer -- "keep none
@@ -304,6 +306,20 @@ class Package:
                     "'extends: kernel: %s' shall be a string" % setting)
         self.kernel = "kernel" in extends
         return extends
+
+    # A sha256 as it is written down: sixty-four hexadecimal digits,
+    # checked here so a truncated one is reported against the file that
+    # holds it rather than against the download it fails to match.
+    def _parse_digest(self, spec, key):
+        digest = spec.get(key)
+        if digest is None:
+            return None
+        if type(digest) != type("") or re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
+            raise self._error(
+                "'%s' shall be a sha256, which is 64 hexadecimal digits -- "
+                "quote it if it happens to be all digits, or YAML reads it as "
+                "a number" % key)
+        return digest.lower()
 
     def _parse_bool(self, spec, key):
         value = spec.get(key)
@@ -398,7 +414,47 @@ class Builder:
         self.builderImage.exec(
             self._fetch_args(package), volumes=volumes + ssh_volumes,
             workdir=WORKDIR, environment=environment)
+        if package.scheme == "https":
+            self._verify(package, workdir, os.path.basename(package.source),
+                         package.sha256, "sha256")
         return self._source_dir(package.source, workdir)
+
+    # What a specification said the bytes would be, against what arrived.
+    #
+    # Checked here rather than in the container that fetched them: the
+    # file lands in a directory seine bind-mounted, so it can be read
+    # directly, and a container asked to verify itself proves nothing.
+    #
+    # Only for what is fetched over http: an apt source is checked against
+    # the archive's signed index, and a git revision is the hash of what
+    # it names, so both already answer for themselves.
+    def _verify(self, package, workdir, name, expected, setting):
+        path = os.path.join(workdir, name)
+        if os.path.isfile(path) == False or expected is None:
+            return
+
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(block)
+        found = digest.hexdigest()
+        if found != expected:
+            raise ValueError(
+                "package '%s': '%s' is not what '%s' says it would be\n"
+                "  expected %s\n"
+                "  fetched  %s\n"
+                "Either the file changed where it is served from, or it was "
+                "changed on the way here."
+                % (package.source, name, setting, expected, found))
+
+    # The tarball a kernel is grafted onto, which is fetched on its own and
+    # has a hash of its own to be checked against.
+    def _verify_upstream(self, package, staging):
+        upstream = package.kernel_upstream
+        if upstream is None or upstream.scheme != "https":
+            return
+        self._verify(package, staging, os.path.basename(upstream.uri),
+                     package.kernel_upstream_sha256, "upstream-sha256")
 
     # The clone runs in the container, so what authenticates it goes in too:
     # the agent's socket and the hosts already known. The keys stay outside
@@ -582,6 +638,7 @@ class Builder:
         self.builderImage.exec(
             self._upstream_args(upstream), volumes=[(staging, WORKDIR)],
             workdir=WORKDIR)
+        self._verify_upstream(package, staging)
         tree = self._source_dir(str(upstream), staging)
 
         source = self._source_name(sourcedir)
@@ -1396,6 +1453,8 @@ rm -rf .pc
                      str(package.kernel_featureset),
                      str(package.kernel_flavour),
                      str(package.kernel_upstream),
+                     str(package.kernel_upstream_sha256),
+                     str(package.sha256),
                      # str(), not a join: keeping nothing and saying
                      # nothing are different answers, and 'None' and '[]'
                      # are what tells them apart.
