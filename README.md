@@ -56,9 +56,20 @@ The easiest way to get started is to install the following packages, all
 available from your distribution:
 
 ```
-sudo apt-get install -y podman qemu-kvm crun python3-venv python3-guestfs
+sudo apt-get install -y podman passt qemu-kvm crun python3-venv python3-guestfs
 sudo adduser $USER kvm
 ```
+
+`passt` provides `pasta`, which podman uses to give a rootless container a
+network. Without it every `podman run` fails with `could not find pasta` and
+a build stops at its first container.
+
+What has to be on the machine seine runs on is only this, plus
+`ansible-playbook` below. Everything a build does to a distribution happens
+inside a container: `mmdebstrap` bootstraps the root file-system, `sbuild`
+rebuilds packages, `apt-ftparchive` writes the repository index, `debsbom`
+reads the SBOM. None of those need installing here, and looking for them on
+the host says nothing about whether a build will work.
 
 Building for an `architecture` other than the host's (e.g. `arm64` images on
 an `amd64` host) additionally needs that architecture's qemu system emulator,
@@ -81,11 +92,22 @@ Python dependencies (`pyyaml`, `ansible-core`) can be installed in a virtual
 environment instead of system-wide:
 
 ```
-python3 -m venv .venv
+python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 ansible-galaxy collection install containers.podman
 ```
+
+`--system-site-packages` is needed for `python3-guestfs`, which pip cannot
+install and seine imports.
+
+seine runs `ansible-playbook` as a command rather than importing it, so it
+has to be on `PATH` -- from the activated environment, or installed
+system-wide with `apt-get install -y ansible`. The `containers.podman`
+collection is what connects it to the target container; `ansible-galaxy` is
+part of the `ansible` package rather than `ansible-core`, so a machine with
+only the latter installs the collection with a system `ansible-galaxy` or
+`pip install ansible`.
 
 You may then either use seine in place (use the `seine.py` script from the top
 level directory of this source tree) or generate a binary package. To build
