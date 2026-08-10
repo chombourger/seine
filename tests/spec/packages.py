@@ -1218,3 +1218,32 @@ class AKernelsTreeIsFetchedWithItsSource(avocado.Test):
         finally:
             import shutil
             shutil.rmtree(workdir, ignore_errors=True)
+
+class TheRepositoryIsNotRehashedEveryTime(avocado.Test):
+    def test(self):
+        from seine.packages import Builder
+
+        commands = []
+
+        class Image:
+            def exec(self, args, architecture=None, volumes=None,
+                     workdir=None, environment=None, check=True):
+                commands.append(" ".join(args))
+                return 0
+
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        Builder(distro, {}, Image()).index()
+
+        command = commands[0]
+        # The index is rewritten after every package that builds, so what
+        # it costs has to be what arrived rather than what is there: a
+        # kernel's debug package is larger than most images, and hashing
+        # it once per package is time spent on nothing.
+        self.assertIn("apt-ftparchive", command)
+        self.assertIn("--db", command)
+        self.assertNotIn("dpkg-scanpackages", command)
+        # And what apt reads is still what it always read.
+        self.assertIn("> Packages", command)
+        self.assertIn("Packages.gz", command)

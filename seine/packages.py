@@ -1440,10 +1440,21 @@ rm -rf .pc
     # apt can read: a flat repository with a Packages index. Both the plain
     # and the gzipped index are written, as apt looks for several
     # compressions and complains about each one it does not find.
+    # apt-ftparchive rather than dpkg-scanpackages, for the cache: the
+    # index is rewritten after every package that builds, and
+    # dpkg-scanpackages hashes every .deb in the repository each time.
+    # That is the whole repository re-read per package -- and a kernel's
+    # debug package alone is larger than most images, so a specification
+    # building several of them spends longer hashing what it already
+    # hashed than building some of what it hashes.
+    #
+    # The cache is keyed on what a file is and when it changed, so only
+    # what arrived since the last time is read. It lives beside the index
+    # it describes; apt has no interest in files it was not pointed at.
     def index(self):
         self.builderImage.exec(
-            ["sh", "-c", "dpkg-scanpackages --multiversion . > Packages && "
-                         "gzip -9 -c Packages > Packages.gz"],
+            ["sh", "-c", "apt-ftparchive --db .packages.db packages . "
+                         "> Packages && gzip -9 -c Packages > Packages.gz"],
             volumes=[(self.repository(), REPOSITORY)], workdir=REPOSITORY)
 
     # What a rebuild of this package would depend on, as a file whose

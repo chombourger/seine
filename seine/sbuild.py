@@ -193,7 +193,7 @@ FROM {0}
 RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
      apt-get update -qqy &&                       \
      apt-get install -qqy --no-install-recommends \
-         sbuild mmdebstrap uidmap zstd            \
+         sbuild mmdebstrap uidmap zstd apt-utils  \
          dpkg-dev devscripts quilt git            \
          ca-certificates curl iproute2 openssh-client \
          debhelper python3-jinja2 python3-dacite kernel-wedge
