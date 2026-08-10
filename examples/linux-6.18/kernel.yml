@@ -1,0 +1,52 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# A 6.18.y kernel built with Debian's own packaging, as a fragment: it
+# says what kernel to build and nothing about the image being built, so
+# it is added to a specification rather than being one.
+#
+#   ./seine.py build examples/common/trixie.yaml \
+#              examples/common/amd64.yaml       \
+#              examples/common/pc-image.yaml    \
+#              examples/linux-6.18/kernel.yml
+#
+# What comes out replaces the distribution's kernel rather than sitting
+# beside it: linux-image-<abi>-amd64, the headers packages and their
+# -common half, linux-libc-dev, the metapackages, and the same maintainer
+# scripts driving initramfs and the boot loader.
+#
+# Everything here is a property of the pair (Debian's packaging, this
+# tree) and of nothing else -- which is why it is one file rather than
+# one per suite. A release whose kernel is old enough that its packaging
+# cannot build this tree says so by naming a version: see bookworm.yml
+# beside this, which is that file and nothing more.
+#
+# Which flavour to build is not here either, for the same reason: it is a
+# property of the architecture, and examples/common/amd64.yaml says it
+# under 'defaults'. An image wanting another one -- a realtime kernel,
+# say -- says so the same way, in the file that wants it.
+
+packages:
+    - source: apt://linux
+      extends:
+          kernel:
+              upstream: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.43.tar.xz
+              # Which of Debian's patches are kept is not listed: they are
+              # picked by what each one touches, so that the list does not
+              # have to be rewritten every time the packaging moves. These
+              # are the ones that selection keeps but a 6.18 tree does not
+              # need, upstream having taken what they fixed. seine applies
+              # the series before dpkg-source does and names every patch
+              # that fails at once, so the list is read off one run.
+              drop-patches:
+                  - debian/gitignore.patch
+                  - debian/documentation-drop-sphinx-version-check.patch
+                  - debian/kbuild-look-for-module.lds-under-arch-directory-too.patch
+                  - debian/kbuild-abort-build-if-subdirs-used.patch
+                  - debian/fixdep-allow-overriding-hostcc-and-hostld.patch
+      profiles:
+          - pkg.linux.nokerneldbginfo
+          - pkg.linux.notools
+          - pkg.linux.nosource
+          - nodoc
+          - noudeb

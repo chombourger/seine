@@ -4,6 +4,17 @@
 distribution:
     architecture: amd64
 
+# Which kernel of this architecture is meant, for a specification that
+# rebuilds one. Under 'defaults' rather than 'packages': naming a package
+# there would ask for it to be built, and every amd64 image would rebuild
+# a kernel whether it wanted one or not.
+defaults:
+    packages:
+        - source: apt://linux
+          extends:
+              kernel:
+                  flavour: amd64
+
 imager:
     kernel: linux-image-amd64
 

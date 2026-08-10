@@ -4,6 +4,15 @@
 distribution:
     architecture: arm64
 
+# As amd64.yaml beside this: which kernel of this architecture is meant,
+# for a specification that rebuilds one, without asking for a build.
+defaults:
+    packages:
+        - source: apt://linux
+          extends:
+              kernel:
+                  flavour: arm64
+
 imager:
     kernel: linux-image-arm64
     hypervisor: /usr/bin/qemu-system-aarch64

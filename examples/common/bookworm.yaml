@@ -8,11 +8,17 @@ distribution:
     # from a host of its own. Without the last two an image is built
     # from packages that are known to be superseded, and cannot be
     # brought up to date on the target either.
+    #
+    # Backports is here for what it carries the packaging of rather than
+    # for anything it installs: it is NotAutomatic, so no package moves
+    # to it on its own, and a specification that wants one asks for it by
+    # version. examples/linux-6.18/bookworm.yml is such a case.
     feeds:
         - suite: bookworm
         - suite: bookworm-updates
         - suite: bookworm-security
           uri: http://security.debian.org/debian-security
+        - suite: bookworm-backports
 
 playbook:
     - name: init packages
