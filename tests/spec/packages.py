@@ -1004,3 +1004,29 @@ class SignedCodeIsLeftAloneWithoutAGraft(UpstreamKernel):
         # is nothing here to turn off.
         package = self.kernel("                              flavour: amd64")
         self.assertEqual(package.kernel_upstream, None)
+
+class NothingVouchesForIt(DeclaredHashes):
+    def test(self):
+        import hashlib
+        import io
+        import contextlib
+
+        content = b"whatever the server sent today"
+        digest = hashlib.sha256(content).hexdigest()
+        name = "foo_1.0-1.dsc"
+        self.fetched(name, content)
+
+        package = self.package("https://example.com/%s" % name)
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            self.builder()._verify(package, self.workdir, name,
+                                   package.sha256, "sha256")
+        said = said.getvalue()
+
+        # What it was, and what to write down so the next build knows.
+        self.assertIn("nothing vouches", said)
+        self.assertIn(digest, said)
+        self.assertIn("sha256: %s" % digest, said)
+        # And the file to write it in, which is the one that carried the
+        # URI rather than whichever named the package.
+        self.assertIn("<string>", said)

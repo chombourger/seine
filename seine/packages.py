@@ -430,7 +430,7 @@ class Builder:
     # it names, so both already answer for themselves.
     def _verify(self, package, workdir, name, expected, setting):
         path = os.path.join(workdir, name)
-        if os.path.isfile(path) == False or expected is None:
+        if os.path.isfile(path) == False:
             return
 
         digest = hashlib.sha256()
@@ -438,6 +438,9 @@ class Builder:
             for block in iter(lambda: f.read(1024 * 1024), b""):
                 digest.update(block)
         found = digest.hexdigest()
+        if expected is None:
+            self._unvouched(package, name, found, setting)
+            return
         if found != expected:
             raise ValueError(
                 "package '%s': '%s' is not what '%s' says it would be\n"
@@ -446,6 +449,19 @@ class Builder:
                 "Either the file changed where it is served from, or it was "
                 "changed on the way here."
                 % (package.source, name, setting, expected, found))
+
+    # Nothing said what these bytes would be, so say what they were --
+    # with the file to write it in, which for a package described by
+    # several is the one that carries the URI rather than the one that
+    # named the package.
+    def _unvouched(self, package, name, found, setting):
+        where = package.origin_of(
+            "extends.kernel.upstream" if setting == "upstream-sha256"
+            else "source")
+        print("warning: nothing vouches for '%s'" % name)
+        print("  it hashes to %s" % found)
+        print("  add '%s: %s'%s" % (
+            setting, found, " to %s" % where if where else ""))
 
     # The tarball a kernel is grafted onto, which is fetched on its own and
     # has a hash of its own to be checked against.

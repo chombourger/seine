@@ -426,6 +426,19 @@ The hash is part of what decides whether a package needs rebuilding, so a
 file that changes under the same URL is a different package rather than a
 cached one.
 
+A download with no hash to check against is not an error, but it says so,
+with the hash it just computed and the file to put it in:
+
+```
+warning: nothing vouches for 'linux-6.18.43.tar.xz'
+  it hashes to 9a1c…
+  add 'upstream-sha256: 9a1c…' to examples/linux-6.18/kernel.yml
+```
+
+The file it names is the one that carries the URI, which for a
+specification assembled from several is not necessarily the one that
+named the package.
+
 `apt://` and `git://` need no hash and take none: an apt source is
 checked against the archive's signed index, and a git revision is the
 hash of what it names. Both answer for themselves, more strongly than a
