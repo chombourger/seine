@@ -1149,6 +1149,14 @@ not depend on each other. `--jobs N` runs up to N of them at once:
 seine build --jobs 4 spec.yaml
 ```
 
+Every package is two of those steps: fetching its source and building it.
+A fetch waits on a server rather than on the machine, so a large download
+runs beside the compiles of other packages instead of holding a slot to
+wait -- and a source that cannot be fetched says so early, rather than
+once everything before it has been built. A kernel's upstream tree, which
+is the largest thing seine downloads, comes down with the packaging it
+will be grafted into.
+
 One by default, which is the order and the output seine has always had.
 Two knobs decide how the machine is divided between what is running:
 

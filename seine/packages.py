@@ -634,6 +634,22 @@ class Builder:
     # can find while both are on disk.
     UPSTREAM = ".upstream"
 
+    # The tree a kernel is grafted onto, fetched with the source it will be
+    # grafted into rather than when the graft happens: it is the largest
+    # download seine makes, and there is no reason for it to wait for a
+    # build slot.
+    def fetch_upstream(self, package, workdir):
+        upstream = package.kernel_upstream
+        if upstream is None:
+            return
+        staging = os.path.join(workdir, Builder.UPSTREAM)
+        os.makedirs(staging, exist_ok=True)
+        print("fetching '%s'" % upstream)
+        self.builderImage.exec(
+            self._upstream_args(upstream), volumes=[(staging, WORKDIR)],
+            workdir=WORKDIR)
+        self._verify_upstream(package, staging)
+
     # Puts the distribution's packaging on a kernel tree it was not written
     # for, and returns the grafted tree.
     #
@@ -650,13 +666,10 @@ class Builder:
     def graft(self, package, workdir, sourcedir, epoch):
         upstream = package.kernel_upstream
         staging = os.path.join(workdir, Builder.UPSTREAM)
-        os.makedirs(staging, exist_ok=True)
+        if os.path.isdir(staging) == False:
+            self.fetch_upstream(package, workdir)
 
         print("grafting '%s' onto '%s'" % (package.source, upstream))
-        self.builderImage.exec(
-            self._upstream_args(upstream), volumes=[(staging, WORKDIR)],
-            workdir=WORKDIR)
-        self._verify_upstream(package, staging)
         tree = self._source_dir(str(upstream), staging)
 
         source = self._source_name(sourcedir)
@@ -1676,6 +1689,7 @@ rm -rf .pc
         try:
             print("fetching '%s'" % package.source)
             sourcedir = self.fetch(package, workdir)
+            self.fetch_upstream(package, workdir)
         except:
             shutil.rmtree(workdir, ignore_errors=True)
             raise

@@ -1179,3 +1179,42 @@ class FetchedSourcesOutliveTheirStep(avocado.Test):
         self.assertFalse(os.path.exists(made[0]),
                          "%s was left behind" % made[0])
         self.assertEqual(builder._sources, {})
+
+class AKernelsTreeIsFetchedWithItsSource(avocado.Test):
+    def test(self):
+        from seine.packages import Builder, WORKDIR
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+
+        fetched = []
+
+        class Image:
+            def exec(self, args, architecture=None, volumes=None,
+                     workdir=None, environment=None, check=True):
+                fetched.append(" ".join(args))
+                os.makedirs(os.path.join(volumes[0][0], "linux-6.18.43"),
+                            exist_ok=True)
+                return 0
+
+        package = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz
+        """).image.packages[0]
+
+        builder = Builder(distro, {"keep": False}, Image())
+        workdir, sourcedir = builder._fetched(package)
+        try:
+            # The kernel's own tree comes down with the packaging, in the
+            # step that waits on the network -- not later, in the one that
+            # waits on the machine.
+            self.assertEqual(len(fetched), 2)
+            self.assertIn("apt-get source linux", fetched[0])
+            self.assertIn("linux-6.18.43.tar.xz", fetched[1])
+            self.assertTrue(os.path.isdir(os.path.join(workdir, ".upstream")))
+        finally:
+            import shutil
+            shutil.rmtree(workdir, ignore_errors=True)
