@@ -91,8 +91,13 @@ class Image(avocado.Test):
         environment["PATH"] = "%s:%s" % (os.path.dirname(sys.executable),
                                          environment.get("PATH", ""))
 
+        # --jobs: what this plan is for is building the examples, and a
+        # build that runs its own steps together is the one users will
+        # run. The four tests may themselves run together, which is what
+        # the cache locks are for.
         build = subprocess.run(
-            [sys.executable, "./seine.py", "build", "-v"] + self.specification(),
+            [sys.executable, "./seine.py", "build", "-v", "--jobs", "4"]
+            + self.specification(),
             cwd=path_to_sources, env=environment,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         log = os.path.join(self.outputdir, "build.log")

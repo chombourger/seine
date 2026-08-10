@@ -125,6 +125,10 @@ so they cancel themselves unless asked for:
 SEINE_TEST_PLAN=full avocado run --filter-by-tags=full tests/spec/images.py
 ```
 
+Each of the four builds with `--jobs 4`, and the four may run beside each
+other -- what they share is guarded by the same locks that let two
+developers build on one machine.
+
 They build the examples as shipped rather than copies of them: the files
 under `examples/common/` composed on the command line the way a
 specification is composed, with the release chosen at the front and the
