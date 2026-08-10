@@ -99,15 +99,16 @@ class Image(avocado.Test):
         # --require-hashes: an example that loses its hash, or grows a new
         # source without one, fails here rather than quietly downloading
         # whatever the URL serves that day.
-        build = subprocess.run(
-            [sys.executable, "./seine.py", "build", "-v", "--jobs", "4",
-             "--require-hashes"]
-            + self.specification(),
-            cwd=path_to_sources, env=environment,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # To the log as it goes, so a build can be watched while it runs
+        # rather than read once it has ended.
         log = os.path.join(self.outputdir, "build.log")
-        with open(log, "wb") as f:
-            f.write(build.stdout)
+        with open(log, "w") as f:
+            build = subprocess.run(
+                [sys.executable, "-u", "./seine.py", "build", "-v",
+                 "--jobs", "4", "--require-hashes"]
+                + self.specification(),
+                cwd=path_to_sources, env=environment, stdout=f,
+                stderr=subprocess.STDOUT)
         self.assertEqual(build.returncode, 0,
                          "building %s for %s failed, see %s"
                          % (self.image, self.release, log))
@@ -225,15 +226,20 @@ class CarriedCache(avocado.Test):
         self.spaces.append(path)
         return environment
 
+    # Straight to its file rather than through a pipe, and '-u' so the file
+    # is written as the build goes rather than when it ends. A build that
+    # has to finish before anything can be read is a build diagnosed after
+    # the fact, and the log of the step that went wrong is the first thing
+    # worth looking at while it is still going.
     def seine(self, space, args, log):
-        run = subprocess.run(
-            [sys.executable, "./seine.py"] + args,
-            cwd=path_to_sources, env=space,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        said = run.stdout.decode("utf-8", errors="replace")
         where = os.path.join(self.outputdir, "%s.log" % log)
         with open(where, "w") as f:
-            f.write(said)
+            run = subprocess.run(
+                [sys.executable, "-u", "./seine.py"] + args,
+                cwd=path_to_sources, env=space, stdout=f,
+                stderr=subprocess.STDOUT)
+        with open(where, "r", errors="replace") as f:
+            said = f.read()
         self.assertEqual(run.returncode, 0,
                          "'%s' failed, see %s" % (" ".join(args), where))
         return said
