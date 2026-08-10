@@ -36,6 +36,7 @@ may require disks/partitions to be created.
   * [Bring your own kernel](#bring-your-own-kernel)
 * [Building](#building)
   * [What a build would do](#what-a-build-would-do)
+  * [While a build runs](#while-a-build-runs)
   * [Building in parallel](#building-in-parallel)
   * [Cross-compiling](#cross-compiling)
   * [Reproducibility](#reproducibility)
@@ -1166,6 +1167,31 @@ Nothing is fetched, built or written. A package that was already built
 from exactly these inputs has no steps at all -- which is the useful part
 of the answer, and why the steps that are listed are the work that
 remains rather than the work in general.
+
+### While a build runs
+
+A build says what it is doing rather than printing everything it does.
+Each step's output goes to a file of its own, under a directory named
+when the build starts, and the terminal shows what is running, for how
+long, and how much is left:
+
+```
+✔ bootstrap-host               0s
+✔ packages-prepare             6s
+  ⠹ package:linux              12m04s
+  ⠋ rootfs                     1m22s
+  6/13 done, 2 running
+```
+
+A step that finishes leaves its line behind; only what is still running
+is redrawn. A step that fails prints its output, since nobody saw it go
+by.
+
+`--verbose` puts the raw output back and turns the display off: when a
+build is going wrong, that is what is wanted and no summary replaces it.
+Output that is not a terminal -- a pipe, a file, a CI log -- gets one
+line per step instead of a redrawn area, and a terminal that cannot print
+the characters above gets plain ones.
 
 ### Building in parallel
 

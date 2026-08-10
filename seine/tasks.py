@@ -151,24 +151,23 @@ def describe(tasks):
 # is the order and the output a build has always had. 'verbose' prints
 # what each step cost, which is what tells a user where the time goes --
 # and so what is worth running beside what.
-def run(tasks, jobs=1, verbose=False, logs=None):
+def run(tasks, jobs=1, verbose=False, logs=None, display=None):
     tasks = ordered(tasks)
+    if logs is not None:
+        install()
     if jobs <= 1:
-        _sequential(tasks, verbose)
+        _sequential(tasks, verbose, logs, display)
         return
 
     install()
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        _parallel(tasks, pool, jobs, verbose, logs)
+        _parallel(tasks, pool, jobs, verbose, logs, display)
 
-def _sequential(tasks, verbose):
+def _sequential(tasks, verbose, logs, display):
     for task in tasks:
-        started = time.time()
-        task.run()
-        if verbose:
-            print("  %s: %.1fs" % (task.name, time.time() - started))
+        _run_one(task, verbose, logs, display)
 
-def _parallel(tasks, pool, jobs, verbose, logs):
+def _parallel(tasks, pool, jobs, verbose, logs, display):
     done = set()
     failures = []
     running = {}
@@ -181,7 +180,7 @@ def _parallel(tasks, pool, jobs, verbose, logs):
             ready = [t for t in waiting if all(n in done for n in t.needs)]
             for task in ready[:jobs - len(running)]:
                 waiting.remove(task)
-                running[pool.submit(_run_one, task, verbose, logs)] = task
+                running[pool.submit(_run_one, task, verbose, logs, display)] = task
 
         if len(running) == 0:
             break
@@ -199,14 +198,22 @@ def _parallel(tasks, pool, jobs, verbose, logs):
     if len(failures) > 0:
         raise Failed(failures, [t.name for t in waiting])
 
-def _run_one(task, verbose, logs):
+def _run_one(task, verbose, logs, display=None):
     started = time.time()
-    if logs is None:
-        task.run()
-    else:
-        path = os.path.join(logs, "%s.log" % task.name)
-        with open(path, "w") as f, capture(f):
+    if display is not None:
+        display.started(task.name)
+    failed = True
+    try:
+        if logs is None:
             task.run()
+        else:
+            path = os.path.join(logs, "%s.log" % task.name)
+            with open(path, "w") as f, capture(f):
+                task.run()
+        failed = False
+    finally:
+        if display is not None:
+            display.finished(task.name, failed=failed)
     if verbose:
         print("  %s: %.1fs" % (task.name, time.time() - started))
 

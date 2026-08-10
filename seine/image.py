@@ -1,12 +1,14 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
+import contextlib
 import os
 import subprocess
 import tarfile
 import tempfile
 
 from seine               import packages
+from seine               import progress
 from seine               import tasks
 from seine               import utils
 from seine.ansible_runner import AnsibleContainerRunner
@@ -243,17 +245,26 @@ class Image:
             return self.plan()
         try:
             jobs = self.options.get("jobs", 1)
+            verbose = self.options.get("verbose", False)
+
+            # A step's output goes to a file of its own unless someone
+            # asked to watch it go by: several steps at once cannot share
+            # a terminal, and one step at a time buries what is worth
+            # knowing in what is not.
             logs = None
-            if jobs > 1:
-                # Somewhere for each step to write while the others write
-                # too. Named after the step, and printed here so a build
-                # can be watched while it runs.
+            if verbose == False or jobs > 1:
                 logs = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
                                         prefix="logs-")
-                print("running up to %d steps at once, output under %s"
-                      % (jobs, logs))
-            tasks.run(self.tasks(), jobs=jobs, logs=logs,
-                      verbose=self.options.get("verbose", False))
+                print("output under %s" % logs)
+
+            steps = self.tasks()
+            display = None
+            if verbose == False:
+                display = progress.Display(total=len(steps),
+                                           environment=os.environ)
+            with display if display is not None else contextlib.nullcontext():
+                tasks.run(steps, jobs=jobs, logs=logs, verbose=verbose,
+                          display=display)
         except:
             if self._image is not None:
                 os.unlink(self._image)
