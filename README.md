@@ -41,6 +41,7 @@ may require disks/partitions to be created.
   * [Cross-compiling](#cross-compiling)
   * [Reproducibility](#reproducibility)
   * [A note on privileges](#a-note-on-privileges)
+  * [What a build keeps, and getting the space back](#what-a-build-keeps-and-getting-the-space-back)
   * [Putting seine's directories on another drive](#putting-seines-directories-on-another-drive)
 * [Software Bill of Materials](#software-bill-of-materials)
 
@@ -1293,6 +1294,37 @@ unprivileged as far as the kernel is concerned: uid 0 inside it is the
 unprivileged user running seine, so what it can reach is that user's own
 files rather than the machine's. No `sudo` is used or required, as
 elsewhere in seine.
+
+### What a build keeps, and getting the space back
+
+A build keeps what it would otherwise make again: the packages it fetched,
+the packages it rebuilt, the buildd chroots sbuild unpacks, and the scratch
+space sources and images are assembled in. `seine cache info` says how much
+each of them is holding:
+
+```
+$ seine cache info
+downloads   253.7 MiB  /home/user/.cache/seine/downloads
+packages      1.1 GiB  /home/user/.cache/seine/packages
+chroots     278.4 MiB  /home/user/.cache/seine/chroots
+scratch     365.5 KiB  /var/tmp/seine
+total         1.6 GiB
+```
+
+`seine cache clear` removes them, and naming one clears only that:
+
+```
+seine cache clear             # all of them
+seine cache clear chroots     # only the buildd chroots
+```
+
+None of it is needed for a build to succeed, so clearing any of it costs
+time on the next build and nothing else. Do it between builds: a build
+running while a cache is removed under it may fail rather than refetch.
+
+Container images are not caches in this sense and are not listed. They live
+in seine's own podman storage under `~/.local/share/seine`, which podman
+itself empties (`podman --root ~/.local/share/seine system reset`).
 
 ### Putting seine's directories on another drive
 

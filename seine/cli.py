@@ -4,6 +4,7 @@
 
 import sys
 from seine.build import BuildCmd
+from seine.cache import CacheCmd
 
 def main():
     argv = sys.argv[1:]
@@ -15,6 +16,8 @@ def main():
     cmd = argv[0]
     if cmd == "build":
         BuildCmd().main(argv[1:])
+    elif cmd == "cache":
+        CacheCmd().main(argv[1:])
     else:
         print("%s: unknown command '%s'!" % (sys.argv[0], cmd))
         sys.exit(1)
