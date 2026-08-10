@@ -13,6 +13,7 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine       import cache
+from seine       import cache_index
 from seine.cache import CacheCmd, CACHES, IMAGES, PORTABLE
 
 # A cache with something in it, under the test's own directory rather than
@@ -335,3 +336,45 @@ class OnlyWhatAnotherMachineCanUseIsCarried(avocado.Test):
         self.assertIn("localhost/imager-kernel/debian/trixie/amd64:latest", carried)
         # Still nothing that cannot be named.
         self.assertNotIn("<none>:<none>", carried)
+# What is cached, one object at a time and oldest use first, which is the
+# order to read it in when the question is what to remove.
+class WhatIsCachedIsListedOneByOne(Caches):
+    def setUp(self):
+        super().setUp()
+        index = cache_index.Index()
+        index.made(cache_index.CHROOT, "bookworm-amd64")
+        index.made(cache_index.PACKAGE, "bookworm/amd64/busybox")
+        index.hit(cache_index.PACKAGE, "bookworm/amd64/busybox")
+
+    def test(self):
+        shown = self.run_cmd(["info", "--entries"])
+        self.assertIn("bookworm-amd64", shown)
+        self.assertIn("bookworm/amd64/busybox", shown)
+        # The one nothing reached for since it was made comes first.
+        self.assertLess(shown.index("bookworm-amd64"),
+                        shown.index("bookworm/amd64/busybox"))
+
+    def test_only_the_caches_asked_about(self):
+        shown = self.run_cmd(["info", "--entries", "chroots"])
+        self.assertIn("bookworm-amd64", shown)
+        self.assertNotIn("busybox", shown)
+
+    # A cleared cache stops being talked about: an entry left behind would
+    # be reported as a very old object and evicted a second time.
+    def test_clearing_a_cache_forgets_what_was_in_it(self):
+        self.run_cmd(["clear", "chroots"])
+        shown = self.run_cmd(["info", "--entries"])
+        self.assertNotIn("bookworm-amd64", shown)
+        self.assertIn("bookworm/amd64/busybox", shown)
+
+    def test_an_empty_index_says_so(self):
+        cache_index.Index().forget()
+        self.assertIn("nothing recorded yet",
+                      self.run_cmd(["info", "--entries"]))
+
+class TheEntriesFlagBelongsToInfoAlone(Caches):
+    def test(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                CacheCmd().main(["clear", "--entries"])
+        self.assertNotEqual(caught.exception.code, 0)

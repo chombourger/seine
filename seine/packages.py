@@ -19,6 +19,7 @@ from datetime import datetime
 from datetime import timezone
 from email.utils import format_datetime
 
+from seine.cache_index import PACKAGE, Index, say, since
 from seine.sbuild import BuilderImage
 from seine.tasks  import Task
 from seine.sbuild import REPOSITORY
@@ -1628,8 +1629,14 @@ rm -rf .pc
     # the image is for.
     def tasks(self, packages, hostBootstrap):
         pending = self._pending(packages)
+        # Which ones were already built when the graph was made, asked now
+        # rather than at the barrier: by then this build has built the rest
+        # of them, and a package it just made was not one it reused.
+        reused = self.current(packages)
         if len(pending) == 0:
-            return [Task("packages", lambda: None, needs=["bootstrap-host"])]
+            return [Task("packages",
+                         functools.partial(self._reused, reused),
+                         needs=["bootstrap-host"])]
 
         tasks = [Task("packages-prepare",
                       lambda: self._prepare(hostBootstrap),
@@ -1663,8 +1670,26 @@ rm -rf .pc
                               functools.partial(self._deploy, package),
                               needs=["package:%s" % package.name]))
 
-        return tasks + [Task("packages", lambda: None,
+        return tasks + [Task("packages",
+                             functools.partial(self._reused, reused),
                              needs=[t.name for t in tasks])]
+
+    # The packages this build did not have to build, recorded as taken from
+    # the cache. At the barrier rather than where the decision is made: that
+    # decision is also made by '--dry-run', which uses nothing and should
+    # leave the index saying so.
+    def _reused(self, current):
+        for package, stamp in current:
+            entry = Index().hit(PACKAGE, self.key(package))
+            say(self.options, "package %s reused, made %s"
+                              % (self.key(package), since(entry.get("made"))))
+
+    # What a package is called in the cache index. The release and the
+    # architecture are part of it: one index covers a machine, and the same
+    # source built for two releases is two different sets of .debs.
+    def key(self, package):
+        return "%s/%s/%s" % (self.distro["release"],
+                             self.distro["architecture"], package.name)
 
     # The packages this build would leave alone, with the stamp that says
     # so. A stamp names the digest of everything that would go into the
@@ -1746,6 +1771,8 @@ rm -rf .pc
             self._forget(package, produced)
             self._record(stamp, produced)
             self.index()
+        Index().made(PACKAGE, self.key(package))
+        say(self.options, "package %s made" % self.key(package))
 
     # One package: patched, built, and recorded as built. The chroot is
     # shared with whatever else is building at the same time, so it is

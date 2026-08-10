@@ -7,6 +7,7 @@ import subprocess
 import tarfile
 import tempfile
 
+from seine               import cache_index
 from seine               import packages
 from seine               import progress
 from seine               import tasks
@@ -258,6 +259,13 @@ class Image:
         try:
             jobs = self.options.get("jobs", 1)
             verbose = self.options.get("verbose", False)
+
+            # Whose downloads this build is about to use. Not per .deb:
+            # which of them apt takes out of the archive cache is decided by
+            # apt inside the container, and a release is the smallest thing
+            # seine can honestly say was used.
+            release = self.spec["distribution"]["release"]
+            cache_index.Index().hit(cache_index.DOWNLOADS, release)
 
             # A step's output goes to a file of its own unless someone
             # asked to watch it go by: several steps at once cannot share

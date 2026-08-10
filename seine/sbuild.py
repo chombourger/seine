@@ -5,7 +5,8 @@ import hashlib
 import os
 import subprocess
 
-from seine.bootstrap import Bootstrap
+from seine.bootstrap   import Bootstrap
+from seine.cache_index import CHROOT, Index, say, since
 from seine.utils     import ContainerEngine
 from seine.utils     import apt_sources
 from seine.utils     import locked
@@ -127,6 +128,12 @@ class SbuildChroot:
     def filename(self):
         return "%s-%s.tar.zst" % (self.distro["release"], self.architecture)
 
+    # What this chroot is called in the cache index, which is what a report
+    # of it says and what an eviction would name.
+    @property
+    def key(self):
+        return "%s-%s" % (self.distro["release"], self.architecture)
+
     @property
     def path(self):
         return os.path.join(
@@ -154,11 +161,11 @@ class SbuildChroot:
         return os.path.join(os.path.dirname(self.path), "%s-%s.inputs"
                             % (self.distro["release"], self.architecture))
 
-    # What an earlier seine wrote instead, which is still in caches and
-    # still looks like a chroot to sbuild.
+    # The names an earlier seine put beside the tarball, both of which still
+    # look like a chroot to sbuild and are still sitting in caches.
     @property
     def _mistakable(self):
-        return "%s.inputs" % self.path
+        return ["%s.inputs" % self.path, "%s.lock" % self.path]
 
     def current(self, digest):
         if self.exists() == False or os.path.isfile(self.inputs) == False:
@@ -170,11 +177,17 @@ class SbuildChroot:
         # Another build may be making the same chroot: they want the same
         # bytes, so one makes it and the other finds it made rather than
         # both writing one tarball.
-        with locked(self.path):
-            # A cache made by an earlier seine has one of these in it, and
-            # leaving it there is leaving a build to fail on a coin toss.
-            if os.path.isfile(self._mistakable):
-                os.unlink(self._mistakable)
+        #
+        # The lock is taken on the digest's name rather than the tarball's,
+        # for the same reason the digest is not called '<tarball>.inputs':
+        # '<tarball>.lock' looks like a chroot tarball to sbuild too, and
+        # bookworm's sbuild does not skip the empty file it is.
+        with locked(self.inputs):
+            # A cache made by an earlier seine has both of these in it, and
+            # leaving them there is leaving a build to fail on a coin toss.
+            for stale in self._mistakable:
+                if os.path.isfile(stale):
+                    os.unlink(stale)
             return self._create(builderImage)
 
     def _create(self, builderImage):
@@ -195,6 +208,9 @@ class SbuildChroot:
         ] + apt_sources(self.distro)
         digest = hashlib.sha256(" ".join(args).encode()).hexdigest()[:16]
         if self.current(digest):
+            entry = Index().hit(CHROOT, self.key)
+            say(self.options, "chroot %s reused, made %s"
+                              % (self.key, since(entry.get("made"))))
             return self
 
         volumes = [(ContainerEngine.downloads(self.distro["release"]),
@@ -210,6 +226,8 @@ class SbuildChroot:
             raise
         with open(self.inputs, "w") as f:
             f.write("%s\n" % digest)
+        Index().made(CHROOT, self.key)
+        say(self.options, "chroot %s made" % self.key)
         return self
 
 BUILDER_IMAGE_SCRIPT = """

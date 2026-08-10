@@ -7,6 +7,7 @@ import hashlib
 import os
 import tempfile
 
+from seine.cache_index import IMAGE, Index, say, since
 from seine.tasks import Task
 from seine.utils import ContainerEngine
 from seine.utils import INPUTS_LABEL
@@ -74,6 +75,9 @@ class Bootstrap(ABC):
     # inputs is already there.
     def build(self, dockerfile, base=None, options=None):
         if self.current(dockerfile, base):
+            entry = Index().hit(IMAGE, self.name)
+            say(self.options, "image %s reused, made %s"
+                              % (self.name, since(entry.get("made"))))
             return self
 
         written = tempfile.NamedTemporaryFile(mode="w", delete=False)
@@ -93,6 +97,8 @@ class Bootstrap(ABC):
                       % (written.name, self.name))
             else:
                 os.unlink(written.name)
+        Index().made(IMAGE, self.name)
+        say(self.options, "image %s made" % self.name)
         return self
 
     def getName(self):

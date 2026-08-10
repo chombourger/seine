@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 
+from seine       import cache_index
 from seine.cmd   import Cmd
 from seine.utils import ContainerEngine
 from seine.utils import KIND_LABEL
@@ -129,8 +130,17 @@ def human(count):
         count /= 1024.0
     return "%.1f TiB" % count
 
+# Which cache each kind of index entry belongs to, so a cache that is
+# cleared or reported on can find what was recorded about it.
+KINDS = {
+    "downloads": [cache_index.DOWNLOADS],
+    "packages":  [cache_index.PACKAGE],
+    "chroots":   [cache_index.CHROOT],
+    IMAGES:      [cache_index.IMAGE],
+}
+
 class CacheCmd(Cmd):
-    def info(self, names):
+    def info(self, names, entries=False):
         total = 0
         for name in names:
             if name == IMAGES:
@@ -142,14 +152,42 @@ class CacheCmd(Cmd):
             total += used
             print("%-10s %10s  %s" % (name, human(used), where))
         print("%-10s %10s" % ("total", human(total)))
+        if entries:
+            self._entries(names)
         return 0
+
+    # What is in the caches one object at a time, least recently used first
+    # -- which is the order to read it in when the question is what to
+    # remove. The times are seine's own record rather than the filesystem's:
+    # atime is a day's worth of resolution where a filesystem keeps it at
+    # all, and podman keeps no last-used time for an image.
+    def _entries(self, names):
+        kinds = [kind for name in names for kind in KINDS.get(name, [])]
+        listed = cache_index.Index().entries(
+            present=lambda kind, key: kind in kinds)
+        print()
+        if len(listed) == 0:
+            print("nothing recorded yet: an entry is written as a build "
+                  "takes or makes one")
+            return
+        print("%-10s %-34s %-12s %s" % ("cache", "entry", "last used", "made"))
+        for kind, key, entry in listed:
+            print("%-10s %-34s %-12s %s"
+                  % (kind, key, cache_index.since(entry.get("used")),
+                     cache_index.since(entry.get("made"))))
 
     def clear(self, names):
         # A build running at the same time as this loses whatever it was
         # about to reuse and does the work again -- which is what the cache
         # promises -- but one that is *reading* a tarball as it goes away
         # fails. Clearing a cache is something to do between builds.
+        index = cache_index.Index()
         for name in names:
+            # What was recorded about a cache goes with the cache: an entry
+            # for something that is not there any more would be reported as
+            # a very old object and evicted twice.
+            for kind in KINDS.get(name, []):
+                index.forget(kind)
             if name == IMAGES:
                 self._clear_images()
                 continue
@@ -341,15 +379,19 @@ class CacheCmd(Cmd):
         # way one does everywhere else: plain getopt stops at 'export' and
         # hands '--with-image-rootfs' back as if it were the name of a cache.
         try:
-            opts, args = getopt.gnu_getopt(argv, "h", ["help", "with-image-rootfs"])
+            opts, args = getopt.gnu_getopt(
+                argv, "h", ["entries", "help", "with-image-rootfs"])
         except getopt.GetoptError as err:
             sys.stderr.write("%s\n%s" % (err, USAGE))
             sys.exit(1)
+        entries = False
         with_image_rootfs = False
         for o, _ in opts:
             if o in ("-h", "--help"):
                 print(USAGE)
                 sys.exit()
+            elif o in ("--entries"):
+                entries = True
             elif o in ("--with-image-rootfs"):
                 with_image_rootfs = True
 
@@ -366,6 +408,9 @@ class CacheCmd(Cmd):
         if with_image_rootfs and action != "export":
             sys.stderr.write("error: --with-image-rootfs is for 'export', not '%s'\n"
                              % action)
+            sys.exit(1)
+        if entries and action != "info":
+            sys.stderr.write("error: --entries is for 'info', not '%s'\n" % action)
             sys.exit(1)
 
         # A tar to write or to read, named first so the caches after it read
@@ -399,7 +444,7 @@ class CacheCmd(Cmd):
         names = names if len(names) > 0 else list(every)
         try:
             if action == "info":
-                sys.exit(self.info(names))
+                sys.exit(self.info(names, entries))
             elif action == "clear":
                 sys.exit(self.clear(names))
             elif action == "export":
@@ -435,8 +480,14 @@ Description:
   applies to. That is all of them for 'info' and 'clear'; for a tar it is
   the caches worth carrying, which excludes 'scratch'.
 
+  'info --entries' lists what is in the caches one object at a time, least
+  recently used first, which is the order to read it in when the question is
+  what to remove. An entry appears the first time a build makes or takes the
+  thing it names, so a cache that has never been built against lists
+  nothing.
+
 Usage:
-  seine cache info [CACHE...|all]
+  seine cache info [--entries] [CACHE...|all]
   seine cache clear [CACHE...|all]
   seine cache export FILE|- [CACHE...|all]
   seine cache import FILE|- [CACHE...|all]
@@ -460,6 +511,7 @@ Caches:
 
 Examples:
   seine cache info
+  seine cache info --entries
   seine cache clear chroots
   seine cache clear downloads packages
   seine cache export caches.tar
@@ -468,6 +520,8 @@ Examples:
   seine cache export - | ssh builder seine cache import -
 
 Flags:
+      --entries         list what is cached one object at a time, least
+                        recently used first, for 'info' only
   -h, --help            print this message
       --with-image-rootfs
                         carry the image's root file-system as well, for

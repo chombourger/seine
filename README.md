@@ -1324,6 +1324,39 @@ None of it is needed for a build to succeed, so clearing any of it costs
 time on the next build and nothing else. Do it between builds: a build
 running while a cache is removed under it may fail rather than refetch.
 
+`--entries` lists what the caches hold one object at a time, least recently
+used first, which is the order to read it in when the question is what to
+remove:
+
+```
+$ seine cache info --entries chroots packages
+chroots     278.4 MiB  /home/user/.cache/seine/chroots
+packages      1.1 GiB  /home/user/.cache/seine/packages
+total         1.4 GiB
+
+cache      entry                              last used    made
+chroot     bookworm-amd64                     12d ago      12d ago
+package    bookworm/amd64/linux               12d ago      12d ago
+chroot     trixie-arm64                       2h ago       9d ago
+package    trixie/arm64/linux                 2h ago       3d ago
+```
+
+An entry appears the first time a build makes or takes the thing it names,
+so a cache nothing has been built against lists nothing. Removing the record
+costs a report and never a build: what decides whether a package needs
+rebuilding is still its stamp, and whether an image is current is still its
+label.
+
+`--verbose` makes a build say each of those decisions as it makes them,
+which is where caching that has quietly stopped working becomes visible:
+
+```
+$ seine build --verbose spec.yml
+cache: image bootstrap/debian/bookworm/all reused, made 9d ago
+cache: chroot bookworm-amd64 reused, made 9d ago
+cache: package bookworm/amd64/linux made
+```
+
 `images` is the odd one: the bootstraps, the builder and the imager
 appliance live in podman storage of seine's own rather than in a directory,
 so its size is what podman reports for that storage and clearing it removes

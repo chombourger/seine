@@ -1248,7 +1248,23 @@ class TheRepositoryIsNotRehashedEveryTime(avocado.Test):
         self.assertIn("> Packages", command)
         self.assertIn("Packages.gz", command)
 
-class PublishingRecordsWhatWasBuilt(avocado.Test):
+class Publishes(avocado.Test):
+    """
+    :avocado: disable
+    """
+
+    # Publishing a package records it in the cache index, and the index
+    # belongs to whoever is running the tests: point it at the test's own
+    # directory rather than writing in their cache.
+    def setUp(self):
+        self.environment = dict(os.environ)
+        os.environ["SEINE_CACHE_DIR"] = os.path.join(self.workdir, "cache")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.environment)
+
+class PublishingRecordsWhatWasBuilt(Publishes):
     def test(self):
         from seine.packages import Builder
 
@@ -1283,7 +1299,7 @@ class PublishingRecordsWhatWasBuilt(avocado.Test):
         # And nothing is left waiting to be published twice.
         self.assertEqual(builder._built, {})
 
-class PublishingABuildThatDidNotHappenDoesNothing(avocado.Test):
+class PublishingABuildThatDidNotHappenDoesNothing(Publishes):
     def test(self):
         from seine.packages import Builder
 
@@ -1320,9 +1336,14 @@ class TheChrootDigestCannotBeMistakenForAChroot(avocado.Test):
             self.assertIsNotNone(
                 looks_like_a_chroot.match(os.path.basename(chroot.path)),
                 "sbuild would not find the chroot at %s" % chroot.path)
-            self.assertIsNone(
-                looks_like_a_chroot.match(os.path.basename(chroot.inputs)),
-                "sbuild would take %s for a chroot" % chroot.inputs)
+            # Every name seine writes in there, the lock included: bookworm's
+            # sbuild takes the first match without skipping empty files, so
+            # a lock file called '<tarball>.lock' is a chroot as far as it is
+            # concerned.
+            for path in [chroot.inputs, "%s.lock" % chroot.inputs]:
+                self.assertIsNone(
+                    looks_like_a_chroot.match(os.path.basename(path)),
+                    "sbuild would take %s for a chroot" % path)
             # The two live side by side, which is the point of the name.
             self.assertEqual(os.path.dirname(chroot.inputs),
                              os.path.dirname(chroot.path))
