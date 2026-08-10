@@ -1,17 +1,21 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+# raspi-firmware lives in non-free-firmware, which every suite of both
+# releases carries. Asked for here rather than by writing a sources.list
+# into the image: the component is added to the feeds the specification
+# already has, whichever release and whatever URIs those are -- so this
+# file names no suite and works on bookworm as it does on trixie, and a
+# build from a snapshot takes the firmware from that snapshot too.
+distribution:
+    components: main non-free-firmware
+
 playbook:
     - name: boot packages
       priority: 800
       tasks:
-          - name: enable the non-free-firmware component (raspi-firmware lives there)
-            copy:
-                dest: /etc/apt/sources.list.d/non-free-firmware.list
-                content: "deb http://deb.debian.org/debian trixie non-free-firmware\n"
           - name: install the Raspberry Pi boot firmware and kernel
             apt:
-                update_cache: true
                 state: present
                 name:
                     - raspi-firmware
