@@ -16,6 +16,9 @@ from seine.ansible_runner import AnsibleContainerRunner
 from seine.bootstrap      import HostBootstrap
 from seine.bootstrap      import TargetBootstrap
 from seine.imager         import Imager
+from seine.imager_appliance import ImagerAppliance
+from seine.imager_kernel  import ImagerKernel
+from seine.transport_bootstrap import TransportBootstrap
 from seine.sbom           import SBOM
 from seine.sbuild         import BuilderImage
 from seine.tasks          import Task
@@ -223,6 +226,38 @@ class Image:
             SBOM(distro, self.options).task(self),
             Task("disk", self._prepare_disk, needs=["tarball"]),
         ] + Imager(self).tasks()
+
+    # Every container image a build of this specification would use, named
+    # without building any of them.
+    #
+    # Asked of the same classes the build instantiates rather than worked out
+    # from the shape of their names: what an image is called is theirs to
+    # decide, and a copy of the formula over here would go quietly wrong the
+    # day one of them changes.
+    #
+    # The appliance is a cross build's, so it is named only for one. The
+    # imager's kernel needs a target bootstrap to stand on, which is what a
+    # build gives it when it reaches that step; here it only has to exist for
+    # the name to be asked of it.
+    def images(self):
+        distro = self.spec["distribution"]
+        if self.targetBootstrap is None:
+            self.targetBootstrap = TargetBootstrap(distro, self.options)
+        named = [HostBootstrap(distro, self.options).name,
+                 self.targetBootstrap.name,
+                 BuilderImage(distro, self.options).name]
+        try:
+            kernel = ImagerKernel(self)
+            named.append(kernel.name)
+            if distro["architecture"] != utils.HOST_ARCH:
+                named.append(ImagerAppliance(self, kernel).name)
+        except ValueError:
+            # A specification with no imager kernel for its architecture
+            # names none; that is the build's complaint to make, not ours.
+            pass
+        named.append(TransportBootstrap(
+            self._from or self.targetBootstrap.name, distro, self.options).name)
+        return named
 
     def _prepare_disk(self):
         self._size_partitions()

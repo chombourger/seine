@@ -121,6 +121,86 @@ def images_size():
             return row.get("RawSize") or 0
     return 0
 
+# What a build of these specifications would want out of the caches, worked
+# out from the specifications alone: none of this fetches anything or builds
+# anything.
+#
+# A cache holds what a machine has built for every board and release it has
+# ever been asked for, and a colleague on one project wants the part of it
+# their own build would reach for. What that is, seine already knows how to
+# say -- the release and architecture name the directories, a package's stamp
+# names the .debs its build produced, and the image classes name themselves.
+#
+# Each specification is a list of files composed the way 'seine build'
+# composes them, so what is scoped is what those files describe together.
+class Wanted:
+    def __init__(self, specifications):
+        from seine.build import BuildCmd
+        from seine.packages import Builder, STAMPS
+
+        self.releases, self.repositories = set(), {}
+        self.chroots, self.images = set(), set()
+        for files in specifications:
+            build = BuildCmd()
+            for name in files:
+                build.load(name)
+            spec = build.parse()
+            distro = spec["distribution"]
+            release, architecture = distro["release"], distro["architecture"]
+
+            self.releases.add(release)
+            self.images.update(build.image.images())
+
+            builder = Builder(distro, build.options, None)
+            files_wanted = self.repositories.setdefault((release, architecture),
+                                                        set())
+            for package, stamp in builder.stamps(build.image.packages):
+                files_wanted.add(os.path.join(STAMPS, os.path.basename(stamp)))
+                for name in CacheCmd()._named_by(stamp):
+                    files_wanted.add(name)
+                self.chroots.add((release, builder.chroot_architecture(package)))
+
+    # Whether an entry of the record belongs to what was asked for, keyed the
+    # way the index keys them.
+    def records(self, kind, key):
+        from seine import cache_index
+        if kind == cache_index.DOWNLOADS:
+            return key in self.releases
+        if kind == cache_index.CHROOT:
+            return tuple(key.rsplit("-", 1)) in self.chroots
+        if kind == cache_index.PACKAGE:
+            release, _, rest = key.partition("/")
+            architecture = rest.partition("/")[0]
+            return (release, architecture) in self.repositories
+        if kind == cache_index.IMAGE:
+            return key in self.images
+        return True
+
+    # Whether a path inside a cache belongs to what was asked for. The path
+    # is the one the tar will hold, so it starts with the cache's own name.
+    def holds(self, path):
+        cache, _, rest = path.partition("/")
+        if rest == "":
+            return True
+        parts = rest.split("/")
+        if cache == "downloads":
+            return parts[0] in self.releases
+        # A release nothing wants is not carried as an empty directory
+        # either: the tar is what a colleague reads to see what they were
+        # given.
+        if cache == "chroots":
+            if len(parts) == 1:
+                return any(release == parts[0] for release, _ in self.chroots)
+            return (parts[0], parts[1]) in self.chroots
+        if cache == "packages":
+            if len(parts) == 1:
+                return any(release == parts[0] for release, _ in self.repositories)
+            wanted = self.repositories.get((parts[0], parts[1]))
+            if wanted is None:
+                return False
+            return len(parts) == 2 or "/".join(parts[2:]) in wanted
+        return True
+
 def size_of(path, carried=None):
     total = 0
     for dirpath, dirnames, filenames in os.walk(path):
@@ -237,21 +317,28 @@ class CacheCmd(Cmd):
     # comes out of one machine goes into another without either having to
     # agree on where a cache lives. Uncompressed unless the filename asks
     # for it: what is in here is .deb and .tar.zst, already compressed.
-    def export(self, names, where, with_image_rootfs=False):
+    def export(self, names, where, with_image_rootfs=False, wanted=None):
         mode = "w|gz" if where.endswith((".gz", ".tgz")) else "w|"
         stream = sys.stdout.buffer if where == "-" else None
         with tarfile.open(None if stream else where, mode, fileobj=stream) as tar:
             for name in names:
                 if name == IMAGES:
-                    self._export_images(tar, where, with_image_rootfs)
+                    self._export_images(tar, where, with_image_rootfs, wanted)
                     continue
                 path = CACHES[name]()
                 if os.path.isdir(path) == False:
                     continue
+                # The size reported is the size carried, so a scoped export
+                # says what it is really sending.
+                def inside(real, name=name, path=path):
+                    if self._carried(real) == False:
+                        return False
+                    return wanted is None or wanted.holds(name + real[len(path):])
                 self.say("exporting %s (%s)"
-                         % (name, human(size_of(path, self._carried))), where)
-                tar.add(path, arcname=name, recursive=True, filter=self._exported)
-            self._export_index(tar, where)
+                         % (name, human(size_of(path, inside))), where)
+                tar.add(path, arcname=name, recursive=True,
+                        filter=lambda entry: self._exported(entry, wanted))
+            self._export_index(tar, where, names, wanted)
         return 0
 
     # What each entry is and when it was made, and nothing about this
@@ -259,8 +346,20 @@ class CacheCmd(Cmd):
     # nothing about the machine reading this, and a last-used time from over
     # there would have the first eviction sweep deleting on another machine's
     # history.
-    def _export_index(self, tar, where):
-        recorded = cache_index.Index().stripped()
+    def _export_index(self, tar, where, names, wanted=None):
+        # Only the caches this tar holds: a record of a cache that was not
+        # sent describes nothing the other machine has.
+        kinds = [kind for name in names for kind in KINDS.get(name, [])]
+        recorded = {kind: entries for kind, entries
+                    in cache_index.Index().stripped().items() if kind in kinds}
+        if wanted is not None:
+            # A record of what was not sent would have the other machine
+            # reporting things it does not have.
+            recorded = {kind: {key: entry for key, entry in entries.items()
+                               if wanted.records(kind, key)}
+                        for kind, entries in recorded.items()}
+            recorded = {kind: entries for kind, entries in recorded.items()
+                        if len(entries) > 0}
         if len(recorded) == 0:
             return
         written = json.dumps(recorded, indent=1, sort_keys=True).encode()
@@ -287,8 +386,15 @@ class CacheCmd(Cmd):
     # size has to be written before its bytes, and podman will not say in
     # advance what it is about to produce. That is one extra copy through
     # the scratch space.
-    def _export_images(self, tar, where, with_image_rootfs=False):
+    def _export_images(self, tar, where, with_image_rootfs=False, wanted=None):
         named = images(with_image_rootfs)
+        if wanted is not None:
+            # A base image nothing here built is kept whatever was asked for:
+            # it is what everything else is built on, and it is not named by
+            # any specification.
+            named = [name for name in named
+                     if name.startswith(LOCAL) == False
+                     or name.removeprefix(LOCAL).rsplit(":", 1)[0] in wanted.images]
         if len(named) == 0:
             return
         self.say("exporting %s (%d image%s)"
@@ -342,8 +448,12 @@ class CacheCmd(Cmd):
 
     # Returning None for a directory prunes what is under it as well, which
     # is what keeps the export out of apt's unreadable 'partial'.
-    def _exported(self, entry):
-        return entry if self._carried(entry.name) else None
+    def _exported(self, entry, wanted=None):
+        if self._carried(entry.name) == False:
+            return None
+        if wanted is not None and wanted.holds(entry.name) == False:
+            return None
+        return entry
 
     # The other half, and the only place seine writes files it did not make
     # itself: a tar handed to it may name anything at all. Every member has
@@ -550,7 +660,7 @@ class CacheCmd(Cmd):
         # hands '--with-image-rootfs' back as if it were the name of a cache.
         try:
             opts, args = getopt.gnu_getopt(
-                argv, "h", ["entries", "force", "help", "replace",
+                argv, "h", ["entries", "force", "help", "replace", "spec=",
                             "with-image-rootfs"])
         except getopt.GetoptError as err:
             sys.stderr.write("%s\n%s" % (err, USAGE))
@@ -558,8 +668,9 @@ class CacheCmd(Cmd):
         entries = False
         force = False
         replace = False
+        specifications = []
         with_image_rootfs = False
-        for o, _ in opts:
+        for o, a in opts:
             if o in ("-h", "--help"):
                 print(USAGE)
                 sys.exit()
@@ -569,6 +680,10 @@ class CacheCmd(Cmd):
                 force = True
             elif o in ("--replace"):
                 replace = True
+            elif o in ("--spec"):
+                # One specification per '--spec', its files composed the way
+                # 'seine build' composes a list of them.
+                specifications.append([name for name in a.split(",") if name])
             elif o in ("--with-image-rootfs"):
                 with_image_rootfs = True
 
@@ -588,6 +703,9 @@ class CacheCmd(Cmd):
             sys.exit(1)
         if entries and action != "info":
             sys.stderr.write("error: --entries is for 'info', not '%s'\n" % action)
+            sys.exit(1)
+        if len(specifications) > 0 and action != "export":
+            sys.stderr.write("error: --spec is for 'export', not '%s'\n" % action)
             sys.exit(1)
         for flag, asked in [("--force", force), ("--replace", replace)]:
             if asked and action != "import":
@@ -633,7 +751,8 @@ class CacheCmd(Cmd):
             elif action == "clear":
                 sys.exit(self.clear(names))
             elif action == "export":
-                sys.exit(self.export(names, where, with_image_rootfs))
+                wanted = Wanted(specifications) if len(specifications) > 0 else None
+                sys.exit(self.export(names, where, with_image_rootfs, wanted))
             else:
                 sys.exit(self.load(names, where, replace, force))
         except (OSError, tarfile.TarError, ValueError) as e:
@@ -660,6 +779,12 @@ Description:
   that has. The tar is uncompressed unless its name ends in .gz or .tgz;
   what is in it is compressed already. '-' stands for stdout or stdin, so
   the two can be piped into each other over ssh.
+
+  '--spec' scopes an export to what a build of those specifications would
+  want: the chroot it unpacks, the .debs its own packages produced, and the
+  images it runs in, leaving behind everything this machine holds for other
+  boards and releases. Give it one specification per '--spec', its files
+  separated by commas as 'seine build' would take them.
 
   An export named no cache carries the packages, the chroots and the images.
   The downloads are left out: a build reaches the archive whatever it was
@@ -720,6 +845,7 @@ Examples:
   seine cache clear downloads packages
   seine cache export caches.tar
   seine cache export caches.tar all
+  seine cache export --spec common/amd64.yaml,pc-image/main.yaml caches.tar
   seine cache export --with-image-rootfs caches.tar
   seine cache import caches.tar chroots
   seine cache import --replace caches.tar
@@ -732,6 +858,8 @@ Flags:
   -h, --help            print this message
       --replace         empty the caches named before reading the tar, for
                         'import' only
+      --spec FILE[,...] carry only what a build of this specification would
+                        want, for 'export' only. May be given more than once
       --with-image-rootfs
                         carry the image's root file-system as well, for
                         'export' only

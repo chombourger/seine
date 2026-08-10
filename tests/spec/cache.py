@@ -34,7 +34,8 @@ class Caches(avocado.Test):
         cache.images = lambda: []
         cache.images_size = lambda: 0
         CacheCmd._clear_images = lambda self: None
-        CacheCmd._export_images = lambda self, tar, where, rootfs=False: None
+        CacheCmd._export_images = \
+            lambda self, tar, where, rootfs=False, wanted=None: None
 
         self.paths = {}
         for name in CACHES:
@@ -179,7 +180,7 @@ class ACacheIsCarriedToAnotherMachine(Caches):
     def test_the_image_rootfs_is_asked_for_by_name(self):
         asked = []
         CacheCmd._export_images = \
-            lambda self, tar, where, rootfs=False: asked.append(rootfs)
+            lambda self, tar, where, rootfs=False, wanted=None: asked.append(rootfs)
 
         where = os.path.join(self.workdir, "caches.tar")
         self.run_cmd(["export", where])
@@ -539,3 +540,83 @@ class TheDownloadsAreLeftBehindUnlessAskedFor(Caches):
         self.run_cmd(["import", where])
         self.assertTrue(os.path.isfile(os.path.join(self.paths["downloads"],
                                                     "blob")))
+
+# A cache holds what a machine built for every board and release it was ever
+# asked for. A colleague on one project wants the part of it their own build
+# would reach for, which is what a specification says.
+class AnExportScopedToASpecification(Caches):
+    def setUp(self):
+        super().setUp()
+        self.spec = os.path.join(self.workdir, "spec.yml")
+        with open(self.spec, "w") as f:
+            f.write("distribution:\n"
+                    "    release: bookworm\n"
+                    "    architecture: amd64\n"
+                    "packages:\n"
+                    "    - source: apt://busybox\n"
+                    "image:\n"
+                    "    filename: scoped.img\n"
+                    "    partitions:\n"
+                    "        - label: rootfs\n"
+                    "          where: /\n")
+        # Two releases and two architectures in the caches, as a machine
+        # that has built for several boards would have.
+        for cache, parts in [("chroots", ["bookworm/amd64", "trixie/arm64"]),
+                             ("packages", ["bookworm/amd64", "trixie/arm64"]),
+                             ("downloads", ["bookworm", "trixie"])]:
+            for part in parts:
+                where = os.path.join(self.paths[cache], part)
+                os.makedirs(where, exist_ok=True)
+                open(os.path.join(where, "blob"), "w").close()
+
+    def carried(self, *args):
+        where = os.path.join(self.workdir, "caches.tar")
+        self.run_cmd(["export", "--spec", self.spec, where] + list(args))
+        with tarfile.open(where) as tar:
+            return set(tar.getnames())
+
+    def test(self):
+        carried = self.carried("chroots")
+        self.assertIn("chroots/bookworm/amd64/blob", carried)
+        # The other machine's board is left where it was.
+        self.assertNotIn("chroots/trixie/arm64/blob", carried)
+        # And not even as the directory it was in: a tar is what a colleague
+        # reads to see what they were given.
+        self.assertNotIn("chroots/trixie", carried)
+
+    # The downloads are per release, which is as fine as this gets: which
+    # .deb apt took is apt's business inside the container.
+    def test_the_downloads_when_asked_for(self):
+        carried = self.carried("downloads")
+        self.assertIn("downloads/bookworm/blob", carried)
+        self.assertNotIn("downloads/trixie/blob", carried)
+
+    # A repository holds .debs from every build the machine has done; what
+    # this specification wants is the ones its own stamps name.
+    def test_only_the_debs_its_stamps_name(self):
+        from seine.cache import Wanted
+        repository = os.path.join(self.paths["packages"], "bookworm", "amd64")
+        os.makedirs(os.path.join(repository, ".stamps"), exist_ok=True)
+        wanted = Wanted([[self.spec]])
+        stamp, = [os.path.basename(name) for name in
+                  wanted.repositories[("bookworm", "amd64")]
+                  if name.startswith(".stamps")]
+        self.assertTrue(stamp.startswith("busybox_"),
+                        "the stamp named was %s" % stamp)
+        # Someone else's build in the same repository is not this one's.
+        self.assertFalse(wanted.holds("packages/bookworm/amd64/linux_6.1_amd64.deb"))
+        self.assertFalse(wanted.holds("packages/trixie/arm64/busybox_1.35_arm64.deb"))
+
+    # What a build of it would run in, asked of the classes that name them.
+    def test_the_images_it_would_run_in(self):
+        from seine.cache import Wanted
+        wanted = Wanted([[self.spec]])
+        self.assertIn("builder/debian/bookworm", wanted.images)
+        self.assertIn("bootstrap/debian/bookworm/all", wanted.images)
+        self.assertNotIn("builder/debian/trixie", wanted.images)
+
+    def test_the_flag_belongs_to_export_alone(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                CacheCmd().main(["import", "--spec", self.spec, "x.tar"])
+        self.assertNotEqual(caught.exception.code, 0)

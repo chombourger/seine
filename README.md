@@ -43,6 +43,7 @@ may require disks/partitions to be created.
   * [A note on privileges](#a-note-on-privileges)
   * [What a build keeps, and getting the space back](#what-a-build-keeps-and-getting-the-space-back)
   * [Moving a cache to another machine](#moving-a-cache-to-another-machine)
+  * [Carrying only what a project needs](#carrying-only-what-a-project-needs)
   * [Putting seine's directories on another drive](#putting-seines-directories-on-another-drive)
 * [Software Bill of Materials](#software-bill-of-materials)
 
@@ -1400,6 +1401,33 @@ archive anyway.
 seine cache export caches.tar downloads   # carry them anyway
 seine cache export caches.tar all         # every cache a tar can hold
 ```
+
+### Carrying only what a project needs
+
+A cache holds what a machine has built for every board and release it was
+ever asked for. `--spec` scopes an export to what a build of those
+specifications would want -- the chroot it unpacks, the `.deb`s its own
+packages produced, the images it runs in -- and leaves the rest where it is:
+
+```
+seine cache export --spec common/amd64.yaml,pc-image/main.yaml caches.tar
+```
+
+One specification per `--spec`, its files separated by commas as `seine
+build` would take them, and the flag may be given more than once for a
+project built for several boards.
+
+Nothing is fetched or built to work this out: the release and architecture
+name the directories, a package's stamp names the `.deb`s its build
+produced, and the image classes name themselves. The record of what was
+cached is scoped with it, since a record of what was not sent describes
+nothing the other machine has.
+
+Two limits worth knowing. The `downloads` cache can only be scoped per
+release, because which `.deb` apt took out of it was decided by apt inside
+the container. And base images pulled from a registry are carried whatever
+was asked for: nothing here built them, no specification names them, and
+everything else is built on them.
 
 `scratch` is left out too: what is in it belongs to a build that is either
 running or has died. The tar is uncompressed unless its name ends in `.gz`
