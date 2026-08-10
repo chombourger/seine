@@ -31,6 +31,11 @@ packages:
       extends:
           kernel:
               upstream: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.43.tar.xz
+              # What kernel.org publishes for it, in sha256sums.asc beside
+              # the tarball. Nothing else vouches for a tarball fetched
+              # over http, and this is also what tells a rebuild that the
+              # tree changed rather than only its name.
+              upstream-sha256: a1aeb926c7c4a1564368200b1082e45bb958007682d804aff88abbc3a7a47b5d
               # Which of Debian's patches are kept is not listed: they are
               # picked by what each one touches, so that the list does not
               # have to be rewritten every time the packaging moves. These
