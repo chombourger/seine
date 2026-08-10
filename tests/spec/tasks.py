@@ -229,11 +229,11 @@ class EachPackageIsATaskOfItsOwn(avocado.Test):
             self.assertIn("package:%s" % name, tasks)
 
         # A package built against another still waits for it; one that is
-        # built against nothing waits for nothing but the preparation.
+        # built against nothing waits for nothing but its own source.
         self.assertIn("package:seine-test-library",
                       tasks["package:seine-test-application"].needs)
         self.assertEqual(tasks["package:seine-test-unrelated"].needs,
-                         ["packages-prepare"])
+                         ["fetch:seine-test-unrelated"])
 
         # And the rest of the build waits on the barrier rather than on
         # whichever packages a specification happens to have.
@@ -252,3 +252,33 @@ class ABuildWithoutPackagesStillHasTheBarrier(avocado.Test):
         # have something to wait for.
         self.assertEqual(tasks["packages"].needs, ["bootstrap-host"])
         self.assertNotIn("packages-prepare", tasks)
+
+class FetchingIsItsOwnStep(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(PACKAGES)
+        build.parse()
+        tasks = {t.name: t for t in build.image.tasks()}
+
+        for name in ["seine-test-application", "seine-test-library",
+                     "seine-test-unrelated"]:
+            self.assertIn("fetch:%s" % name, tasks)
+            # A download waits on a server, so it waits for nothing but
+            # the builder image -- not for the package it will be built
+            # against.
+            self.assertEqual(tasks["fetch:%s" % name].needs,
+                             ["packages-prepare"])
+            self.assertIn("fetch:%s" % name,
+                          tasks["package:%s" % name].needs)
+
+        # Building still waits for what it is built against, which
+        # fetching never did.
+        self.assertIn("package:seine-test-library",
+                      tasks["package:seine-test-application"].needs)
+        self.assertNotIn("package:seine-test-library",
+                         tasks["fetch:seine-test-application"].needs)
+
+        # And the barrier still covers everything, fetches included.
+        for name in tasks:
+            if name.startswith(("fetch:", "package:")):
+                self.assertIn(name, tasks["packages"].needs)

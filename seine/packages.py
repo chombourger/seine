@@ -1615,7 +1615,16 @@ rm -rf .pc
         names = {package.name: "package:%s" % package.name
                  for package, _ in pending}
         for package, stamp in pending:
-            needs = ["packages-prepare"] + [
+            # Fetching waits on a server and building waits on the
+            # machine, so they are separate: a large download no longer
+            # holds a slot that could be compiling something else, and a
+            # source that cannot be fetched says so early rather than
+            # after everything before it has been built.
+            fetch = "fetch:%s" % package.name
+            tasks.append(Task(fetch,
+                              functools.partial(self._fetched, package),
+                              needs=["packages-prepare"]))
+            needs = [fetch] + [
                 names[d.name] for d in getattr(package, "depends", [])
                 if d.name in names]
             tasks.append(Task(names[package.name],
