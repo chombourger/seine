@@ -19,6 +19,7 @@ class BuildCmd(Cmd):
         "help",
         "jobs=",
         "keep",
+        "parallel=",
         "rebuild",
         "sbom",
         "verbose"
@@ -26,7 +27,7 @@ class BuildCmd(Cmd):
 
     def __init__(self):
         self.image = None
-        self.options = { "build": True, "debug": False, "jobs": 1, "keep": False,
+        self.options = { "build": True, "debug": False, "jobs": 1, "keep": False, "parallel": None,
                          "rebuild": False, "sbom": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
@@ -414,6 +415,19 @@ class BuildCmd(Cmd):
                 self.options["keep"] = True
             elif o in ("-D", "--dump"):
                 self.options["build"] = False
+            elif o in ("--parallel"):
+                # How many cores one package build may use. Left unset it
+                # follows --jobs, so raising that divides the machine
+                # rather than multiplying it: N builds each helping
+                # themselves to every core is how a build machine dies.
+                try:
+                    self.options["parallel"] = int(a)
+                except ValueError:
+                    sys.stderr.write("error: --parallel expects a number\n")
+                    sys.exit(1)
+                if self.options["parallel"] < 1:
+                    sys.stderr.write("error: --parallel shall be at least 1\n")
+                    sys.exit(1)
             elif o in ("--rebuild"):
                 self.options["rebuild"] = True
             elif o in ("--sbom"):
@@ -473,6 +487,9 @@ Flags:
                         step's containers print goes to a file of its own
                         while more than one is running
   -k, --keep            keep temporary files
+      --parallel N      cores one package build may use. Unset, it is derived
+                        from --jobs so that the builds running together do not
+                        ask for more of the machine than it has
   --rebuild             rebuild the packages of the 'packages' section even if
                         they were built before
   --sbom                produce a Software Bill of Materials (SBOM) using

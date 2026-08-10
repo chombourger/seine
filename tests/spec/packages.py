@@ -500,6 +500,39 @@ class DumpHidesInternalAttributes(avocado.Test):
         self.assertNotIn("_dirname", dumped)
         self.assertNotIn("priority", dumped)
 
+class CoresPerBuild(CrossBuildProfile):
+    def jobs(self, options, package_options=None):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        from seine.utils import HOST_ARCH
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": HOST_ARCH, "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      options:
+%s
+        """ % "".join("                          - %s\n" % o
+                      for o in (package_options or ["nocheck"])))
+        builder = Builder(distro, options, BuilderImage(distro, options))
+        return builder.parallel(build.image.packages[0])
+
+    def test(self):
+        cores = os.cpu_count() or 1
+
+        # One build at a time gets the machine, as it always did.
+        self.assertEqual(self.jobs({"jobs": 1}), cores)
+        # Four at a time get a quarter each: raising --jobs divides the
+        # machine rather than multiplying it.
+        self.assertEqual(self.jobs({"jobs": 4}), max(1, cores // 4))
+        # Unless told otherwise, which is the point of the knob.
+        self.assertEqual(self.jobs({"jobs": 4, "parallel": 8}), 8)
+        # A package whose build is broken in parallel says so itself, and
+        # that beats both.
+        self.assertEqual(
+            self.jobs({"jobs": 1, "parallel": 8}, ["parallel=1"]), 1)
+
 class UpstreamKernel(avocado.Test):
     def builder(self):
         from seine.packages import Builder

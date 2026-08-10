@@ -847,6 +847,22 @@ seine build --jobs 4 spec.yaml
 ```
 
 One by default, which is the order and the output seine has always had.
+Two knobs decide how the machine is divided between what is running:
+
+| flag | what it sets | default |
+| ---- | ------------ | ------- |
+| `--jobs N` | steps of the build running at once | `1` |
+| `--parallel N` | cores one package build may use | the machine divided by `--jobs` |
+
+The default for the second is what keeps the first from being a trap.
+Raising `--jobs` alone divides the cores rather than multiplying them:
+four builds each helping themselves to every core is a load average of
+four times the machine and a build that finishes nothing. Set
+`--parallel` explicitly to oversubscribe on purpose -- for builds that
+wait on I/O rather than on the CPU -- and set `parallel=1` in a
+package's own `options` for packaging whose build is broken in parallel,
+which beats both.
+
 While more than one step is running, each writes to a file of its own,
 under a directory the build names when it starts, so two kernels do not
 interleave into something unreadable. A step that fails has its output

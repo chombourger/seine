@@ -368,6 +368,21 @@ class Builder:
         self._chroots = threading.Lock()
         self._repository = threading.Lock()
 
+    # Cores for one package build: what --parallel said, or the machine
+    # divided by how many builds may run at once.
+    def parallel(self, package):
+        parallel = self.options.get("parallel")
+        if parallel is None:
+            jobs = max(1, self.options.get("jobs", 1))
+            parallel = max(1, (os.cpu_count() or 1) // jobs)
+        for option in package.options:
+            if option.startswith("parallel="):
+                parallel = option
+                break
+        if type(parallel) == type(""):
+            parallel = int(parallel.split("=")[1])
+        return max(1, parallel)
+
     def fetch(self, package, workdir):
         volumes = [(workdir, WORKDIR)]
         ssh_volumes, environment = self._ssh(package)
@@ -1275,6 +1290,16 @@ rm -rf .pc
                      "--host=%s" % self.distro["architecture"]]
         else:
             args += ["--arch=%s" % self.distro["architecture"]]
+        # How much of the machine this build may use. sbuild works it out
+        # from the machine itself, which is right for the one build that
+        # was ever running at a time and wrong the moment there are
+        # several, each helping itself to every core. So the cores are
+        # divided rather than handed out whole, unless the specification
+        # says otherwise -- a package whose build is broken in parallel
+        # says 'parallel=1' in its options, and a machine that is not
+        # CPU-bound can be told to oversubscribe.
+        args += ["--jobs=%d" % self.parallel(package)]
+
         # 'cross' is one of dpkg's own build profiles, and sbuild sets it
         # for a cross build -- but only while it is choosing the profiles
         # itself. Naming any profile takes that decision over, and a
