@@ -3,6 +3,7 @@
 
 import json
 import os
+import threading
 import time
 
 from seine.utils import ContainerEngine, locked
@@ -61,6 +62,7 @@ class Index:
         return self._touch(kind, key, made=True)
 
     def _touch(self, kind, key, made):
+        counted(kind, made)
         now = int(time.time())
         with locked(self._path):
             recorded = self._read()
@@ -129,6 +131,37 @@ class Index:
         with open(temporary, "w") as f:
             json.dump(recorded, f, indent=1, sort_keys=True)
         os.replace(temporary, self._path)
+
+# What this build reused and what it made, counted where the index is
+# written so the count and the record cannot disagree. A build's steps run
+# beside each other, hence the lock.
+_counted = {}
+_counting = threading.Lock()
+
+def counted(kind, made):
+    with _counting:
+        seen = _counted.setdefault(kind, {"made": 0, "reused": 0})
+        seen["made" if made else "reused"] += 1
+
+# The line a build ends with, or nothing when it decided nothing -- a build
+# that reused and made nothing has no cache to report on.
+def summary():
+    with _counting:
+        if len(_counted) == 0:
+            return None
+        said = []
+        for what in ["reused", "made"]:
+            counts = ["%d %s" % (seen[what], plural(kind, seen[what]))
+                      for kind, seen in sorted(_counted.items()) if seen[what] > 0]
+            said.append("%s: %s" % (what, ", ".join(counts) if counts else "nothing"))
+        # A plain separator: this goes wherever a build's output goes, and
+        # that is not always a terminal that can carry more.
+        return "; ".join(said)
+
+def plural(kind, count):
+    if count == 1 or kind.endswith("s"):
+        return kind
+    return "%ss" % kind
 
 # A line for the log when someone asked to see what a build is doing. The
 # index is where a build's cache decisions are already written down, so this

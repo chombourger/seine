@@ -320,6 +320,14 @@ class Image:
             with display if display is not None else contextlib.nullcontext():
                 tasks.run(steps, jobs=jobs, logs=logs, verbose=verbose,
                           display=display)
+
+            # What the caches spared this build, and what it had to make.
+            # Printed after the steps rather than by them: it is the answer
+            # to 'is the cache working', and one line at the end is where
+            # someone looks for it.
+            said = cache_index.summary()
+            if said is not None:
+                print(said)
         except:
             if self._image is not None:
                 os.unlink(self._image)

@@ -1359,7 +1359,16 @@ costs a report and never a build: what decides whether a package needs
 rebuilding is still its stamp, and whether an image is current is still its
 label.
 
-`--verbose` makes a build say each of those decisions as it makes them,
+A build ends by saying what the caches spared it:
+
+```
+$ seine build spec.yml
+...
+reused: 1 downloads, 1 image, 1 package; made: 1 chroot
+```
+
+which is the short answer to whether caching is working. `--verbose` makes a
+build say each of those decisions as it makes them,
 which is where caching that has quietly stopped working becomes visible:
 
 ```

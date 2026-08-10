@@ -118,3 +118,41 @@ class HowLongAgoItWas(avocado.Test):
 
 if __name__ == "__main__":
     avocado.main()
+
+# What a build reused and what it made, which is the answer to 'is the cache
+# working' and the thing a build was never able to say.
+class WhatABuildReusedAndMade(AnIndex):
+    def setUp(self):
+        from seine import cache_index
+        cache_index._counted.clear()
+
+    def test(self):
+        from seine import cache_index
+        index = self.index()
+        index.made(CHROOT, "bookworm-amd64")
+        index.hit(IMAGE, "builder/debian/bookworm")
+        index.hit(IMAGE, "bootstrap/debian/bookworm/all")
+        index.hit(PACKAGE, "bookworm/amd64/linux")
+
+        said = cache_index.summary()
+        self.assertIn("reused: 2 images, 1 package", said)
+        self.assertIn("made: 1 chroot", said)
+
+    # Nothing decided, nothing to report: a build that touched no cache has
+    # no line to end with.
+    def test_a_build_that_decided_nothing(self):
+        from seine import cache_index
+        self.assertIsNone(cache_index.summary())
+
+    # One of a thing is not '1 images'.
+    def test_one_of_something(self):
+        from seine import cache_index
+        self.index().hit(CHROOT, "trixie-arm64")
+        self.assertIn("reused: 1 chroot;", cache_index.summary())
+
+    # 'downloads' is already plural and stays that way.
+    def test_what_is_already_plural(self):
+        from seine import cache_index
+        from seine.cache_index import DOWNLOADS
+        self.index().hit(DOWNLOADS, "bookworm")
+        self.assertIn("1 downloads", cache_index.summary())
