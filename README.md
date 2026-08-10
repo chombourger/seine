@@ -41,6 +41,7 @@ may require disks/partitions to be created.
   * [Cross-compiling](#cross-compiling)
   * [Reproducibility](#reproducibility)
   * [A note on privileges](#a-note-on-privileges)
+  * [Putting seine's directories on another drive](#putting-seines-directories-on-another-drive)
 * [Software Bill of Materials](#software-bill-of-materials)
 
 ## Getting started
@@ -1292,6 +1293,36 @@ unprivileged as far as the kernel is concerned: uid 0 inside it is the
 unprivileged user running seine, so what it can reach is that user's own
 files rather than the machine's. No `sudo` is used or required, as
 elsewhere in seine.
+
+### Putting seine's directories on another drive
+
+seine keeps two kinds of large thing outside the working directory: the
+caches that spare the next build the work this one did, and what a build
+makes for itself -- the container images, in podman storage of its own,
+and the scratch space sources and images are assembled in. A home
+directory is commonly the smallest filesystem on a build machine, and a
+couple of kernels fill it. Two optional environment variables move them
+elsewhere; unset, everything stays where it has always been.
+
+| Variable          | Default                  | What it moves |
+|-------------------|--------------------------|---------------|
+| `SEINE_CACHE_DIR` | `~/.cache/seine`         | The caches kept between builds: downloaded packages, rebuilt packages, buildd chroots |
+| `SEINE_BUILD_DIR` | see below                | What a build makes for itself: podman storage (`storage/`) and the scratch space (`tmp/`) |
+
+```
+export SEINE_CACHE_DIR=/drive/seine/cache
+export SEINE_BUILD_DIR=/drive/seine/build
+```
+
+`XDG_CACHE_HOME` is honoured for the caches when `SEINE_CACHE_DIR` is not
+set, so a machine that has already moved every cache does not leave this
+one behind. Without `SEINE_BUILD_DIR`, the images stay in
+`~/.local/share/seine` and the scratch space follows `TMPDIR`, or
+`/var/tmp/seine` when that is unset -- never `/tmp`, which is usually a
+tmpfs, and unpacking a kernel tree into memory takes the machine with it.
+
+The two are separate on purpose: caches are worth keeping, while what a
+build makes for itself is not. Setting one does not move the other.
 
 ## Software Bill of Materials
 

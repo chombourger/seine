@@ -74,11 +74,17 @@ class AnsibleContainerRunner:
         ansiblefile.close()
 
         inventoryfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        # The same storage and, where there is one, the same runroot: a
+        # connection plugin talking to our storage with podman's default
+        # runroot is the mismatch this pair exists to avoid.
+        storage = "--root %s" % ContainerEngine.root()
+        if ContainerEngine.runroot() is not None:
+            storage += " --runroot %s" % ContainerEngine.runroot()
         inventoryfile.write(
             "%s ansible_connection=containers.podman.podman "
-            "ansible_podman_extra_args='--root %s' "
+            "ansible_podman_extra_args='%s' "
             "ansible_python_interpreter=/usr/bin/python3\n" % (
-                self.cid.decode(), ContainerEngine.root()))
+                self.cid.decode(), storage))
         inventoryfile.close()
 
         cmd = ["ansible-playbook", "-i", inventoryfile.name, ansiblefile.name]
