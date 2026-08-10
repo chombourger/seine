@@ -136,8 +136,23 @@ class SbuildChroot:
     # Without it a chroot made from one set of feeds goes on being used
     # after the specification has changed them, and packages are built
     # against an archive the image no longer has.
+    #
+    # Not '<tarball>.inputs', which is what this was: sbuild takes every
+    # file in its cache directory matching '<dist>-<arch>.t<anything>' for a
+    # chroot tarball, and 'bookworm-amd64.tar.zst.inputs' matches as surely
+    # as 'bookworm-amd64.tar.zst' does. Its find_tarball() keeps the last
+    # one readdir hands it, so which of the two a build unpacks is decided
+    # by the order of a directory -- and the build that gets this one dies
+    # with 'tar: This does not look like a tar archive'.
     @property
     def inputs(self):
+        return os.path.join(os.path.dirname(self.path), "%s-%s.inputs"
+                            % (self.distro["release"], self.architecture))
+
+    # What an earlier seine wrote instead, which is still in caches and
+    # still looks like a chroot to sbuild.
+    @property
+    def _mistakable(self):
         return "%s.inputs" % self.path
 
     def current(self, digest):
@@ -151,6 +166,10 @@ class SbuildChroot:
         # bytes, so one makes it and the other finds it made rather than
         # both writing one tarball.
         with locked(self.path):
+            # A cache made by an earlier seine has one of these in it, and
+            # leaving it there is leaving a build to fail on a coin toss.
+            if os.path.isfile(self._mistakable):
+                os.unlink(self._mistakable)
             return self._create(builderImage)
 
     def _create(self, builderImage):

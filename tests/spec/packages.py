@@ -1299,3 +1299,32 @@ class PublishingABuildThatDidNotHappenDoesNothing(avocado.Test):
                     - source: apt://busybox
         """).image.packages[0]
         Builder(distro, {}, Image())._deploy(package)
+
+# sbuild finds its chroot by looking for a file whose name looks like
+# '<dist>-<arch>.t<something>' in its cache directory, and keeps the last
+# one readdir hands it. So the digest seine records beside a chroot must not
+# look like that, or every build is a coin toss between unpacking the chroot
+# and unpacking a 17-byte text file.
+class TheChrootDigestCannotBeMistakenForAChroot(avocado.Test):
+    def test(self):
+        import re
+        from seine.sbuild import SbuildChroot
+
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        try:
+            chroot = SbuildChroot(
+                {"source": "debian", "release": "bookworm"}, {}, "amd64")
+            # ChrootInfoUnshare.pm's own rule, as it reads there.
+            looks_like_a_chroot = re.compile(
+                r"^[^-]+-[^-]+(-[^-]+)?(-sbuild)?\.t.+$")
+            self.assertIsNotNone(
+                looks_like_a_chroot.match(os.path.basename(chroot.path)),
+                "sbuild would not find the chroot at %s" % chroot.path)
+            self.assertIsNone(
+                looks_like_a_chroot.match(os.path.basename(chroot.inputs)),
+                "sbuild would take %s for a chroot" % chroot.inputs)
+            # The two live side by side, which is the point of the name.
+            self.assertEqual(os.path.dirname(chroot.inputs),
+                             os.path.dirname(chroot.path))
+        finally:
+            os.environ.pop("SEINE_CACHE_DIR", None)
