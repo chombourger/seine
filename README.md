@@ -35,6 +35,7 @@ may require disks/partitions to be created.
   * [Rebuilding the kernel](#rebuilding-the-kernel)
   * [Bring your own kernel](#bring-your-own-kernel)
 * [Building](#building)
+  * [What a build would do](#what-a-build-would-do)
   * [Building in parallel](#building-in-parallel)
   * [Cross-compiling](#cross-compiling)
   * [Reproducibility](#reproducibility)
@@ -1138,6 +1139,33 @@ Worth being plain about, since the aim here is a true replacement:
 
 What a specification says is one thing; how the build that reads it
 runs is another. These apply whatever is being built.
+
+### What a build would do
+
+`--dry-run` prints the steps a build would run, in the order it would run
+them and with what each waits for, and the packages it would leave alone:
+
+```
+$ seine build --dry-run --jobs 4 spec.yaml
+would build 'pc-image.img' for trixie/amd64, 4 steps at a time
+
+already built, and not built again:
+  linux                          linux_3ffc6a528133f4bf
+
+'--rebuild' builds them anyway.
+
+steps:
+  bootstrap-host
+  bootstrap-target         after bootstrap-host
+  packages                 after bootstrap-host
+  rootfs                   after bootstrap-target, packages
+  ...
+```
+
+Nothing is fetched, built or written. A package that was already built
+from exactly these inputs has no steps at all -- which is the useful part
+of the answer, and why the steps that are listed are the work that
+remains rather than the work in general.
 
 ### Building in parallel
 

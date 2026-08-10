@@ -299,3 +299,88 @@ class PublishingIsItsOwnStep(avocado.Test):
             self.assertIn("deploy:%s" % name, tasks)
             self.assertEqual(tasks["deploy:%s" % name].needs,
                              ["package:%s" % name])
+
+class ADryRunSaysWhatItWouldDo(avocado.Test):
+    def spec(self):
+        return """
+                distribution:
+                    release: trixie
+                    architecture: amd64
+                packages:
+                    - source: apt://seine-test-dry
+                image:
+                    filename: dry.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """
+
+    def build(self, **options):
+        build = BuildCmd()
+        build.options.update(options)
+        build.loads(self.spec())
+        build.parse()
+        return build
+
+    def test(self):
+        import contextlib
+        import io
+
+        build = self.build(dry_run=True, jobs=4)
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            self.assertEqual(build.build(), 0)
+        said = said.getvalue()
+
+        # Every step it would run, and what each waits for.
+        for step in ["bootstrap-host", "packages-prepare",
+                     "fetch:seine-test-dry", "package:seine-test-dry",
+                     "deploy:seine-test-dry", "rootfs", "appliance", "image"]:
+            self.assertIn(step, said)
+        self.assertIn("after bootstrap-host", said)
+        self.assertIn("4 steps at a time", said)
+
+class ADryRunSaysWhatItWouldNotRedo(avocado.Test):
+    def test(self):
+        import contextlib
+        import io
+
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+
+        build = BuildCmd()
+        build.options["dry_run"] = True
+        build.loads("""
+                distribution:
+                    release: trixie
+                    architecture: amd64
+                packages:
+                    - source: apt://seine-test-done
+                image:
+                    filename: dry.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+
+        # A stamp is what says a package was built from exactly these
+        # inputs, so a dry run reads them rather than guessing.
+        distro = build.spec["distribution"]
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        stamp = builder.stamp(build.image.packages[0])
+        with open(stamp, "w") as f:
+            f.write("")
+        try:
+            said = io.StringIO()
+            with contextlib.redirect_stdout(said):
+                build.build()
+            said = said.getvalue()
+
+            self.assertIn("already built", said)
+            self.assertIn("seine-test-done", said)
+            self.assertIn(os.path.basename(stamp), said)
+            # And it says so instead of listing steps that will not run.
+            self.assertNotIn("fetch:seine-test-done", said)
+        finally:
+            os.unlink(stamp)

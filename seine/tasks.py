@@ -136,6 +136,17 @@ class Failed(Exception):
             message += " (%s did not run)" % ", ".join(sorted(cancelled))
         super().__init__(message)
 
+# What a build would do, without doing any of it: every step in the order
+# they would run, and what each waits for. The order is the same one run()
+# would take, so a plan is not a description of the build but the build
+# itself, unexecuted.
+def describe(tasks):
+    for task in ordered(tasks):
+        if len(task.needs) == 0:
+            print("  %s" % task.name)
+        else:
+            print("  %-24s after %s" % (task.name, ", ".join(task.needs)))
+
 # Runs them. 'jobs' is how many may run at once; one, by default, which
 # is the order and the output a build has always had. 'verbose' prints
 # what each step cost, which is what tells a user where the time goes --

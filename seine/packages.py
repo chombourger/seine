@@ -1666,6 +1666,17 @@ rm -rf .pc
         return tasks + [Task("packages", lambda: None,
                              needs=[t.name for t in tasks])]
 
+    # The packages this build would leave alone, with the stamp that says
+    # so. A stamp names the digest of everything that would go into the
+    # build, so one that exists means the .debs in the repository were
+    # made from exactly these inputs.
+    def current(self, packages):
+        rebuild = self.options.get("rebuild", False)
+        if rebuild:
+            return []
+        return [(p, s) for p, s in self.stamps(packages)
+                if os.path.isfile(s)]
+
     # Which packages this build actually has to rebuild, decided before
     # anything is created: reading a stamp costs nothing, and a build
     # whose packages are all current should not make a builder image to

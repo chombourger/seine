@@ -15,6 +15,7 @@ class BuildCmd(Cmd):
     SHORT_OPTIONS = "dDhj:kv"
     LONG_OPTIONS = [
         "debug",
+        "dry-run",
         "dump",
         "help",
         "jobs=",
@@ -28,7 +29,7 @@ class BuildCmd(Cmd):
 
     def __init__(self):
         self.image = None
-        self.options = { "build": True, "debug": False, "jobs": 1, "keep": False, "parallel": None,
+        self.options = { "build": True, "debug": False, "dry_run": False, "jobs": 1, "keep": False, "parallel": None,
                          "rebuild": False, "require_hashes": False,
                          "sbom": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
@@ -475,6 +476,8 @@ class BuildCmd(Cmd):
                     sys.exit(1)
             elif o in ("-k", "--keep"):
                 self.options["keep"] = True
+            elif o in ("--dry-run"):
+                self.options["dry_run"] = True
             elif o in ("-D", "--dump"):
                 self.options["build"] = False
             elif o in ("--parallel"):
@@ -544,6 +547,8 @@ Examples:
 
 Flags:
   -d, --debug           print debug messages
+  --dry-run             do not build anything, print the steps the build would
+                        run and the packages it would leave alone
   -D, --dump            do not build the image, just dump the consolidated specification
   -h, --help            print this message
   -j, --jobs N          run up to N steps of the build at once (1 by default).

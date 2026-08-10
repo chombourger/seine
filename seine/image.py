@@ -215,7 +215,32 @@ class Image:
         self._size_partitions()
         self._empty_disk()
 
+    # Everything the build would do, and what it would leave alone.
+    # Nothing is fetched, built or written: the same graph run() would
+    # walk, printed instead of walked.
+    def plan(self):
+        distro = self.spec["distribution"]
+        print("would build '%s' for %s/%s, %d step%s at a time"
+              % (self._output, distro["release"], distro["architecture"],
+                 self.options.get("jobs", 1),
+                 "" if self.options.get("jobs", 1) == 1 else "s"))
+
+        builder = packages.Builder(
+            distro, self.options, BuilderImage(distro, self.options))
+        current = builder.current(self.packages)
+        if len(current) > 0:
+            print("\nalready built, and not built again:")
+            for package, stamp in current:
+                print("  %-30s %s" % (package.name, os.path.basename(stamp)))
+            print("\n'--rebuild' builds them anyway.")
+
+        print("\nsteps:")
+        tasks.describe(self.tasks())
+        return 0
+
     def build(self):
+        if self.options.get("dry_run"):
+            return self.plan()
         try:
             jobs = self.options.get("jobs", 1)
             logs = None
