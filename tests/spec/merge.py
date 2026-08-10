@@ -426,3 +426,155 @@ class FilesAreResolvedAgainstTheFileThatListedThem(avocado.Test):
         self.assertEqual(package["extends"]["kernel"]["config"],
                          [os.path.join(self.workdir,
                                        "kernels/6.18/configs/slim.fragment")])
+
+class DefaultsDescribeAPackageWithoutBuildingIt(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # An architecture file, saying which kernel of it is meant.
+        build.loads("""
+                defaults:
+                    packages:
+                        - source: apt://linux
+                          extends:
+                              kernel:
+                                  flavour: amd64
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        # Nothing asked for a kernel, so nothing is built.
+        self.assertEqual(build.spec.get("packages"), None)
+
+class DefaultsAreFoldedIntoWhatIsBuilt(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                defaults:
+                    packages:
+                        - source: apt://linux
+                          extends:
+                              kernel:
+                                  flavour: amd64
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.loads("""
+                packages:
+                    - source: apt://linux=6.12.101-1
+                      extends:
+                          kernel:
+                              upstream: https://kernel.org/linux-6.18.43.tar.xz
+        """)
+        build.parse()
+        package = build.image.packages[0]
+        self.assertEqual(package.kernel_flavour, "amd64")
+        self.assertEqual(package.version, "6.12.101-1")
+
+class ThePackageBeingBuiltBeatsTheDefault(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                defaults:
+                    packages:
+                        - source: apt://linux
+                          extends:
+                              kernel:
+                                  flavour: amd64
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: cloud-amd64
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        self.assertEqual(build.image.packages[0].kernel_flavour, "cloud-amd64")
+
+class TheLastDefaultWins(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # The architecture file, then the board file that sits on it.
+        build.loads("""
+                defaults:
+                    packages:
+                        - source: apt://linux
+                          extends:
+                              kernel:
+                                  flavour: amd64
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.loads("""
+                defaults:
+                    packages:
+                        - source: apt://linux
+                          extends:
+                              kernel:
+                                  featureset: rt
+        """)
+        build.loads("""
+                packages:
+                    - source: apt://linux
+        """)
+        build.parse()
+        package = build.image.packages[0]
+        # The particular adds to the general rather than replacing it.
+        self.assertEqual(package.kernel_flavour, "amd64")
+        self.assertEqual(package.kernel_featureset, "rt")
+
+class DefaultsAreCheckedWhereTheyAreWritten(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # A default nothing builds still has to make sense, or a typo in an
+        # architecture file waits for the one image that rebuilds a kernel.
+        build.loads("""
+                defaults:
+                    packages:
+                        - source: apt://linux
+                          extends:
+                              kernel:
+                                  flavours: amd64
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        try:
+            build.parse()
+            self.fail("parsing succeeded for an unknown 'kernel' setting!")
+        except ValueError:
+            pass
+
+class DefaultsHoldPackagesOnly(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        try:
+            build.loads("""
+                defaults:
+                    playbook:
+                        - name: nothing
+            """)
+            self.fail("parsing succeeded for a 'defaults' section that is not packages!")
+        except ValueError:
+            pass

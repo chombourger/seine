@@ -386,6 +386,10 @@ the specification including it settles the rest. Files given on the
 command line are merged in the order they appear, and a `requires` is
 loaded after the file that asked for it.
 
+A file that wants to describe a package *without* asking for it to be
+built -- an architecture file naming a kernel flavour, say -- puts the
+entry under [`defaults`](#defaults) instead.
+
 Patches are applied in the way the source format calls for. A
 `3.0 (quilt)` package gets them added to `debian/patches/series`; anything
 else has them applied to the tree, and committed if that tree came from
@@ -557,6 +561,45 @@ unprivileged as far as the kernel is concerned: uid 0 inside it is the
 unprivileged user running seine, so what it can reach is that user's own
 files rather than the machine's. No `sudo` is used or required, as
 elsewhere in seine.
+
+#### defaults
+
+An entry under `packages` means *build this*. `defaults` holds package
+entries that only describe a package, and are used if something else asks
+for it to be built:
+
+```
+# examples/common/amd64.yaml
+defaults:
+    packages:
+        - source: apt://linux
+          extends:
+              kernel:
+                  flavour: amd64
+```
+
+That file now says which kernel `amd64` means without every amd64 image
+rebuilding a kernel it never asked for. Two rules:
+
+ * **A default never creates a package.** If nothing under `packages`
+   names it, it describes nothing and is dropped.
+ * **The last default loaded wins**, and anything under `packages` beats
+   all of them. Files are listed from the general to the particular --
+   an architecture, then a board, then what is being built -- so the
+   particular file gets the last word, while the file actually asking
+   for the build outranks every description of it.
+
+Settings are merged one at a time, so a board naming a `featureset` keeps
+the `flavour` its architecture gave it. Entries are matched by source
+package, as under `packages`, so a default written `apt://linux` applies
+to a specification that pinned `apt://linux=6.12.101-1`.
+
+A default is parsed whether or not anything uses it: a misspelt setting
+in an architecture file is reported by the file that holds it rather than
+waiting for the one image that rebuilds a kernel.
+
+`defaults` holds package entries only. Playbooks already append rather
+than replace, and the other sections are merged by key.
 
 #### playbook
 

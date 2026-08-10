@@ -43,9 +43,8 @@ class BuildCmd(Cmd):
         # listing them, which merging would otherwise lose. Resolved here,
         # where the file they came from is still known: a package assembled
         # from several files has no one directory to carry along.
-        for package in (spec or {}).get("packages", []) or []:
-            if type(package) == type({}):
-                self._resolve_files(package, os.path.dirname(yaml_filename))
+        for package in self._package_entries(spec):
+            self._resolve_files(package, os.path.dirname(yaml_filename))
 
         if self.spec is None:
             self.spec = spec
@@ -66,6 +65,14 @@ class BuildCmd(Cmd):
                         % (yaml_filename, req, os.path.dirname(req_path)))
                 self.load(req_path)
         return self.spec
+
+    # Every package entry a file holds, whether it is asking for a build or
+    # only describing one: both name files relative to the file they are in.
+    def _package_entries(self, spec):
+        spec = spec or {}
+        entries = list(spec.get("packages") or [])
+        entries += list((spec.get("defaults") or {}).get("packages") or [])
+        return [e for e in entries if type(e) == type({})]
 
     # The settings of a package that name files, as the path to reach them
     # from the package's own dictionary.
@@ -158,6 +165,66 @@ class BuildCmd(Cmd):
                 self.spec["packages"].append(package)
             else:
                 self._merge_package(existing[0], package)
+
+    # A package entry under 'defaults' describes a package without asking
+    # for it to be built: it is what an architecture file needs to say
+    # which kernel flavour is meant without conjuring a kernel rebuild into
+    # every image that includes it.
+    #
+    # The last file to describe a package wins, which is the opposite of
+    # 'packages' and is what makes them useful: files are listed from the
+    # general to the particular, so a board file gets the last word over
+    # the architecture file it sits on. Anything under 'packages' still
+    # beats every default, since that is the file doing the asking.
+    def _merge_defaults(self, spec):
+        if "defaults" not in spec:
+            return
+        defaults = spec["defaults"]
+        if type(defaults) != type({}):
+            raise ValueError("'defaults' shall be a dictionary!")
+        for setting in defaults:
+            if setting != "packages":
+                raise ValueError(
+                    "'defaults' holds package entries only, not '%s'" % setting)
+
+        merged = self.spec.setdefault("defaults", {}).setdefault("packages", [])
+        for package in defaults.get("packages") or []:
+            name = self._package_name(package)
+            existing = [p for p in merged if self._package_name(p) == name]
+            if name is None or len(existing) == 0:
+                merged.append(package)
+            else:
+                self._override_package(existing[0], package)
+
+    # As _merge_package(), with the two files the other way round: what the
+    # later one says replaces what the earlier one did.
+    def _override_package(self, package, newpackage):
+        for setting in newpackage:
+            if setting == "extends" and type(package.get(setting)) == type({}):
+                for kind in newpackage[setting]:
+                    if type(package[setting].get(kind)) != type({}):
+                        package[setting][kind] = newpackage[setting][kind]
+                    else:
+                        package[setting][kind].update(newpackage[setting][kind])
+            else:
+                package[setting] = newpackage[setting]
+
+    # Folded into the packages the specification asked for, once every file
+    # has been read. A default naming a package nothing builds describes
+    # nothing and is dropped -- which is the whole point of it -- but it is
+    # parsed first, so a typo in an architecture file is reported by the
+    # file that holds it rather than by the one image that happens to build
+    # a kernel.
+    def _apply_defaults(self):
+        from seine.packages import Package
+
+        defaults = (self.spec.pop("defaults", None) or {}).get("packages") or []
+        for index, default in enumerate(defaults):
+            Package(default, index)
+            name = self._package_name(default)
+            for package in self.spec.get("packages") or []:
+                if self._package_name(package) == name:
+                    self._merge_package(package, default)
 
     def _merge_package(self, package, newpackage):
         for setting in newpackage:
@@ -253,6 +320,7 @@ class BuildCmd(Cmd):
     def merge(self, spec):
         self._merge_distro(spec)
         self._merge_imager(spec)
+        self._merge_defaults(spec)
         self._merge_packages(spec)
         self._append_playbooks(spec)
         if "image" in spec:
@@ -262,6 +330,7 @@ class BuildCmd(Cmd):
     def parse(self):
         if self.image is None:
             self.image = Image(self.partitionHandler, self.options)
+        self._apply_defaults()
         self.spec = self.partitionHandler.parse(self.spec)
         self.spec = self.image.parse(self.spec)
         return self.spec
