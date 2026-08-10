@@ -8,6 +8,7 @@ import yaml
 
 from seine                      import packages
 from seine.transport_bootstrap import TransportBootstrap
+from seine import tasks
 from seine.utils                import ContainerEngine
 
 # Runs the spec's Ansible playbooks against a live, host-architecture-driven
@@ -84,7 +85,11 @@ class AnsibleContainerRunner:
         if self.verbose:
             cmd.insert(1, "-v")
         try:
-            subprocess.run(cmd, check=True)
+            # To the task's file when one is capturing, so a playbook's
+            # output stays with the rest of what that step did.
+            output = tasks.output()
+            subprocess.run(cmd, check=True, stdout=output,
+                           stderr=subprocess.STDOUT if output else None)
         finally:
             os.unlink(ansiblefile.name)
             os.unlink(inventoryfile.name)

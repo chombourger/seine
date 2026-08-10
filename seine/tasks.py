@@ -1,7 +1,63 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
+import threading
 import time
+
+# Where a task's output goes. Unset while a build runs one step at a time,
+# so output reaches the terminal in the order it was produced.
+#
+# Tasks running beside each other cannot share a terminal that way: two
+# kernels and a root file-system writing to one stream interleave into
+# something no one can follow. So each task may be given a file of its
+# own, and everything it writes goes there instead. Per thread rather than
+# per call, since the alternative is passing a file handle through every
+# function a task reaches.
+_local = threading.local()
+
+def output():
+    return getattr(_local, "output", None)
+
+# Sends a task's output to 'stream' for as long as this is held. The
+# stream has to be a real file: a container's output is redirected by
+# handing its file descriptor to podman, which cannot be done with an
+# object that only pretends to be one.
+class capture:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def __enter__(self):
+        self.previous = output()
+        _local.output = self.stream
+        return self.stream
+
+    def __exit__(self, *args):
+        _local.output = self.previous
+        return False
+
+# What print() writes to while a build runs. Installed once, and a no-op
+# until a task asks for a stream of its own -- so a build that runs its
+# steps one at a time writes to the terminal exactly as before.
+class _Stdout:
+    def __init__(self, terminal):
+        self.terminal = terminal
+
+    def __getattr__(self, name):
+        return getattr(output() or self.terminal, name)
+
+    def write(self, text):
+        stream = output() or self.terminal
+        written = stream.write(text)
+        # A task's file is read while the build is still running -- by a
+        # user tailing it, and by seine itself when the task fails -- so
+        # it cannot sit in a buffer until the task ends.
+        stream.flush()
+        return written
+
+def install():
+    if not isinstance(sys.stdout, _Stdout):
+        sys.stdout = _Stdout(sys.stdout)
 
 # The steps a build is made of, and what each one needs before it can run.
 #

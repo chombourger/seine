@@ -85,3 +85,38 @@ class ABuildRunsInTheOrderItAlwaysDid(avocado.Test):
         self.assertEqual(names, ["bootstrap-host", "bootstrap-target",
                                  "packages", "rootfs", "tarball", "sbom",
                                  "disk", "image"])
+
+class OutputGoesToTheTerminalByDefault(avocado.Test):
+    def test(self):
+        from seine import tasks
+        # Nothing capturing: a build running one step at a time writes
+        # where it always did, in the order it produced it.
+        self.assertEqual(tasks.output(), None)
+
+class ATaskCanBeGivenAFileOfItsOwn(avocado.Test):
+    def test(self):
+        from seine import tasks
+        tasks.install()
+        path = os.path.join(self.workdir, "task.log")
+        with open(path, "w") as f:
+            with tasks.capture(f):
+                self.assertEqual(tasks.output(), f)
+                print("inside")
+            print("outside")
+        with open(path) as f:
+            self.assertEqual(f.read(), "inside\n")
+        # And the sink is put back, whatever was there before.
+        self.assertEqual(tasks.output(), None)
+
+class ATaskFileIsReadableWhileItIsWritten(avocado.Test):
+    def test(self):
+        from seine import tasks
+        tasks.install()
+        path = os.path.join(self.workdir, "task.log")
+        with open(path, "w") as f:
+            with tasks.capture(f):
+                print("first")
+                # A long build is watched with tail while it runs, which
+                # a buffer holding the line would defeat.
+                with open(path) as reader:
+                    self.assertEqual(reader.read(), "first\n")

@@ -8,6 +8,8 @@ import platform
 import subprocess
 import tarfile
 
+from seine import tasks
+
 # Debian architecture of the machine seine itself runs on. Anything the
 # specification asks for that differs from this is a cross build, whether
 # that means emulating the target or compiling for it.
@@ -207,10 +209,17 @@ class ContainerEngine:
         cmd.insert(0, "--root")
         cmd.insert(0, "podman")
         return cmd
+    # A container's output belongs to the task that started it: with
+    # nothing capturing, it goes to the terminal as it always has, and
+    # with a task capturing it goes to that task's file. Passing the file
+    # rather than reading the pipe ourselves keeps podman writing straight
+    # into it, so a long build can be watched with tail while it runs.
     @staticmethod
     def run(cmd, check=False):
         cmd = ContainerEngine._podman_cmd(cmd)
-        return subprocess.run(cmd, check=check)
+        output = tasks.output()
+        return subprocess.run(cmd, check=check, stdout=output,
+                              stderr=subprocess.STDOUT if output else None)
     @staticmethod
     def check_output(cmd):
         cmd = ContainerEngine._podman_cmd(cmd)
