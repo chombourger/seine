@@ -3,6 +3,7 @@
 import avocado
 import io
 import contextlib
+import json
 import os
 import sys
 import tarfile
@@ -11,20 +12,34 @@ path_to_self   = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from seine.cache import CacheCmd, CACHES, PORTABLE
+from seine       import cache
+from seine.cache import CacheCmd, CACHES, IMAGES, PORTABLE
 
 # A cache with something in it, under the test's own directory rather than
 # the user's -- said the way a user would say it, with the two environment
 # variables, so what is tested is where seine really looks.
+#
+# The images are the exception: they are podman's, and none of these tests
+# needs podman to answer what a directory can. A machine with a real one is
+# what the round trip in tests/spec/images.py is for.
 class Caches(avocado.Test):
     def setUp(self):
         self.environment = dict(os.environ)
         os.environ["SEINE_CACHE_DIR"] = os.path.join(self.workdir, "cache")
         os.environ["SEINE_BUILD_DIR"] = os.path.join(self.workdir, "build")
 
+        self.podman = (cache.images, cache.images_size,
+                       CacheCmd._clear_images, CacheCmd._export_images)
+        cache.images = lambda: []
+        cache.images_size = lambda: 0
+        CacheCmd._clear_images = lambda self: None
+        CacheCmd._export_images = lambda self, tar, where, rootfs=False: None
+
         self.paths = {}
         for name in CACHES:
-            path = CACHES[name][1]()
+            if CACHES[name] is None:
+                continue
+            path = CACHES[name]()
             self.assertTrue(path.startswith(self.workdir),
                             "%s is not under the test's directory: %s"
                             % (name, path))
@@ -36,6 +51,8 @@ class Caches(avocado.Test):
     def tearDown(self):
         os.environ.clear()
         os.environ.update(self.environment)
+        (cache.images, cache.images_size,
+         CacheCmd._clear_images, CacheCmd._export_images) = self.podman
 
     def run_cmd(self, argv):
         out = io.StringIO()
@@ -51,8 +68,9 @@ class WhatIsCachedIsReported(Caches):
         shown = self.run_cmd(["info"])
         for name in CACHES:
             self.assertIn(name, shown)
-            self.assertIn(self.paths[name], shown)
-        # Four caches of 2KiB each, so the total is 8KiB.
+        for name, path in self.paths.items():
+            self.assertIn(path, shown)
+        # Four directories of 2KiB each, and podman holding nothing.
         self.assertIn("8.0 KiB", shown)
 
 class OneCacheIsClearedWithoutTheOthers(Caches):
@@ -64,26 +82,27 @@ class OneCacheIsClearedWithoutTheOthers(Caches):
 class EveryCacheIsClearedWhenNoneIsNamed(Caches):
     def test(self):
         self.run_cmd(["clear"])
-        for name in CACHES:
-            self.assertFalse(os.path.isdir(self.paths[name]))
+        for path in self.paths.values():
+            self.assertFalse(os.path.isdir(path))
 
     def test_all_says_the_same_thing(self):
         self.run_cmd(["clear", "all"])
-        for name in CACHES:
-            self.assertFalse(os.path.isdir(self.paths[name]))
+        for path in self.paths.values():
+            self.assertFalse(os.path.isdir(path))
 
 class ACacheIsCarriedToAnotherMachine(Caches):
     def test(self):
         where = os.path.join(self.workdir, "caches.tar")
         self.run_cmd(["export", where])
-        # Scratch is not worth carrying and is left out of the tar.
+        # Scratch is not worth carrying and is left out of the tar. The
+        # images are podman's here, so this machine has none.
         with tarfile.open(where) as tar:
             tops = set(name.split("/")[0] for name in tar.getnames())
-        self.assertEqual(tops, set(PORTABLE))
+        self.assertEqual(tops, set(PORTABLE) - {IMAGES})
 
         self.run_cmd(["clear"])
         self.run_cmd(["import", where])
-        for name in PORTABLE:
+        for name in set(PORTABLE) - {IMAGES}:
             with open(os.path.join(self.paths[name], "blob"), "rb") as f:
                 self.assertEqual(len(f.read()), 2048)
         self.assertFalse(os.path.isdir(self.paths["scratch"]))
@@ -155,6 +174,24 @@ class ACacheIsCarriedToAnotherMachine(Caches):
         finally:
             os.chmod(partial, 0o700)
 
+    # The image's own root file-system is the one thing an export leaves
+    # behind, and the flag that says otherwise has to reach the export.
+    def test_the_image_rootfs_is_asked_for_by_name(self):
+        asked = []
+        CacheCmd._export_images = \
+            lambda self, tar, where, rootfs=False: asked.append(rootfs)
+
+        where = os.path.join(self.workdir, "caches.tar")
+        self.run_cmd(["export", where])
+        self.run_cmd(["export", where, "--with-image-rootfs"])
+        self.assertEqual(asked, [False, True])
+
+    def test_the_flag_belongs_to_export_alone(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                CacheCmd().main(["info", "--with-image-rootfs"])
+        self.assertNotEqual(caught.exception.code, 0)
+
     def test_scratch_is_refused(self):
         with self.assertRaises(SystemExit) as caught:
             with contextlib.redirect_stderr(io.StringIO()):
@@ -216,3 +253,85 @@ class AnUnknownCacheIsRefused(Caches):
 
 if __name__ == "__main__":
     avocado.main()
+
+# Every image seine builds says what it is, rather than inheriting the
+# answer from the image it was built on: podman hands an image its base's
+# labels, so the builder -- built on the tooling -- would call itself
+# tooling, and the imager's kernel would call itself a root file-system.
+class EveryImageSaysWhatItIs(avocado.Test):
+    def test(self):
+        from seine.bootstrap import HostBootstrap, TargetBootstrap
+        from seine.cache import CARRIED_KINDS
+        from seine.imager_appliance import ImagerAppliance
+        from seine.imager_kernel import ImagerKernel
+        from seine.sbuild import BuilderImage
+        from seine.transport_bootstrap import TransportBootstrap
+        from seine.utils import BUILDER_KIND, IMAGER_KIND, ROOTFS_KIND
+        from seine.utils import TOOLING_KIND, TRANSPORT_KIND
+
+        for cls, kind in [(HostBootstrap, TOOLING_KIND),
+                          (TargetBootstrap, ROOTFS_KIND),
+                          (BuilderImage, BUILDER_KIND),
+                          (ImagerKernel, IMAGER_KIND),
+                          (ImagerAppliance, IMAGER_KIND),
+                          (TransportBootstrap, TRANSPORT_KIND)]:
+            self.assertEqual(cls.kind, kind,
+                             "%s says it is a %s" % (cls.__name__, cls.kind))
+
+        # Everything but the root file-system: what stands on that one is
+        # still current on the machine that receives it, since what decides
+        # is what its base was built from and not which bytes it came out as.
+        self.assertEqual(sorted(CARRIED_KINDS),
+                         sorted([TOOLING_KIND, BUILDER_KIND, IMAGER_KIND,
+                                 TRANSPORT_KIND]))
+        self.assertNotIn(ROOTFS_KIND, CARRIED_KINDS)
+
+# Which of a storage's images go into a tar, decided by what each says it is.
+class OnlyWhatAnotherMachineCanUseIsCarried(avocado.Test):
+    def setUp(self):
+        from seine.utils import ContainerEngine
+        self.asked = ContainerEngine.check_output
+        storage = [
+            {"Names": ["localhost/bootstrap/debian/trixie/all:latest"],
+             "Labels": {"seine.kind": "tooling"}},
+            {"Names": ["localhost/builder/debian/trixie:latest"],
+             "Labels": {"seine.kind": "builder"}},
+            {"Names": ["localhost/bootstrap/debian/trixie/amd64:latest"],
+             "Labels": {"seine.kind": "rootfs"}},
+            {"Names": ["localhost/imager-kernel/debian/trixie/amd64:latest"],
+             "Labels": {"seine.kind": "imager"}},
+            {"Names": ["localhost/transport-bootstrap/amd64/base:latest"],
+             "Labels": {"seine.kind": "transport"}},
+            # A base image nothing here built, and one an older seine did.
+            {"Names": ["docker.io/library/debian:trixie"], "Labels": None},
+            {"Names": ["localhost/bootstrap/debian/bookworm/all:latest"],
+             "Labels": {}},
+            # An intermediate layer, which has no name to ask for it by.
+            {"Names": ["<none>:<none>"], "Labels": None},
+        ]
+        ContainerEngine.check_output = \
+            lambda cmd: json.dumps(storage).encode()
+
+    def tearDown(self):
+        from seine.utils import ContainerEngine
+        ContainerEngine.check_output = self.asked
+
+    def test(self):
+        carried = cache.images()
+        self.assertEqual(sorted(carried), sorted([
+            "localhost/bootstrap/debian/trixie/all:latest",
+            "localhost/builder/debian/trixie:latest",
+            "localhost/imager-kernel/debian/trixie/amd64:latest",
+            "localhost/transport-bootstrap/amd64/base:latest",
+            "docker.io/library/debian:trixie"]))
+        # The one an export leaves behind, and the one an older seine left
+        # unlabelled, which is rebuilt on sight anyway.
+        self.assertNotIn("localhost/bootstrap/debian/trixie/amd64:latest", carried)
+        self.assertNotIn("localhost/bootstrap/debian/bookworm/all:latest", carried)
+
+    def test_with_the_image_rootfs(self):
+        carried = cache.images(True)
+        self.assertIn("localhost/bootstrap/debian/trixie/amd64:latest", carried)
+        self.assertIn("localhost/imager-kernel/debian/trixie/amd64:latest", carried)
+        # Still nothing that cannot be named.
+        self.assertNotIn("<none>:<none>", carried)

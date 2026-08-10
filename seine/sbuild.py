@@ -9,6 +9,7 @@ from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
 from seine.utils     import apt_sources
 from seine.utils     import locked
+from seine.utils     import BUILDER_KIND
 
 # Rebuilding source packages happens under sbuild's "unshare" backend, the
 # one Debian's own buildds use: it needs no schroot, no daemon and no root,
@@ -50,6 +51,10 @@ SBUILD_RUN_OPTIONS = [
 REPOSITORY = "/packages"
 
 class BuilderImage(Bootstrap):
+    # Where packages are built, holding the buildd chroot: derived from
+    # the host bootstrap and worth carrying.
+    kind = BUILDER_KIND
+
     def create(self, hostBootstrap):
         return self.build(BUILDER_IMAGE_SCRIPT.format(
             hostBootstrap.name,

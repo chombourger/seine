@@ -6,6 +6,7 @@ import os
 from seine           import packages
 from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
+from seine.utils import IMAGER_KIND
 
 # Fallback kernel package per architecture, used when the spec does not set
 # 'imager: kernel:'. This is the kernel that boots the (throwaway) guestfs
@@ -18,6 +19,11 @@ DEFAULT_PACKAGES = {
 }
 
 class ImagerKernel(Bootstrap):
+    # The kernel libguestfs boots to write the image. Built on the target
+    # bootstrap, so it has to say what it is rather than inherit that
+    # image's answer.
+    kind = IMAGER_KIND
+
     def __init__(self, source):
         self.source = source
         self.targetBootstrap = source.targetBootstrap

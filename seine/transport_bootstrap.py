@@ -4,6 +4,7 @@
 import os
 
 from seine.bootstrap import Bootstrap
+from seine.utils import TRANSPORT_KIND
 
 # Installing python3/python3-apt/attr is the same small apt install on
 # every single build, immediately made redundant by the next build against
@@ -13,6 +14,11 @@ from seine.bootstrap import Bootstrap
 # different content per architecture, so both are needed to avoid a
 # wrong-arch cache hit.
 class TransportBootstrap(Bootstrap):
+    # A root file-system too, but a baseline image plus the two packages
+    # ansible needs rather than an archive's output, so it does not go
+    # stale when the archive moves and is worth carrying.
+    kind = TRANSPORT_KIND
+
     def __init__(self, baseline, distro, options):
         self.baseline = baseline
         super().__init__(distro, options)

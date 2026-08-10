@@ -6,6 +6,7 @@ import os
 from seine           import packages
 from seine.bootstrap import Bootstrap
 from seine.utils     import ContainerEngine
+from seine.utils import IMAGER_KIND
 
 # Files libguestfs expects in a LIBGUESTFS_PATH "fixed appliance" directory.
 APPLIANCE_FILES = ["kernel", "initrd", "root", "README.fixed"]
@@ -38,6 +39,11 @@ ARCH_INFO = {
 # kernel/initrd/root straight into the output directory, and we validate the
 # result afterwards using our own qemu-wrapper harness instead.
 class ImagerAppliance(Bootstrap):
+    # The appliance libguestfs runs when it cannot build its own, which is
+    # every cross build. Built on the target bootstrap, and the image
+    # whose reuse is the point of carrying images at all.
+    kind = IMAGER_KIND
+
     def __init__(self, source, imagerKernel):
         self.source = source
         self.imagerKernel = imagerKernel

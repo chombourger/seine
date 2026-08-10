@@ -2,37 +2,108 @@
 # SPDX-License-Identifier Apache-2.0
 
 import getopt
+import gzip
+import json
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
+import tempfile
 
 from seine.cmd   import Cmd
 from seine.utils import ContainerEngine
+from seine.utils import KIND_LABEL
+from seine.utils import BUILDER_KIND
+from seine.utils import IMAGER_KIND
+from seine.utils import TRANSPORT_KIND
+from seine.utils import ROOTFS_KIND
+from seine.utils import TOOLING_KIND
 
 # What seine keeps between builds, and what a build has to do again once it
 # is gone. Nothing here is needed for a build to succeed -- only to spare
 # it work it has already done -- which is what makes removing any of it
 # safe.
 #
-# Container images are not listed: they live in seine's own podman storage
-# rather than under ~/.cache, and emptying that is podman's job ('podman
-# --root ~/.local/share/seine system reset').
+# A directory each, except the images: those are in podman's storage, whose
+# layout is podman's business, so they are asked of podman rather than
+# walked. Hence a name with no directory behind it.
+IMAGES = "images"
+
 CACHES = {
-    "downloads": ("packages fetched from the distribution's feeds",
-                  lambda: ContainerEngine.cache("downloads")),
-    "packages":  ("packages the 'packages' section built, as an apt repository",
-                  lambda: ContainerEngine.cache("packages")),
-    "chroots":   ("buildd chroot tarballs sbuild unpacks to build a package",
-                  lambda: ContainerEngine.cache("chroots")),
-    "scratch":   ("temporary files a build unpacks sources and images into",
-                  ContainerEngine.scratch),
+    "downloads": lambda: ContainerEngine.cache("downloads"),
+    "packages":  lambda: ContainerEngine.cache("packages"),
+    "chroots":   lambda: ContainerEngine.cache("chroots"),
+    IMAGES:      None,
+    "scratch":   ContainerEngine.scratch,
 }
 
 # The caches worth carrying to another machine. Scratch is not one of them:
 # what is in it belongs to a build that is either running or has died, and
 # neither is of use anywhere else.
-PORTABLE = ["downloads", "packages", "chroots"]
+PORTABLE = ["downloads", "packages", "chroots", IMAGES]
+
+# Where the images ride in the tar. One archive holding all of them rather
+# than one per image, so a layer shared by every image seine builds -- and
+# they all stand on the host bootstrap -- is written once.
+IMAGES_MEMBER = "%s/images.tar.gz" % IMAGES
+
+
+# Every image except the one an export leaves behind: the image's own root
+# file-system, which is what mmdebstrap made of the archive on the day it
+# ran and is stale as soon as the archive moves.
+#
+# The images built on that one go all the same -- the kernel libguestfs
+# boots, the appliance it runs for a cross build, the transport bootstrap
+# ansible connects through -- because what says whether they are current is
+# what their base was built *from* rather than which bytes it came out as.
+# The receiving machine bootstraps its own root file-system from the same
+# specification, which is a different image and the same inputs, so what
+# stands on it is still current. The appliance is the largest and slowest
+# thing in a storage and the one most worth not making twice.
+#
+# '--with-image-rootfs' carries the root file-system as well, for a machine
+# that wants a copy of another's storage rather than one it can build with.
+#
+# An image with no kind and a registry to its name is carried too: that is a
+# base image everything here is built on, and carrying it is what lets an
+# import work with no route to a registry. One with no kind and no registry
+# was built by a seine that did not label them and is rebuilt on sight, so it
+# is not worth the bytes.
+#
+# The root file-system a build hands to ansible is not among these either
+# way: it is a container, exported as a tarball and never committed, so
+# podman has no image of it.
+CARRIED_KINDS = [TOOLING_KIND, BUILDER_KIND, IMAGER_KIND, TRANSPORT_KIND]
+
+def images(with_image_rootfs=False):
+    named = []
+    for image in json.loads(ContainerEngine.check_output(["images", "--format", "json"])):
+        kind = (image.get("Labels") or {}).get(KIND_LABEL)
+        # Ones with no name are left out for want of a way to ask for them:
+        # an intermediate layer is carried by the image standing on it.
+        for name in image.get("Names") or []:
+            if "<none>" in name:
+                continue
+            if with_image_rootfs or kind in CARRIED_KINDS:
+                named.append(name)
+            elif kind is None and name.startswith(LOCAL) == False:
+                named.append(name)
+    return named
+
+# What podman calls an image nothing pulled: it has no registry, so it says
+# so with one of its own.
+LOCAL = "localhost/"
+
+# What podman says its storage holds, which is not the sum of what its
+# images say they weigh: every image seine builds stands on the host
+# bootstrap, so adding them up counts that one once per image.
+def images_size():
+    listed = ContainerEngine.check_output(["system", "df", "--format", "json"])
+    for row in json.loads(listed):
+        if row.get("Type") == "Images":
+            return row.get("RawSize") or 0
+    return 0
 
 def size_of(path, carried=None):
     total = 0
@@ -62,10 +133,14 @@ class CacheCmd(Cmd):
     def info(self, names):
         total = 0
         for name in names:
-            path = CACHES[name][1]()
-            used = size_of(path) if os.path.isdir(path) else 0
+            if name == IMAGES:
+                used, where = images_size(), ContainerEngine.root()
+            else:
+                path = CACHES[name]()
+                used = size_of(path) if os.path.isdir(path) else 0
+                where = path
             total += used
-            print("%-10s %10s  %s" % (name, human(used), path))
+            print("%-10s %10s  %s" % (name, human(used), where))
         print("%-10s %10s" % ("total", human(total)))
         return 0
 
@@ -75,29 +150,80 @@ class CacheCmd(Cmd):
         # promises -- but one that is *reading* a tarball as it goes away
         # fails. Clearing a cache is something to do between builds.
         for name in names:
-            path = CACHES[name][1]()
+            if name == IMAGES:
+                self._clear_images()
+                continue
+            path = CACHES[name]()
             if os.path.isdir(path) == False:
                 continue
             print("removing %s" % path)
             shutil.rmtree(path)
         return 0
 
+    # The images go by name and not by removing the storage under them: what
+    # is in a podman storage belongs to uids a rootless user cannot unlink
+    # without going back through a user namespace, so 'rm -rf' on it fails
+    # halfway and leaves a storage that is neither there nor usable.
+    def _clear_images(self):
+        print("removing the images from %s" % ContainerEngine.root())
+        ContainerEngine.run(["rmi", "--all", "--force"], check=True)
+
     # One tar holding the named caches, each under its own name, so what
     # comes out of one machine goes into another without either having to
     # agree on where a cache lives. Uncompressed unless the filename asks
     # for it: what is in here is .deb and .tar.zst, already compressed.
-    def export(self, names, where):
+    def export(self, names, where, with_image_rootfs=False):
         mode = "w|gz" if where.endswith((".gz", ".tgz")) else "w|"
         stream = sys.stdout.buffer if where == "-" else None
         with tarfile.open(None if stream else where, mode, fileobj=stream) as tar:
             for name in names:
-                path = CACHES[name][1]()
+                if name == IMAGES:
+                    self._export_images(tar, where, with_image_rootfs)
+                    continue
+                path = CACHES[name]()
                 if os.path.isdir(path) == False:
                     continue
                 self.say("exporting %s (%s)"
                          % (name, human(size_of(path, self._carried))), where)
                 tar.add(path, arcname=name, recursive=True, filter=self._exported)
         return 0
+
+    # podman writes the images out itself rather than seine walking its
+    # storage: what is in there is podman's business, and an archive it
+    # wrote is what another podman will read back. The ids and the labels
+    # come out of that unchanged, which is what matters -- an image is
+    # rebuilt when the label saying what it was built from does not match,
+    # so an imported bootstrap is current, and so is everything derived
+    # from it, whose label carries that image's id.
+    #
+    # Through gzip on the way: 'podman save' compresses only when it is
+    # writing a directory, and the images are the one thing in the tar that
+    # is not compressed already, and it compresses several times over.
+    # Level 1, because the last few per cent of a gigabyte cost more time
+    # than the bytes are worth.
+    #
+    # Into a temporary file rather than straight into the tar: a member's
+    # size has to be written before its bytes, and podman will not say in
+    # advance what it is about to produce. That is one extra copy through
+    # the scratch space.
+    def _export_images(self, tar, where, with_image_rootfs=False):
+        named = images(with_image_rootfs)
+        if len(named) == 0:
+            return
+        self.say("exporting %s (%d image%s)"
+                 % (IMAGES, len(named), "" if len(named) == 1 else "s"), where)
+        with tempfile.NamedTemporaryFile(dir=ContainerEngine.scratch(),
+                                         suffix=".tar.gz") as saved:
+            with gzip.GzipFile(fileobj=saved, mode="wb", compresslevel=1) as out:
+                podman = ContainerEngine.Popen(
+                    ["save", "--multi-image-archive"] + named,
+                    stdout=subprocess.PIPE)
+                shutil.copyfileobj(podman.stdout, out)
+                podman.stdout.close()
+                if podman.wait() != 0:
+                    raise ValueError("podman could not save the images!")
+            saved.flush()
+            tar.add(saved.name, arcname=IMAGES_MEMBER)
 
     # What is in a cache but has no business on another machine, by the end
     # of its path:
@@ -174,13 +300,29 @@ class CacheCmd(Cmd):
                                      % member.name)
                 if cache not in names or rest == "":
                     continue
+                if cache == IMAGES:
+                    self._load_images(tar, member, where)
+                    continue
                 member.name = rest
-                tar.extract(member, path=CACHES[cache][1]())
+                tar.extract(member, path=CACHES[cache]())
         for name in names:
-            path = CACHES[name][1]()
+            if name == IMAGES:
+                continue
+            path = CACHES[name]()
             if os.path.isdir(path):
                 self.say("imported %s (%s)" % (name, human(size_of(path))), where)
         return 0
+
+    # Handed to podman as it comes out of the tar: podman reads a gzipped
+    # archive as happily as a plain one, so the images go from one storage
+    # to the other without being written down on the way.
+    def _load_images(self, tar, member, where):
+        self.say("importing %s (%s)" % (IMAGES, human(member.size)), where)
+        podman = ContainerEngine.Popen(["load"], stdin=subprocess.PIPE)
+        shutil.copyfileobj(tar.extractfile(member), podman.stdin)
+        podman.stdin.close()
+        if podman.wait() != 0:
+            raise ValueError("podman could not load the images!")
 
     # Whether a path taken from a tar stays within the cache it was found
     # in, once '..' and the rest of it are worked out. An absolute path
@@ -195,15 +337,21 @@ class CacheCmd(Cmd):
         print(message, file=sys.stderr if where == "-" else sys.stdout)
 
     def main(self, argv):
+        # gnu_getopt, so a flag may come after the action and the file the
+        # way one does everywhere else: plain getopt stops at 'export' and
+        # hands '--with-image-rootfs' back as if it were the name of a cache.
         try:
-            opts, args = getopt.getopt(argv, "h", ["help"])
+            opts, args = getopt.gnu_getopt(argv, "h", ["help", "with-image-rootfs"])
         except getopt.GetoptError as err:
             sys.stderr.write("%s\n%s" % (err, USAGE))
             sys.exit(1)
+        with_image_rootfs = False
         for o, _ in opts:
             if o in ("-h", "--help"):
                 print(USAGE)
                 sys.exit()
+            elif o in ("--with-image-rootfs"):
+                with_image_rootfs = True
 
         ACTIONS = ["info", "clear", "export", "import"]
         if len(args) == 0:
@@ -214,6 +362,10 @@ class CacheCmd(Cmd):
         action, names = args[0], args[1:]
         if action not in ACTIONS:
             sys.stderr.write("error: unknown cache action '%s'\n" % action)
+            sys.exit(1)
+        if with_image_rootfs and action != "export":
+            sys.stderr.write("error: --with-image-rootfs is for 'export', not '%s'\n"
+                             % action)
             sys.exit(1)
 
         # A tar to write or to read, named first so the caches after it read
@@ -251,7 +403,7 @@ class CacheCmd(Cmd):
             elif action == "clear":
                 sys.exit(self.clear(names))
             elif action == "export":
-                sys.exit(self.export(names, where))
+                sys.exit(self.export(names, where, with_image_rootfs))
             else:
                 sys.exit(self.load(names, where))
         except (OSError, tarfile.TarError, ValueError) as e:
@@ -262,10 +414,11 @@ USAGE = """
 Show what seine has cached, remove it, or move it to another machine
 
 Description:
-  seine keeps downloaded packages, rebuilt packages, buildd chroots and the
-  scratch space a build unpacks sources into so that the next build does not
-  make them again. None of it is needed for a build to succeed, so any of it
-  can be removed to get the disk space back.
+  seine keeps downloaded packages, rebuilt packages, buildd chroots, the
+  container images it builds and the scratch space a build unpacks sources
+  into, so that the next build does not make them again. None of it is
+  needed for a build to succeed, so any of it can be removed to get the
+  disk space back.
 
   Where they live can be said with SEINE_CACHE_DIR, and where a build's own
   container storage and scratch space live with SEINE_BUILD_DIR. Unset, the
@@ -292,17 +445,32 @@ Caches:
   downloads   packages fetched from the distribution's feeds
   packages    packages the 'packages' section built, as an apt repository
   chroots     buildd chroot tarballs sbuild unpacks to build a package
+  images      the container images seine built: the bootstrap tooling, the
+              builder, the imager's kernel and appliance and the transport
+              bootstrap, in podman storage of its own
   scratch     temporary files a build unpacks sources and images into
+
+  An export leaves out one image: the image's own root file-system, what
+  mmdebstrap made of the archive on the day it ran, which is stale as soon as
+  the archive moves. What is built on it still travels and is still current
+  there, since what decides that is what an image's base was built from
+  rather than which bytes it came out as. --with-image-rootfs carries the
+  root file-system as well, for a machine that wants a copy of another's
+  storage.
 
 Examples:
   seine cache info
   seine cache clear chroots
   seine cache clear downloads packages
   seine cache export caches.tar
+  seine cache export --with-image-rootfs caches.tar
   seine cache import caches.tar chroots
   seine cache export - | ssh builder seine cache import -
 
 Flags:
   -h, --help            print this message
+      --with-image-rootfs
+                        carry the image's root file-system as well, for
+                        'export' only
 
 """

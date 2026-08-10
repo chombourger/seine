@@ -10,9 +10,18 @@ import tempfile
 from seine.tasks import Task
 from seine.utils import ContainerEngine
 from seine.utils import INPUTS_LABEL
+from seine.utils import KIND_LABEL
+from seine.utils import ROOTFS_KIND
 from seine.utils import apt_sources
+from seine.utils import TOOLING_KIND
 
 class Bootstrap(ABC):
+    # What this image is, as the label every image carries. Said by each
+    # class rather than left to be inherited: podman hands an image the
+    # labels of the one it was built FROM, so an image that did not say
+    # would answer with its base's answer.
+    kind = TOOLING_KIND
+
     def __init__(self, distro, options):
         self._name = None
         self.distro = distro
@@ -73,7 +82,9 @@ class Bootstrap(ABC):
         try:
             ContainerEngine.run(
                 ["build", "--rm"] + (options or []) +
-                ["--label", "%s=%s" % (INPUTS_LABEL, self.digest(dockerfile, base)),
+                ["--label", "%s=%s" % (INPUTS_LABEL,
+                                       self.digest(dockerfile, base)),
+                 "--label", "%s=%s" % (KIND_LABEL, self.kind),
                  "-t", self.name, "-f", written.name], check=True)
         finally:
             ContainerEngine.run(["image", "prune", "-f"])
@@ -110,6 +121,9 @@ class HostBootstrap(Bootstrap):
         return os.path.join("bootstrap", self.distro["source"], self.distro["release"], "all")
 
 class TargetBootstrap(Bootstrap):
+    # The root file-system itself, which is what an export leaves behind.
+    kind = ROOTFS_KIND
+
     # The root file-system is assembled in this one, and the imager's own
     # kernel is fetched through it -- so it is needed even when the
     # specification names a 'baseline' of its own.

@@ -1299,17 +1299,18 @@ elsewhere in seine.
 ### What a build keeps, and getting the space back
 
 A build keeps what it would otherwise make again: the packages it fetched,
-the packages it rebuilt, the buildd chroots sbuild unpacks, and the scratch
-space sources and images are assembled in. `seine cache info` says how much
-each of them is holding:
+the packages it rebuilt, the buildd chroots sbuild unpacks, the container
+images it builds, and the scratch space sources and images are assembled in.
+`seine cache info` says how much each of them is holding:
 
 ```
 $ seine cache info
 downloads   253.7 MiB  /home/user/.cache/seine/downloads
 packages      1.1 GiB  /home/user/.cache/seine/packages
 chroots     278.4 MiB  /home/user/.cache/seine/chroots
+images        9.3 GiB  /home/user/.local/share/seine
 scratch     365.5 KiB  /var/tmp/seine
-total         1.6 GiB
+total        10.9 GiB
 ```
 
 `seine cache clear` removes them, and naming one clears only that:
@@ -1323,9 +1324,13 @@ None of it is needed for a build to succeed, so clearing any of it costs
 time on the next build and nothing else. Do it between builds: a build
 running while a cache is removed under it may fail rather than refetch.
 
-Container images are not caches in this sense and are not listed. They live
-in seine's own podman storage under `~/.local/share/seine`, which podman
-itself empties (`podman --root ~/.local/share/seine system reset`).
+`images` is the odd one: the bootstraps, the builder and the imager
+appliance live in podman storage of seine's own rather than in a directory,
+so its size is what podman reports for that storage and clearing it removes
+the images by name. Do not `rm -rf` that directory -- what is in it belongs
+to uids a rootless user cannot unlink without a user namespace, so the
+removal fails halfway and leaves a storage that is neither there nor
+usable. `seine cache clear images` is how it is emptied.
 
 ### Moving a cache to another machine
 
@@ -1335,7 +1340,7 @@ runner, a machine with no route to the archive -- can start with the caches
 of one that has:
 
 ```
-seine cache export caches.tar          # the caches worth carrying
+seine cache export caches.tar          # everything worth carrying
 seine cache export chroots.tar chroots # only the buildd chroots
 seine cache import caches.tar
 ```
@@ -1343,6 +1348,46 @@ seine cache import caches.tar
 `scratch` is left out: what is in it belongs to a build that is either
 running or has died. The tar is uncompressed unless its name ends in `.gz`
 or `.tgz`, since `.deb` and the chroot tarballs are compressed already.
+
+Container images go with them, which is what spares the importing machine
+every container a build runs: the bootstrap tooling, the builder holding the
+buildd chroot, the kernel libguestfs boots, the appliance it runs for a cross
+build, the transport bootstrap ansible connects through, and the base images
+those are made from. podman writes that part itself -- an archive it wrote is
+what another podman will read back -- and seine gzips it on the way in, since
+it is the one thing in the tar not compressed already.
+
+One image is left behind: the image's own root file-system, the target
+bootstrap as `mmdebstrap` made it. It is what the archive held on the day it
+ran, so it is stale as soon as the archive moves, and a machine that imports
+a stale one spends minutes making its own regardless.
+
+The images built on that one still travel, which is worth knowing because the
+appliance is the largest and slowest thing in a storage -- cross-built under
+emulation. What decides whether one of them is current is what its base was
+built *from*, not which bytes that base came out as: two machines
+bootstrapping the same root file-system from the same specification produce
+different images and the same inputs, so what stands on it is current on
+either. It is the rule a package's stamp and a chroot's digest already
+follow.
+
+`--with-image-rootfs` carries the root file-system too, for a machine that
+wants a copy of another's storage rather than one it can build with:
+
+```
+seine cache export --with-image-rootfs caches.tar
+```
+
+The root file-system ansible augments is not a candidate either way: it is a
+container, exported straight to a tarball and never committed, so podman has
+no image of it.
+
+An image is rebuilt when the label recording what it was built from stops
+matching, and both the labels and the image ids survive the round trip. So
+an imported bootstrap is *current*, and so is everything standing on it,
+whose label carries that image's id. A machine that imports a full tar
+bootstraps nothing, builds no appliance and rebuilds no package -- it
+assembles the root file-system and writes the image.
 
 The `packages` cache is what makes this worth doing for a kernel. It holds
 the `.deb`s a rebuild produced *and* the stamps that say what they were
@@ -1361,13 +1406,12 @@ both. Change any of them, or pass `--rebuild`, and the package is built
 again as usual.
 
 What is left out is what the other machine has no use for: `sbuild`'s build
-logs, which are a third of a gigabyte for a couple of kernels and describe
-a build that happened elsewhere; `apt-ftparchive`'s hash cache, which a
+logs, which describe a build that happened elsewhere and which for a kernel
+are the larger part of the cache; `apt-ftparchive`'s hash cache, which a
 build rewrites from the `.deb`s it finds; the lock files; and apt's
-`partial` directory of half-finished downloads. For two kernels across four
-release/architecture pairs that is 1.1 GiB of cache carried as 600 MiB. The
-`.changes` and `.buildinfo` are kept -- kilobytes, and what says how the
-`.deb`s beside them were made.
+`partial` directory of half-finished downloads. The `.changes` and
+`.buildinfo` are kept -- small, and what says how the `.deb`s beside them
+were made.
 
 `-` stands for stdout or stdin, so the two ends can be piped into each
 other and nothing is written to disk twice:

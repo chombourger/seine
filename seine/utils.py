@@ -107,6 +107,23 @@ def locked(path):
 # Label carrying the digest of what an image was built from.
 INPUTS_LABEL = "seine.inputs"
 
+# Label saying what an image is, which decides whether it is worth carrying
+# to another machine. Every image seine builds says so for itself: a label is
+# inherited by whatever is built FROM an image, so an image that said nothing
+# would answer with whatever its base said -- and the imager's kernel, built
+# on the target bootstrap, would call itself a root file-system.
+KIND_LABEL = "seine.kind"
+
+# The kinds there are. Two of them can be used by another machine as they
+# are; the rest stand on the root file-system, which is not carried, and an
+# image whose base is not the same image is rebuilt whatever else happens to
+# it.
+TOOLING_KIND = "tooling"      # apt and mmdebstrap: what makes the rest
+BUILDER_KIND = "builder"      # where packages are built, holding the chroot
+ROOTFS_KIND = "rootfs"        # what mmdebstrap made of the archive
+IMAGER_KIND = "imager"        # the kernel libguestfs boots, and its appliance
+TRANSPORT_KIND = "transport"  # a baseline plus what ansible needs
+
 class ContainerEngine:
     @staticmethod
     def hasImage(name):
