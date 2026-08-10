@@ -20,6 +20,7 @@ class BuildCmd(Cmd):
         "help",
         "jobs=",
         "keep",
+        "packages-only",
         "parallel=",
         "rebuild",
         "require-hashes",
@@ -29,7 +30,8 @@ class BuildCmd(Cmd):
 
     def __init__(self):
         self.image = None
-        self.options = { "build": True, "debug": False, "dry_run": False, "jobs": 1, "keep": False, "parallel": None,
+        self.options = { "build": True, "debug": False, "dry_run": False, "jobs": 1, "keep": False,
+                         "packages_only": False, "parallel": None,
                          "rebuild": False, "require_hashes": False,
                          "sbom": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
@@ -476,6 +478,8 @@ class BuildCmd(Cmd):
                     sys.exit(1)
             elif o in ("-k", "--keep"):
                 self.options["keep"] = True
+            elif o in ("--packages-only"):
+                self.options["packages_only"] = True
             elif o in ("--dry-run"):
                 self.options["dry_run"] = True
             elif o in ("-D", "--dump"):
@@ -556,6 +560,11 @@ Flags:
                         step's containers print goes to a file of its own
                         while more than one is running
   -k, --keep            keep temporary files
+      --packages-only   build the packages of the 'packages' section and stop,
+                        without assembling a root file-system or writing an
+                        image. What a machine filling a cache for others to
+                        import runs, since the packages are the half worth
+                        carrying
       --parallel N      cores one package build may use. Unset, it is derived
                         from --jobs so that the builds running together do not
                         ask for more of the machine than it has

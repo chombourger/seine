@@ -1420,6 +1420,16 @@ other and nothing is written to disk twice:
 seine cache export - | ssh builder seine cache import -
 ```
 
+A machine whose job is to fill that tar for everyone else has no use for
+the image at the end of the build. `--packages-only` builds the packages of
+the `packages` section and stops, without assembling a root file-system or
+writing an image:
+
+```
+seine build --packages-only pc-image.yml
+seine cache export caches.tar
+```
+
 An imported cache merges into what is already there, and importing the same
 tar twice does nothing the second time. A tar seine did not write is not
 trusted: every member has to be a file, a directory or a link under a cache

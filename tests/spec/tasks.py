@@ -300,6 +300,40 @@ class PublishingIsItsOwnStep(avocado.Test):
             self.assertEqual(tasks["deploy:%s" % name].needs,
                              ["package:%s" % name])
 
+# A machine filling a cache for others to import builds the packages and
+# has no use for the image at the end of it.
+class PackagesOnlyStopsAtThePackages(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.options["packages_only"] = True
+        build.loads(PACKAGES)
+        build.parse()
+        names = [t.name for t in build.image.tasks()]
+
+        self.assertIn("bootstrap-host", names)
+        self.assertIn("package:seine-test-library", names)
+        self.assertIn("packages", names)
+        # Nothing that belongs to the image, the target bootstrap included:
+        # packages are built in a chroot of the build architecture and
+        # never touch it.
+        for step in ["bootstrap-target", "rootfs", "tarball", "disk",
+                     "appliance", "image"]:
+            self.assertNotIn(step, names)
+
+    # Every step still waits for something that is in the graph.
+    def test_the_graph_is_whole(self):
+        build = BuildCmd()
+        build.options["packages_only"] = True
+        build.loads(PACKAGES)
+        build.parse()
+        steps = build.image.tasks()
+        names = set(t.name for t in steps)
+        for step in steps:
+            for needed in step.needs:
+                self.assertIn(needed, names,
+                              "%s waits for %s, which is not in the graph"
+                              % (step.name, needed))
+
 class ADryRunSaysWhatItWouldDo(avocado.Test):
     def spec(self):
         return """

@@ -199,6 +199,16 @@ class Image:
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options))
 
+        # '--packages-only' stops here: the packages are what a build makes
+        # that another machine can be handed, and a machine filling a cache
+        # for others to import has no use for the image at the end of it.
+        # The target bootstrap goes with the rest of the image -- packages
+        # are built in a chroot of the build architecture and never touch
+        # it.
+        if self.options.get("packages_only"):
+            return [self.hostBootstrap.task()] \
+                   + builder.tasks(self.packages, self.hostBootstrap)
+
         # Each of these is declared beside the code that runs it, so what
         # a step needs is written where someone changing that step will
         # see it. What is left here is the handful of steps this class
@@ -222,8 +232,10 @@ class Image:
     # walk, printed instead of walked.
     def plan(self):
         distro = self.spec["distribution"]
-        print("would build '%s' for %s/%s, %d step%s at a time"
-              % (self._output, distro["release"], distro["architecture"],
+        what = "the packages" if self.options.get("packages_only") \
+               else "'%s'" % self._output
+        print("would build %s for %s/%s, %d step%s at a time"
+              % (what, distro["release"], distro["architecture"],
                  self.options.get("jobs", 1),
                  "" if self.options.get("jobs", 1) == 1 else "s"))
 
