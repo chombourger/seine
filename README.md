@@ -439,6 +439,19 @@ The file it names is the one that carries the URI, which for a
 specification assembled from several is not necessarily the one that
 named the package.
 
+`--require-hashes` turns that warning into a refusal, for a build that
+should not fetch anything nobody vouched for:
+
+```
+seine build --require-hashes spec.yaml
+```
+
+It is answered when the specification is parsed rather than after a
+download, since whether a source has anything vouching for it is knowable
+without fetching it, and it names every source at fault in one go rather
+than one per attempt. seine's own image tests build this way, so an
+example that loses its hash fails them.
+
 `apt://` and `git://` need no hash and take none: an apt source is
 checked against the archive's signed index, and a git revision is the
 hash of what it names. Both answer for themselves, more strongly than a

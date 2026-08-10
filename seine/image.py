@@ -71,6 +71,12 @@ class Image:
         # specification is parsed rather than once the build reaches it.
         self.packages = packages.parse(spec)
 
+        # And so is this: whether a source has anything vouching for it is
+        # knowable without fetching it, so a specification that asked for
+        # hashes and has none is told now rather than after a download.
+        if self.options.get("require_hashes"):
+            self._require_hashes()
+
         spec = self._parse_playbooks(spec)
 
         # Make selected 'baseline' visible in the parsed spec (for our test-suite)
@@ -79,6 +85,21 @@ class Image:
 
         self.spec = spec
         return self.spec
+
+    def _require_hashes(self):
+        missing = packages.unvouched(self.packages)
+        if len(missing) == 0:
+            return
+        report = ["--require-hashes was given and %d source%s has nothing "
+                  "vouching for it:" % (len(missing),
+                                        "" if len(missing) == 1 else "s")]
+        for uri, where, setting in missing:
+            report.append("  %s" % uri)
+            report.append("    add '%s:'%s"
+                          % (setting, " to %s" % where if where else ""))
+        report.append("apt:// and git:// sources need none: an archive "
+                      "signature and a commit hash answer for themselves.")
+        raise ValueError("\n".join(report))
 
     def _parse_playbooks(self, spec):
 

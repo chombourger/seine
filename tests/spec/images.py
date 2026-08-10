@@ -95,8 +95,13 @@ class Image(avocado.Test):
         # build that runs its own steps together is the one users will
         # run. The four tests may themselves run together, which is what
         # the cache locks are for.
+        #
+        # --require-hashes: an example that loses its hash, or grows a new
+        # source without one, fails here rather than quietly downloading
+        # whatever the URL serves that day.
         build = subprocess.run(
-            [sys.executable, "./seine.py", "build", "-v", "--jobs", "4"]
+            [sys.executable, "./seine.py", "build", "-v", "--jobs", "4",
+             "--require-hashes"]
             + self.specification(),
             cwd=path_to_sources, env=environment,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

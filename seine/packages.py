@@ -1772,6 +1772,39 @@ def has_packages(distro):
 
 # Validates the 'packages' section and returns it as Package objects,
 # ordered the way they will be built.
+# What answers for a source, if anything does. A specification that wants
+# every download accounted for asks with --require-hashes, and is told
+# before a byte is fetched rather than after.
+def integrity(package):
+    if package.scheme == "apt":
+        return "the archive's signed index"
+    if package.scheme == "git":
+        return "the revision it is pinned to"
+    return "a declared sha256" if package.sha256 is not None else None
+
+def upstream_integrity(package):
+    upstream = package.kernel_upstream
+    if upstream is None:
+        return "nothing to fetch"
+    if upstream.scheme == "git":
+        return "the revision it is pinned to"
+    return ("a declared sha256"
+            if package.kernel_upstream_sha256 is not None else None)
+
+# Every source nothing vouches for, named with the file that wrote it, so
+# one run says all of them rather than one per attempt.
+def unvouched(packages):
+    found = []
+    for package in packages:
+        if integrity(package) is None:
+            found.append((package.source, package.origin_of("source"),
+                          "sha256"))
+        if upstream_integrity(package) is None:
+            found.append((str(package.kernel_upstream),
+                          package.origin_of("extends.kernel.upstream"),
+                          "upstream-sha256"))
+    return found
+
 def parse(spec):
     packages = spec.get("packages", [])
     if type(packages) != type([]):

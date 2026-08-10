@@ -21,6 +21,7 @@ class BuildCmd(Cmd):
         "keep",
         "parallel=",
         "rebuild",
+        "require-hashes",
         "sbom",
         "verbose"
     ]
@@ -28,7 +29,8 @@ class BuildCmd(Cmd):
     def __init__(self):
         self.image = None
         self.options = { "build": True, "debug": False, "jobs": 1, "keep": False, "parallel": None,
-                         "rebuild": False, "sbom": False, "verbose": False }
+                         "rebuild": False, "require_hashes": False,
+                         "sbom": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
 
@@ -488,6 +490,8 @@ class BuildCmd(Cmd):
                 if self.options["parallel"] < 1:
                     sys.stderr.write("error: --parallel shall be at least 1\n")
                     sys.exit(1)
+            elif o in ("--require-hashes"):
+                self.options["require_hashes"] = True
             elif o in ("--rebuild"):
                 self.options["rebuild"] = True
             elif o in ("--sbom"):
@@ -552,6 +556,9 @@ Flags:
                         ask for more of the machine than it has
   --rebuild             rebuild the packages of the 'packages' section even if
                         they were built before
+  --require-hashes      refuse to build when a source is fetched over http with
+                        no sha256 to check it against. Reported when the
+                        specification is parsed, before anything is downloaded
   --sbom                produce a Software Bill of Materials (SBOM) using
                         debsbom
   -v, --verbose         produce verbose output while building the image

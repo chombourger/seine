@@ -1030,3 +1030,74 @@ class NothingVouchesForIt(DeclaredHashes):
         # And the file to write it in, which is the one that carried the
         # URI rather than whichever named the package.
         self.assertIn("<string>", said)
+
+class RequireHashes(avocado.Test):
+    def spec(self, packages):
+        return packages + IMAGE
+
+    def parsed(self, packages, require=True):
+        build = BuildCmd()
+        build.options["require_hashes"] = require
+        build.loads(self.spec(packages))
+        return build.parse()
+
+    def test(self):
+        # What answers for itself is left alone: an archive signature and
+        # a commit hash are stronger than a hash written down beside a URL.
+        self.parsed("""
+                packages:
+                    - source: apt://busybox
+                    - source: git://example.com/bsp.git;rev=deadbeef
+        """)
+
+        # A hash that was declared is what was asked for.
+        self.parsed("""
+                packages:
+                    - source: https://example.com/foo_1.0-1.dsc
+                      sha256: %s
+        """ % ("a" * 64))
+
+    def test_unvouched_is_refused(self):
+        try:
+            self.parsed("""
+                packages:
+                    - source: https://example.com/foo_1.0-1.dsc
+            """)
+            self.fail("a source with nothing vouching for it was accepted!")
+        except ValueError as e:
+            self.assertIn("--require-hashes", str(e))
+            self.assertIn("sha256", str(e))
+            self.assertIn("foo_1.0-1.dsc", str(e))
+
+    def test_unvouched_upstream_is_refused(self):
+        try:
+            self.parsed("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              upstream: https://kernel.org/linux-6.18.43.tar.xz
+            """)
+            self.fail("an upstream with nothing vouching for it was accepted!")
+        except ValueError as e:
+            self.assertIn("upstream-sha256", str(e))
+
+    def test_every_offender_at_once(self):
+        try:
+            self.parsed("""
+                packages:
+                    - source: https://example.com/one_1.0-1.dsc
+                    - source: https://example.com/two_1.0-1.dsc
+            """)
+            self.fail("sources with nothing vouching for them were accepted!")
+        except ValueError as e:
+            # One run says all of them rather than one per attempt.
+            self.assertIn("2 sources", str(e))
+            self.assertIn("one_1.0-1.dsc", str(e))
+            self.assertIn("two_1.0-1.dsc", str(e))
+
+    def test_off_by_default(self):
+        self.parsed("""
+                packages:
+                    - source: https://example.com/foo_1.0-1.dsc
+        """, require=False)
