@@ -169,6 +169,10 @@ class Package:
 
         self.spec = spec
         self.priority = spec.get("priority", 500)
+        # Which file wrote each setting, for the messages that ask someone
+        # to change one: a package described by three files has three
+        # answers, and the useful one is per setting.
+        self.origins = spec.get("_origins", {})
 
         self._parse_source(spec["source"])
         self.extends = self._parse_extends(spec)
@@ -329,6 +333,11 @@ class Package:
     # assembled from several files through 'requires'. They arrive here
     # already resolved against it, since a package may be described by more
     # than one file and each names its own files.
+    # The file that wrote a setting, named as its path -- 'source',
+    # 'extends.kernel.upstream'. None for a setting nothing wrote down.
+    def origin_of(self, setting):
+        return self.origins.get(setting)
+
     def patch_files(self):
         return self._files(self.patches)
 

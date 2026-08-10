@@ -578,3 +578,55 @@ class DefaultsHoldPackagesOnly(avocado.Test):
             self.fail("parsing succeeded for a 'defaults' section that is not packages!")
         except ValueError:
             pass
+
+class SettingsRememberWhichFileWroteThem(avocado.Test):
+    def test(self):
+        # An overlay of the shape the examples use: the suite file pins
+        # the packaging, the kernel fragment says which tree to graft on,
+        # the architecture file says which flavour under 'defaults'. The
+        # file to open to change any one of them is a different file.
+        build = BuildCmd()
+        for name, text in [
+                ("suite.yml", """
+                    packages:
+                        - source: apt://linux=6.12.101-1
+                """),
+                ("kernel.yml", """
+                    packages:
+                        - source: apt://linux
+                          extends:
+                              kernel:
+                                  upstream: https://kernel.org/linux-6.18.43.tar.xz
+                """),
+                ("arch.yml", """
+                    defaults:
+                        packages:
+                            - source: apt://linux
+                              extends:
+                                  kernel:
+                                      flavour: amd64
+                """)]:
+            path = os.path.join(self.workdir, name)
+            with open(path, "w") as f:
+                f.write(text)
+            build.load(path)
+        build.loads("""
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+
+        package = build.image.packages[0]
+        self.assertEqual(os.path.basename(package.origin_of("source")),
+                         "suite.yml")
+        self.assertEqual(
+            os.path.basename(package.origin_of("extends.kernel.upstream")),
+            "kernel.yml")
+        self.assertEqual(
+            os.path.basename(package.origin_of("extends.kernel.flavour")),
+            "arch.yml")
+        # Nothing wrote this one down.
+        self.assertEqual(package.origin_of("extends.kernel.sha256"), None)

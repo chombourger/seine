@@ -48,6 +48,7 @@ class BuildCmd(Cmd):
         # from several files has no one directory to carry along.
         for package in self._package_entries(spec):
             self._resolve_files(package, os.path.dirname(yaml_filename))
+            self._record_origins(package, yaml_filename)
 
         if self.spec is None:
             self.spec = spec
@@ -76,6 +77,37 @@ class BuildCmd(Cmd):
         entries = list(spec.get("packages") or [])
         entries += list((spec.get("defaults") or {}).get("packages") or [])
         return [e for e in entries if type(e) == type({})]
+
+    # Which file each of a package's settings came from. A package is
+    # routinely described by several, so there is no such thing as "the
+    # file this package came from" -- only the file that wrote each
+    # setting, which is the one a user would open to change it.
+    #
+    # Nested settings are named by their path, 'extends.kernel.upstream',
+    # so one flat map answers for all of them. It rides along under a key
+    # starting with an underscore, which the dump already hides.
+    ORIGINS = "_origins"
+
+    def _record_origins(self, package, filename, prefix=""):
+        origins = package.setdefault(BuildCmd.ORIGINS, {}) if prefix == "" else None
+        for setting, value in list(package.items()):
+            if setting.startswith("_"):
+                continue
+            if prefix == "" and setting == "extends" and type(value) == type({}):
+                for kind, settings in value.items():
+                    if type(settings) != type({}):
+                        continue
+                    for name in settings:
+                        package[BuildCmd.ORIGINS]["extends.%s.%s" % (kind, name)] = filename
+                continue
+            package[BuildCmd.ORIGINS][setting] = filename
+        return package
+
+    # Where a setting was written down, for the messages that ask someone
+    # to change it.
+    @staticmethod
+    def origin_of(package, setting):
+        return (package.get(BuildCmd.ORIGINS) or {}).get(setting)
 
     # The settings of a package that name files, as the path to reach them
     # from the package's own dictionary.
@@ -203,14 +235,20 @@ class BuildCmd(Cmd):
     # later one says replaces what the earlier one did.
     def _override_package(self, package, newpackage):
         for setting in newpackage:
+            if setting == BuildCmd.ORIGINS:
+                continue
             if setting == "extends" and type(package.get(setting)) == type({}):
                 for kind in newpackage[setting]:
                     if type(package[setting].get(kind)) != type({}):
                         package[setting][kind] = newpackage[setting][kind]
                     else:
                         package[setting][kind].update(newpackage[setting][kind])
+                    for name in newpackage[setting][kind] or []:
+                        self._take_origin(package, newpackage,
+                                          "extends.%s.%s" % (kind, name))
             else:
                 package[setting] = newpackage[setting]
+                self._take_origin(package, newpackage, setting)
 
     # Folded into the packages the specification asked for, once every file
     # has been read. A default naming a package nothing builds describes
@@ -231,23 +269,45 @@ class BuildCmd(Cmd):
 
     def _merge_package(self, package, newpackage):
         for setting in newpackage:
+            if setting == BuildCmd.ORIGINS:
+                continue
             if setting == "extends" and type(package.get(setting)) == type({}):
-                self._merge_extends(package[setting], newpackage[setting])
+                self._merge_extends(package[setting], newpackage[setting],
+                                    package, newpackage)
             elif setting not in package:
                 package[setting] = newpackage[setting]
+                self._take_origin(package, newpackage, setting)
+
+    # A setting and the file that wrote it move together. Taking a setting
+    # whole takes what is under it: copying an 'extends' block no file had
+    # yet copies where each of its settings was written, not one answer
+    # for the block.
+    def _take_origin(self, package, newpackage, setting):
+        origins = newpackage.get(BuildCmd.ORIGINS) or {}
+        taken = {name: origin for name, origin in origins.items()
+                 if name == setting or name.startswith("%s." % setting)}
+        if len(taken) > 0:
+            package.setdefault(BuildCmd.ORIGINS, {}).update(taken)
 
     # One level deeper than the rest: 'extends' is a dictionary of kinds,
     # and two files describing the same kernel are describing the same
     # 'kernel' entry rather than replacing each other's.
-    def _merge_extends(self, extends, newextends):
+    def _merge_extends(self, extends, newextends, package, newpackage):
         if type(newextends) != type({}):
             return
         for kind in newextends:
             if type(extends.get(kind)) != type({}) or type(newextends[kind]) != type({}):
-                extends.setdefault(kind, newextends[kind])
+                if kind not in extends:
+                    extends[kind] = newextends[kind]
+                    for setting in newextends[kind] or []:
+                        self._take_origin(package, newpackage,
+                                          "extends.%s.%s" % (kind, setting))
                 continue
             for setting in newextends[kind]:
-                extends[kind].setdefault(setting, newextends[kind][setting])
+                if setting not in extends[kind]:
+                    extends[kind][setting] = newextends[kind][setting]
+                    self._take_origin(package, newpackage,
+                                      "extends.%s.%s" % (kind, setting))
 
     # The source package a 'source' URI names, which is what decides
     # whether two entries are the same package. Kept simple on purpose:
