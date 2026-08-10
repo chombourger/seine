@@ -297,6 +297,81 @@ class TheEntriesFlagBelongsToInfoAlone(Caches):
                 CacheCmd().main(["clear", "--entries"])
         self.assertNotEqual(caught.exception.code, 0)
 
+# An import brings .debs and the stamps that describe them, so a repository
+# that had its own build of the same source package has to give way: two
+# versions of one package in a flat repository means apt installs the higher
+# of them, which is neither what a specification pinned nor what a stamp
+# describes.
+class AnImportSupersedesWhatItReplaces(Caches):
+    def repository(self, space="cache"):
+        path = os.path.join(self.workdir, space, "packages", "bookworm", "amd64")
+        os.makedirs(os.path.join(path, ".stamps"), exist_ok=True)
+        return path
+
+    def built(self, repository, source, digest, files, index=True):
+        for name in files:
+            with open(os.path.join(repository, name), "wb") as f:
+                f.write(b"deb")
+        with open(os.path.join(repository, ".stamps",
+                               "%s_%s" % (source, digest)), "w") as f:
+            f.write("\n".join(files) + "\n")
+        if index:
+            for derived in ["Packages", "Packages.gz"]:
+                with open(os.path.join(repository, derived), "w") as f:
+                    f.write("Package: %s\n" % source)
+
+    def theirs(self):
+        # A tar written by a machine that built the same source differently.
+        where = os.path.join(self.workdir, "theirs.tar")
+        os.environ["SEINE_CACHE_DIR"] = os.path.join(self.workdir, "theirs")
+        try:
+            self.built(self.repository("theirs"), "linux", "bbbbbbbbbbbbbbbb",
+                       ["linux-image_6.2_amd64.deb"])
+            self.run_cmd(["export", where, "packages"])
+        finally:
+            os.environ["SEINE_CACHE_DIR"] = os.path.join(self.workdir, "cache")
+        return where
+
+    def test(self):
+        mine = self.repository()
+        self.built(mine, "linux", "aaaaaaaaaaaaaaaa", ["linux-image_6.1_amd64.deb"])
+        self.run_cmd(["import", self.theirs()])
+
+        held = sorted(os.listdir(mine))
+        self.assertIn("linux-image_6.2_amd64.deb", held)
+        self.assertNotIn("linux-image_6.1_amd64.deb", held,
+                         "the superseded .deb is still there: apt would "
+                         "install whichever version is higher")
+        # And with it the stamp that named it.
+        self.assertEqual(os.listdir(os.path.join(mine, ".stamps")),
+                         ["linux_bbbbbbbbbbbbbbbb"])
+        # The index described the repository as it was a moment ago; it is
+        # made from the directory, so it is left for the next build to write.
+        self.assertFalse(os.path.isfile(os.path.join(mine, "Packages")))
+
+    # A package the tar says nothing about is nobody's business but this
+    # machine's.
+    def test_what_they_did_not_build_is_left_alone(self):
+        mine = self.repository()
+        self.built(mine, "busybox", "cccccccccccccccc", ["busybox_1.35_amd64.deb"])
+        self.run_cmd(["import", self.theirs()])
+        self.assertIn("busybox_1.35_amd64.deb", os.listdir(mine))
+
+    # A .deb no stamp names is a leftover rather than something superseded,
+    # and removing it is guesswork rather than following a stamp.
+    def test_what_no_stamp_names_waits_for_force(self):
+        mine = self.repository()
+        with open(os.path.join(mine, "orphan_1.0_amd64.deb"), "wb") as f:
+            f.write(b"deb")
+        where = self.theirs()
+
+        shown = self.run_cmd(["import", where])
+        self.assertIn("orphan_1.0_amd64.deb", os.listdir(mine))
+        self.assertIn("--force", shown)
+
+        self.run_cmd(["import", where, "--force"])
+        self.assertNotIn("orphan_1.0_amd64.deb", os.listdir(mine))
+
 # Every image seine builds says what it is, rather than inheriting the
 # answer from the image it was built on: podman hands an image its base's
 # labels, so the builder -- built on the tooling -- would call itself

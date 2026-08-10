@@ -129,6 +129,18 @@ def human(count):
         count /= 1024.0
     return "%.1f TiB" % count
 
+# Where a repository keeps the stamps that say what was built from what, as
+# packages.py names it. Taken from there rather than spelled again, so the
+# two cannot drift apart.
+from seine.packages import STAMPS
+
+def _directories(path):
+    try:
+        return [name for name in os.listdir(path)
+                if os.path.isdir(os.path.join(path, name))]
+    except OSError:
+        return []
+
 # Which cache each kind of index entry belongs to, so a cache that is
 # cleared or reported on can find what was recorded about it.
 KINDS = {
@@ -308,7 +320,8 @@ class CacheCmd(Cmd):
     # and, for a link, what it points at. The whole import fails on the
     # first member that does not: half of someone else's tar is not a
     # cache, and a tar reaching out of one is not worth guessing about.
-    def load(self, names, where):
+    def load(self, names, where, force=False):
+        arrived = []
         stream = sys.stdin.buffer if where == "-" else None
         with tarfile.open(None if stream else where, "r|*", fileobj=stream) as tar:
             for member in tar:
@@ -344,6 +357,14 @@ class CacheCmd(Cmd):
                     continue
                 member.name = rest
                 tar.extract(member, path=CACHES[cache]())
+                if cache == "packages":
+                    arrived.append(rest)
+        # What the tar superseded, once all of it is in: a stamp names the
+        # .debs its build produced, so a stamp that arrived for a source
+        # package this machine had already built says which of the ones
+        # already here are not reachable any more.
+        if "packages" in names:
+            self._prune(arrived, force, where)
         for name in names:
             if name == IMAGES:
                 continue
@@ -351,6 +372,90 @@ class CacheCmd(Cmd):
             if os.path.isdir(path):
                 self.say("imported %s (%s)" % (name, human(size_of(path))), where)
         return 0
+
+    # A .deb is reachable if a stamp names it: a stamp lists the files its
+    # build produced, which is how seine already undoes an earlier build of
+    # the same source package.
+    #
+    # An import brings .debs and the stamps that describe them, so a stamp
+    # that arrived for a source package this machine had already built
+    # supersedes the one that was here -- an import means take theirs -- and
+    # what only the superseded stamp named is not reachable any more. Left
+    # there, the repository would offer two versions of the same package and
+    # apt would install the higher of them, which is neither what the
+    # specification pinned nor what either stamp describes.
+    #
+    # A .deb no stamp names at all is a leftover of a seine that did not
+    # record them, or of a directory someone tidied by hand. Removing it is
+    # guesswork rather than following a stamp, so it waits for --force.
+    def _prune(self, arrived, force, where):
+        cache = CACHES["packages"]()
+        if os.path.isdir(cache) == False:
+            return
+        arrived = set(arrived)
+        for release in sorted(os.listdir(cache)):
+            for architecture in sorted(_directories(os.path.join(cache, release))):
+                self._prune_one(cache, os.path.join(release, architecture),
+                                arrived, force, where)
+
+    def _prune_one(self, cache, inside, arrived, force, where):
+        repository = os.path.join(cache, inside)
+        stamps = os.path.join(repository, STAMPS)
+        if os.path.isdir(stamps) == False:
+            return
+
+        # Every stamp in there, by the source package it belongs to: a name
+        # is '<source>_<digest of what it was built from>'.
+        stamped = {}
+        for stamp in sorted(os.listdir(stamps)):
+            stamped.setdefault(stamp.rsplit("_", 1)[0], []).append(stamp)
+
+        superseded, keeping = [], []
+        for source, versions in stamped.items():
+            theirs = [stamp for stamp in versions
+                      if os.path.join(inside, STAMPS, stamp) in arrived]
+            for stamp in versions:
+                if len(theirs) == 0 or stamp in theirs:
+                    keeping.append(stamp)
+                else:
+                    superseded.append(stamp)
+
+        reachable = set()
+        for stamp in keeping:
+            reachable.update(self._named_by(os.path.join(stamps, stamp)))
+        letting_go = set()
+        for stamp in superseded:
+            letting_go.update(self._named_by(os.path.join(stamps, stamp)))
+            self.say("superseded %s" % os.path.join(inside, STAMPS, stamp), where)
+            os.unlink(os.path.join(stamps, stamp))
+
+        held = [name for name in sorted(os.listdir(repository))
+                if os.path.isfile(os.path.join(repository, name))]
+        for name in held:
+            if name in reachable or name.startswith("Packages"):
+                continue
+            if name in letting_go or force:
+                self.say("removing %s" % os.path.join(inside, name), where)
+                os.unlink(os.path.join(repository, name))
+            elif name.endswith(".deb"):
+                self.say("keeping %s, which no stamp names ('--force' removes it)"
+                         % os.path.join(inside, name), where)
+
+        # The index describes what the directory held a moment ago. It is
+        # made from the directory rather than carried, so the honest thing to
+        # do with it here is take it away and let the next build write one.
+        for derived in ["Packages", "Packages.gz", ".packages.db"]:
+            path = os.path.join(repository, derived)
+            if os.path.isfile(path):
+                os.unlink(path)
+
+    # The files a stamp says its build produced.
+    def _named_by(self, stamp):
+        try:
+            with open(stamp, "r") as f:
+                return [line.strip() for line in f if len(line.strip()) > 0]
+        except OSError:
+            return []
 
     # Handed to podman as it comes out of the tar: podman reads a gzipped
     # archive as happily as a plain one, so the images go from one storage
@@ -381,11 +486,12 @@ class CacheCmd(Cmd):
         # hands '--with-image-rootfs' back as if it were the name of a cache.
         try:
             opts, args = getopt.gnu_getopt(
-                argv, "h", ["entries", "help", "with-image-rootfs"])
+                argv, "h", ["entries", "force", "help", "with-image-rootfs"])
         except getopt.GetoptError as err:
             sys.stderr.write("%s\n%s" % (err, USAGE))
             sys.exit(1)
         entries = False
+        force = False
         with_image_rootfs = False
         for o, _ in opts:
             if o in ("-h", "--help"):
@@ -393,6 +499,8 @@ class CacheCmd(Cmd):
                 sys.exit()
             elif o in ("--entries"):
                 entries = True
+            elif o in ("--force"):
+                force = True
             elif o in ("--with-image-rootfs"):
                 with_image_rootfs = True
 
@@ -412,6 +520,10 @@ class CacheCmd(Cmd):
             sys.exit(1)
         if entries and action != "info":
             sys.stderr.write("error: --entries is for 'info', not '%s'\n" % action)
+            sys.exit(1)
+        if force and action != "import":
+            sys.stderr.write("error: --force is for 'import', not '%s'\n"
+                             % action)
             sys.exit(1)
 
         # A tar to write or to read, named first so the caches after it read
@@ -451,7 +563,7 @@ class CacheCmd(Cmd):
             elif action == "export":
                 sys.exit(self.export(names, where, with_image_rootfs))
             else:
-                sys.exit(self.load(names, where))
+                sys.exit(self.load(names, where, force))
         except (OSError, tarfile.TarError, ValueError) as e:
             sys.stderr.write("error: cache %s failed: %s\n" % (action, e))
             sys.exit(1)
@@ -478,7 +590,11 @@ Description:
   the two can be piped into each other over ssh.
 
   An import extends what is already here: what the tar carries is written
-  over what shares its name.
+  over what shares its name, and a build of a source package that arrives
+  supersedes the one this machine had -- a flat repository offering two
+  versions of one package is a repository apt takes the higher of.
+  It does not remove a .deb that no stamp names, since that is a leftover
+  rather than something superseded: '--force' does.
 
   The repository index is not carried either way. It is made from whatever
   the directory holds, so an import takes it away and the next build writes
@@ -498,7 +614,7 @@ Usage:
   seine cache info [--entries] [CACHE...|all]
   seine cache clear [CACHE...|all]
   seine cache export [--with-image-rootfs] FILE|- [CACHE...|all]
-  seine cache import FILE|- [CACHE...|all]
+  seine cache import [--force] FILE|- [CACHE...|all]
 
 Caches:
   downloads   packages fetched from the distribution's feeds
@@ -530,6 +646,7 @@ Examples:
 Flags:
       --entries         list what is cached one object at a time, least
                         recently used first, for 'info' only
+      --force           remove .debs no stamp names, for 'import' only
   -h, --help            print this message
       --with-image-rootfs
                         carry the image's root file-system as well, for

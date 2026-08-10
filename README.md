@@ -1475,7 +1475,19 @@ seine cache export caches.tar
 ```
 
 An import extends what is already here rather than replacing it, and a
-second import of the same tar changes nothing.
+second import of the same tar changes nothing. Where the two machines built
+the same source package differently, the build that arrives wins and the one
+that was here is removed with the stamp that named it -- a flat repository
+offering two versions of one package is one apt installs the higher of,
+which is neither what the specification pinned nor what either build
+describes.
+
+```
+seine cache import --force caches.tar     # tidy up .debs no stamp names
+```
+
+A `.deb` that no stamp names is a leftover rather than something superseded,
+and removing it would be guesswork, so `--force` has to say so.
 
 The repository index is not carried, and an import removes the one that is
 there: it describes what the directory held a moment ago, and a build writes
