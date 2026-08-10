@@ -134,6 +134,14 @@ class Failed(Exception):
         message = "%s failed" % names
         if len(cancelled) > 0:
             message += " (%s did not run)" % ", ".join(sorted(cancelled))
+        # And what each of them said. Without this a step that raised
+        # rather than exited -- the imager talking to libguestfs is the one
+        # that does -- reported only its own name, and what actually went
+        # wrong was nowhere: not in the step's output, which had ended, and
+        # not in the traceback, which starts here.
+        for name, error in failures:
+            said = str(error) or error.__class__.__name__
+            message += "\n  %s: %s" % (name, said)
         super().__init__(message)
 
 # What a build would do, without doing any of it: every step in the order
