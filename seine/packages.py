@@ -391,6 +391,8 @@ class Builder:
         # built at the same time. Compiling is not: that is the part
         # worth doing beside each other.
         self._chroots = threading.Lock()
+        # What each package's fetch left behind, until its build takes it.
+        self._sources = {}
         self._repository = threading.Lock()
 
     # Cores for one package build: what --parallel said, or the machine
@@ -1651,22 +1653,45 @@ rm -rf .pc
         for package, stamp in pending:
             self._rebuild(package, stamp)
 
-    # One package: fetched, patched, built, and recorded as built. The
-    # chroot and the repository index are shared with whatever else is
-    # building at the same time, so both are taken one at a time -- an
-    # index rewritten while another build reads it fails much later and
-    # makes no sense when it does.
+    # Fetching a source and building it are two different jobs: one waits
+    # on a server, the other on the machine. Kept together, a package with
+    # a large source holds a build slot while it uses nothing but the
+    # network.
+    #
+    # So what a fetch leaves behind outlives it: the directory belongs to
+    # the package rather than to the step, and the build that follows
+    # finds it there.
+    def _fetched(self, package):
+        workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
+                                   prefix="source-")
+        try:
+            print("fetching '%s'" % package.source)
+            sourcedir = self.fetch(package, workdir)
+        except:
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise
+        self._sources[package.name] = (workdir, sourcedir)
+        return workdir, sourcedir
+
+    # One package: patched, built, and recorded as built. The chroot and
+    # the repository index are shared with whatever else is building at the
+    # same time, so both are taken one at a time -- an index rewritten
+    # while another build reads it fails much later and makes no sense
+    # when it does.
     def _rebuild(self, package, stamp):
         with self._chroots:
             chroot = SbuildChroot(self.distro, self.options,
                                   self.chroot_architecture(package))
             chroot.create(self.builderImage)
 
-        workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
-                                   prefix="source-")
+        workdir, sourcedir = self._sources.pop(
+            package.name, (None, None))
+        if workdir is None:
+            workdir, sourcedir = self._fetched(package)
+            self._sources.pop(package.name, None)
+
         try:
             print("rebuilding '%s'" % package.source)
-            sourcedir = self.fetch(package, workdir)
             # Taken before the graft, which replaces the changelog it is
             # read from: what dates the build is the packaging we started
             # from, which is a thing the specification pins.

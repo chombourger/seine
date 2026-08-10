@@ -1101,3 +1101,81 @@ class RequireHashes(avocado.Test):
                 packages:
                     - source: https://example.com/foo_1.0-1.dsc
         """, require=False)
+
+# A builder image that unpacks something when it is asked to fetch, so a
+# fetch can be exercised without a network or a container.
+class FakeFetch:
+    def __init__(self, fails=False):
+        self.fetches = 0
+        self.fails = fails
+
+    def exec(self, args, architecture=None, volumes=None, workdir=None,
+             environment=None, check=True):
+        self.fetches += 1
+        if self.fails:
+            raise RuntimeError("the server said no")
+        os.makedirs(os.path.join(volumes[0][0], "busybox-1.37.0"),
+                    exist_ok=True)
+        return 0
+
+class FetchedSourcesOutliveTheirStep(avocado.Test):
+    def builder(self, image):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        return Builder(distro, {"keep": False}, image)
+
+    def package(self):
+        return parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+
+
+    def test(self):
+        image = FakeFetch()
+        builder = self.builder(image)
+        package = self.package()
+
+        workdir, sourcedir = builder._fetched(package)
+        try:
+            # What the fetch left behind belongs to the package, so the
+            # step that builds it can be a different step.
+            self.assertIn(package.name, builder._sources)
+            self.assertEqual(builder._sources[package.name],
+                             (workdir, sourcedir))
+            self.assertTrue(os.path.isdir(sourcedir))
+            self.assertEqual(image.fetches, 1)
+        finally:
+            import shutil
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    def test_a_failed_fetch_leaves_nothing_behind(self):
+        import tempfile
+        from seine import packages as module
+
+        made = []
+        original = module.tempfile.mkdtemp
+
+        def watched(*args, **kwargs):
+            path = original(*args, **kwargs)
+            made.append(path)
+            return path
+
+        module.tempfile.mkdtemp = watched
+        try:
+            builder = self.builder(FakeFetch(fails=True))
+            try:
+                builder._fetched(self.package())
+                self.fail("a fetch that failed was reported as done!")
+            except RuntimeError:
+                pass
+        finally:
+            module.tempfile.mkdtemp = original
+
+        # No half-fetched directory, and nothing for a build to find.
+        self.assertEqual(len(made), 1)
+        self.assertFalse(os.path.exists(made[0]),
+                         "%s was left behind" % made[0])
+        self.assertEqual(builder._sources, {})
