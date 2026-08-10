@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 from seine       import cache_index
 from seine.cmd   import Cmd
@@ -282,6 +283,59 @@ class CacheCmd(Cmd):
             print("%-10s %-34s %-12s %s"
                   % (kind, key, cache_index.since(entry.get("used")),
                      cache_index.since(entry.get("made"))))
+
+    # What was last wanted longer ago than this, and nothing else. The index
+    # is the only thing asked: what it does not know about, it does not
+    # remove. A cache written by a seine that kept no record is left alone
+    # rather than deleted on a guess about its mtimes.
+    def stale(self, names, older_than):
+        cutoff = int(time.time()) - older_than
+        index = cache_index.Index()
+        kinds = [kind for name in names for kind in KINDS.get(name, [])]
+        removing = [(kind, key, entry) for kind, key, entry
+                    in index.entries(present=lambda kind, key: kind in kinds)
+                    if (entry.get("used") or 0) < cutoff]
+        if len(removing) == 0:
+            print("nothing in %s was last wanted that long ago"
+                  % ", ".join(names))
+            return 0
+        for kind, key, entry in removing:
+            print("removing %s %s, last wanted %s"
+                  % (kind, key, cache_index.since(entry.get("used"))))
+            self._evict(kind, key)
+            index.forget(kind, key)
+        return 0
+
+    # One cached object, by what the index calls it.
+    def _evict(self, kind, key):
+        if kind == cache_index.IMAGE:
+            ContainerEngine.run(["rmi", "--force", key], check=False)
+        elif kind == cache_index.CHROOT:
+            release, _, architecture = key.rpartition("-")
+            where = os.path.join(CACHES["chroots"](), release, architecture)
+            shutil.rmtree(where, ignore_errors=True)
+        elif kind == cache_index.DOWNLOADS:
+            shutil.rmtree(os.path.join(CACHES["downloads"](), key),
+                          ignore_errors=True)
+        elif kind == cache_index.PACKAGE:
+            release, _, rest = key.partition("/")
+            architecture, _, source = rest.partition("/")
+            repository = os.path.join(CACHES["packages"](), release, architecture)
+            stamps = os.path.join(repository, STAMPS)
+            for stamp in sorted(os.listdir(stamps)) if os.path.isdir(stamps) else []:
+                if stamp.rsplit("_", 1)[0] != source:
+                    continue
+                for name in self._named_by(os.path.join(stamps, stamp)):
+                    path = os.path.join(repository, name)
+                    if os.path.isfile(path):
+                        os.unlink(path)
+                os.unlink(os.path.join(stamps, stamp))
+            # The index the .debs were described by is made from what is
+            # there, so the next build writes one that matches.
+            for derived in ["Packages", "Packages.gz", ".packages.db"]:
+                path = os.path.join(repository, derived)
+                if os.path.isfile(path):
+                    os.unlink(path)
 
     def clear(self, names):
         # A build running at the same time as this loses whatever it was
@@ -660,13 +714,14 @@ class CacheCmd(Cmd):
         # hands '--with-image-rootfs' back as if it were the name of a cache.
         try:
             opts, args = getopt.gnu_getopt(
-                argv, "h", ["entries", "force", "help", "replace", "spec=",
-                            "with-image-rootfs"])
+                argv, "h", ["entries", "force", "help", "older-than=",
+                            "replace", "spec=", "with-image-rootfs"])
         except getopt.GetoptError as err:
             sys.stderr.write("%s\n%s" % (err, USAGE))
             sys.exit(1)
         entries = False
         force = False
+        older_than = None
         replace = False
         specifications = []
         with_image_rootfs = False
@@ -678,6 +733,12 @@ class CacheCmd(Cmd):
                 entries = True
             elif o in ("--force"):
                 force = True
+            elif o in ("--older-than"):
+                try:
+                    older_than = cache_index.span(a)
+                except ValueError as e:
+                    sys.stderr.write("error: %s\n" % e)
+                    sys.exit(1)
             elif o in ("--replace"):
                 replace = True
             elif o in ("--spec"):
@@ -703,6 +764,10 @@ class CacheCmd(Cmd):
             sys.exit(1)
         if entries and action != "info":
             sys.stderr.write("error: --entries is for 'info', not '%s'\n" % action)
+            sys.exit(1)
+        if older_than is not None and action != "clear":
+            sys.stderr.write("error: --older-than is for 'clear', not '%s'\n"
+                             % action)
             sys.exit(1)
         if len(specifications) > 0 and action != "export":
             sys.stderr.write("error: --spec is for 'export', not '%s'\n" % action)
@@ -749,7 +814,8 @@ class CacheCmd(Cmd):
             if action == "info":
                 sys.exit(self.info(names, entries))
             elif action == "clear":
-                sys.exit(self.clear(names))
+                sys.exit(self.stale(names, older_than) if older_than is not None
+                         else self.clear(names))
             elif action == "export":
                 wanted = Wanted(specifications) if len(specifications) > 0 else None
                 sys.exit(self.export(names, where, with_image_rootfs, wanted))
@@ -809,6 +875,11 @@ Description:
   applies to. That is all of them for 'info' and 'clear'; for a tar it is
   the caches worth carrying, which excludes 'scratch'.
 
+  'clear --older-than' removes one object at a time rather than a whole
+  cache: what was last wanted longer ago than the span given. It asks the
+  record and nothing else, so a cache seine kept no record of is left alone
+  rather than removed on a guess.
+
   'info --entries' lists what is in the caches one object at a time, least
   recently used first, which is the order to read it in when the question is
   what to remove. An entry appears the first time a build makes or takes the
@@ -817,7 +888,7 @@ Description:
 
 Usage:
   seine cache info [--entries] [CACHE...|all]
-  seine cache clear [CACHE...|all]
+  seine cache clear [--older-than SPAN] [CACHE...|all]
   seine cache export [--with-image-rootfs] FILE|- [CACHE...|all]
   seine cache import [--replace] [--force] FILE|- [CACHE...|all]
 
@@ -843,6 +914,7 @@ Examples:
   seine cache info --entries
   seine cache clear chroots
   seine cache clear downloads packages
+  seine cache clear --older-than 30d
   seine cache export caches.tar
   seine cache export caches.tar all
   seine cache export --spec common/amd64.yaml,pc-image/main.yaml caches.tar
@@ -855,6 +927,8 @@ Flags:
       --entries         list what is cached one object at a time, least
                         recently used first, for 'info' only
       --force           remove .debs no stamp names, for 'import' only
+      --older-than SPAN remove only what was last wanted longer ago than
+                        this ('30d', '6h', '2w'), for 'clear' only
   -h, --help            print this message
       --replace         empty the caches named before reading the tar, for
                         'import' only

@@ -102,13 +102,18 @@ class Index:
                     mine["uses"] = mine.get("uses") or 0
             self._write(recorded)
 
-    def forget(self, kind=None):
+    # A whole kind, one entry of one, or the lot.
+    def forget(self, kind=None, key=None):
         with locked(self._path):
             recorded = self._read()
             if kind is None:
                 recorded = {}
-            else:
+            elif key is None:
                 recorded.pop(kind, None)
+            else:
+                recorded.get(kind, {}).pop(key, None)
+                if len(recorded.get(kind, {})) == 0:
+                    recorded.pop(kind, None)
             self._write(recorded)
 
     # A file that is not there, not readable or not JSON is an index with
@@ -169,6 +174,21 @@ def plural(kind, count):
 def say(options, message):
     if (options or {}).get("verbose"):
         print("cache: %s" % message)
+
+# A span of time as someone types it: '30d', '6h', '2w'. Days by default,
+# since that is the unit a cache is thought about in.
+def span(said):
+    units = {"h": 3600, "d": 86400, "w": 604800}
+    seconds = units.get(said[-1:])
+    number = said[:-1] if seconds else said
+    try:
+        count = int(number)
+    except ValueError:
+        raise ValueError("'%s' is not a length of time, try 30d, 6h or 2w"
+                         % said)
+    if count < 1:
+        raise ValueError("a length of time has to be at least 1")
+    return count * (seconds or units["d"])
 
 # How long ago, in the roughest terms that are still useful for deciding
 # what to delete.

@@ -620,3 +620,79 @@ class AnExportScopedToASpecification(Caches):
             with contextlib.redirect_stderr(io.StringIO()):
                 CacheCmd().main(["import", "--spec", self.spec, "x.tar"])
         self.assertNotEqual(caught.exception.code, 0)
+
+# What has not been wanted in a while, one object at a time, rather than a
+# whole cache at once.
+class WhatWasNotWantedInAWhileIsRemoved(Caches):
+    def setUp(self):
+        super().setUp()
+        self.index = cache_index.Index()
+        self.repository = os.path.join(self.paths["packages"], "bookworm", "amd64")
+        os.makedirs(os.path.join(self.repository, ".stamps"), exist_ok=True)
+        for name in ["linux_6.1_amd64.deb", "Packages"]:
+            open(os.path.join(self.repository, name), "w").close()
+        with open(os.path.join(self.repository, ".stamps", "linux_abcdef01"),
+                  "w") as f:
+            f.write("linux_6.1_amd64.deb\n")
+        self.chroot = os.path.join(self.paths["chroots"], "bookworm", "amd64")
+        os.makedirs(self.chroot, exist_ok=True)
+        open(os.path.join(self.chroot, "bookworm-amd64.tar.zst"), "w").close()
+
+    def aged(self, kind, key, days):
+        self.index.made(kind, key)
+        recorded = self.index._read()
+        recorded[kind][key]["used"] -= days * 86400
+        self.index._write(recorded)
+
+    def test(self):
+        self.aged(cache_index.PACKAGE, "bookworm/amd64/linux", 40)
+        self.run_cmd(["clear", "--older-than", "30d"])
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.repository, "linux_6.1_amd64.deb")))
+        self.assertEqual(os.listdir(os.path.join(self.repository, ".stamps")), [])
+        # The index described what is no longer there, so the next build
+        # writes one that matches.
+        self.assertFalse(os.path.isfile(os.path.join(self.repository, "Packages")))
+        self.assertEqual(self.index.entries(), [])
+
+    def test_what_was_wanted_recently_stays(self):
+        self.aged(cache_index.PACKAGE, "bookworm/amd64/linux", 3)
+        shown = self.run_cmd(["clear", "--older-than", "30d"])
+        self.assertIn("nothing in", shown)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.repository, "linux_6.1_amd64.deb")))
+
+    def test_a_chroot_goes_with_its_release_and_architecture(self):
+        self.aged(cache_index.CHROOT, "bookworm-amd64", 40)
+        self.run_cmd(["clear", "--older-than", "30d", "chroots"])
+        self.assertFalse(os.path.isdir(self.chroot))
+
+    # Only the caches named, and only what the record knows about: a cache
+    # seine kept no record of is left alone rather than removed on a guess.
+    def test_only_the_caches_named(self):
+        self.aged(cache_index.PACKAGE, "bookworm/amd64/linux", 40)
+        self.aged(cache_index.CHROOT, "bookworm-amd64", 40)
+        self.run_cmd(["clear", "--older-than", "30d", "chroots"])
+        self.assertFalse(os.path.isdir(self.chroot))
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.repository, "linux_6.1_amd64.deb")))
+
+    def test_what_nothing_recorded_is_left_alone(self):
+        self.run_cmd(["clear", "--older-than", "30d"])
+        self.assertTrue(os.path.isfile(os.path.join(self.paths["chroots"], "blob")))
+        self.assertTrue(os.path.isdir(self.paths["downloads"]))
+
+class ASpanOfTime(avocado.Test):
+    def test(self):
+        from seine.cache_index import span
+        self.assertEqual(span("30d"), 30 * 86400)
+        self.assertEqual(span("6h"), 6 * 3600)
+        self.assertEqual(span("2w"), 14 * 86400)
+        # Days by default, since that is the unit a cache is thought about in.
+        self.assertEqual(span("7"), 7 * 86400)
+
+    def test_what_is_not_a_length_of_time(self):
+        from seine.cache_index import span
+        for said in ["banana", "", "0d", "-5d", "d"]:
+            with self.assertRaises(ValueError):
+                span(said)

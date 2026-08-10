@@ -1332,6 +1332,20 @@ seine cache clear             # all of them
 seine cache clear chroots     # only the buildd chroots
 ```
 
+`--older-than` clears one object at a time instead of a whole cache: what
+was last wanted longer ago than the span given, in days, hours or weeks.
+
+```
+seine cache clear --older-than 30d          # anything untouched for a month
+seine cache clear --older-than 2w chroots   # only the buildd chroots
+```
+
+It asks the record and nothing else, so anything seine kept no record of --
+a cache from before it kept one -- is left alone rather than removed on a
+guess about file timestamps. Removing a rebuilt package takes the `.deb`s its
+stamp named and the index describing them, so the next build writes one that
+matches what is there.
+
 None of it is needed for a build to succeed, so clearing any of it costs
 time on the next build and nothing else. Do it between builds: a build
 running while a cache is removed under it may fail rather than refetch.
