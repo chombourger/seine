@@ -704,8 +704,19 @@ class Builder:
                      "--host=%s" % self.distro["architecture"]]
         else:
             args += ["--arch=%s" % self.distro["architecture"]]
-        if len(package.profiles) > 0:
-            args += ["--profiles=%s" % ",".join(package.profiles)]
+        # 'cross' is one of dpkg's own build profiles, and sbuild sets it
+        # for a cross build -- but only while it is choosing the profiles
+        # itself. Naming any profile takes that decision over, and a
+        # specification naming 'nocheck' has no reason to know that it has
+        # thereby told the packaging it is building natively. Debian's
+        # kernel build-depends on the cross compiler under '<cross>' and
+        # the native one under '<!cross>', so without the profile a cross
+        # build asks its chroot for a compiler not installable there.
+        profiles = list(package.profiles)
+        if self.cross(package) and "cross" not in profiles:
+            profiles.append("cross")
+        if len(profiles) > 0:
+            args += ["--profiles=%s" % ",".join(profiles)]
 
         # A package may build-depend on one rebuilt before it. The chroot
         # reaches the repository through the bind mount configured in the

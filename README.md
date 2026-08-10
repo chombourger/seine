@@ -511,6 +511,14 @@ When the target `architecture` differs from the host's, packages are
 cross-compiled by default: sbuild builds them in a chroot of the host's
 architecture, having pulled in `crossbuild-essential` for the target.
 
+A cross build is also given dpkg's `cross` build profile, alongside
+whatever `profiles` the specification named. Packaging that builds
+differently when cross-built selects on that profile, and the kernel is
+the clearest case: Debian's build-depends on `gcc-<version>` under
+`<!cross>` and on `gcc-<version>-<triplet>` under `<cross>`, so without
+it a cross build asks a host-architecture chroot for a target-architecture
+compiler and stops before it starts.
+
 Not every package can be cross-built. Setting `cross: false` builds it in a
 chroot of the target's own architecture instead, running its binaries under
 `qemu-user-static` -- much slower, but it works for anything. This needs the

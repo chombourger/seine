@@ -432,6 +432,62 @@ class FetchWithoutSshForwardsNothing(SshFetch):
             self.assertEqual(environment, None,
                              "'%s' asked for an environment" % source)
 
+# What sbuild was told to do, without running it: the builder image is
+# replaced by one that writes down the arguments it is handed.
+class RecordingBuilderImage:
+    def __init__(self, workdir):
+        self.workdir = workdir
+        self.calls = []
+
+    def exec(self, args, architecture=None, volumes=None, workdir=None,
+             environment=None, check=True):
+        self.calls.append(args)
+        if args[0] == "dpkg-source":
+            open(os.path.join(self.workdir, "linux_1-1.dsc"), "w").close()
+        return 0
+
+class CrossBuildProfile(avocado.Test):
+    def builder(self, architecture):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": architecture, "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        image = RecordingBuilderImage(self.workdir)
+        builder = Builder(distro, {}, image)
+        builder.repository = lambda: self.workdir
+        return builder, image
+
+    def sbuild(self, architecture, profiles):
+        from seine.utils import HOST_ARCH
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      profiles:
+%s
+        """ % "".join("                          - %s\n" % p for p in profiles))
+        package = build.image.packages[0]
+        builder, image = self.builder(architecture)
+        source = os.path.join(self.workdir, "linux-1")
+        os.makedirs(source, exist_ok=True)
+        builder.build(package, source, "0")
+        # sbuild is run through a shell, so its arguments arrive as one
+        # string rather than as a list.
+        command = " ".join(image.calls[-1])
+        return [a for a in command.split() if a.startswith("--profiles=")]
+
+    def test(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+
+        # 'cross' is dpkg's own profile, and the packaging build-depends on
+        # a cross compiler under it: naming any profile takes sbuild's own
+        # choice over, so seine has to put it back.
+        self.assertEqual(self.sbuild(other, ["nocheck"]),
+                         ["--profiles=nocheck,cross"])
+        # A native build is not a cross build, whatever it names.
+        self.assertEqual(self.sbuild(HOST_ARCH, ["nocheck"]),
+                         ["--profiles=nocheck"])
+
 class DumpHidesInternalAttributes(avocado.Test):
     def test(self):
         build = parse("""
