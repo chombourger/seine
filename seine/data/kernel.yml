@@ -30,6 +30,10 @@
 # version, tree) pair, since the debian/ set differs between releases.
 # It also keeps the rule honest about applying: build files are the part
 # of a kernel that barely moves, and net/, security/ and fs/ are not.
+#
+# A specification whose packaging builds through files Debian's does not
+# touch adds its own with 'extends: kernel: build-files', which are added
+# to these rather than replacing them.
 build-files:
     - '(^|/)(Makefile|Kbuild|Platform|Build)[^/]*$'
     - '(^|/)\.gitignore$'

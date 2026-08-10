@@ -43,8 +43,8 @@ SCHEMES = ["apt", "git", "https"]
 # the right one is both easier to write and less likely to conflict with
 # the next point release than a patch would be.
 EXTENSIONS = {
-    "kernel": ["config", "drop-patches", "featureset", "flavour",
-               "keep-patches", "upstream"],
+    "kernel": ["build-files", "config", "drop-patches", "featureset",
+               "flavour", "keep-patches", "upstream"],
 }
 
 # Where a kernel tree comes from when it is not the one the distribution
@@ -87,8 +87,18 @@ def kernel_rules():
         if type(rules.get(setting)) != type([]):
             raise ValueError("%s: '%s' shall be a list"
                              % (KERNEL_RULES, setting))
-    return KernelRules(re.compile("|".join(rules["build-files"])),
-                       rules["drop-patches"], content)
+    return KernelRules(rules["build-files"], rules["drop-patches"], content)
+
+# The rules' patterns and whatever the specification added to them, as one
+# expression. Added rather than replacing: what makes a kernel build is
+# the same wherever the tree came from, and a packaging reaching
+# somewhere else reaches there as well as here, not instead of it.
+#
+# 'extra' is a tuple so that this can be cached: the expression is the
+# same for every patch in the series.
+@functools.lru_cache(maxsize=None)
+def build_files(extra=()):
+    return re.compile("|".join(list(kernel_rules().build_files) + list(extra)))
 
 # Debian identifies a kernel by architecture, featureset and flavour, and
 # a flavour name only means something within its featureset -- amd64's
@@ -268,6 +278,19 @@ class Package:
         # adds: taking one patch out of 'debian/*' would otherwise mean
         # writing out the thirty-odd being kept.
         self.kernel_drop_patches = self._parse_list(kernel, "drop-patches")
+        # Added to the patterns seine ships, for a packaging that builds
+        # through files Debian's does not touch. Checked here rather than
+        # where the series is read: a bad expression should be reported by
+        # the specification that wrote it, not by the patch it first fails
+        # to match.
+        self.kernel_build_files = self._parse_list(kernel, "build-files")
+        for pattern in self.kernel_build_files:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise self._error(
+                    "'extends: kernel: build-files' has '%s', which is not a "
+                    "regular expression: %s" % (pattern, e))
         for setting, value in [("flavour", self.kernel_flavour),
                                ("featureset", self.kernel_featureset)]:
             if value is not None and type(value) != type(""):
@@ -634,7 +657,8 @@ class Builder:
             if self._matches(name, dropped):
                 continue
             if package.kernel_keep_patches is None:
-                if self._packaging_patch(name, os.path.join(patches, name)):
+                if self._packaging_patch(package, name,
+                                         os.path.join(patches, name)):
                     kept.append(name)
             elif self._matches(name, package.kernel_keep_patches):
                 kept.append(name)
@@ -711,12 +735,12 @@ rm -rf .pc
     # means taking the kernel change too. Only debian/ is looked at:
     # bugfix/ and features/ are backports, and one touching only a
     # makefile is still something a newer tree is expected to have.
-    def _packaging_patch(self, name, path):
+    def _packaging_patch(self, package, name, path):
         if name.startswith("debian/") == False:
             return False
         touched = self._touches(path)
-        build_files = kernel_rules().build_files
-        return len(touched) > 0 and all(build_files.search(f) for f in touched)
+        matches = build_files(tuple(package.kernel_build_files))
+        return len(touched) > 0 and all(matches.search(f) for f in touched)
 
     # The files a patch changes, as it names them on its '+++' lines. The
     # leading component goes: these apply with -p1, and what is in front of
@@ -1271,6 +1295,7 @@ rm -rf .pc
                          if package.kernel_keep_patches is None
                          else sorted(package.kernel_keep_patches)),
                      ",".join(sorted(package.kernel_drop_patches)),
+                     ",".join(sorted(package.kernel_build_files)),
                      self.distro["source"],
                      self.distro["release"],
                      self.distro["architecture"],

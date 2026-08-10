@@ -623,6 +623,48 @@ class DropPatchesSubtractsFromWhatIsKept(SeriesCutDownToWhatIsKept):
             "                              drop-patches: [ 'debian/kbuild-*' ]")
         self.assertEqual(self.series(package), ["debian/kernelvariables.patch"])
 
+class BuildFilesAddToWhatCountsAsPackaging(SeriesCutDownToWhatIsKept):
+    # A packaging that builds through a file Debian's does not touch:
+    # Kconfig is not C source, but it is not a makefile either.
+    PATCHES = {
+        "debian/kconfig-defaults.patch": patch_touching("arch/arm64/Kconfig"),
+        "debian/kernelvariables.patch":  patch_touching("Makefile"),
+    }
+
+    def test(self):
+        package = self.kernel("                              flavour: amd64")
+        self.assertEqual(self.series(package, self.PATCHES),
+                         ["debian/kernelvariables.patch"])
+
+        # Added to the shipped patterns rather than replacing them: the
+        # makefile patch is still packaging.
+        package = self.kernel(
+            "                              build-files: [ '(^|/)Kconfig[^/]*$' ]")
+        self.assertEqual(sorted(self.series(package, self.PATCHES)),
+                         ["debian/kconfig-defaults.patch",
+                          "debian/kernelvariables.patch"])
+
+class BuildFilesAreCheckedWhereTheyAreWritten(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel("                              build-files: [ '(unclosed' ]")
+            self.fail("accepted a pattern that is not a regular expression!")
+        except ValueError:
+            pass
+
+class BuildFilesCountInTheDigest(UpstreamKernel):
+    def test(self):
+        builder = self.builder()
+        plain = self.kernel(
+            "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
+        extended = self.kernel(
+            "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz\n"
+            "                              build-files: [ '(^|/)Kconfig[^/]*$' ]")
+        # Which patches are kept changes what is built, so it has to
+        # change what says whether it needs building.
+        self.assertNotEqual(builder.stamp(plain), builder.stamp(extended),
+                            "extending 'build-files' did not ask for a rebuild")
+
 class KeepPatchesMatchingNothingIsRejected(SeriesCutDownToWhatIsKept):
     def test(self):
         package = self.kernel(
