@@ -1247,3 +1247,55 @@ class TheRepositoryIsNotRehashedEveryTime(avocado.Test):
         # And what apt reads is still what it always read.
         self.assertIn("> Packages", command)
         self.assertIn("Packages.gz", command)
+
+class PublishingRecordsWhatWasBuilt(avocado.Test):
+    def test(self):
+        from seine.packages import Builder
+
+        commands = []
+
+        class Image:
+            def exec(self, args, architecture=None, volumes=None,
+                     workdir=None, environment=None, check=True):
+                commands.append(" ".join(args))
+                return 0
+
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        builder = Builder(distro, {}, Image())
+        builder.repository = lambda: self.workdir
+
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        stamp = os.path.join(self.workdir, "busybox_stamp")
+        builder._built[package.name] = (stamp, ["busybox_1.37.0-6_amd64.deb"])
+        builder._deploy(package)
+
+        # The stamp is written and the index rewritten, in that order and
+        # only once the .deb is there to be recorded.
+        with open(stamp) as f:
+            self.assertEqual(f.read().strip(), "busybox_1.37.0-6_amd64.deb")
+        self.assertEqual(len(commands), 1)
+        self.assertIn("apt-ftparchive", commands[0])
+        # And nothing is left waiting to be published twice.
+        self.assertEqual(builder._built, {})
+
+class PublishingABuildThatDidNotHappenDoesNothing(avocado.Test):
+    def test(self):
+        from seine.packages import Builder
+
+        class Image:
+            def exec(self, *args, **kwargs):
+                raise AssertionError("nothing to publish, nothing to run")
+
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        Builder(distro, {}, Image())._deploy(package)

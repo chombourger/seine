@@ -1149,13 +1149,19 @@ not depend on each other. `--jobs N` runs up to N of them at once:
 seine build --jobs 4 spec.yaml
 ```
 
-Every package is two of those steps: fetching its source and building it.
+Every package is three of those steps: fetching its source, building it,
+and publishing what came out into the local repository.
 A fetch waits on a server rather than on the machine, so a large download
 runs beside the compiles of other packages instead of holding a slot to
 wait -- and a source that cannot be fetched says so early, rather than
 once everything before it has been built. A kernel's upstream tree, which
 is the largest thing seine downloads, comes down with the packaging it
 will be grafted into.
+
+Publishing is separate because a package built against another needs that
+one's `.deb` in the repository, which sbuild installs from -- a later
+moment than its build finishing, and the one a dependency actually waits
+for.
 
 One by default, which is the order and the output seine has always had.
 Two knobs decide how the machine is divided between what is running:

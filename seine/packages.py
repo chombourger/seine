@@ -391,8 +391,10 @@ class Builder:
         # built at the same time. Compiling is not: that is the part
         # worth doing beside each other.
         self._chroots = threading.Lock()
-        # What each package's fetch left behind, until its build takes it.
+        # What each package's fetch left behind, until its build takes it,
+        # and what each build produced, until it is published.
         self._sources = {}
+        self._built = {}
         self._repository = threading.Lock()
 
     # Cores for one package build: what --parallel said, or the machine
@@ -1636,7 +1638,10 @@ rm -rf .pc
         # A package built against another has to be built after it, which
         # is the same order 'before'/'after' already worked out -- as task
         # dependencies now, so everything else can overlap.
-        names = {package.name: "package:%s" % package.name
+        # What a dependent waits for is the name of the step that puts a
+        # package where it can be installed from, not the one that built
+        # it.
+        names = {package.name: "deploy:%s" % package.name
                  for package, _ in pending}
         for package, stamp in pending:
             # Fetching waits on a server and building waits on the
@@ -1651,9 +1656,12 @@ rm -rf .pc
             needs = [fetch] + [
                 names[d.name] for d in getattr(package, "depends", [])
                 if d.name in names]
-            tasks.append(Task(names[package.name],
+            tasks.append(Task("package:%s" % package.name,
                               functools.partial(self._rebuild, package, stamp),
                               needs=needs))
+            tasks.append(Task(names[package.name],
+                              functools.partial(self._deploy, package),
+                              needs=["package:%s" % package.name]))
 
         return tasks + [Task("packages", lambda: None,
                              needs=[t.name for t in tasks])]
@@ -1685,6 +1693,7 @@ rm -rf .pc
         self._prepare(hostBootstrap)
         for package, stamp in pending:
             self._rebuild(package, stamp)
+            self._deploy(package)
 
     # Fetching a source and building it are two different jobs: one waits
     # on a server, the other on the machine. Kept together, a package with
@@ -1707,11 +1716,29 @@ rm -rf .pc
         self._sources[package.name] = (workdir, sourcedir)
         return workdir, sourcedir
 
-    # One package: patched, built, and recorded as built. The chroot and
-    # the repository index are shared with whatever else is building at the
-    # same time, so both are taken one at a time -- an index rewritten
-    # while another build reads it fails much later and makes no sense
-    # when it does.
+    # Putting what was built where the rest of the build can install it
+    # from: the repository, and the index apt reads there.
+    #
+    # Both only once it built. A stamp left by a failed build would skip
+    # the package next time and compose the image from whatever the
+    # repository happened to hold, and dropping the previous build before
+    # this one succeeds would leave the repository with neither.
+    #
+    # One at a time, and against every other build on the machine as well:
+    # an index rewritten while another build's apt reads it is a failure
+    # that arrives much later and makes no sense when it does.
+    def _deploy(self, package):
+        stamp, produced = self._built.pop(package.name, (None, None))
+        if stamp is None:
+            return
+        with self._repository, locked(self.repository()):
+            self._forget(package, produced)
+            self._record(stamp, produced)
+            self.index()
+
+    # One package: patched, built, and recorded as built. The chroot is
+    # shared with whatever else is building at the same time, so it is
+    # taken one at a time.
     def _rebuild(self, package, stamp):
         with self._chroots:
             chroot = SbuildChroot(self.distro, self.options,
@@ -1742,15 +1769,11 @@ rm -rf .pc
             self.build(package, sourcedir, epoch)
             produced = self._produced(started)
 
-            # Both only once it built. A stamp left by a failed build
-            # would skip the package next time and compose the image from
-            # whatever the repository happened to hold, and dropping the
-            # previous build before this one succeeds would leave the
-            # repository with neither.
-            with self._repository, locked(self.repository()):
-                self._forget(package, produced)
-                self._record(stamp, produced)
-                self.index()
+            # Handed to the step that publishes it. What a package built
+            # against another needs is that one's .deb in the repository,
+            # for sbuild to install out of -- which is a later moment than
+            # its build finishing.
+            self._built[package.name] = (stamp, produced)
         finally:
             if self.options.get("keep"):
                 print("keeping '%s' (source of '%s') as requested"

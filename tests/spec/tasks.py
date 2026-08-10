@@ -228,10 +228,13 @@ class EachPackageIsATaskOfItsOwn(avocado.Test):
                      "seine-test-unrelated"]:
             self.assertIn("package:%s" % name, tasks)
 
-        # A package built against another still waits for it; one that is
-        # built against nothing waits for nothing but its own source.
-        self.assertIn("package:seine-test-library",
+        # A package built against another waits for that one to be
+        # published rather than merely built: what sbuild installs comes
+        # out of the repository, which is a later moment than the build.
+        self.assertIn("deploy:seine-test-library",
                       tasks["package:seine-test-application"].needs)
+        self.assertEqual(tasks["deploy:seine-test-library"].needs,
+                         ["package:seine-test-library"])
         self.assertEqual(tasks["package:seine-test-unrelated"].needs,
                          ["fetch:seine-test-unrelated"])
 
@@ -239,7 +242,7 @@ class EachPackageIsATaskOfItsOwn(avocado.Test):
         # whichever packages a specification happens to have.
         self.assertEqual(tasks["rootfs"].needs, ["bootstrap-target", "packages"])
         for name in tasks:
-            if name.startswith("package:"):
+            if name.startswith(("package:", "deploy:")):
                 self.assertIn(name, tasks["packages"].needs)
 
 class ABuildWithoutPackagesStillHasTheBarrier(avocado.Test):
@@ -273,12 +276,26 @@ class FetchingIsItsOwnStep(avocado.Test):
 
         # Building still waits for what it is built against, which
         # fetching never did.
-        self.assertIn("package:seine-test-library",
+        self.assertIn("deploy:seine-test-library",
                       tasks["package:seine-test-application"].needs)
-        self.assertNotIn("package:seine-test-library",
+        self.assertNotIn("deploy:seine-test-library",
                          tasks["fetch:seine-test-application"].needs)
 
         # And the barrier still covers everything, fetches included.
         for name in tasks:
-            if name.startswith(("fetch:", "package:")):
+            if name.startswith(("fetch:", "package:", "deploy:")):
                 self.assertIn(name, tasks["packages"].needs)
+
+class PublishingIsItsOwnStep(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(PACKAGES)
+        build.parse()
+        tasks = {t.name: t for t in build.image.tasks()}
+
+        for name in ["seine-test-application", "seine-test-library",
+                     "seine-test-unrelated"]:
+            # Built, then put where the rest of the build installs from.
+            self.assertIn("deploy:%s" % name, tasks)
+            self.assertEqual(tasks["deploy:%s" % name].needs,
+                             ["package:%s" % name])
