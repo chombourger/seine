@@ -3,6 +3,7 @@
 
 import getopt
 import gzip
+import io
 import json
 import os
 import shutil
@@ -48,6 +49,11 @@ PORTABLE = ["downloads", "packages", "chroots", IMAGES]
 # than one per image, so a layer shared by every image seine builds -- and
 # they all stand on the host bootstrap -- is written once.
 IMAGES_MEMBER = "%s/images.tar.gz" % IMAGES
+
+# Where the record of what was cached rides. Not under a cache's name: it
+# covers all of them, and it is the one member that is not an object a build
+# takes but a description of the ones that are.
+INDEX_MEMBER = "index.json"
 
 # Every image except the one an export leaves behind: the image's own root
 # file-system, which is what mmdebstrap made of the archive on the day it
@@ -235,7 +241,23 @@ class CacheCmd(Cmd):
                 self.say("exporting %s (%s)"
                          % (name, human(size_of(path, self._carried))), where)
                 tar.add(path, arcname=name, recursive=True, filter=self._exported)
+            self._export_index(tar, where)
         return 0
+
+    # What each entry is and when it was made, and nothing about this
+    # machine's use of it: how often someone else reached for a chroot says
+    # nothing about the machine reading this, and a last-used time from over
+    # there would have the first eviction sweep deleting on another machine's
+    # history.
+    def _export_index(self, tar, where):
+        recorded = cache_index.Index().stripped()
+        if len(recorded) == 0:
+            return
+        written = json.dumps(recorded, indent=1, sort_keys=True).encode()
+        entry = tarfile.TarInfo(INDEX_MEMBER)
+        entry.size = len(written)
+        entry.mode = 0o644
+        tar.addfile(entry, io.BytesIO(written))
 
     # podman writes the images out itself rather than seine walking its
     # storage: what is in there is podman's business, and an archive it
@@ -330,6 +352,13 @@ class CacheCmd(Cmd):
         stream = sys.stdin.buffer if where == "-" else None
         with tarfile.open(None if stream else where, "r|*", fileobj=stream) as tar:
             for member in tar:
+                # The index describes every cache rather than being in one,
+                # so it is taken before a member is asked which cache it
+                # belongs to.
+                if member.name == INDEX_MEMBER:
+                    if member.isfile():
+                        self._load_index(tar, member, names, where)
+                    continue
                 cache, _, rest = member.name.partition("/")
                 if cache not in PORTABLE:
                     raise ValueError("'%s' is not a cache that can be imported!"
@@ -461,6 +490,26 @@ class CacheCmd(Cmd):
                 return [line.strip() for line in f if len(line.strip()) > 0]
         except OSError:
             return []
+
+    # What arrived is theirs for the entries they carry and mine for the
+    # ones they do not, which is the rule the objects themselves follow: a
+    # superseded stamp gives way to the one that came with the tar, and an
+    # entry for a cache this import was not asked about is left alone.
+    def _load_index(self, tar, member, names, where):
+        kinds = [kind for name in names for kind in KINDS.get(name, [])]
+        try:
+            carried = json.loads(tar.extractfile(member).read())
+        except (OSError, ValueError):
+            # An index that cannot be read is an index that says nothing.
+            # Nothing decides a build from it, so this is not worth failing
+            # an import over.
+            self.say("the record of what was cached could not be read", where)
+            return
+        if type(carried) != type({}):
+            return
+        cache_index.Index().merge({kind: entries
+                                   for kind, entries in carried.items()
+                                   if kind in kinds})
 
     # Handed to podman as it comes out of the tar: podman reads a gzipped
     # archive as happily as a plain one, so the images go from one storage

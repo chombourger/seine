@@ -1494,7 +1494,10 @@ removing it would be guesswork -- unless `--force` says to.
 
 The repository index is not carried, and an import removes the one that is
 there: it describes what the directory held a moment ago, and a build writes
-one from what the directory really holds.
+one from what the directory really holds. The record of what was cached
+travels as well, carrying when each thing was made but nothing about the
+other machine's use of it -- on the machine receiving it, none of it has
+been used yet.
 
 A tar seine did not write is not trusted: every member has to be a file, a
 directory or a link under a cache seine knows, and has to stay inside it --

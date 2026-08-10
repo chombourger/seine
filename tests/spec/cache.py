@@ -394,6 +394,39 @@ class AnImportCanReplaceWhatIsThere(Caches):
         self.assertEqual(sorted(os.listdir(self.paths["chroots"])),
                          ["blob", "mine"])
 
+class TheRecordTravelsWithTheCaches(Caches):
+    def test(self):
+        index = cache_index.Index()
+        index.made(cache_index.CHROOT, "bookworm-amd64")
+        index.hit(cache_index.CHROOT, "bookworm-amd64")
+        theirs = index.entries()[0][2]
+
+        where = os.path.join(self.workdir, "caches.tar")
+        self.run_cmd(["export", where, "chroots"])
+        with tarfile.open(where) as tar:
+            self.assertIn("index.json", tar.getnames())
+
+        # Arriving on a machine that has never seen it: made then, used now.
+        index.forget()
+        self.run_cmd(["import", where, "chroots"])
+        (kind, key, entry), = index.entries()
+        self.assertEqual((kind, key), (cache_index.CHROOT, "bookworm-amd64"))
+        self.assertEqual(entry["made"], theirs["made"])
+        self.assertEqual(entry["uses"], 0)
+
+    # An import told to take one cache says nothing about the others.
+    def test_only_the_caches_asked_for(self):
+        index = cache_index.Index()
+        index.made(cache_index.CHROOT, "bookworm-amd64")
+        index.made(cache_index.PACKAGE, "bookworm/amd64/busybox")
+
+        where = os.path.join(self.workdir, "caches.tar")
+        self.run_cmd(["export", where])
+        index.forget()
+        self.run_cmd(["import", where, "chroots"])
+        self.assertEqual([kind for kind, _, _ in index.entries()],
+                         [cache_index.CHROOT])
+
 # Every image seine builds says what it is, rather than inheriting the
 # answer from the image it was built on: podman hands an image its base's
 # labels, so the builder -- built on the tooling -- would call itself
