@@ -419,39 +419,6 @@ class ADryRunSaysWhatItWouldNotRedo(avocado.Test):
         finally:
             os.unlink(stamp)
 
-# A step that raised rather than exited has to say what it raised: the
-# imager talks to libguestfs through python, so what goes wrong there is an
-# exception rather than a command's exit status, and the name of the step is
-# not an explanation.
-class AFailingStepSaysWhatWentWrong(avocado.Test):
-    def test(self):
-        from seine.tasks import Failed, run
-
-        def fails():
-            raise RuntimeError("guestfs: appliance closed the connection")
-
-        try:
-            # Two at a time: with one, a step's exception is what a build
-            # sees, and it is the parallel path that has to hand it back.
-            run([Task("image", fails)], jobs=2, logs=self.workdir)
-            self.fail("a failing task was not reported!")
-        except Failed as e:
-            self.assertIn("image failed", str(e))
-            self.assertIn("appliance closed the connection", str(e))
-
-    # One with nothing to say is named by its type rather than by an empty
-    # line: 'image failed\n  image: ' explains less than 'KeyError'.
-    def test_an_exception_with_no_message(self):
-        from seine.tasks import Failed, run
-
-        def fails():
-            raise KeyError()
-
-        try:
-            run([Task("image", fails)], jobs=2, logs=self.workdir)
-            self.fail("a failing task was not reported!")
-        except Failed as e:
-            self.assertIn("KeyError", str(e))
 # A machine that was handed a repository has the .debs and nothing to read
 # them with: the index is made from what the directory holds, so a build
 # with nothing to rebuild still has that to do.
@@ -509,3 +476,37 @@ class ARepositoryWithNoIndexIsIndexed(avocado.Test):
         os.utime(index, (1000, 1000))
         self.deb(builder)
         self.assertIn("packages-prepare", self.steps(builder))
+
+# A step that raised rather than exited has to say what it raised: the
+# imager talks to libguestfs through python, so what goes wrong there is an
+# exception rather than a command's exit status, and the name of the step is
+# not an explanation.
+class AFailingStepSaysWhatWentWrong(avocado.Test):
+    def test(self):
+        from seine.tasks import Failed, run
+
+        def fails():
+            raise RuntimeError("guestfs: appliance closed the connection")
+
+        try:
+            # Two at a time: with one, a step's exception is what a build
+            # sees, and it is the parallel path that has to hand it back.
+            run([Task("image", fails)], jobs=2, logs=self.workdir)
+            self.fail("a failing task was not reported!")
+        except Failed as e:
+            self.assertIn("image failed", str(e))
+            self.assertIn("appliance closed the connection", str(e))
+
+    # One with nothing to say is named by its type rather than by an empty
+    # line: 'image failed\n  image: ' explains less than 'KeyError'.
+    def test_an_exception_with_no_message(self):
+        from seine.tasks import Failed, run
+
+        def fails():
+            raise KeyError()
+
+        try:
+            run([Task("image", fails)], jobs=2, logs=self.workdir)
+            self.fail("a failing task was not reported!")
+        except Failed as e:
+            self.assertIn("KeyError", str(e))

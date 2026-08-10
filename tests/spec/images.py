@@ -11,7 +11,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from seine.utils import ContainerEngine
+from seine.utils import ContainerEngine, HOST_ARCH
 
 EXAMPLES = os.path.join(path_to_sources, "examples")
 
@@ -157,4 +157,244 @@ class Rpi4ImageTrixie(Image):
     """
     architecture = "arm64"
     image = "rpi4-image"
+    release = "trixie"
+
+# Which board's example this machine can build without emulating anything.
+# The round trip below is about what a cache carries, not about an
+# appliance running under qemu, so it takes the native one.
+NATIVE = {"amd64": "pc-image", "arm64": "rpi4-image"}
+
+# What a developer handed someone else's cache actually gets.
+#
+# Two spaces of their own, a build in each, and a tar in between: the first
+# builds from nothing and exports what it kept, the second imports that and
+# builds the same specification. What the second one must not do is the work
+# the first one already did -- rebuild the package, unpack a buildd chroot,
+# or make the containers again -- and what it must still do is produce an
+# image, since a cache that cannot be built from is not a cache.
+#
+# The specification is the busybox rebuild rather than a kernel: it is a
+# real package build, with a patch and a stamp of its own, and it needs
+# no kernel compile to prove it.
+#
+# Both spaces are the test's own, so nothing here touches the caches or the
+# storage of whoever is running it.
+#
+# Once per release, because what unpacks a buildd chroot is the sbuild of
+# the release being built and the two do not agree: bookworm's takes the
+# first name in its cache directory that could be a chroot tarball, while
+# trixie's skips the empty ones first. A cache seine writes has more than
+# the tarball in it, so a name that is safe on one is not evidence about the
+# other.
+class CarriedCache(avocado.Test):
+    """
+    :avocado: disable
+    """
+    timeout = 21600
+
+    release = None
+
+    def setUp(self):
+        # Before anything that may cancel: tearDown runs either way.
+        self.spaces = []
+        if PLAN != "full":
+            self.cancel("SEINE_TEST_PLAN=full builds images; this takes a while")
+        if shutil.which("podman") is None:
+            self.cancel("podman is needed to build an image")
+        self.architecture = HOST_ARCH
+        if self.architecture not in NATIVE:
+            self.cancel("no example image for %s" % self.architecture)
+
+    # podman's storage holds files belonging to uids this user cannot unlink
+    # outside a user namespace, so removing a space is podman's job -- and
+    # avocado cannot clean up the workdir until it is done.
+    def tearDown(self):
+        for space in self.spaces:
+            subprocess.run(["podman", "unshare", "rm", "-rf", space],
+                           check=False)
+
+    def space(self, name):
+        path = os.path.join(self.workdir, name)
+        environment = dict(os.environ)
+        # ansible-playbook lives beside the python running the tests when
+        # they are run from a virtual environment, and the build needs it.
+        environment["PATH"] = "%s:%s" % (os.path.dirname(sys.executable),
+                                         environment.get("PATH", ""))
+        environment["SEINE_CACHE_DIR"] = os.path.join(path, "cache")
+        environment["SEINE_BUILD_DIR"] = os.path.join(path, "build")
+        self.spaces.append(path)
+        return environment
+
+    def seine(self, space, args, log):
+        run = subprocess.run(
+            [sys.executable, "./seine.py"] + args,
+            cwd=path_to_sources, env=space,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        said = run.stdout.decode("utf-8", errors="replace")
+        where = os.path.join(self.outputdir, "%s.log" % log)
+        with open(where, "w") as f:
+            f.write(said)
+        self.assertEqual(run.returncode, 0,
+                         "'%s' failed, see %s" % (" ".join(args), where))
+        return said
+
+    def specification(self, filename):
+        names = [
+            "common/%s.yaml" % self.release,
+            "common/%s.yaml" % self.architecture,
+            "common/%s.yaml" % NATIVE[self.architecture],
+            "rebuild-busybox/busybox.yaml",
+        ]
+        specs = [os.path.join(EXAMPLES, name) for name in names]
+        for spec in specs:
+            self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
+
+        where = os.path.join(self.workdir, "%s.yml" % os.path.basename(filename))
+        with open(where, "w") as f:
+            f.write("image:\n    filename: %s\n" % filename)
+        return specs + [where]
+
+    def images_in(self, space):
+        listed = subprocess.check_output(
+            ["podman", "--root", os.path.join(space["SEINE_BUILD_DIR"], "storage"),
+             "images", "--format", "{{.Repository}} {{.Id}}"]).decode()
+        return dict(line.split() for line in listed.splitlines()
+                    if len(line.split()) == 2 and "<none>" not in line)
+
+    def test(self):
+        first = self.space("first")
+        second = self.space("second")
+        built = os.path.join(self.workdir, "first.img")
+
+        # One machine, from nothing.
+        self.seine(first, ["build", "-v", "--jobs", "4"]
+                          + self.specification(built), "build-first")
+        self.assertTrue(os.path.isfile(built), "no image at %s" % built)
+
+        carried = os.path.join(self.workdir, "caches.tar")
+        self.seine(first, ["cache", "export", carried], "export")
+        self.seine(second, ["cache", "import", carried], "import")
+
+        # The other machine, before it builds: the package is already built
+        # and every image it needs is there, bar the root file-system, which
+        # is deliberately not carried.
+        planned = self.seine(second,
+                             ["build", "--dry-run"] + self.specification(built),
+                             "plan-second")
+        self.assertIn("already built, and not built again", planned)
+        self.assertIn("busybox", planned.split(
+            "already built, and not built again")[1])
+
+        images = self.images_in(second)
+        self.assertNotEqual(images, {}, "no images were imported")
+        for name in images:
+            self.assertEqual(images[name], self.images_in(first)[name],
+                             "%s is not the image the first machine had" % name)
+
+        # Named rather than left to the loop above, which would be happy
+        # with an empty answer: the tooling every container is made from, the
+        # builder packages are built in, the kernel libguestfs boots, and the
+        # transport bootstrap ansible connects through. The last two stand on
+        # a root file-system this machine made for itself, and are current
+        # all the same -- which is the whole point of what an image records
+        # about its base.
+        for kind in ["bootstrap/", "builder/", "imager-kernel/", "transport-"]:
+            self.assertTrue(any(kind in name for name in images),
+                            "no %s image was carried, only %s"
+                            % (kind.rstrip("/"), sorted(images)))
+        # And the one that is left behind on purpose.
+        rootfs = "bootstrap/debian/%s/%s" % (self.release, self.architecture)
+        self.assertFalse(any(rootfs in name for name in images),
+                         "the image's own root file-system was carried")
+
+        # What must not be touched by the second build, since the tar
+        # brought it: the chroot it would otherwise spend a full mmdebstrap
+        # run on, and the stamp that says the package is built.
+        chroots = os.path.join(second["SEINE_CACHE_DIR"], "chroots")
+        stamps = glob.glob(os.path.join(second["SEINE_CACHE_DIR"], "packages",
+                                        "*", "*", ".stamps", "busybox_*"))
+        self.assertEqual(len(stamps), 1, "no busybox stamp in the imported cache")
+        before = {path: os.stat(path)
+                  for path in glob.glob(os.path.join(chroots, "*", "*", "*.tar.zst"))
+                            + stamps}
+        self.assertNotEqual(before, {}, "no chroot in the imported cache")
+
+        # The index is derived from the .debs rather than carried, so the
+        # tar does not bring one and the build about to run writes it.
+        repository = glob.glob(os.path.join(second["SEINE_CACHE_DIR"],
+                                            "packages", "*", "*"))
+        self.assertNotEqual(repository, [], "no repository was imported")
+        self.assertFalse(os.path.isfile(os.path.join(repository[0], "Packages")),
+                         "the tar carried a repository index")
+
+        again = os.path.join(self.workdir, "second.img")
+        self.seine(second, ["build", "-v", "--jobs", "4"]
+                           + self.specification(again), "build-second")
+        self.assertTrue(os.path.isfile(again), "no image at %s" % again)
+
+        # Written by the build that needed it, from what the directory holds.
+        self.assertTrue(os.path.isfile(os.path.join(repository[0], "Packages")),
+                        "the build did not write a repository index")
+
+        for path, stat in before.items():
+            now = os.stat(path)
+            self.assertEqual((now.st_ino, now.st_mtime_ns),
+                             (stat.st_ino, stat.st_mtime_ns),
+                             "%s was made again" % path)
+
+        # And the images the second build used are the ones it was handed,
+        # rather than ones it built for itself.
+        for name, id in self.images_in(second).items():
+            if name in images:
+                self.assertEqual(id, images[name],
+                                 "%s was built again" % name)
+
+        # What the second machine did with what it was given, in its own
+        # words: the record travelled with the caches, so the things it
+        # reused are things it knows were made before it had them.
+        listed = self.seine(second, ["cache", "info", "--entries"], "entries")
+        self.assertIn("busybox", listed)
+        self.assertIn("%s-%s" % (self.release, self.architecture), listed)
+
+    # A cache is not a licence to skip a build that has changed: a
+    # specification asking for something else is pending again, imported
+    # cache or not.
+    def test_a_changed_specification_is_still_built(self):
+        first = self.space("first")
+        built = os.path.join(self.workdir, "first.img")
+        self.seine(first, ["build", "--packages-only", "-v", "--jobs", "4"]
+                          + self.specification(built), "build-packages")
+
+        carried = os.path.join(self.workdir, "caches.tar")
+        self.seine(first, ["cache", "export", carried], "export")
+        second = self.space("second")
+        self.seine(second, ["cache", "import", carried], "import")
+
+        # The same specification, plus a build option nobody asked for
+        # before, which is part of what a stamp is made of.
+        changed = os.path.join(self.workdir, "changed.yml")
+        with open(changed, "w") as f:
+            f.write("packages:\n"
+                    "    - source: apt://busybox\n"
+                    "      options: [nostrip]\n")
+        planned = self.seine(second,
+                             ["build", "--dry-run"]
+                             + self.specification(built) + [changed],
+                             "plan-changed")
+        self.assertIn("package:busybox", planned)
+        self.assertNotIn("already built, and not built again", planned)
+
+# The two releases whose sbuild reads its cache directory differently. The
+# specification is the same one either way: what is being tested is what a
+# cache carries, and the release is the thing that changes how it is read.
+class CarriedCacheBookworm(CarriedCache):
+    """
+    :avocado: tags=full,container
+    """
+    release = "bookworm"
+
+class CarriedCacheTrixie(CarriedCache):
+    """
+    :avocado: tags=full,container
+    """
     release = "trixie"
