@@ -320,8 +320,13 @@ class CacheCmd(Cmd):
     # and, for a link, what it points at. The whole import fails on the
     # first member that does not: half of someone else's tar is not a
     # cache, and a tar reaching out of one is not worth guessing about.
-    def load(self, names, where, force=False):
+    def load(self, names, where, replace=False, force=False):
         arrived = []
+        # 'make this machine look like that tar', which is what a runner
+        # starting from nothing wants: what is here now cannot be worth
+        # keeping if it is about to be replaced wholesale.
+        if replace:
+            self.clear(names)
         stream = sys.stdin.buffer if where == "-" else None
         with tarfile.open(None if stream else where, "r|*", fileobj=stream) as tar:
             for member in tar:
@@ -486,12 +491,14 @@ class CacheCmd(Cmd):
         # hands '--with-image-rootfs' back as if it were the name of a cache.
         try:
             opts, args = getopt.gnu_getopt(
-                argv, "h", ["entries", "force", "help", "with-image-rootfs"])
+                argv, "h", ["entries", "force", "help", "replace",
+                            "with-image-rootfs"])
         except getopt.GetoptError as err:
             sys.stderr.write("%s\n%s" % (err, USAGE))
             sys.exit(1)
         entries = False
         force = False
+        replace = False
         with_image_rootfs = False
         for o, _ in opts:
             if o in ("-h", "--help"):
@@ -501,6 +508,8 @@ class CacheCmd(Cmd):
                 entries = True
             elif o in ("--force"):
                 force = True
+            elif o in ("--replace"):
+                replace = True
             elif o in ("--with-image-rootfs"):
                 with_image_rootfs = True
 
@@ -521,10 +530,11 @@ class CacheCmd(Cmd):
         if entries and action != "info":
             sys.stderr.write("error: --entries is for 'info', not '%s'\n" % action)
             sys.exit(1)
-        if force and action != "import":
-            sys.stderr.write("error: --force is for 'import', not '%s'\n"
-                             % action)
-            sys.exit(1)
+        for flag, asked in [("--force", force), ("--replace", replace)]:
+            if asked and action != "import":
+                sys.stderr.write("error: %s is for 'import', not '%s'\n"
+                                 % (flag, action))
+                sys.exit(1)
 
         # A tar to write or to read, named first so the caches after it read
         # as they do for the other two actions.
@@ -563,7 +573,7 @@ class CacheCmd(Cmd):
             elif action == "export":
                 sys.exit(self.export(names, where, with_image_rootfs))
             else:
-                sys.exit(self.load(names, where, force))
+                sys.exit(self.load(names, where, replace, force))
         except (OSError, tarfile.TarError, ValueError) as e:
             sys.stderr.write("error: cache %s failed: %s\n" % (action, e))
             sys.exit(1)
@@ -593,8 +603,10 @@ Description:
   over what shares its name, and a build of a source package that arrives
   supersedes the one this machine had -- a flat repository offering two
   versions of one package is a repository apt takes the higher of.
-  It does not remove a .deb that no stamp names, since that is a leftover
-  rather than something superseded: '--force' does.
+  '--replace' empties the caches named before reading the tar instead, which
+  is what a runner starting from nothing wants. Neither removes a .deb that
+  no stamp names, since that is a leftover rather than something superseded:
+  '--force' does.
 
   The repository index is not carried either way. It is made from whatever
   the directory holds, so an import takes it away and the next build writes
@@ -614,7 +626,7 @@ Usage:
   seine cache info [--entries] [CACHE...|all]
   seine cache clear [CACHE...|all]
   seine cache export [--with-image-rootfs] FILE|- [CACHE...|all]
-  seine cache import [--force] FILE|- [CACHE...|all]
+  seine cache import [--replace] [--force] FILE|- [CACHE...|all]
 
 Caches:
   downloads   packages fetched from the distribution's feeds
@@ -641,6 +653,7 @@ Examples:
   seine cache export caches.tar
   seine cache export --with-image-rootfs caches.tar
   seine cache import caches.tar chroots
+  seine cache import --replace caches.tar
   seine cache export - | ssh builder seine cache import -
 
 Flags:
@@ -648,6 +661,8 @@ Flags:
                         recently used first, for 'info' only
       --force           remove .debs no stamp names, for 'import' only
   -h, --help            print this message
+      --replace         empty the caches named before reading the tar, for
+                        'import' only
       --with-image-rootfs
                         carry the image's root file-system as well, for
                         'export' only

@@ -1483,11 +1483,14 @@ which is neither what the specification pinned nor what either build
 describes.
 
 ```
+seine cache import --replace caches.tar   # this machine, as that tar
 seine cache import --force caches.tar     # tidy up .debs no stamp names
 ```
 
-A `.deb` that no stamp names is a leftover rather than something superseded,
-and removing it would be guesswork, so `--force` has to say so.
+`--replace` empties the caches named before reading the tar, which is what a
+runner starting from nothing wants. Neither form removes a `.deb` that no
+stamp names -- that is a leftover rather than something superseded, and
+removing it would be guesswork -- unless `--force` says to.
 
 The repository index is not carried, and an import removes the one that is
 there: it describes what the directory held a moment ago, and a build writes

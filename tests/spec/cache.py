@@ -372,6 +372,28 @@ class AnImportSupersedesWhatItReplaces(Caches):
         self.run_cmd(["import", where, "--force"])
         self.assertNotIn("orphan_1.0_amd64.deb", os.listdir(mine))
 
+# What a runner starting from nothing wants: this machine looking like that
+# tar, rather than the two of them merged.
+class AnImportCanReplaceWhatIsThere(Caches):
+    def test(self):
+        where = os.path.join(self.workdir, "caches.tar")
+        self.run_cmd(["export", where, "chroots"])
+        with open(os.path.join(self.paths["chroots"], "mine"), "wb") as f:
+            f.write(b"only here")
+
+        self.run_cmd(["import", where, "chroots", "--replace"])
+        self.assertEqual(sorted(os.listdir(self.paths["chroots"])), ["blob"])
+
+    def test_extending_is_what_it_does_otherwise(self):
+        where = os.path.join(self.workdir, "caches.tar")
+        self.run_cmd(["export", where, "chroots"])
+        with open(os.path.join(self.paths["chroots"], "mine"), "wb") as f:
+            f.write(b"only here")
+
+        self.run_cmd(["import", where, "chroots"])
+        self.assertEqual(sorted(os.listdir(self.paths["chroots"])),
+                         ["blob", "mine"])
+
 # Every image seine builds says what it is, rather than inheriting the
 # answer from the image it was built on: podman hands an image its base's
 # labels, so the builder -- built on the tooling -- would call itself
