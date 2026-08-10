@@ -165,7 +165,6 @@ class Package:
             raise ValueError("package #%d has no 'source' specified!" % index)
 
         self.spec = spec
-        self.dirname = spec.get("_dirname", "")
         self.priority = spec.get("priority", 500)
 
         self._parse_source(spec["source"])
@@ -322,9 +321,11 @@ class Package:
             raise self._error("'source_date_epoch' shall be a number of seconds")
         return value
 
-    # Patches are given relative to the YAML file that listed them, which is
-    # not necessarily the one being built: specifications are assembled from
-    # several files through 'requires'.
+    # Patches and fragments are given relative to the YAML file that listed
+    # them, which is not necessarily the one being built: specifications are
+    # assembled from several files through 'requires'. They arrive here
+    # already resolved against it, since a package may be described by more
+    # than one file and each names its own files.
     def patch_files(self):
         return self._files(self.patches)
 
@@ -332,7 +333,7 @@ class Package:
         return self._files(self.kernel_config)
 
     def _files(self, names):
-        return [os.path.normpath(os.path.join(self.dirname, n)) for n in names]
+        return [os.path.normpath(n) for n in names]
 
 # Where the source of a package is fetched and, later, built. Everything
 # happens inside the builder container: the tools involved (apt-get source,

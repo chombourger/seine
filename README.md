@@ -378,6 +378,14 @@ between `0` and `999`, `500` by default, lowest first -- as it does for
 playbooks. Constraints win over it, so adding one does not rearrange the
 packages around it.
 
+Two files naming the same source package are describing one package
+rather than asking for two builds of it: the entries are merged, setting
+by setting, as partitions with the same label are. A setting already
+given wins, so a fragment can carry the parts that do not change while
+the specification including it settles the rest. Files given on the
+command line are merged in the order they appear, and a `requires` is
+loaded after the file that asked for it.
+
 Patches are applied in the way the source format calls for. A
 `3.0 (quilt)` package gets them added to `debian/patches/series`; anything
 else has them applied to the tree, and committed if that tree came from

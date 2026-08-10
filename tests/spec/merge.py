@@ -323,3 +323,106 @@ class FeedsAreOverriddenBySuite(avocado.Test):
         feeds = build.spec["distribution"]["feeds"]
         self.assertEqual(len(feeds), 1)
         self.assertEqual(feeds[0]["valid-until"], False)
+
+class PackagesAreMergedByTheirSourcePackage(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # What a suite says about a kernel: which packaging to take, and
+        # nothing else.
+        build.loads("""
+                packages:
+                    - source: apt://linux=6.12.95-1~bpo12+1
+        """)
+        # What the kernel itself says, which no suite has an opinion on.
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              upstream: https://kernel.org/linux-6.18.43.tar.xz
+                              flavour: amd64
+                      profiles:
+                          - noudeb
+        """)
+        packages = build.spec["packages"]
+        self.assertEqual(len(packages), 1)
+        # The version the specification asked for survives being described
+        # further, or a fragment could not be shared by two suites.
+        self.assertEqual(packages[0]["source"], "apt://linux=6.12.95-1~bpo12+1")
+        self.assertEqual(packages[0]["profiles"], ["noudeb"])
+        self.assertEqual(packages[0]["extends"]["kernel"]["flavour"], "amd64")
+
+class PackagesAreMergedInsideExtends(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: rpi
+        """)
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+                              featureset: rt
+        """)
+        kernel = build.spec["packages"][0]["extends"]["kernel"]
+        # Settled one setting at a time rather than the 'kernel' entry
+        # being replaced whole: what was said first stands, what is new
+        # is added.
+        self.assertEqual(kernel, {"flavour": "rpi", "featureset": "rt"})
+
+class DifferentPackagesAreLeftApart(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                packages:
+                    - source: apt://busybox
+        """)
+        build.loads("""
+                packages:
+                    - source: git://example.com/linux.git;rev=deadbeef
+                    - source: https://example.com/busybox_1.37.0-6.dsc
+        """)
+        packages = build.spec["packages"]
+        # busybox is busybox wherever its source is fetched from; the
+        # kernel is not busybox.
+        self.assertEqual(len(packages), 2)
+        self.assertEqual(packages[0]["source"], "apt://busybox")
+        self.assertEqual(packages[1]["source"],
+                         "git://example.com/linux.git;rev=deadbeef")
+
+class FilesAreResolvedAgainstTheFileThatListedThem(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # A package described by two files in two directories: each names
+        # its own files, and merging must not leave one of them looking
+        # for the other's.
+        for dirname in ["boards/rpi", "kernels/6.18"]:
+            os.makedirs(os.path.join(self.workdir, dirname), exist_ok=True)
+        with open(os.path.join(self.workdir, "boards/rpi/board.yml"), "w") as f:
+            f.write("packages:\n"
+                    "    - source: apt://linux\n"
+                    "      patches:\n"
+                    "          - patches/0001-board.patch\n")
+        with open(os.path.join(self.workdir, "kernels/6.18/kernel.yml"), "w") as f:
+            f.write("packages:\n"
+                    "    - source: apt://linux\n"
+                    "      extends:\n"
+                    "          kernel:\n"
+                    "              config:\n"
+                    "                  - configs/slim.fragment\n")
+        build.load(os.path.join(self.workdir, "boards/rpi/board.yml"))
+        build.load(os.path.join(self.workdir, "kernels/6.18/kernel.yml"))
+
+        package = build.spec["packages"][0]
+        self.assertEqual(package["patches"],
+                         [os.path.join(self.workdir,
+                                       "boards/rpi/patches/0001-board.patch")])
+        self.assertEqual(package["extends"]["kernel"]["config"],
+                         [os.path.join(self.workdir,
+                                       "kernels/6.18/configs/slim.fragment")])

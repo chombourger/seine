@@ -39,12 +39,13 @@ class BuildCmd(Cmd):
     def _load(self, yaml_filename, yaml_spec):
         spec = yaml.safe_load(yaml_spec)
 
-        # Patches are listed relative to the file listing them, which merging
-        # would otherwise lose: 'requires' pulls sections in from files in
-        # other directories.
+        # Patches and kconfig fragments are listed relative to the file
+        # listing them, which merging would otherwise lose. Resolved here,
+        # where the file they came from is still known: a package assembled
+        # from several files has no one directory to carry along.
         for package in (spec or {}).get("packages", []) or []:
             if type(package) == type({}):
-                package["_dirname"] = os.path.dirname(yaml_filename)
+                self._resolve_files(package, os.path.dirname(yaml_filename))
 
         if self.spec is None:
             self.spec = spec
@@ -65,6 +66,24 @@ class BuildCmd(Cmd):
                         % (yaml_filename, req, os.path.dirname(req_path)))
                 self.load(req_path)
         return self.spec
+
+    # The settings of a package that name files, as the path to reach them
+    # from the package's own dictionary.
+    FILE_LISTS = [["patches"], ["extends", "kernel", "config"]]
+
+    def _resolve_files(self, package, dirname):
+        for path in BuildCmd.FILE_LISTS:
+            holder = package
+            for key in path[:-1]:
+                holder = holder.get(key) if type(holder) == type({}) else None
+            if type(holder) != type({}):
+                continue
+            names = holder.get(path[-1])
+            if type(names) != type([]):
+                continue
+            holder[path[-1]] = [
+                os.path.normpath(os.path.join(dirname, name))
+                if type(name) == type("") else name for name in names]
 
     def _merge_distro(self, spec):
         if "distribution" in spec:
@@ -113,13 +132,63 @@ class BuildCmd(Cmd):
             elif "playbook" not in self.spec:
                 self.spec["playbook"] = spec["playbook"]
 
-    def _append_packages(self, spec):
-        if "packages" in spec:
-            if "packages" in self.spec:
-                for package in spec["packages"]:
-                    self.spec["packages"].append(package)
+    # Packages are merged by the source package they name, the way
+    # partitions are merged by label: a file may say what to build and
+    # another how, without either having to restate the other.
+    #
+    # What that is for is a kernel: which patches a tree needs, what
+    # upstream it is, what flavour to cut the build down to are none of
+    # them properties of the release being built for, and writing them
+    # once per suite is how the copies drift apart.
+    #
+    # A setting already there wins, as it does for partitions: 'requires'
+    # loads what a file asked for after the file itself, so the
+    # specification reaching for a fragment is the one that overrides it.
+    def _merge_packages(self, spec):
+        if "packages" not in spec:
+            return
+        if "packages" not in self.spec:
+            self.spec["packages"] = spec["packages"]
+            return
+        for package in spec["packages"]:
+            name = self._package_name(package)
+            existing = [p for p in self.spec["packages"]
+                        if self._package_name(p) == name]
+            if name is None or len(existing) == 0:
+                self.spec["packages"].append(package)
             else:
-                self.spec["packages"] = spec["packages"]
+                self._merge_package(existing[0], package)
+
+    def _merge_package(self, package, newpackage):
+        for setting in newpackage:
+            if setting == "extends" and type(package.get(setting)) == type({}):
+                self._merge_extends(package[setting], newpackage[setting])
+            elif setting not in package:
+                package[setting] = newpackage[setting]
+
+    # One level deeper than the rest: 'extends' is a dictionary of kinds,
+    # and two files describing the same kernel are describing the same
+    # 'kernel' entry rather than replacing each other's.
+    def _merge_extends(self, extends, newextends):
+        if type(newextends) != type({}):
+            return
+        for kind in newextends:
+            if type(extends.get(kind)) != type({}) or type(newextends[kind]) != type({}):
+                extends.setdefault(kind, newextends[kind])
+                continue
+            for setting in newextends[kind]:
+                extends[kind].setdefault(setting, newextends[kind][setting])
+
+    # The source package a 'source' URI names, which is what decides
+    # whether two entries are the same package. Kept simple on purpose:
+    # the URI is parsed properly later, and a name that comes out wrong
+    # here merges nothing that was not already separate.
+    def _package_name(self, package):
+        if type(package) != type({}) or type(package.get("source")) != type(""):
+            return None
+        _, _, rest = package["source"].partition("://")
+        rest = rest.split(";")[0].partition("=")[0]
+        return os.path.basename(rest).removesuffix(".git").split("_")[0]
 
     def _lookup_named_part_or_vol(self, parts, label, kind):
         for part in parts:
@@ -184,7 +253,7 @@ class BuildCmd(Cmd):
     def merge(self, spec):
         self._merge_distro(spec)
         self._merge_imager(spec)
-        self._append_packages(spec)
+        self._merge_packages(spec)
         self._append_playbooks(spec)
         if "image" in spec:
             self._merge_image(spec)
