@@ -337,9 +337,10 @@ come from them. Moving the timestamp changes the digest every rebuild is
 stamped with, so the packages are rebuilt against the new snapshot rather
 than kept from the old one.
 
-Snapshots are slow and rate-limited compared to a mirror. The downloads
-cache under `~/.cache/seine/downloads` takes most of that cost off the
-second build.
+A second build of the same snapshot fetches nothing: what the first one
+downloaded is in the cache under `~/.cache/seine/downloads`, and a snapshot
+serves the same bytes for a timestamp for ever, so nothing there can go
+stale.
 
 When multiple YAML files are parsed, the last parsed value will be used.
 
