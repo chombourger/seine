@@ -1,6 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+import concurrent.futures
+import os
 import sys
 import threading
 import time
@@ -66,9 +68,10 @@ def install():
 # it is installed into, not true of the imager appliance, which waits
 # today for a root file-system it has nothing to do with.
 #
-# Nothing here runs anything in parallel: this is the same sequence as
-# before, derived rather than assumed. What it buys now is that the order
-# can be checked, and that each step can be timed and named when it fails.
+# How many of them run at once is 'jobs' below; with one, this is the
+# same sequence as before, derived rather than assumed. What it buys is
+# that the order can be checked, and that each step is timed and named
+# when it fails.
 class Task:
     def __init__(self, name, run, needs=None):
         self.name = name
@@ -111,12 +114,99 @@ def ordered(tasks):
             seen.add(task.name)
     return done
 
-# Runs them, in that order. 'verbose' prints what each one cost, which is
-# what tells a user where a build's time actually goes -- and so which
-# steps are worth running beside each other.
-def run(tasks, verbose=False):
-    for task in ordered(tasks):
+# What a build does when a step fails, which parallel builds have to
+# answer and a sequential one never had to.
+#
+# Nothing new is started. What is already running is left to finish
+# rather than killed: seine's house-keeping runs at the end of each step
+# -- a stamp is written only once a package built, a half-made chroot
+# deletes itself -- and killing a task skips all of that for a build
+# that has already failed.
+#
+# So the build waits, then reports the failure that came first, says what
+# never ran, and raises it. Later failures are reported too, since the
+# first one is the one that has any chance of being the cause.
+class Failed(Exception):
+    def __init__(self, failures, cancelled):
+        self.failures = failures
+        self.cancelled = cancelled
+        names = ", ".join(name for name, _ in failures)
+        message = "%s failed" % names
+        if len(cancelled) > 0:
+            message += " (%s did not run)" % ", ".join(sorted(cancelled))
+        super().__init__(message)
+
+# Runs them. 'jobs' is how many may run at once; one, by default, which
+# is the order and the output a build has always had. 'verbose' prints
+# what each step cost, which is what tells a user where the time goes --
+# and so what is worth running beside what.
+def run(tasks, jobs=1, verbose=False, logs=None):
+    tasks = ordered(tasks)
+    if jobs <= 1:
+        _sequential(tasks, verbose)
+        return
+
+    install()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        _parallel(tasks, pool, jobs, verbose, logs)
+
+def _sequential(tasks, verbose):
+    for task in tasks:
         started = time.time()
         task.run()
         if verbose:
             print("  %s: %.1fs" % (task.name, time.time() - started))
+
+def _parallel(tasks, pool, jobs, verbose, logs):
+    done = set()
+    failures = []
+    running = {}
+    waiting = list(tasks)
+
+    while len(waiting) > 0 or len(running) > 0:
+        # Nothing new once something has failed. What is running stays
+        # running: see above.
+        if len(failures) == 0:
+            ready = [t for t in waiting if all(n in done for n in t.needs)]
+            for task in ready[:jobs - len(running)]:
+                waiting.remove(task)
+                running[pool.submit(_run_one, task, verbose, logs)] = task
+
+        if len(running) == 0:
+            break
+        finished, _ = concurrent.futures.wait(
+            running, return_when=concurrent.futures.FIRST_COMPLETED)
+        for future in finished:
+            task = running.pop(future)
+            error = future.exception()
+            if error is None:
+                done.add(task.name)
+            else:
+                failures.append((task.name, error))
+                _report(task, logs)
+
+    if len(failures) > 0:
+        raise Failed(failures, [t.name for t in waiting])
+
+def _run_one(task, verbose, logs):
+    started = time.time()
+    if logs is None:
+        task.run()
+    else:
+        path = os.path.join(logs, "%s.log" % task.name)
+        with open(path, "w") as f, capture(f):
+            task.run()
+    if verbose:
+        print("  %s: %.1fs" % (task.name, time.time() - started))
+
+# A failing task's output, which nobody saw: it went to that task's file
+# so it would not interleave with the tasks it ran beside.
+def _report(task, logs):
+    print("task '%s' failed" % task.name)
+    if logs is None:
+        return
+    path = os.path.join(logs, "%s.log" % task.name)
+    if os.path.isfile(path):
+        with open(path) as f:
+            for line in f:
+                print("  %s| %s" % (task.name, line.rstrip()))

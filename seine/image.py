@@ -193,7 +193,18 @@ class Image:
 
     def build(self):
         try:
-            tasks.run(self.tasks(), verbose=self.options.get("verbose", False))
+            jobs = self.options.get("jobs", 1)
+            logs = None
+            if jobs > 1:
+                # Somewhere for each step to write while the others write
+                # too. Named after the step, and printed here so a build
+                # can be watched while it runs.
+                logs = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
+                                        prefix="logs-")
+                print("running up to %d steps at once, output under %s"
+                      % (jobs, logs))
+            tasks.run(self.tasks(), jobs=jobs, logs=logs,
+                      verbose=self.options.get("verbose", False))
         except:
             if self._image is not None:
                 os.unlink(self._image)

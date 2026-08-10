@@ -836,6 +836,30 @@ Worth being plain about, since the aim here is a true replacement:
    the kernel and the image itself get its headers. Usually what you
    want; worth knowing when it is not.
 
+##### Building in parallel
+
+A build is a handful of steps -- bootstraps, one task per package, the
+root file-system, the imager appliance, the image -- and most of them do
+not depend on each other. `--jobs N` runs up to N of them at once:
+
+```
+seine build --jobs 4 spec.yaml
+```
+
+One by default, which is the order and the output seine has always had.
+While more than one step is running, each writes to a file of its own,
+under a directory the build names when it starts, so two kernels do not
+interleave into something unreadable. A step that fails has its output
+printed, since nobody saw it go by.
+
+When a step fails, nothing new is started -- not what depended on it, not
+what was merely queued -- and what is already running is left to finish
+rather than killed. seine tidies up at the end of a step: a stamp is
+written only once a package built, a half-made chroot deletes itself, a
+partial disk image is removed. Killing a task skips all of that to save
+minutes of a build that has already failed, and leaves the mess for the
+next one. The failure is reported with the steps that never ran.
+
 ##### Cross-compiling
 
 When the target `architecture` differs from the host's, packages are

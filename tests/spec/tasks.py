@@ -120,3 +120,76 @@ class ATaskFileIsReadableWhileItIsWritten(avocado.Test):
                 # a buffer holding the line would defeat.
                 with open(path) as reader:
                     self.assertEqual(reader.read(), "first\n")
+
+class IndependentTasksRunAtOnce(avocado.Test):
+    def test(self):
+        import threading
+        from seine.tasks import run
+
+        # Each waits for the other to have started. With one at a time
+        # this cannot finish, which is the point: it is what proves they
+        # really are running beside each other rather than in a row.
+        started = threading.Barrier(2, timeout=30)
+        tasks = [Task("one", started.wait), Task("two", started.wait)]
+        run(tasks, jobs=2)
+
+class DependenciesStillWaitWhenRunningInParallel(avocado.Test):
+    def test(self):
+        from seine.tasks import run
+        ran = []
+        tasks = [task("first", None, ran),
+                 task("second", ["first"], ran),
+                 task("third", ["second"], ran)]
+        run(tasks, jobs=4)
+        self.assertEqual(ran, ["first", "second", "third"])
+
+class AFailureStartsNothingNew(avocado.Test):
+    def test(self):
+        import time
+        from seine.tasks import Failed, run
+
+        ran = []
+        def fails():
+            ran.append("fails")
+            raise ValueError("no")
+
+        def slow():
+            time.sleep(0.2)
+            ran.append("slow")
+
+        tasks = [Task("fails", fails),
+                 Task("slow", slow),
+                 task("after", ["fails"], ran),
+                 task("unrelated", ["slow"], ran)]
+        try:
+            run(tasks, jobs=2)
+            self.fail("a failing task was not reported!")
+        except Failed as e:
+            # What needed the failure never runs, and neither does
+            # anything still waiting: the build is over, it is only
+            # finishing what it had already started.
+            self.assertNotIn("after", ran)
+            self.assertNotIn("unrelated", ran)
+            self.assertEqual([name for name, _ in e.failures], ["fails"])
+            self.assertEqual(sorted(e.cancelled), ["after", "unrelated"])
+            # What was already running was left alone rather than killed:
+            # a step interrupted halfway leaves half-written caches.
+            self.assertIn("slow", ran)
+
+class AFailingTaskSaysWhatItWrote(avocado.Test):
+    def test(self):
+        from seine.tasks import Failed, run
+
+        def fails():
+            print("the interesting line")
+            raise ValueError("no")
+
+        try:
+            run([Task("fails", fails)], jobs=2, logs=self.workdir)
+            self.fail("a failing task was not reported!")
+        except Failed:
+            pass
+        # Its output went to a file so it would not interleave with the
+        # tasks beside it, so the build has to hand it back.
+        with open(os.path.join(self.workdir, "fails.log")) as f:
+            self.assertIn("the interesting line", f.read())

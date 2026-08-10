@@ -12,11 +12,12 @@ from seine.cmd       import Cmd
 from seine.partition import PartitionHandler
 
 class BuildCmd(Cmd):
-    SHORT_OPTIONS = "dDhkv"
+    SHORT_OPTIONS = "dDhj:kv"
     LONG_OPTIONS = [
         "debug",
         "dump",
         "help",
+        "jobs=",
         "keep",
         "rebuild",
         "sbom",
@@ -25,7 +26,8 @@ class BuildCmd(Cmd):
 
     def __init__(self):
         self.image = None
-        self.options = { "build": True, "debug": False, "keep": False, "rebuild": False, "sbom": False, "verbose": False }
+        self.options = { "build": True, "debug": False, "jobs": 1, "keep": False,
+                         "rebuild": False, "sbom": False, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
 
@@ -395,6 +397,19 @@ class BuildCmd(Cmd):
             elif o in ("-h", "--help"):
                 print(USAGE)
                 sys.exit()
+            elif o in ("-j", "--jobs"):
+                # How many steps of a build may run at once. One by
+                # default: that is the order and the output a build has
+                # always had, and the only thing that makes a failure
+                # readable without going looking for a file.
+                try:
+                    self.options["jobs"] = int(a)
+                except ValueError:
+                    sys.stderr.write("error: --jobs expects a number\n")
+                    sys.exit(1)
+                if self.options["jobs"] < 1:
+                    sys.stderr.write("error: --jobs shall be at least 1\n")
+                    sys.exit(1)
             elif o in ("-k", "--keep"):
                 self.options["keep"] = True
             elif o in ("-D", "--dump"):
@@ -453,6 +468,10 @@ Flags:
   -d, --debug           print debug messages
   -D, --dump            do not build the image, just dump the consolidated specification
   -h, --help            print this message
+  -j, --jobs N          run up to N steps of the build at once (1 by default).
+                        Steps that depend on each other still wait; what a
+                        step's containers print goes to a file of its own
+                        while more than one is running
   -k, --keep            keep temporary files
   --rebuild             rebuild the packages of the 'packages' section even if
                         they were built before
