@@ -13,6 +13,7 @@ import guestfs
 from seine.imager_appliance import ImagerAppliance
 from seine.imager_kernel    import ImagerKernel
 from seine.tasks import Task
+from seine.utils            import ContainerEngine
 from seine.utils            import HOST_ARCH
 
 DEVICE = "/dev/sda"
@@ -235,7 +236,11 @@ class Imager:
         ]
 
     def _prepare(self):
-        self._output_dir = tempfile.mkdtemp(dir=os.getcwd())
+        # The appliance's kernel and modules are unpacked here, which is a
+        # lot of nothing anyone asked to keep: the scratch space, not the
+        # checkout.
+        self._output_dir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
+                                           prefix="imager-")
         self._hypervisor_path = self._prepare_appliance(self._output_dir)
 
     def _build(self):

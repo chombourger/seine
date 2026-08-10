@@ -150,7 +150,13 @@ class Image:
     def build_tarball(self):
         try:
             self._tarball = None
-            image = tempfile.NamedTemporaryFile(mode="w", delete=False, dir=os.getcwd(), prefix='root-', suffix='.tar')
+            # In the scratch space rather than the working directory: a
+            # root file-system nobody asked to keep is large, and the
+            # working directory is someone's checkout. A build that dies
+            # leaves it where 'seine cache clear scratch' will find it.
+            image = tempfile.NamedTemporaryFile(
+                mode="w", delete=False, dir=ContainerEngine.scratch(),
+                prefix="root-", suffix=".tar")
             ContainerEngine.run(["container", "export", "-o", image.name, self._cid], check=True)
             self._tarball = image.name
         except subprocess.CalledProcessError:
@@ -178,9 +184,17 @@ class Image:
         self.partitionHandler.compute_sizes()
         self.partitionHandler.print_stats()
 
+    # Beside the image it is about to become, and not in the scratch space
+    # with the rest: the imager finishes by renaming this to the filename the
+    # specification asked for, and a rename only works within one filesystem.
+    # Written where the output goes rather than in the working directory, so
+    # a specification writing to another drive renames rather than failing
+    # with EXDEV.
     def _empty_disk(self):
         size = self.partitionHandler.disk_size()
-        image = tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.getcwd())
+        image = tempfile.NamedTemporaryFile(
+            mode="wb", delete=False,
+            dir=os.path.dirname(os.path.abspath(self._output)))
         image.truncate(size)
         image.close()
         self._image = image.name

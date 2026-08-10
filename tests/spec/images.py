@@ -15,6 +15,16 @@ from seine.utils import ContainerEngine, HOST_ARCH
 
 EXAMPLES = os.path.join(path_to_sources, "examples")
 
+# What a build must not leave in the directory it was run from. A root
+# file-system and the imager's unpacked appliance are both large, and both
+# belong in the scratch space, which is reported by 'seine cache info' and
+# emptied by 'seine cache clear'. Someone's checkout is not a scratch
+# space.
+def leftovers():
+    return sorted(glob.glob(os.path.join(path_to_sources, "root-*.tar"))
+                  + [path for path in glob.glob(os.path.join(path_to_sources, "tmp*"))
+                     if os.path.isdir(path)])
+
 # Building an image takes a kernel build with it, so these do not run
 # unless asked for. Not a tag alone: a tag says which tests to select,
 # and the default run selects everything.
@@ -116,6 +126,7 @@ class Image(avocado.Test):
         self.assertTrue(os.path.isfile(self.filename),
                         "no image at %s" % self.filename)
         self.assertGreater(os.path.getsize(self.filename), 0, "the image is empty")
+        self.assertEqual(leftovers(), [], "the build left these behind")
 
         # The kernel that came out is the grafted one rather than the
         # distribution's: an image is produced either way, and the
@@ -337,6 +348,7 @@ class CarriedCache(avocado.Test):
         self.seine(second, ["build", "-v", "--jobs", "4"]
                            + self.specification(again), "build-second")
         self.assertTrue(os.path.isfile(again), "no image at %s" % again)
+        self.assertEqual(leftovers(), [], "the build left these behind")
 
         # Written by the build that needed it, from what the directory holds.
         self.assertTrue(os.path.isfile(os.path.join(repository[0], "Packages")),
