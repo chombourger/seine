@@ -179,7 +179,7 @@ class Image:
         return [
             self.hostBootstrap.task(),
             self.targetBootstrap.task(self.hostBootstrap),
-            builder.task(self.packages, self.hostBootstrap),
+        ] + builder.tasks(self.packages, self.hostBootstrap) + [
             Task("rootfs", self.rootfs, needs=["bootstrap-target", "packages"]),
             Task("tarball", self.build_tarball, needs=["rootfs"]),
             SBOM(distro, self.options).task(self),

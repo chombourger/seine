@@ -10,6 +10,7 @@ import re
 import shlex
 import shutil
 import tempfile
+import threading
 import time
 import tomllib
 import yaml
@@ -23,6 +24,7 @@ from seine.tasks  import Task
 from seine.sbuild import REPOSITORY
 from seine.sbuild import SbuildChroot
 from seine.utils  import apt_sources
+from seine.utils  import locked
 from seine.utils  import ContainerEngine
 from seine.utils  import HOST_ARCH
 
@@ -359,6 +361,12 @@ class Builder:
         self.builderImage = builderImage
         self.distro = distro
         self.options = options
+        # Held while unpacking a chroot and while rewriting the
+        # repository, both of which are shared by every package being
+        # built at the same time. Compiling is not: that is the part
+        # worth doing beside each other.
+        self._chroots = threading.Lock()
+        self._repository = threading.Lock()
 
     def fetch(self, package, workdir):
         volumes = [(workdir, WORKDIR)]
@@ -1472,81 +1480,116 @@ rm -rf .pc
     # were sorted into. Each gets a working directory of its own, thrown
     # away afterwards unless --keep was asked for: what is worth keeping
     # (the .debs) is in the repository by then.
-    # Rebuilding what the specification asked for, as one step. It needs
-    # the host bootstrap and not the target one: packages are built in a
-    # chroot of the build architecture, whichever architecture the image
-    # is for.
-    def task(self, packages, hostBootstrap):
-        return Task("packages",
-                    lambda: self.run(packages, hostBootstrap),
-                    needs=["bootstrap-host"])
+    # One task per package, so packages that do not depend on each other
+    # can be built beside each other, and a 'packages' barrier for the
+    # rest of the build to wait on. The barrier is what lets the root
+    # file-system and the imager name one thing that always exists,
+    # rather than whichever packages a specification happens to have.
+    #
+    # They need the host bootstrap and not the target one: packages are
+    # built in a chroot of the build architecture, whichever architecture
+    # the image is for.
+    def tasks(self, packages, hostBootstrap):
+        pending = self._pending(packages)
+        if len(pending) == 0:
+            return [Task("packages", lambda: None, needs=["bootstrap-host"])]
+
+        tasks = [Task("packages-prepare",
+                      lambda: self._prepare(hostBootstrap),
+                      needs=["bootstrap-host"])]
+
+        # A package built against another has to be built after it, which
+        # is the same order 'before'/'after' already worked out -- as task
+        # dependencies now, so everything else can overlap.
+        names = {package.name: "package:%s" % package.name
+                 for package, _ in pending}
+        for package, stamp in pending:
+            needs = ["packages-prepare"] + [
+                names[d.name] for d in getattr(package, "depends", [])
+                if d.name in names]
+            tasks.append(Task(names[package.name],
+                              functools.partial(self._rebuild, package, stamp),
+                              needs=needs))
+
+        return tasks + [Task("packages", lambda: None,
+                             needs=[t.name for t in tasks])]
+
+    # Which packages this build actually has to rebuild, decided before
+    # anything is created: reading a stamp costs nothing, and a build
+    # whose packages are all current should not make a builder image to
+    # discover it.
+    def _pending(self, packages):
+        if len(packages) == 0:
+            return []
+        rebuild = self.options.get("rebuild", False)
+        return [(p, s) for p, s in self.stamps(packages)
+                if rebuild or os.path.isfile(s) == False]
+
+    # Every build has the repository in its sources.list, including the
+    # first one, when nothing has been rebuilt yet: apt needs an index to
+    # read there, even an empty one, or the build fails before it starts.
+    def _prepare(self, hostBootstrap):
+        self.builderImage.create(hostBootstrap)
+        with locked(self.repository()):
+            self.index()
 
     def run(self, packages, hostBootstrap):
-        if len(packages) == 0:
-            return
-
-        # The digest is taken once, here, and carried through to the end:
-        # it describes the inputs this build is about to use. Recomputing
-        # it afterwards would record whatever the patches and fragments
-        # say by then, and a fragment edited while its kernel was building
-        # would leave a stamp claiming a kernel that was never built --
-        # which the next build would then skip.
-        rebuild = self.options.get("rebuild", False)
-        pending = [(p, s) for p, s in self.stamps(packages)]
-        pending = [(p, s) for p, s in pending
-                   if rebuild or os.path.isfile(s) == False]
+        pending = self._pending(packages)
         if len(pending) == 0:
             return
 
-        self.builderImage.create(hostBootstrap)
-
-        # Every build has the repository in its sources.list, including the
-        # first one, when nothing has been rebuilt yet: apt needs an index
-        # to read there, even an empty one, or the build fails before it
-        # starts. It is refreshed after each package so the next one can
-        # build against what came out of the last.
-        self.index()
-
+        self._prepare(hostBootstrap)
         for package, stamp in pending:
+            self._rebuild(package, stamp)
+
+    # One package: fetched, patched, built, and recorded as built. The
+    # chroot and the repository index are shared with whatever else is
+    # building at the same time, so both are taken one at a time -- an
+    # index rewritten while another build reads it fails much later and
+    # makes no sense when it does.
+    def _rebuild(self, package, stamp):
+        with self._chroots:
             chroot = SbuildChroot(self.distro, self.options,
                                   self.chroot_architecture(package))
             chroot.create(self.builderImage)
 
-            workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
-                                       prefix="source-")
-            try:
-                print("rebuilding '%s'" % package.source)
-                sourcedir = self.fetch(package, workdir)
-                # Taken before the graft, which replaces the changelog it
-                # is read from: what dates the build is the packaging we
-                # started from, which is a thing the specification pins.
-                epoch = self.source_date_epoch(package, sourcedir)
-                if package.kernel_upstream is not None:
-                    sourcedir = self.graft(package, workdir, sourcedir, epoch)
-                self.patch(package, sourcedir, epoch)
-                self.local_release(package, sourcedir, epoch)
-                self.extend_kernel(package, sourcedir)
+        workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
+                                   prefix="source-")
+        try:
+            print("rebuilding '%s'" % package.source)
+            sourcedir = self.fetch(package, workdir)
+            # Taken before the graft, which replaces the changelog it is
+            # read from: what dates the build is the packaging we started
+            # from, which is a thing the specification pins.
+            epoch = self.source_date_epoch(package, sourcedir)
+            if package.kernel_upstream is not None:
+                sourcedir = self.graft(package, workdir, sourcedir, epoch)
+            self.patch(package, sourcedir, epoch)
+            self.local_release(package, sourcedir, epoch)
+            self.extend_kernel(package, sourcedir)
 
-                # Everything written while the build ran is what it
-                # produced, whether it is a new file or one it overwrote.
-                started = time.time()
-                self.build(package, sourcedir, epoch)
-                produced = self._produced(started)
+            # Everything written while the build ran is what it produced,
+            # whether it is a new file or one it overwrote.
+            started = time.time()
+            self.build(package, sourcedir, epoch)
+            produced = self._produced(started)
 
-                # Both only once it built. A stamp left by a failed build
-                # would skip the package next time and compose the image
-                # from whatever the repository happened to hold, and
-                # dropping the previous build before this one succeeds
-                # would leave the repository with neither.
+            # Both only once it built. A stamp left by a failed build
+            # would skip the package next time and compose the image from
+            # whatever the repository happened to hold, and dropping the
+            # previous build before this one succeeds would leave the
+            # repository with neither.
+            with self._repository, locked(self.repository()):
                 self._forget(package, produced)
                 self._record(stamp, produced)
                 self.index()
-            finally:
-                if self.options.get("keep"):
-                    print("keeping '%s' (source of '%s') as requested"
-                          % (workdir, package.name))
-                else:
-                    shutil.rmtree(workdir, ignore_errors=True)
+        finally:
+            if self.options.get("keep"):
+                print("keeping '%s' (source of '%s') as requested"
+                      % (workdir, package.name))
+            else:
+                shutil.rmtree(workdir, ignore_errors=True)
+
 
 # Identity the patch commits are made under. Fixed, like their date: a
 # commit made by whoever happens to be running the build is a commit whose

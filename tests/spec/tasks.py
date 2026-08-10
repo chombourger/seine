@@ -193,3 +193,56 @@ class AFailingTaskSaysWhatItWrote(avocado.Test):
         # tasks beside it, so the build has to hand it back.
         with open(os.path.join(self.workdir, "fails.log")) as f:
             self.assertIn("the interesting line", f.read())
+
+PACKAGES = """
+distribution:
+    release: trixie
+    architecture: amd64
+packages:
+    - source: apt://seine-test-application
+      after:
+          - seine-test-library
+    - source: apt://seine-test-library
+    - source: apt://seine-test-unrelated
+image:
+    filename: tasks-test.img
+    partitions:
+        - label: rootfs
+          where: /
+"""
+
+class EachPackageIsATaskOfItsOwn(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(PACKAGES)
+        build.parse()
+        tasks = {t.name: t for t in build.image.tasks()}
+
+        for name in ["seine-test-application", "seine-test-library",
+                     "seine-test-unrelated"]:
+            self.assertIn("package:%s" % name, tasks)
+
+        # A package built against another still waits for it; one that is
+        # built against nothing waits for nothing but the preparation.
+        self.assertIn("package:seine-test-library",
+                      tasks["package:seine-test-application"].needs)
+        self.assertEqual(tasks["package:seine-test-unrelated"].needs,
+                         ["packages-prepare"])
+
+        # And the rest of the build waits on the barrier rather than on
+        # whichever packages a specification happens to have.
+        self.assertEqual(tasks["rootfs"].needs, ["bootstrap-target", "packages"])
+        for name in tasks:
+            if name.startswith("package:"):
+                self.assertIn(name, tasks["packages"].needs)
+
+class ABuildWithoutPackagesStillHasTheBarrier(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(SPEC)
+        build.parse()
+        tasks = {t.name: t for t in build.image.tasks()}
+        # Nothing to build, and the steps that wait for packages still
+        # have something to wait for.
+        self.assertEqual(tasks["packages"].needs, ["bootstrap-host"])
+        self.assertNotIn("packages-prepare", tasks)
