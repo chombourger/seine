@@ -510,3 +510,36 @@ class AFailingStepSaysWhatWentWrong(avocado.Test):
             self.fail("a failing task was not reported!")
         except Failed as e:
             self.assertIn("KeyError", str(e))
+
+# 'seine plan' is 'seine build --dry-run' with the option decided for it: the
+# same graph, since a plan is only worth what a build would really do.
+class ThePlanIsTheBuildUnwalked(avocado.Test):
+    def plan(self, command):
+        import contextlib, io
+        said = io.StringIO()
+        command.loads(SPEC)
+        command.parse()
+        with contextlib.redirect_stdout(said):
+            self.assertEqual(command.build(), 0)
+        return said.getvalue()
+
+    def test(self):
+        from seine.build import PlanCmd
+        said = self.plan(PlanCmd())
+        self.assertIn("would build", said)
+        self.assertIn("bootstrap-host", said)
+        # Nothing said about how many at a time: it takes no such option.
+        self.assertNotIn("at a time", said)
+
+    def test_the_same_as_a_dry_run(self):
+        from seine.build import BuildCmd, PlanCmd
+        dry = BuildCmd()
+        dry.options["dry_run"] = True
+        self.assertEqual(self.plan(PlanCmd()), self.plan(dry))
+
+    # A plan asks for nothing to be built, whatever else it is given.
+    def test_it_does_not_build(self):
+        from seine.build import PlanCmd
+        command = PlanCmd()
+        self.assertEqual(command.options["dry_run"], True)
+        self.assertEqual(command.options["build"], True)

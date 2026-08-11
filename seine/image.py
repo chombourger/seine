@@ -284,10 +284,13 @@ class Image:
         distro = self.spec["distribution"]
         what = "the packages" if self.options.get("packages_only") \
                else "'%s'" % self._output
-        print("would build %s for %s/%s, %d step%s at a time"
+        # How many at a time only when it is more than one: a build that runs
+        # its steps in a row is what a plan describes by default, and saying
+        # '1 step at a time' says nothing.
+        jobs = self.options.get("jobs", 1)
+        print("would build %s for %s/%s%s"
               % (what, distro["release"], distro["architecture"],
-                 self.options.get("jobs", 1),
-                 "" if self.options.get("jobs", 1) == 1 else "s"))
+                 ", %d steps at a time" % jobs if jobs > 1 else ""))
 
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options))

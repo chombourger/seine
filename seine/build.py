@@ -12,6 +12,10 @@ from seine.cmd       import Cmd
 from seine.partition import PartitionHandler
 
 class BuildCmd(Cmd):
+    # What this command is called and what it prints for '-h'. A command that
+    # is the same build with one option decided for it says so by overriding
+    # these rather than by copying main().
+    NAME = "build"
     SHORT_OPTIONS = "dDhj:kv"
     LONG_OPTIONS = [
         "debug",
@@ -449,19 +453,22 @@ class BuildCmd(Cmd):
         # return the spec in YAML format
         return yaml.dump(spec)
 
+    def usage(self):
+        return USAGE
+
     def main(self, argv):
         try:
-            opts, args = getopt.getopt(argv, BuildCmd.SHORT_OPTIONS, BuildCmd.LONG_OPTIONS)
+            opts, args = getopt.getopt(argv, self.SHORT_OPTIONS, self.LONG_OPTIONS)
         except getopt.GetoptError as err:
             sys.stderr.write(str(err))
-            sys.stderr.write(USAGE)
+            sys.stderr.write(self.usage())
             sys.exit(1)
         for o, a in opts:
             if o in ("-d", "--debug"):
                 self.options["debug"] = True
                 self.options["verbose"] = True
             elif o in ("-h", "--help"):
-                print(USAGE)
+                print(self.usage())
                 sys.exit()
             elif o in ("-j", "--jobs"):
                 # How many steps of a build may run at once. One by
@@ -509,7 +516,7 @@ class BuildCmd(Cmd):
                 assert False, "unhandled option"
 
         if len(args) == 0:
-            sys.stderr.write("error: build command expects a YAML file\n")
+            sys.stderr.write("error: %s command expects a YAML file\n" % self.NAME)
             sys.exit(1)
 
         try:
@@ -533,6 +540,27 @@ class BuildCmd(Cmd):
         except subprocess.CalledProcessError as e:
             sys.stderr.write("error: build failed: {0}\n".format(e))
             sys.exit(4)
+
+# Everything 'build' does up to the point of doing it. The same command with
+# one option decided for it, rather than a second implementation of it: what
+# a plan is worth depends on it being the graph a build would walk, and two
+# code paths would be two answers.
+class PlanCmd(BuildCmd):
+    NAME = "plan"
+
+    # Nothing but '-h'. Of a build's options the only one that reached the
+    # plan was how many steps it said it would run at once, which is not
+    # what someone asking what a build would do wants to know. 'seine build
+    # --dry-run' still takes them all, for the plan of a particular build.
+    SHORT_OPTIONS = "h"
+    LONG_OPTIONS = ["help"]
+
+    def __init__(self):
+        super().__init__()
+        self.options["dry_run"] = True
+
+    def usage(self):
+        return PLAN_USAGE
 
 USAGE = """
 Build an image using instructions from specifications files
@@ -576,5 +604,37 @@ Flags:
   --sbom                produce a Software Bill of Materials (SBOM) using
                         debsbom
   -v, --verbose         produce verbose output while building the image
+
+"""
+
+PLAN_USAGE = """
+Say what a build would do, without doing any of it
+
+Description:
+  Prints the steps a build of these specifications would run, in the order it
+  would run them and with what each waits for, and the packages it would
+  leave alone with the stamp that says why.
+
+  The plan is not a description of the build: it is the same graph a build
+  walks, printed instead of walked. So a package already built from exactly
+  these inputs has no steps in it at all -- which is the useful half of the
+  answer.
+
+  Nothing is fetched, built or written. 'seine build --dry-run' is the same
+  thing.
+
+Usage:
+  seine plan [options] SPEC...
+
+Examples:
+  seine plan demo-image.yml
+  seine plan --jobs 4 demo-image.yml
+
+Flags:
+  -h, --help            print this message
+
+  And nothing else: a plan is the same whoever asks for it. For the plan of
+  a build with particular options, 'seine build --dry-run' takes all of
+  them.
 
 """

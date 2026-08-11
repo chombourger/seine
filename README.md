@@ -1184,8 +1184,27 @@ runs is another. These apply whatever is being built.
 
 ### What a build would do
 
-`--dry-run` prints the steps a build would run, in the order it would run
+`seine plan` prints the steps a build would run, in the order it would run
 them and with what each waits for, and the packages it would leave alone:
+
+```
+$ seine plan spec.yaml
+would build 'pc-image.img' for trixie/amd64
+
+already built, and not built again:
+  linux                          linux_3ffc6a528133f4bf
+
+'--rebuild' builds them anyway.
+
+steps:
+  bootstrap-host
+  bootstrap-target         after bootstrap-host
+  ...
+```
+
+It takes no options: a plan is the same whoever asks for it. For the plan of
+a build with particular options -- `--jobs`, `--rebuild`, `--packages-only`
+-- `seine build --dry-run` is the same thing and takes them all:
 
 ```
 $ seine build --dry-run --jobs 4 spec.yaml
