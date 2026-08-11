@@ -56,6 +56,7 @@ whole project. The ones in use are:
 | `readme`       | The README                                            |
 | `sbom`         | Software Bill of Materials generation                 |
 | `sbuild`       | The buildd chroot packages are rebuilt in             |
+| `spec`         | The specification files, and how they are loaded      |
 | `utils`        | Shared helpers: the container engine, apt sources     |
 
 ### Summary
