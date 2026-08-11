@@ -2144,8 +2144,19 @@ rm -rf .pc
         with self._repository, locked(self.repository()):
             for architecture, (stamp, output, produced) in sorted(built.items()):
                 for name in produced:
-                    shutil.move(os.path.join(output, name),
-                                os.path.join(self.repository(), name))
+                    destination = os.path.join(self.repository(), name)
+                    # What is already there goes first. A file would be
+                    # replaced by the move on its own, but a symlink would
+                    # not -- and sbuild leaves one beside every build log,
+                    # pointing at the newest, so the second build of a
+                    # package would stop here with 'File exists' having
+                    # already done all of its work.
+                    #
+                    # lexists, since that symlink may be pointing at a log
+                    # an earlier build of the same package has taken away.
+                    if os.path.lexists(destination):
+                        os.remove(destination)
+                    shutil.move(os.path.join(output, name), destination)
                 shutil.rmtree(output, ignore_errors=True)
                 self._forget(package, architecture, everything)
                 self._record(stamp, produced)

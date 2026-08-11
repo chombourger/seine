@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import avocado
+import errno
 import os
 import shutil
+import tempfile
 import sys
 
 path_to_self    = os.path.realpath(__file__)
@@ -1921,3 +1923,65 @@ class AFailedBuildKeepsItsLog(avocado.Test):
         # And nothing was published: a stamp for a build that failed would
         # skip it next time.
         self.assertEqual(builder._built, {})
+
+# Building a package a second time replaces what the first build left,
+# symlinks included: sbuild writes its log under a dated name and points
+# an undated symlink at it, so a repository already holding one is the
+# ordinary case rather than the exception.
+#
+# Across filesystems, which is the case that goes wrong and the ordinary
+# one: the scratch space a build writes in and the repository it is
+# published to are separate directories, and SEINE_BUILD_DIR exists to
+# put them on separate drives. A rename replaces whatever is at the
+# destination, so within one filesystem this passes either way; across
+# two, shutil falls back to recreating the symlink, and that fails on one
+# already there.
+class ASecondBuildReplacesTheFirst(Publishes):
+    def test(self):
+        from seine.packages import Builder
+
+        class Image:
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                return 0
+
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        builder = Builder(distro, {}, Image())
+        repository = os.path.join(self.workdir, "repository")
+        os.makedirs(os.path.join(repository, ".stamps"), exist_ok=True)
+        builder.repository = lambda: repository
+
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+
+        for dated in ["busybox_1-2026-01-01.build", "busybox_1-2026-06-01.build"]:
+            output = tempfile.mkdtemp(dir=self.workdir)
+            open(os.path.join(output, "busybox_1_amd64.deb"), "w").close()
+            open(os.path.join(output, dated), "w").close()
+            os.symlink(dated, os.path.join(output, "busybox_1.build"))
+            builder._built[(package.name, "amd64")] = (
+                os.path.join(repository, ".stamps", "busybox_amd64_%s" % dated),
+                output)
+
+            renamed = os.rename
+
+            def elsewhere(source, destination):
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+            os.rename = elsewhere
+            try:
+                builder._deploy(package, ["amd64"])
+            finally:
+                os.rename = renamed
+
+        # The second build's log is what the undated name points at, and
+        # the first one is gone with the stamp that named it.
+        where = os.path.join(repository, "busybox_1.build")
+        self.assertEqual(os.readlink(where), "busybox_1-2026-06-01.build")
+        self.assertFalse(os.path.isfile(
+            os.path.join(repository, "busybox_1-2026-01-01.build")),
+            "the superseded build log was left behind")
