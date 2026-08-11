@@ -1,0 +1,34 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# The distribution's kernel, rebuilt with the drivers an appliance of this
+# architecture has no use for turned off. Added to a specification rather
+# than being one:
+#
+#   ./seine.py build examples/pc-image/main.yaml examples/slim-kernel.yml
+#
+# A fragment of its own because it is the larger half: rebuilding a kernel
+# is a build in itself, and an image that is being tried rather than
+# shipped should not have to wait for one -- so an example boots the
+# distribution's kernel until this file is named.
+#
+# Which fragment is read follows the architecture being built for, so this
+# file says nothing about any one machine. configs/slim-amd64.fragment is
+# the one written so far; another architecture is another fragment beside
+# it, and nothing here changes.
+#
+# The flavour is not named either: it is a property of the architecture,
+# and examples/common/<arch>.yaml says it under 'defaults'.
+
+packages:
+    - source: apt://linux
+      extends:
+          kernel:
+              config:
+                  - configs/slim-[[ distribution.architecture ]].fragment
+      profiles:
+          - pkg.linux.nokerneldbginfo
+          - pkg.linux.notools
+          - pkg.linux.nosource
+          - nodoc
+          - noudeb
