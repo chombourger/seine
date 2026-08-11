@@ -469,7 +469,7 @@ class CrossBuildProfile(avocado.Test):
         builder, image = self.builder(architecture)
         source = os.path.join(self.workdir, "linux-1")
         os.makedirs(source, exist_ok=True)
-        builder.build(package, source, "0")
+        builder.build(package, source, "0", self.workdir)
         # sbuild is run through a shell, so its arguments arrive as one
         # string rather than as a list.
         command = " ".join(image.calls[-1])
@@ -1287,13 +1287,18 @@ class PublishingRecordsWhatWasBuilt(Publishes):
                     - source: apt://busybox
         """).image.packages[0]
         stamp = os.path.join(self.workdir, "busybox_stamp")
-        builder._built[package.name] = (stamp, ["busybox_1.37.0-6_amd64.deb"])
+        output = os.path.join(self.workdir, "output")
+        os.makedirs(output, exist_ok=True)
+        open(os.path.join(output, "busybox_1.37.0-6_amd64.deb"), "w").close()
+        builder._built[package.name] = (stamp, output)
         builder._deploy(package)
 
         # The stamp is written and the index rewritten, in that order and
-        # only once the .deb is there to be recorded.
+        # only once the .deb has been moved in to be recorded.
         with open(stamp) as f:
             self.assertEqual(f.read().strip(), "busybox_1.37.0-6_amd64.deb")
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.workdir, "busybox_1.37.0-6_amd64.deb")))
         self.assertEqual(len(commands), 1)
         self.assertIn("apt-ftparchive", commands[0])
         # And nothing is left waiting to be published twice.

@@ -51,6 +51,15 @@ SBUILD_RUN_OPTIONS = [
 # either place.
 REPOSITORY = "/packages"
 
+# Where a build drops what it produced, which is not the repository.
+#
+# Builds run beside each other, into a repository they share, so "what did
+# this build write" cannot be answered by looking at what appeared there
+# while it ran -- what appeared there is also whatever else was building.
+# Each build writes into a directory of its own and the step that
+# publishes moves them across, which answers it by construction.
+OUTPUT = "/output"
+
 class BuilderImage(Bootstrap):
     # Where packages are built, holding the buildd chroot: derived from
     # the host bootstrap and worth carrying.

@@ -11,7 +11,6 @@ import shlex
 import shutil
 import tempfile
 import threading
-import time
 import tomllib
 import yaml
 
@@ -22,6 +21,7 @@ from email.utils import format_datetime
 from seine.cache_index import PACKAGE, Index, say, since
 from seine.sbuild import BuilderImage
 from seine.tasks  import Task
+from seine.sbuild import OUTPUT
 from seine.sbuild import REPOSITORY
 from seine.sbuild import SbuildChroot
 from seine.utils  import apt_sources
@@ -1345,9 +1345,10 @@ rm -rf .pc
     # produced in the host-side repository. The source tree is turned back
     # into a source package first: patches added to a quilt series are
     # applied by dpkg-source on the way, and sbuild wants a .dsc anyway.
-    def build(self, package, sourcedir, epoch):
+    def build(self, package, sourcedir, epoch, output):
         workdir = os.path.dirname(sourcedir)
-        volumes = [(workdir, WORKDIR), (self.repository(), REPOSITORY)]
+        volumes = [(workdir, WORKDIR), (self.repository(), REPOSITORY),
+                   (output, OUTPUT)]
 
         # The fetched source came with a .dsc of its own, and ours is about
         # to be written beside it under a different name -- the local
@@ -1431,10 +1432,11 @@ rm -rf .pc
         # warning per invocation drowning the output that matters.
         script = "ln -sf /dev/null /dev/console; exec %s" % shlex.join(args)
 
-        # Run from the repository so sbuild drops what it built there.
+        # Run from the output directory so sbuild drops what it built
+        # there, where it is this build's and nobody else's.
         self.builderImage.exec(
             ["sh", "-c", script], architecture=self.chroot_architecture(package),
-            volumes=volumes, workdir=REPOSITORY, environment=environment)
+            volumes=volumes, workdir=OUTPUT, environment=environment)
 
     def repository(self):
         return repository(self.distro)
@@ -1596,18 +1598,18 @@ rm -rf .pc
                     os.unlink(path)
             os.unlink(stamp)
 
-    # Files in the repository written since 'started'. The index is left
-    # out: it is regenerated from whatever the repository holds once every
-    # package has been built, and belongs to none of them.
-    def _produced(self, started):
-        produced = []
-        for name in sorted(os.listdir(self.repository())):
-            path = os.path.join(self.repository(), name)
-            if os.path.isfile(path) == False or name.startswith("Packages"):
-                continue
-            if os.path.getmtime(path) >= started:
-                produced.append(name)
-        return produced
+    # What a build left in the directory it was given. Everything there is
+    # its own, so there is nothing to date or to tell apart: it is the only
+    # thing that wrote there.
+    #
+    # Dating them was the way this used to be asked, and it is wrong the
+    # moment two packages build at once: a build that starts while another
+    # is running claims every file the other writes after it, records them
+    # in its own stamp, and takes them away as superseded next time.
+    def _produced(self, output):
+        return sorted(name for name in os.listdir(output)
+                      if os.path.isfile(os.path.join(output, name))
+                      or os.path.islink(os.path.join(output, name)))
 
     def _record(self, stamp, produced):
         with open(stamp, "w") as f:
@@ -1797,10 +1799,15 @@ rm -rf .pc
     # an index rewritten while another build's apt reads it is a failure
     # that arrives much later and makes no sense when it does.
     def _deploy(self, package):
-        stamp, produced = self._built.pop(package.name, (None, None))
+        stamp, output = self._built.pop(package.name, (None, None))
         if stamp is None:
             return
+        produced = self._produced(output)
         with self._repository, locked(self.repository()):
+            for name in produced:
+                shutil.move(os.path.join(output, name),
+                            os.path.join(self.repository(), name))
+            shutil.rmtree(output, ignore_errors=True)
             self._forget(package, produced)
             self._record(stamp, produced)
             self.index()
@@ -1822,6 +1829,8 @@ rm -rf .pc
             workdir, sourcedir = self._fetched(package)
             self._sources.pop(package.name, None)
 
+        # Where this build writes, which is nowhere anything else does.
+        output = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="built-")
         try:
             print("rebuilding '%s'" % package.source)
             # Taken before the graft, which replaces the changelog it is
@@ -1834,17 +1843,16 @@ rm -rf .pc
             self.local_release(package, sourcedir, epoch)
             self.extend_kernel(package, sourcedir)
 
-            # Everything written while the build ran is what it produced,
-            # whether it is a new file or one it overwrote.
-            started = time.time()
-            self.build(package, sourcedir, epoch)
-            produced = self._produced(started)
+            self.build(package, sourcedir, epoch, output)
 
             # Handed to the step that publishes it. What a package built
             # against another needs is that one's .deb in the repository,
             # for sbuild to install out of -- which is a later moment than
             # its build finishing.
-            self._built[package.name] = (stamp, produced)
+            self._built[package.name] = (stamp, output)
+        except:
+            shutil.rmtree(output, ignore_errors=True)
+            raise
         finally:
             if self.options.get("keep"):
                 print("keeping '%s' (source of '%s') as requested"
