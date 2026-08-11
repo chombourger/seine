@@ -203,6 +203,51 @@ class WhereTheTimeWent(avocado.Test):
         self.assertIn("failed", report.splitlines()[0])
         self.assertIn("(failed)", report)
 
+class WhatTheMachineWasDoing(avocado.Test):
+    # /proc/stat as the kernel writes it: user, nice, system, idle,
+    # iowait, and the interrupt counters after them.
+    def stat(self, ticks):
+        where = os.path.join(self.workdir, "stat")
+        with open(where, "w") as f:
+            f.write("cpu  %s\n" % " ".join(str(t) for t in ticks))
+            f.write("cpu0 1 2 3 4 5 6 7 0 0 0\n")
+        return where
+
+    def test(self):
+        before = analyze._busy(self.stat([100, 0, 50, 800, 50, 0, 0, 0, 0, 0]))
+        # 150 ticks of work out of 1000 had, and the idle and the iowait
+        # are both time the machine was not working.
+        self.assertEqual(before, (150, 1000))
+
+        after = analyze._busy(self.stat([400, 0, 50, 1500, 50, 0, 0, 0, 0, 0]))
+        self.assertEqual(analyze._cpu(before, after), 0.3)
+
+    def test_a_machine_that_does_not_answer_is_not_sampled(self):
+        # No /proc/stat is not a build that fails: it is a build recorded
+        # without any of this.
+        self.assertEqual(analyze._busy(os.path.join(self.workdir, "nope")),
+                         None)
+        with analyze.watching(stat=os.path.join(self.workdir, "nope")) as m:
+            self.assertEqual(m.watcher, None)
+        self.assertEqual(m.samples, [])
+
+    def test_it_is_watched_while_the_build_runs(self):
+        import time as clock
+        with analyze.watching(every=0.05, stat="/proc/stat") as machine:
+            clock.sleep(0.2)
+        self.assertGreater(len(machine.samples), 0)
+        for sample in machine.samples:
+            self.assertGreaterEqual(sample["cpu"], 0.0)
+            self.assertLessEqual(sample["cpu"], 1.0)
+
+    def test_the_report_says_how_hard_it_was_working(self):
+        run = run_of([("rootfs", [], 0, 600)])
+        run["cpus"] = 8
+        run["samples"] = [{"t": 10, "load": 5.0, "cpu": 0.6},
+                          {"t": 20, "load": 5.2, "cpu": 0.64}]
+        self.assertIn("the machine was 62% busy, load 5.1 of 8 cpus",
+                      said(analyze.blame, run))
+
 class WhatTheBuildWaitedOn(avocado.Test):
     # A kernel and a root file-system built beside each other, both waited
     # for by the image: the kernel is the reason the build took as long as

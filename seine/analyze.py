@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import time
 
 from seine.cmd      import Cmd
@@ -53,10 +54,90 @@ def graph_digest(steps):
 def _digest(text):
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
+# How often the machine is looked at while a build runs. Short beside the
+# steps it samples, and fine enough to see a kernel finish.
+SAMPLE = 10
+
+STAT = "/proc/stat"
+
+# What the machine is doing, as the kernel counts it since boot: the ticks
+# it spent working, and the ticks it had. Two of these are what a busy
+# fraction is made of -- one on its own says only what the machine has
+# been up to since it was switched on.
+#
+# Idle and iowait are both counted as not working, on purpose: a build
+# waiting for a disk or a mirror is a build not using the cpu, and that
+# is exactly what this is here to be able to say.
+def _busy(stat=STAT):
+    try:
+        with open(stat) as f:
+            ticks = [int(field) for field in f.readline().split()[1:]]
+    except (OSError, IndexError, ValueError):
+        return None
+    return sum(ticks) - sum(ticks[3:5]), sum(ticks)
+
+def _cpu(before, after):
+    had = after[1] - before[1]
+    return round((after[0] - before[0]) / had, 3) if had > 0 else 0.0
+
+# What the machine was doing while the build ran.
+#
+# 'blame' says where the time went and 'critical-chain' says what the
+# build was waiting for. Neither says whether the machine had anything
+# left to give, which is the next question every time: a build using a
+# third of the cores wants more '--jobs', and one whose load is far above
+# what it is burning is waiting for a disk or a mirror, which more of
+# them would not change.
+#
+# The whole machine and not this build: podman, another user and a second
+# seine all land in these numbers. Enough to answer 'was it busy', not
+# 'who was busy'.
+#
+# A machine that will not answer -- no /proc/stat, no load average -- is
+# not asked again, and the build is recorded without any of this.
+class watching:
+    def __init__(self, every=SAMPLE, stat=STAT):
+        self.every = every
+        self.stat = stat
+        self.cpus = os.cpu_count()
+        self.samples = []
+        self.stop = threading.Event()
+        self.watcher = None
+
+    def __enter__(self):
+        self.last = _busy(self.stat)
+        if self.last is None or _load() is None:
+            return self
+        self.watcher = threading.Thread(target=self._watch, daemon=True)
+        self.watcher.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop.set()
+        if self.watcher is not None:
+            self.watcher.join(timeout=1)
+        return False
+
+    def _watch(self):
+        while self.stop.wait(self.every) == False:
+            busy = _busy(self.stat)
+            if busy is None:
+                continue
+            self.samples.append({"t": time.time(),
+                                 "load": _load(),
+                                 "cpu": _cpu(self.last, busy)})
+            self.last = busy
+
+def _load():
+    try:
+        return round(os.getloadavg()[0], 2)
+    except (OSError, AttributeError):
+        return None
+
 # One run, written once it is over -- whether it ended or failed. Steps
 # that never ran are not in it: what did not run has nothing to say about
 # where the time went, and it is named by the failure instead.
-def record(steps, spec, jobs=1, ok=True):
+def record(steps, spec, jobs=1, ok=True, machine=None):
     ran = [step for step in steps if step.started is not None]
     if len(ran) == 0:
         return None
@@ -76,6 +157,12 @@ def record(steps, spec, jobs=1, ok=True):
                    "end": round((step.ended or step.started) - started, 3),
                    "failed": step.failed} for step in ran],
     }
+    if machine is not None and len(machine.samples) > 0:
+        run["cpus"] = machine.cpus
+        # On the same clock as the steps, so that a load worth explaining
+        # is read against what was running at the time.
+        run["samples"] = [dict(sample, t=round(sample["t"] - started, 1))
+                          for sample in machine.samples]
 
     where = ContainerEngine.cache(RECORDS, spec)
     try:
@@ -158,12 +245,16 @@ def chain(recorded):
 def merged(taken):
     if len(taken) == 0:
         return None
-    tasks, offset = {}, 0.0
+    tasks, samples, offset = {}, [], 0.0
     for run in sorted(taken, key=lambda run: run["started"]):
         for task in run["tasks"]:
             tasks[task["name"]] = dict(task,
                                        start=task["start"] + offset,
                                        end=task["end"] + offset)
+        # Every run's, unlike the steps: what the machine was doing during
+        # a run that failed is still what it was doing.
+        samples += [dict(sample, t=sample["t"] + offset)
+                    for sample in run.get("samples") or []]
         offset += spent(run)
 
     newest = taken[0]
@@ -173,6 +264,8 @@ def merged(taken):
             "ok": newest.get("ok", True),
             "runs": len(taken),
             "graphs": len({run.get("graph") for run in taken}),
+            "cpus": newest.get("cpus"),
+            "samples": samples,
             "tasks": sorted(tasks.values(), key=lambda task: task["start"])}
 
 def _header(run):
@@ -209,7 +302,23 @@ def blame(run):
     print()
     print("  %s of step time in %s of build" % (elapsed(total),
                                                 elapsed(spent(run))))
+    machine = _machine(run)
+    if machine is not None:
+        print("  %s" % machine)
     return 0
+
+# How hard the machine was working, beside how long the build took. The
+# pair is the answer to 'more --jobs?': a build burning a third of the
+# cores has room, and one whose load sits well above what it is burning
+# is waiting for a disk or a mirror, which more of them would not change.
+def _machine(run):
+    samples = run.get("samples") or []
+    if len(samples) == 0:
+        return None
+    busy = sum(sample["cpu"] for sample in samples) / len(samples)
+    load = sum(sample["load"] for sample in samples) / len(samples)
+    return "the machine was %d%% busy, load %.1f of %d cpus" % (
+        busy * 100, load, run.get("cpus") or 0)
 
 # The longest way through the build, as (what it cost, the steps of it).
 #

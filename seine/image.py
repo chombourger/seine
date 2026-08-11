@@ -342,14 +342,16 @@ class Image:
             # time went, and the build that resumes this one is filed
             # with it.
             ok = False
+            machine = analyze.watching()
             try:
-                with display if display is not None else contextlib.nullcontext():
+                with machine, (display if display is not None
+                               else contextlib.nullcontext()):
                     tasks.run(steps, jobs=jobs, logs=logs, verbose=verbose,
                               display=display)
                 ok = True
             finally:
                 analyze.record(steps, analyze.spec_digest(self.spec),
-                               jobs=jobs, ok=ok)
+                               jobs=jobs, ok=ok, machine=machine)
 
             # What the caches spared this build, and what it had to make.
             # Printed after the steps rather than by them: it is the answer
