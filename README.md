@@ -25,6 +25,7 @@ may require disks/partitions to be created.
 * [Running the tests](#running-the-tests)
   * [The full plan](#the-full-plan)
 * [Specification files](#specification-files)
+  * [Variables](#variables)
   * [distribution](#distribution)
   * [defaults](#defaults)
   * [packages](#packages)
@@ -270,6 +271,52 @@ image:
 For each module listed in the `requires` section, a corresponding file with
 either the `.yml` or `.yaml` suffix shall be found in the folder of the yaml
 file requiring them.
+
+### Variables
+
+A file may read what the specification sets, written `[[ ... ]]`, so that
+what is true of any architecture or any release is written once instead of
+being copied once per each. `examples/common/debian.yaml` is the whole of
+what a Debian release's feeds look like:
+
+```
+distribution:
+    feeds:
+        - suite: [[ distribution.release ]]
+        - suite: [[ distribution.release ]]-updates
+        - suite: [[ distribution.release ]]-security
+          uri: http://security.debian.org/debian-security
+```
+
+and `trixie.yaml` beside it is the name and nothing else:
+
+```
+requires:
+    - debian
+
+distribution:
+    release: trixie
+```
+
+What can be read is the specification itself, by the path to the setting:
+`distribution.architecture`, `distribution.release`, `imager.kernel`. Where a
+setting is written makes no difference -- the files are all read before any
+of them is loaded, so a fragment sees what a fragment listed after it says,
+and the file doing the asking sees its own settings. A name the specification
+never sets is an error rather than an empty value, and every one of them is
+reported at once, with the file that asked for it.
+
+Two things are deliberately not supported:
+
+ * `[% if %]` and the rest of jinja's blocks. Which fragments apply is what
+   `requires` already says, in a file that can be read without being run.
+ * a `requires` entry that names a file through a variable, which would make
+   the files a specification is built from depend on what those files say.
+
+The delimiters are `[[ ]]` rather than jinja's own `{{ }}` because a
+specification carries ansible tasks, and ansible templates those itself, on
+the target, when the playbook runs. `{{ ansible_facts.hostname }}` in a task
+is passed through untouched.
 
 ### distribution
 
