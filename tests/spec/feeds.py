@@ -1,14 +1,30 @@
 #!/usr/bin/env python3
 
+import atexit
 import avocado
 import os
+import shutil
 import sys
+import tempfile
 
 path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine.utils import apt_sources
+
+# Nothing under here may write into the machine's own cache. These build
+# Builder objects directly, and asking one for a stamp or an index makes
+# the directory it would live in -- so a plain unit test run leaves
+# directories in ~/.cache/seine, and a run at an older commit leaves them
+# in a layout the current code no longer uses.
+#
+# One cache per test process, thrown away with it. Set rather than
+# defaulted so it holds however the suite was invoked; the tests that
+# build images for real pass their own to the seine they run.
+os.environ["SEINE_CACHE_DIR"] = tempfile.mkdtemp(prefix="seine-tests-")
+atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"],
+                ignore_errors=True)
 
 DISTRO = {"source": "debian", "release": "bookworm", "architecture": "amd64",
           "uri": "http://example.com/debian"}
