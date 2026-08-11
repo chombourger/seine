@@ -2,6 +2,7 @@
 
 import avocado
 import os
+import shutil
 import sys
 
 path_to_self    = os.path.realpath(__file__)
@@ -1623,3 +1624,231 @@ class ArchitectureAllIsBuiltOnce(avocado.Test):
                                    if a.endswith("arch-all")]
         self.assertEqual(asked[HOST_ARCH], ["--arch-all"])
         self.assertEqual(asked[other], ["--no-arch-all"])
+
+# What a package's build is allowed to install, said in apt's own language
+# and put in front of that build alone.
+class AptPreferencesArePutInFrontOfOneBuild(avocado.Test):
+    PINNED = """Package: linux-libc-dev
+Pin: release n=bookworm
+Pin-Priority: 1001
+"""
+
+    def package(self, preferences=True):
+        spec = """
+                packages:
+                    - source: apt://busybox
+"""
+        if preferences:
+            spec += "                      apt-preferences: |\n"
+            spec += "".join("                          %s\n" % line
+                            for line in self.PINNED.strip().split("\n"))
+        return parse(spec).image.packages[0]
+
+    def test(self):
+        # Verbatim: what can be said in that file is apt's to define.
+        self.assertEqual(self.package().preferences_for("bookworm").strip(),
+                         self.PINNED.strip())
+        # One text with no release named is for every release.
+        self.assertEqual(self.package().preferences_for("trixie").strip(),
+                         self.PINNED.strip())
+        self.assertEqual(
+            self.package(preferences=False).preferences_for("bookworm"), None)
+
+    def test_it_shall_be_a_string_or_a_mapping(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      apt-preferences:
+                          - Package: linux-libc-dev
+            """)
+            self.fail("a list was accepted as 'apt-preferences'!")
+        except ValueError as e:
+            self.assertIn("apt-preferences", str(e))
+
+    # What a pin names is a suite, so the same package commonly needs a
+    # different one per release -- or one for a single release and none
+    # for the others.
+    def test_it_may_be_keyed_by_release(self):
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+                      apt-preferences:
+                          bookworm: |
+                              Package: linux-libc-dev
+                              Pin: release n=bookworm
+                              Pin-Priority: 1001
+                          trixie: |
+                              Package: linux-libc-dev
+                              Pin: release n=trixie
+                              Pin-Priority: 1001
+        """).image.packages[0]
+        self.assertIn("n=bookworm", package.preferences_for("bookworm"))
+        self.assertIn("n=trixie", package.preferences_for("trixie"))
+        # A release it does not name gets none.
+        self.assertEqual(package.preferences_for("sid"), None)
+
+    def test_a_release_may_be_pinned_on_its_own(self):
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+                      apt-preferences:
+                          bookworm: |
+                              Package: linux-libc-dev
+                              Pin: release n=bookworm
+                              Pin-Priority: 1001
+        """).image.packages[0]
+        self.assertIsNotNone(package.preferences_for("bookworm"))
+        self.assertEqual(package.preferences_for("trixie"), None)
+
+    def test_an_empty_one_in_a_mapping_is_rejected(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      apt-preferences:
+                          bookworm: "  "
+            """)
+            self.fail("an empty per-release 'apt-preferences' was accepted!")
+        except ValueError as e:
+            self.assertIn("bookworm", str(e))
+
+    def test_an_empty_one_is_rejected(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      apt-preferences: "   "
+            """)
+            self.fail("an empty 'apt-preferences' was accepted!")
+        except ValueError as e:
+            self.assertIn("apt-preferences", str(e))
+
+    # It reaches the chroot the package is built in, and says exactly what
+    # the specification wrote.
+    def test_it_reaches_the_chroot(self):
+        from seine.packages import Builder, PACKAGE_PREFERENCES
+
+        class Image:
+            def __init__(self):
+                self.calls = []
+
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                self.calls.append(args)
+                return 0
+
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "bookworm"}]}
+        image = Image()
+        builder = Builder(distro, {}, image)
+        builder.repository = lambda: self.workdir
+
+        builder.build(self.package(), self.workdir, "busybox_1.dsc", "0",
+                      "amd64", self.workdir)
+        command = " ".join(image.calls[-1])
+        self.assertIn(PACKAGE_PREFERENCES, command)
+        self.assertIn("Pin: release n=bookworm", command)
+
+        # And a package that asked for none is given none, rather than an
+        # empty file apt would still read.
+        builder.build(self.package(preferences=False), self.workdir,
+                      "busybox_1.dsc", "0", "amd64", self.workdir)
+        self.assertNotIn(PACKAGE_PREFERENCES, " ".join(image.calls[-1]))
+
+    # A changed pin is a changed build, so it has to be a rebuild.
+    def test_it_decides_whether_a_rebuild_is_needed(self):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "bookworm"}]}
+        builder = Builder(distro, {}, None)
+
+        digests = set()
+        for package in [self.package(), self.package(preferences=False)]:
+            _, _, stamp = builder.stamps([package])[0]
+            digests.add(os.path.basename(stamp))
+        self.assertEqual(len(digests), 2,
+                         "pinning a package's build did not ask for a rebuild")
+
+    # Another release's pin has no bearing on what comes out here, so it
+    # is not a reason to build again.
+    def test_another_releases_pin_is_not_a_rebuild(self):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "bookworm"}]}
+        builder = Builder(distro, {}, None)
+
+        digests = set()
+        for trixie in ["Pin-Priority: 1001", "Pin-Priority: 990"]:
+            package = parse("""
+                packages:
+                    - source: apt://busybox
+                      apt-preferences:
+                          bookworm: |
+                              Package: linux-libc-dev
+                              Pin: release n=bookworm
+                              Pin-Priority: 1001
+                          trixie: |
+                              Package: linux-libc-dev
+                              Pin: release n=trixie
+                              %s
+            """ % trixie).image.packages[0]
+            _, _, stamp = builder.stamps([package])[0]
+            digests.add(os.path.basename(stamp))
+        self.assertEqual(len(digests), 1,
+                         "changing trixie's pin rebuilt a bookworm package")
+
+# sbuild expands percent escapes in the commands it is handed before any
+# shell sees them, so a command meaning a literal percent has to double
+# it. Found by the preferences file arriving as the expansion of '%s',
+# with apt refusing to read what landed there.
+class PercentSurvivesSbuild(avocado.Test):
+    def test(self):
+        from seine.packages import sbuild_command
+        self.assertEqual(sbuild_command("printf '%s' x"), "printf '%%s' x")
+        # Whatever the specification wrote, too: a percent in the text is
+        # as much sbuild's to eat as one in the command around it.
+        self.assertEqual(sbuild_command("Pin: version 6.1%"),
+                         "Pin: version 6.1%%")
+
+    # What actually reaches sbuild, rather than the helper on its own.
+    def test_the_command_sbuild_is_given(self):
+        from seine.packages import Builder
+
+        class Image:
+            def __init__(self):
+                self.calls = []
+
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                self.calls.append(args)
+                return 0
+
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "bookworm"}]}
+        image = Image()
+        builder = Builder(distro, {}, image)
+        builder.repository = lambda: self.workdir
+
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+                      apt-preferences: |
+                          Package: linux-libc-dev
+                          Pin: origin ""
+                          Pin-Priority: -1
+        """).image.packages[0]
+        builder.build(package, self.workdir, "busybox_1.dsc", "0", "amd64",
+                      self.workdir)
+        # The command travels inside a shell quoting of its own, so what
+        # is checked is the percents themselves: every one of them is
+        # doubled, since a single one is sbuild's to expand.
+        import re
+        command = " ".join(image.calls[-1])
+        self.assertIn("%%s", command)
+        self.assertEqual(re.sub("%%", "", command).count("%"), 0,
+                         "an unescaped percent would be eaten by sbuild")

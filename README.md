@@ -444,6 +444,7 @@ The following attributes are supported:
 | ----------------- |:--------:| ----------------------------------------------- |
 | source            | yes      | URI the source is fetched from (see below)      |
 | after             | no       | Packages that shall be built before this one    |
+| apt-preferences   | no       | What this build may install (see [Pinning a build](#pinning-a-build)) |
 | before            | no       | Packages that shall be built after this one     |
 | cross             | no       | Cross-compile (see [Cross-compiling](#cross-compiling)) |
 | options           | no       | Debian build options (`DEB_BUILD_OPTIONS`)      |
@@ -623,6 +624,80 @@ Marking the source unreleased also earns the kernel an ABI name of its
 own -- Debian derives it from the changelog, so `6.1.0-50` becomes
 `6.1.0-51` -- which is what keeps a reconfigured kernel from being
 mistaken for the distribution's.
+
+#### Pinning a build
+
+A rebuild is compiled against whatever apt hands its chroot, which is not
+always what it should be. The clearest case is a specification that
+rebuilds a kernel: that puts a `linux-libc-dev` in the repository which
+sorts above the release's own, and every package built afterwards is then
+compiled against kernel headers its source never expected. busybox stops
+outright, on the CBQ definitions the newer headers no longer have.
+
+`apt-preferences` says what a package's own build may install, in apt's
+language, copied verbatim into a fragment under
+`/etc/apt/preferences.d/` in the chroot that builds it:
+
+```
+packages:
+    - source: apt://busybox
+      apt-preferences: |
+          Package: linux-libc-dev
+          Pin: origin ""
+          Pin-Priority: -1
+```
+
+That refuses the rebuilt copy for this build alone -- a `file://`
+repository is the one with an empty origin -- and leaves apt to take
+whatever the archive offers, security updates included.
+
+Prefer it to pinning a suite. `Pin: release n=bookworm` at a priority
+above 1000 forces the *base* suite's version over the newer one in
+`bookworm-security`, which is a downgrade, and apt stops rather than
+perform one:
+
+```
+E: Packages were downgraded and -y was used without --allow-downgrades
+```
+
+What a pin names is often particular to a release -- a version, or a
+suite by name -- so it may be keyed by release instead:
+
+```
+packages:
+    - source: apt://busybox
+      apt-preferences:
+          bookworm: |
+              Package: linux-libc-dev
+              Pin: version 6.1.*
+              Pin-Priority: 1001
+          trixie: |
+              Package: linux-libc-dev
+              Pin: version 6.12.*
+              Pin-Priority: 1001
+```
+
+A release the mapping does not name gets none, so a package needing a
+pin for one release alone names only that one. A plain string is for
+every release.
+
+It is taken as written rather than parsed: what can be said in that file
+is [apt_preferences(5)][]'s to define, and a setting that understood it
+would be a second, smaller language to keep up to date.
+
+It reaches that package's build and no other. A buildd chroot is
+unpacked for one build and thrown away, so naming a version here decides
+nothing for the package beside it -- which is what makes it usable at
+all, since the pin that a kernel rebuild needs is the opposite of the
+one busybox needs.
+
+What a build is allowed to install decides what comes out of it, so the
+setting is part of what says whether a package needs rebuilding: change
+the pin and the package is built again. What counts is the pin for the
+release being built -- changing another release's does not rebuild
+anything here.
+
+[apt_preferences(5)]: https://manpages.debian.org/stable/apt/apt_preferences.5.en.html
 
 #### Host packages
 

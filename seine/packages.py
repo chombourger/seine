@@ -54,6 +54,11 @@ SCHEMES = ["apt", "git", "https"]
 SCOPES = ["host", "target"]
 DEFAULT_SCOPE = ["target"]
 
+# What a package's 'apt-preferences' is keyed by when it names no release,
+# i.e. when one text is meant for all of them. Not a release anything can
+# be called, so it cannot collide with one.
+ANY_RELEASE = None
+
 # Build types 'extends' knows about, and the settings each of them takes.
 # A kernel is configured rather than patched: Debian builds its kernels
 # from a stack of kconfig files under debian/, so a fragment appended to
@@ -201,6 +206,7 @@ class Package:
         if type(self.revision) != type(""):
             raise self._error("'revision' shall be a string")
         self.scope = self._parse_scope(spec)
+        self.apt_preferences = self._parse_apt_preferences(spec)
         # A kernel is described per architecture and named for one. Its
         # flavour is a name within an architecture -- 'arm64', 'amd64',
         # 'rpi' -- so one 'flavour' cannot be right for two of them, and a
@@ -334,6 +340,49 @@ class Package:
                     "'extends: kernel: %s' shall be a string" % setting)
         self.kernel = "kernel" in extends
         return extends
+
+    # apt preferences to put in front of this package's build, as
+    # apt_preferences(5) writes them. Taken verbatim: what can be said in
+    # that file is apt's to define, and a setting that parsed it would be a
+    # second, smaller language to keep up to date.
+    #
+    # Written as one text for every release, or keyed by release when they
+    # need different ones -- which is the ordinary case rather than the
+    # exception, since what a pin names is a suite: 'Pin: release
+    # n=bookworm' is not a thing to say while building trixie. A release
+    # the mapping does not name gets none, so a package needing a pin for
+    # one release alone says only that.
+    def _parse_apt_preferences(self, spec):
+        preferences = spec.get("apt-preferences")
+        if preferences is None:
+            return {}
+        if type(preferences) == type(""):
+            return {ANY_RELEASE: self._checked_preferences(preferences, None)}
+        if type(preferences) != type({}):
+            raise self._error(
+                "'apt-preferences' shall be a string, as written in a file "
+                "under /etc/apt/preferences.d, or a mapping of release names "
+                "to one")
+        return {release: self._checked_preferences(text, release)
+                for release, text in preferences.items()}
+
+    def _checked_preferences(self, text, release):
+        where = "" if release is None else " for '%s'" % release
+        if type(text) != type(""):
+            raise self._error(
+                "'apt-preferences'%s shall be a string, as written in a file "
+                "under /etc/apt/preferences.d" % where)
+        if len(text.strip()) == 0:
+            raise self._error("'apt-preferences'%s is empty" % where)
+        return text
+
+    # What this package's build may install on the release being built,
+    # which is what it said for that release or what it said for all of
+    # them. Nothing, for a package that named neither.
+    def preferences_for(self, release):
+        if release in self.apt_preferences:
+            return self.apt_preferences[release]
+        return self.apt_preferences.get(ANY_RELEASE)
 
     # Who this rebuild is for, as one role or a list of them. Whether it
     # was written down at all is kept beside it: a scope nothing asked for
@@ -1568,6 +1617,19 @@ rm -rf .pc
         args += ["--extra-repository=deb [trusted=yes] file:%s ./" % REPOSITORY,
                  "--chroot-setup-commands=%s" % apt_preferences_command()]
 
+        # And what this package asked for, in front of its own build and no
+        # other. The chroot is unpacked for one build and thrown away, so
+        # naming a version here pins what that build is compiled against
+        # without deciding anything for the package beside it -- which is
+        # what makes it usable at all: a rebuilt kernel puts a
+        # linux-libc-dev in the repository that sorts above the release's,
+        # and busybox does not build against headers six versions newer
+        # than the ones its source expects.
+        preferences = package.preferences_for(self.distro["release"])
+        if preferences is not None:
+            args += ["--chroot-setup-commands=%s"
+                     % sbuild_command(package_preferences_command(preferences))]
+
         args += ["%s/%s" % (WORKDIR, dsc)]
 
         # sbuild bind-mounts a handful of device nodes into its chroot and
@@ -1650,6 +1712,12 @@ rm -rf .pc
                      str(package.kernel_upstream),
                      str(package.kernel_upstream_sha256),
                      str(package.sha256),
+                     # What the build is allowed to install decides what
+                     # comes out of it, so a changed pin is a rebuild. What
+                     # this release is pinned to rather than the whole
+                     # mapping: another release's pin has no bearing on
+                     # what comes out here.
+                     str(package.preferences_for(self.distro["release"])),
                      # str(), not a join: keeping nothing and saying
                      # nothing are different answers, and 'None' and '[]'
                      # are what tells them apart.
@@ -2161,6 +2229,43 @@ def apt_preferences_command():
         "echo 'Pin: origin \"\"' >> %s" % PREFERENCES,
         "echo 'Pin-Priority: 900' >> %s" % PREFERENCES,
     ])
+
+# Where a package's own preferences go, beside seine's rather than in it:
+# the two say different things -- which origin to prefer, and what this
+# one build may install -- and a fragment of its own is what lets the
+# specification's text be written down exactly as it was given.
+#
+# Not 'seine-package', which would be a prefix of the name above it and so
+# a thing to misread in a directory listing and in anything matching on
+# names.
+PACKAGE_PREFERENCES = "/etc/apt/preferences.d/seine-build"
+
+# sbuild expands percent escapes in the commands it is handed -- '%s' is
+# the interactive shell it would otherwise drop you into, and '%%' is how
+# a literal percent is written -- and it does that before any shell sees
+# the command. So a command meant to arrive intact has its percents
+# doubled.
+#
+# Found by the file this writes arriving as the expansion of '%s' and apt
+# refusing to read it:
+#
+#   E: Unable to parse package file /etc/apt/preferences.d/seine-build (1)
+#
+# Doubled here rather than asked of a specification: what it writes is
+# apt's language, and sbuild's escaping is no business of its.
+def sbuild_command(command):
+    return command.replace("%", "%%")
+
+# Written with printf rather than echo: what a specification put here is
+# several lines of apt_preferences(5), and echo would need it taken apart
+# and put back together again -- and would interpret backslashes in it on
+# any shell whose echo does. quote() is what makes the text survive the
+# shell it travels through unaltered.
+def package_preferences_command(preferences):
+    if preferences.endswith("\n") == False:
+        preferences += "\n"
+    return "printf '%%s' %s > %s" % (shlex.quote(preferences),
+                                     PACKAGE_PREFERENCES)
 
 def apt_configuration(*mountpoints):
     lines = " && ".join(
