@@ -305,7 +305,7 @@ class TheEntriesFlagBelongsToInfoAlone(Caches):
 # describes.
 class AnImportSupersedesWhatItReplaces(Caches):
     def repository(self, space="cache"):
-        path = os.path.join(self.workdir, space, "packages", "bookworm", "amd64")
+        path = os.path.join(self.workdir, space, "packages", "bookworm")
         os.makedirs(os.path.join(path, ".stamps"), exist_ok=True)
         return path
 
@@ -314,7 +314,7 @@ class AnImportSupersedesWhatItReplaces(Caches):
             with open(os.path.join(repository, name), "wb") as f:
                 f.write(b"deb")
         with open(os.path.join(repository, ".stamps",
-                               "%s_%s" % (source, digest)), "w") as f:
+                               "%s_amd64_%s" % (source, digest)), "w") as f:
             f.write("\n".join(files) + "\n")
         if index:
             for derived in ["Packages", "Packages.gz"]:
@@ -345,7 +345,7 @@ class AnImportSupersedesWhatItReplaces(Caches):
                          "install whichever version is higher")
         # And with it the stamp that named it.
         self.assertEqual(os.listdir(os.path.join(mine, ".stamps")),
-                         ["linux_bbbbbbbbbbbbbbbb"])
+                         ["linux_amd64_bbbbbbbbbbbbbbbb"])
         # The index described the repository as it was a moment ago; it is
         # made from the directory, so it is left for the next build to write.
         self.assertFalse(os.path.isfile(os.path.join(mine, "Packages")))
@@ -562,7 +562,7 @@ class AnExportScopedToASpecification(Caches):
         # Two releases and two architectures in the caches, as a machine
         # that has built for several boards would have.
         for cache, parts in [("chroots", ["bookworm/amd64", "trixie/arm64"]),
-                             ("packages", ["bookworm/amd64", "trixie/arm64"]),
+                             ("packages", ["bookworm", "trixie"]),
                              ("downloads", ["bookworm", "trixie"])]:
             for part in parts:
                 where = os.path.join(self.paths[cache], part)
@@ -595,17 +595,17 @@ class AnExportScopedToASpecification(Caches):
     # this specification wants is the ones its own stamps name.
     def test_only_the_debs_its_stamps_name(self):
         from seine.cache import Wanted
-        repository = os.path.join(self.paths["packages"], "bookworm", "amd64")
+        repository = os.path.join(self.paths["packages"], "bookworm")
         os.makedirs(os.path.join(repository, ".stamps"), exist_ok=True)
         wanted = Wanted([[self.spec]])
         stamp, = [os.path.basename(name) for name in
-                  wanted.repositories[("bookworm", "amd64")]
+                  wanted.repositories["bookworm"]
                   if name.startswith(".stamps")]
         self.assertTrue(stamp.startswith("busybox_"),
                         "the stamp named was %s" % stamp)
         # Someone else's build in the same repository is not this one's.
-        self.assertFalse(wanted.holds("packages/bookworm/amd64/linux_6.1_amd64.deb"))
-        self.assertFalse(wanted.holds("packages/trixie/arm64/busybox_1.35_arm64.deb"))
+        self.assertFalse(wanted.holds("packages/bookworm/linux_6.1_amd64.deb"))
+        self.assertFalse(wanted.holds("packages/trixie/busybox_1.35_arm64.deb"))
 
     # What a build of it would run in, asked of the classes that name them.
     def test_the_images_it_would_run_in(self):
@@ -627,11 +627,11 @@ class WhatWasNotWantedInAWhileIsRemoved(Caches):
     def setUp(self):
         super().setUp()
         self.index = cache_index.Index()
-        self.repository = os.path.join(self.paths["packages"], "bookworm", "amd64")
+        self.repository = os.path.join(self.paths["packages"], "bookworm")
         os.makedirs(os.path.join(self.repository, ".stamps"), exist_ok=True)
         for name in ["linux_6.1_amd64.deb", "Packages"]:
             open(os.path.join(self.repository, name), "w").close()
-        with open(os.path.join(self.repository, ".stamps", "linux_abcdef01"),
+        with open(os.path.join(self.repository, ".stamps", "linux_amd64_abcdef01"),
                   "w") as f:
             f.write("linux_6.1_amd64.deb\n")
         self.chroot = os.path.join(self.paths["chroots"], "bookworm", "amd64")

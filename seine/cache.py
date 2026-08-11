@@ -153,8 +153,10 @@ class Wanted:
             self.images.update(build.image.images())
 
             builder = Builder(distro, build.options, None)
-            files_wanted = self.repositories.setdefault((release, architecture),
-                                                        set())
+            # One repository per release, holding every architecture it was
+            # asked to build for -- so what a specification wants out of it
+            # is a set of files rather than a set of directories.
+            files_wanted = self.repositories.setdefault(release, set())
             for package, stamp in builder.stamps(build.image.packages):
                 files_wanted.add(os.path.join(STAMPS, os.path.basename(stamp)))
                 for name in CacheCmd()._named_by(stamp):
@@ -170,9 +172,7 @@ class Wanted:
         if kind == cache_index.CHROOT:
             return tuple(key.rsplit("-", 1)) in self.chroots
         if kind == cache_index.PACKAGE:
-            release, _, rest = key.partition("/")
-            architecture = rest.partition("/")[0]
-            return (release, architecture) in self.repositories
+            return key.partition("/")[0] in self.repositories
         if kind == cache_index.IMAGE:
             return key in self.images
         return True
@@ -194,12 +194,10 @@ class Wanted:
                 return any(release == parts[0] for release, _ in self.chroots)
             return (parts[0], parts[1]) in self.chroots
         if cache == "packages":
-            if len(parts) == 1:
-                return any(release == parts[0] for release, _ in self.repositories)
-            wanted = self.repositories.get((parts[0], parts[1]))
+            wanted = self.repositories.get(parts[0])
             if wanted is None:
                 return False
-            return len(parts) == 2 or "/".join(parts[2:]) in wanted
+            return len(parts) == 1 or "/".join(parts[1:]) in wanted
         return True
 
 def size_of(path, carried=None):
@@ -230,13 +228,6 @@ def human(count):
 # packages.py names it. Taken from there rather than spelled again, so the
 # two cannot drift apart.
 from seine.packages import STAMPS
-
-def _directories(path):
-    try:
-        return [name for name in os.listdir(path)
-                if os.path.isdir(os.path.join(path, name))]
-    except OSError:
-        return []
 
 # Which cache each kind of index entry belongs to, so a cache that is
 # cleared or reported on can find what was recorded about it.
@@ -320,10 +311,13 @@ class CacheCmd(Cmd):
         elif kind == cache_index.PACKAGE:
             release, _, rest = key.partition("/")
             architecture, _, source = rest.partition("/")
-            repository = os.path.join(CACHES["packages"](), release, architecture)
+            repository = os.path.join(CACHES["packages"](), release)
             stamps = os.path.join(repository, STAMPS)
+            # '<source>_<architecture>_<digest>': one repository holds every
+            # architecture's stamps, and an entry of the index names one
+            # architecture's build.
             for stamp in sorted(os.listdir(stamps)) if os.path.isdir(stamps) else []:
-                if stamp.rsplit("_", 1)[0] != source:
+                if stamp.rsplit("_", 2)[:2] != [source, architecture]:
                     continue
                 for name in self._named_by(os.path.join(stamps, stamp)):
                     path = os.path.join(repository, name)
@@ -602,9 +596,7 @@ class CacheCmd(Cmd):
             return
         arrived = set(arrived)
         for release in sorted(os.listdir(cache)):
-            for architecture in sorted(_directories(os.path.join(cache, release))):
-                self._prune_one(cache, os.path.join(release, architecture),
-                                arrived, force, where)
+            self._prune_one(cache, release, arrived, force, where)
 
     def _prune_one(self, cache, inside, arrived, force, where):
         repository = os.path.join(cache, inside)
@@ -612,8 +604,10 @@ class CacheCmd(Cmd):
         if os.path.isdir(stamps) == False:
             return
 
-        # Every stamp in there, by the source package it belongs to: a name
-        # is '<source>_<digest of what it was built from>'.
+        # Every stamp in there, by the build it belongs to: a name is
+        # '<source>_<architecture>_<digest of what it was built from>', and
+        # what supersedes a build is another build of the same source for
+        # the same architecture.
         stamped = {}
         for stamp in sorted(os.listdir(stamps)):
             stamped.setdefault(stamp.rsplit("_", 1)[0], []).append(stamp)

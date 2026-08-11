@@ -1541,8 +1541,15 @@ rm -rf .pc
         for name in sorted(depends or {}):
             digest.update(depends[name].encode())
 
-        return os.path.join(self._stamps(),
-                            "%s_%s" % (package.name, digest.hexdigest()[:16]))
+        # The architecture is in the name, not only in the digest: one
+        # repository holds every architecture's stamps, and what a stamp is
+        # looked up by is the build it belongs to. Without it the amd64
+        # build of a package would find the arm64 build's stamp when asking
+        # what it left behind last time, and take its .debs away as
+        # superseded.
+        return os.path.join(self._stamps(), "%s_%s_%s"
+                            % (package.name, self.distro["architecture"],
+                               digest.hexdigest()[:16]))
 
     # The stamp of every package, in build order, each one folding in the
     # stamps of what it is built after. The order is what makes that
@@ -1572,7 +1579,8 @@ rm -rf .pc
     def _previous(self, package):
         previous = {}
         for stamp in sorted(os.listdir(self._stamps())):
-            if stamp.startswith("%s_" % package.name) == False:
+            if stamp.startswith("%s_%s_" % (package.name,
+                                            self.distro["architecture"])) == False:
                 continue
             path = os.path.join(self._stamps(), stamp)
             with open(path, "r") as f:
@@ -1921,12 +1929,13 @@ def build_volumes(distro):
         return []
     return ["-v", "%s:%s:ro" % (repository(distro), REPOSITORY)]
 
-# Where the rebuilt packages of a specification are kept, and whether there
-# is anything there to install: a specification with no 'packages' section
-# leaves the directory without an index, and pointing apt at it would only
-# earn a failed 'apt-get update'.
+# Where the rebuilt packages of a specification are kept -- one flat
+# repository per release, holding every architecture built for -- and
+# whether there is anything there to install: a specification with no
+# 'packages' section leaves the directory without an index, and pointing
+# apt at it would only earn a failed 'apt-get update'.
 def repository(distro):
-    return ContainerEngine.packages(distro["release"], distro["architecture"])
+    return ContainerEngine.packages(distro["release"])
 
 def has_packages(distro):
     return os.path.isfile(os.path.join(repository(distro), "Packages"))

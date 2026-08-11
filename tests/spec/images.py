@@ -131,9 +131,9 @@ class Image(avocado.Test):
         # The kernel that came out is the grafted one rather than the
         # distribution's: an image is produced either way, and the
         # difference is only visible in what was built to make it.
-        repository = ContainerEngine.packages(self.release, self.architecture)
-        debs = glob.glob(os.path.join(repository,
-                                      "linux-image-*unreleased*.deb"))
+        repository = ContainerEngine.packages(self.release)
+        debs = glob.glob(os.path.join(
+            repository, "linux-image-*unreleased*_%s.deb" % self.architecture))
         self.assertNotEqual(debs, [], "no grafted kernel in %s" % repository)
 
 class PcImageBookworm(Image):
@@ -329,7 +329,7 @@ class CarriedCache(avocado.Test):
         # run on, and the stamp that says the package is built.
         chroots = os.path.join(second["SEINE_CACHE_DIR"], "chroots")
         stamps = glob.glob(os.path.join(second["SEINE_CACHE_DIR"], "packages",
-                                        "*", "*", ".stamps", "busybox_*"))
+                                        "*", ".stamps", "busybox_*"))
         self.assertEqual(len(stamps), 1, "no busybox stamp in the imported cache")
         before = {path: os.stat(path)
                   for path in glob.glob(os.path.join(chroots, "*", "*", "*.tar.zst"))
@@ -339,7 +339,7 @@ class CarriedCache(avocado.Test):
         # The index is derived from the .debs rather than carried, so the
         # tar does not bring one and the build about to run writes it.
         repository = glob.glob(os.path.join(second["SEINE_CACHE_DIR"],
-                                            "packages", "*", "*"))
+                                            "packages", "*"))
         self.assertNotEqual(repository, [], "no repository was imported")
         self.assertFalse(os.path.isfile(os.path.join(repository[0], "Packages")),
                          "the tar carried a repository index")

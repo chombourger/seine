@@ -228,13 +228,17 @@ class ContainerEngine:
         return path
     # Host-side apt repository holding the packages rebuilt from the spec's
     # 'packages' section, bind-mounted into ansible's target container so
-    # the playbooks can install them like any other package. Unlike the
-    # downloads cache this one is scoped per architecture as well: it is
-    # served as a flat repository whose Packages index describes exactly
-    # one architecture.
+    # the playbooks can install them like any other package.
+    #
+    # One per release, holding every architecture, the way a distribution's
+    # archive does: a package's own name says which architecture it is for,
+    # an 'Architecture: all' package is for all of them and has no business
+    # being kept per architecture, and a source package belongs to none of
+    # them. apt reads a flat repository's index once and takes from it what
+    # the architecture it was asked about can use.
     @staticmethod
-    def packages(release, architecture):
-        path = ContainerEngine.cache("packages", release, architecture)
+    def packages(release):
+        path = ContainerEngine.cache("packages", release)
         os.makedirs(path, exist_ok=True)
         return path
     # Host-side cache for the buildd chroot tarballs sbuild unpacks for
