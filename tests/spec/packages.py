@@ -1852,3 +1852,72 @@ class PercentSurvivesSbuild(avocado.Test):
         self.assertIn("%%s", command)
         self.assertEqual(re.sub("%%", "", command).count("%"), 0,
                          "an unescaped percent would be eaten by sbuild")
+
+# A build that fails leaves what it wrote where someone can read it: the
+# build log sbuild writes beside its output is the only account of why it
+# failed, and it is written into that directory rather than the
+# repository.
+class AFailedBuildKeepsItsLog(avocado.Test):
+    def test(self):
+        from seine import packages as module
+        from seine.packages import Builder
+        from seine.utils import ContainerEngine
+
+        class Image:
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                # Only the build itself fails, and only after writing what
+                # sbuild would have written -- which is what has to
+                # survive.
+                output = [host for host, container in volumes or []
+                          if container == "/output"]
+                if len(output) == 0:
+                    return 0
+                open(os.path.join(output[0], "busybox.build"), "w").close()
+                raise RuntimeError("the build died")
+
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "bookworm"}]}
+        builder = Builder(distro, {}, Image())
+        builder.repository = lambda: self.workdir
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        builder._sources[package.name] = (self.workdir, "busybox_1.dsc", 0)
+        builder._holding[package.name] = 1
+
+        # Unpacking a buildd chroot is not what is under test, and doing
+        # it for real would write into the machine's own cache.
+        class Chroot:
+            def __init__(self, *arguments):
+                pass
+
+            def create(self, image):
+                return self
+
+        # What was already in the scratch space is somebody else's, and on
+        # a real machine there is usually something.
+        before = set(os.listdir(ContainerEngine.scratch()))
+        original = module.SbuildChroot
+        module.SbuildChroot = Chroot
+        try:
+            builder._rebuild(package, "amd64", os.path.join(self.workdir, "stamp"))
+            self.fail("a failed build was reported as done!")
+        except RuntimeError:
+            pass
+        finally:
+            module.SbuildChroot = original
+
+        kept = [name for name in os.listdir(ContainerEngine.scratch())
+                if name.startswith("built-") and name not in before]
+        self.assertNotEqual(kept, [], "the failed build's log was thrown away")
+        for name in kept:
+            where = os.path.join(ContainerEngine.scratch(), name)
+            self.assertIn("busybox.build", os.listdir(where))
+            shutil.rmtree(where, ignore_errors=True)
+
+        # And nothing was published: a stamp for a build that failed would
+        # skip it next time.
+        self.assertEqual(builder._built, {})

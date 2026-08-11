@@ -2186,7 +2186,17 @@ rm -rf .pc
             # its build finishing.
             self._built[(package.name, architecture)] = (stamp, output)
         except:
-            shutil.rmtree(output, ignore_errors=True)
+            # Left where it is, and said out loud. sbuild writes its build
+            # log beside what it produced, so this directory is where the
+            # record of the failure is -- what the chroot installed, and
+            # the compiler error that stopped it. Throwing it away would
+            # leave nothing to read but the exit status.
+            #
+            # It stays in the scratch space, which 'seine cache clear
+            # scratch' empties, rather than being tidied away here by the
+            # one build that had something worth keeping.
+            print("keeping '%s': what the failed build of '%s' wrote, its "
+                  "build log included" % (output, package.name))
             raise
         finally:
             self._release(package)
