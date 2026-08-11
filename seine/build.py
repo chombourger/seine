@@ -41,13 +41,31 @@ class BuildCmd(Cmd):
                          "sbom": False, "sign_key": None, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
+        self._loading = []
 
     def loads(self, yaml_spec):
         return self._load("<string>", yaml_spec)
 
+    # The files being loaded, innermost last. 'requires' pulls in files that
+    # pull in files themselves, and nothing stopped two of them from reaching
+    # for each other: seine recursed until Python ran out of stack, with a
+    # traceback naming neither file. A file already on the chain is one being
+    # loaded again before it finished, which is the loop.
+    #
+    # A file reached twice by two different paths is not, and still loads
+    # twice: that is a specification listing a fragment its fragments also
+    # list, which is how they are meant to be composed.
     def load(self, yaml_file):
-        with open(yaml_file, "r") as f:
-            return self._load(yaml_file, f)
+        path = os.path.realpath(yaml_file)
+        if path in self._loading:
+            loop = self._loading[self._loading.index(path):] + [path]
+            raise ValueError("'requires' loops: %s!" % " -> ".join(loop))
+        self._loading.append(path)
+        try:
+            with open(yaml_file, "r") as f:
+                return self._load(yaml_file, f)
+        finally:
+            self._loading.pop()
 
     def _load(self, yaml_filename, yaml_spec):
         spec = yaml.safe_load(yaml_spec)
