@@ -176,6 +176,21 @@ class SbuildChroot:
     def _mistakable(self):
         return ["%s.inputs" % self.path, "%s.lock" % self.path]
 
+    # What a chroot is called while it is being made. sbuild unpacks the
+    # tarball without taking the lock that making one takes, so writing
+    # onto it in place gave a reader a zstd stream that stopped in the
+    # middle. The rename below is atomic and costs no lock; holding one
+    # over the unpacking would serialise the package builds instead.
+    #
+    # No release or architecture in the name: sbuild takes every file
+    # matching '<dist>-<arch>.t<anything>' for a chroot. The '.tar.zst'
+    # stays, it is what tells mmdebstrap the format.
+    TEMPORARY = ".seine-new.tar.zst"
+
+    @property
+    def temporary(self):
+        return os.path.join(os.path.dirname(self.path), SbuildChroot.TEMPORARY)
+
     def current(self, digest):
         if self.exists() == False or os.path.isfile(self.inputs) == False:
             return False
@@ -215,6 +230,9 @@ class SbuildChroot:
             self.distro["release"],
             "/root/.cache/sbuild/%s" % self.filename,
         ] + apt_sources(self.distro)
+        # Digested before the name is swapped in below: where a chroot is
+        # written is not what it is made from, and caches made before this
+        # still match.
         digest = hashlib.sha256(" ".join(args).encode()).hexdigest()[:16]
         if self.current(digest):
             entry = Index().hit(CHROOT, self.key)
@@ -222,17 +240,21 @@ class SbuildChroot:
                               % (self.key, since(entry.get("made"))))
             return self
 
+        args[args.index("/root/.cache/sbuild/%s" % self.filename)] = \
+            "/root/.cache/sbuild/%s" % SbuildChroot.TEMPORARY
+
         volumes = [(ContainerEngine.downloads(self.distro["release"]),
                     "/var/cache/mmdebstrap")]
         try:
             builderImage.exec(args, self.architecture, volumes=volumes)
         except subprocess.CalledProcessError:
-            # A half-written tarball would be picked up as a usable chroot
-            # by the next build.
-            for path in [self.path, self.inputs]:
-                if os.path.isfile(path):
-                    os.unlink(path)
+            # Only what this run wrote: the chroot that was there is whole
+            # and still matches its inputs, where removing the pair made
+            # every build remake a chroot because one of them failed.
+            if os.path.isfile(self.temporary):
+                os.unlink(self.temporary)
             raise
+        os.replace(self.temporary, self.path)
         with open(self.inputs, "w") as f:
             f.write("%s\n" % digest)
         Index().made(CHROOT, self.key)
