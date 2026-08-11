@@ -2,7 +2,9 @@
 # SPDX-License-Identifier Apache-2.0
 
 import getopt
+import jinja2
 import os
+import re
 import subprocess
 import sys
 import yaml
@@ -10,6 +12,27 @@ import yaml
 from seine.image     import Image
 from seine.cmd       import Cmd
 from seine.partition import PartitionHandler
+
+# Specifications are rendered before they are parsed, so that one file can
+# say what is true of several architectures or releases instead of being
+# copied once per each.
+#
+# The delimiters are not jinja's own on purpose. A specification carries
+# ansible tasks, and ansible templates them itself, on the target, at the
+# time the playbook runs: '{{ ansible_facts.hostname }}' is a value seine
+# has no business resolving and could not resolve if it wanted to. Sharing
+# jinja's delimiters would mean eating those at load time, so seine takes a
+# pair of its own and leaves '{{ }}' and '{% %}' alone for ansible.
+#
+# StrictUndefined rather than a name that renders to nothing: a
+# specification whose architecture quietly went empty builds an image for
+# the wrong machine and says so nowhere.
+TEMPLATE = jinja2.Environment(
+    variable_start_string="[[", variable_end_string="]]",
+    block_start_string="[%", block_end_string="%]",
+    comment_start_string="[#", comment_end_string="#]",
+    trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True,
+    undefined=jinja2.StrictUndefined)
 
 class BuildCmd(Cmd):
     # What this command is called and what it prints for '-h'. A command that
@@ -67,10 +90,45 @@ class BuildCmd(Cmd):
         finally:
             self._loading.pop()
 
+    # A specification is rendered against the one built so far. Files are
+    # loaded before the 'requires' they list, so a fragment sees what the
+    # specification that reached for it had already said -- which is where
+    # the architecture and the release a fragment speaks of come from.
+    #
+    # Blocks are not accepted, only substitutions. Branching in a
+    # specification is what 'requires' is: listing the fragments that apply
+    # says which ones apply, in a file that can be read without running it.
+    BLOCKS = re.compile(re.escape(TEMPLATE.block_start_string))
+
+    # 'requires' is read from the rendered file like everything else, so a
+    # require could name a file through a variable -- and then the set of
+    # files a specification is made of depends on the render, which is
+    # decided by the files. Kept out from the start.
+    REQUIRES = re.compile(r"^([ \t]*)requires:.*?(?=^\1\S|\Z)",
+                          re.MULTILINE | re.DOTALL)
+
+    def _render(self, yaml_filename, yaml_spec):
+        block = BuildCmd.BLOCKS.search(yaml_spec)
+        if block is not None:
+            raise ValueError("%s: '%s' blocks are not accepted, only '%s %s' "
+                "substitutions -- list the fragments that apply under "
+                "'requires' instead!"
+                % (yaml_filename, TEMPLATE.block_start_string,
+                   TEMPLATE.variable_start_string, TEMPLATE.variable_end_string))
+        for requires in BuildCmd.REQUIRES.finditer(yaml_spec):
+            if TEMPLATE.variable_start_string in requires.group(0):
+                raise ValueError("%s: 'requires' cannot be templated!"
+                                 % yaml_filename)
+        try:
+            return TEMPLATE.from_string(yaml_spec).render(self.spec or {})
+        except jinja2.TemplateError as e:
+            raise ValueError("%s:%s: %s"
+                % (yaml_filename, getattr(e, "lineno", "?"), e)) from e
+
     # The text of one specification file, not a stream: what a file says is
     # read before it is parsed, and both callers hand over the same thing.
     def _load(self, yaml_filename, yaml_spec):
-        spec = yaml.safe_load(yaml_spec)
+        spec = yaml.safe_load(self._render(yaml_filename, yaml_spec))
 
         # Patches and kconfig fragments are listed relative to the file
         # listing them, which merging would otherwise lose. Resolved here,
