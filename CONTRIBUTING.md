@@ -43,6 +43,7 @@ whole project. The ones in use are:
 
 | Scope          | What it covers                                        |
 | -------------- | ----------------------------------------------------- |
+| `analyze`      | Recorded build timings, and `seine analyze`           |
 | `ansible`      | Running playbooks against the target container        |
 | `bootstrap`    | The host and target bootstrap images                  |
 | `build`        | Driving a build: the steps it is made of, `seine build` |
