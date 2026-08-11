@@ -42,14 +42,8 @@ KERNELS = {
 # An image built from the examples as they are shipped, for one release
 # and one board. Nothing is copied here: the specification is the files
 # under examples/, composed on the command line the way a user composes
-# them, with a release chosen at the front and the kernel fragment at the
-# back. What this test adds is where to write the image, so four of them
+# them. What this test adds is where to write the image, so four of them
 # can be built without agreeing on a filename.
-#
-# The kernel is part of it on purpose. A build that takes the
-# distribution's kernel exercises none of what makes these examples
-# interesting -- the graft, the flavour coming from the architecture, the
-# cross toolchain the profile selects, the component the firmware needs.
 class Image(avocado.Test):
     """
     :avocado: disable
@@ -63,6 +57,16 @@ class Image(avocado.Test):
     architecture = None
     image = None
     release = None
+
+    # Whether this one grafts a kernel onto Debian's packaging, which is
+    # where the hours are: the compile dwarfs everything else these tests
+    # do, and four of them said the same thing four times.
+    #
+    # Two say it now, and which two is what makes that safe -- see
+    # TheGraftedKernelsCoverBothWays below. A build that takes the
+    # distribution's kernel still covers the rest of what an example is:
+    # the root file-system, the appliance, the partitions and the boot.
+    grafted = False
 
     def setUp(self):
         if PLAN != "full":
@@ -81,8 +85,7 @@ class Image(avocado.Test):
             "common/%s.yaml" % self.image,
             "common/conf-accounts.yaml",
             "common/conf-locales.yaml",
-            KERNELS[self.release],
-        ]
+        ] + ([KERNELS[self.release]] if self.grafted else [])
         specs = [os.path.join(EXAMPLES, name) for name in names]
         for spec in specs:
             self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
@@ -128,13 +131,18 @@ class Image(avocado.Test):
         self.assertGreater(os.path.getsize(self.filename), 0, "the image is empty")
         self.assertEqual(leftovers(), [], "the build left these behind")
 
-        # The kernel that came out is the grafted one rather than the
-        # distribution's: an image is produced either way, and the
-        # difference is only visible in what was built to make it.
+        # Which kernel came out, since an image is produced either way and
+        # the difference is only visible in what was built to make it. The
+        # glob names this architecture: the repository is per release, and
+        # the image built beside this one may have grafted one of its own.
         repository = ContainerEngine.packages(self.release)
         debs = glob.glob(os.path.join(
             repository, "linux-image-*unreleased*_%s.deb" % self.architecture))
-        self.assertNotEqual(debs, [], "no grafted kernel in %s" % repository)
+        if self.grafted:
+            self.assertNotEqual(debs, [], "no grafted kernel in %s" % repository)
+        else:
+            self.assertEqual(debs, [],
+                             "this one was to take the distribution's kernel")
 
 class PcImageBookworm(Image):
     """
@@ -143,6 +151,9 @@ class PcImageBookworm(Image):
     architecture = "amd64"
     image = "pc-image"
     release = "bookworm"
+    # Grafted, with bookworm's packaging pinned out of backports -- which
+    # is the half of it examples/linux-6.18/bookworm.yml exists for.
+    grafted = True
 
 class PcImageTrixie(Image):
     """
@@ -170,6 +181,39 @@ class Rpi4ImageTrixie(Image):
     architecture = "arm64"
     image = "rpi4-image"
     release = "trixie"
+    # Grafted, being the other architecture, with the release's own
+    # packaging rather than a backport's.
+    grafted = True
+
+# Two of the four graft a kernel, and which two is the whole of what makes
+# that safe. One of each architecture is one native build and one cross
+# build whichever machine the suite runs on -- an amd64 machine cross-builds
+# the arm64 image, an aarch64 one cross-builds the amd64 image -- and one of
+# each release is Debian's packaging taken from the release and pinned out
+# of backports.
+#
+# Needs neither podman nor a build: it reads what the tests above say they
+# will do, so moving the graft to the wrong pair is caught here rather
+# than by noticing later what stopped being built.
+class TheGraftedKernelsCoverBothWays(avocado.Test):
+    def grafting(self):
+        return [test for test in Image.__subclasses__() if test.grafted]
+
+    def test_one_image_of_each_architecture_is_grafted(self):
+        self.assertEqual({test.architecture for test in self.grafting()},
+                         {"amd64", "arm64"},
+                         "a machine of one of these would build no kernel "
+                         "for the other")
+
+    def test_one_image_of_each_release_is_grafted(self):
+        self.assertEqual({test.release for test in self.grafting()},
+                         set(KERNELS),
+                         "a release's kernel fragment is built by nothing")
+
+    # The saving is the other two, so this fails if the graft creeps back.
+    def test_the_others_take_the_distribution_kernel(self):
+        self.assertEqual(len(self.grafting()), 2)
+        self.assertGreater(len(Image.__subclasses__()), 2)
 
 # Which board's example this machine can build without emulating anything.
 # The round trip below is about what a cache carries, not about an
