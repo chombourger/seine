@@ -65,6 +65,18 @@ class Caches(avocado.Test):
                 self.assertEqual(e.code, 0)
         return out.getvalue()
 
+    # The same, for a command that is expected to have something to
+    # complain about: its exit code and what it said about it.
+    def run_cmd_failing(self, argv):
+        code, err = 0, io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err):
+            try:
+                CacheCmd().main(argv)
+            except SystemExit as e:
+                code = e.code
+        return code, err.getvalue()
+
 class WhatIsCachedIsReported(Caches):
     def test(self):
         shown = self.run_cmd(["info"])
@@ -93,6 +105,42 @@ class EveryCacheIsClearedWhenNoneIsNamed(Caches):
         self.run_cmd(["clear", "all"])
         for path in self.paths.values():
             self.assertFalse(os.path.isdir(path))
+
+# A build's apt runs as a user of the container's own, so what it leaves in
+# 'downloads/*/partial' belongs to a uid this cannot unlink. That took every
+# other cache down with it.
+class ClearingIsBestEffort(Caches):
+    def setUp(self):
+        super().setUp()
+        if os.geteuid() == 0:
+            self.cancel("root removes what these permissions are meant to stop")
+        self.kept = os.path.join(self.paths["downloads"], "trixie")
+        os.makedirs(self.kept)
+        with open(os.path.join(self.kept, "partial"), "wb") as f:
+            f.write(b"half a package")
+        os.chmod(self.kept, 0o500)
+
+    def tearDown(self):
+        os.chmod(self.kept, 0o700)
+        super().tearDown()
+
+    def test(self):
+        code, reported = self.run_cmd_failing(["clear"])
+
+        self.assertNotEqual(code, 0, "a cache was left and nothing said so")
+        self.assertIn("downloads", reported)
+        for name, path in self.paths.items():
+            if name == "downloads":
+                continue
+            self.assertFalse(os.path.isdir(path),
+                             "'%s' was not cleared" % name)
+
+    # What can go, goes: the cache that could not be emptied is emptied of
+    # everything but what is holding it up.
+    def test_the_rest_of_that_cache_goes_too(self):
+        self.run_cmd_failing(["clear"])
+        self.assertFalse(os.path.exists(
+            os.path.join(self.paths["downloads"], "blob")))
 
 class ACacheIsCarriedToAnotherMachine(Caches):
     def test(self):

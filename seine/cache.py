@@ -343,22 +343,51 @@ class CacheCmd(Cmd):
         # about to reuse and does the work again -- which is what the cache
         # promises -- but one that is *reading* a tarball as it goes away
         # fails. Clearing a cache is something to do between builds.
+        # Best effort, cache by cache: a build's apt runs as a user of the
+        # container's own, so what it left behind -- 'downloads/*/partial'
+        # -- belongs to a uid outside the namespace that this cannot
+        # unlink. Stopping there took every other cache down with it, and
+        # 'clear all' emptied nothing after any build that fetched a
+        # package.
         index = cache_index.Index()
+        left = []
         for name in names:
+            try:
+                if name == IMAGES:
+                    self._clear_images()
+                else:
+                    self._clear_one(CACHES[name]())
+            except (OSError, subprocess.CalledProcessError) as e:
+                left.append((name, str(e)))
+                continue
             # What was recorded about a cache goes with the cache: an entry
             # for something that is not there any more would be reported as
-            # a very old object and evicted twice.
+            # a very old object and evicted twice. Kept for a cache still
+            # holding what it says it holds.
             for kind in KINDS.get(name, []):
                 index.forget(kind)
-            if name == IMAGES:
-                self._clear_images()
-                continue
-            path = CACHES[name]()
-            if os.path.isdir(path) == False:
-                continue
-            print("removing %s" % path)
-            shutil.rmtree(path)
-        return 0
+
+        # After what was removed has been said, not before it: piped into a
+        # file, as a runner does, stdout is block-buffered and the warnings
+        # would otherwise come out first.
+        sys.stdout.flush()
+        for name, why in left:
+            sys.stderr.write("warning: '%s' was not emptied: %s\n" % (name, why))
+        if len(left) > 0:
+            sys.stderr.write(
+                "warning: what a container wrote belongs to a user of its "
+                "own; 'podman unshare rm -rf DIR' removes it\n")
+        return 1 if len(left) > 0 else 0
+
+    # What can go, goes: a directory that cannot be unlinked leaves the rest
+    # of the cache removed rather than the whole of it kept.
+    def _clear_one(self, path):
+        if os.path.isdir(path) == False:
+            return
+        print("removing %s" % path)
+        shutil.rmtree(path, ignore_errors=True)
+        if os.path.exists(path):
+            raise OSError("%s is still there" % path)
 
     # The images go by name and not by removing the storage under them: what
     # is in a podman storage belongs to uids a rootless user cannot unlink
@@ -893,6 +922,11 @@ Description:
   Named with no cache -- or with 'all' -- an action covers every cache it
   applies to. That is all of them for 'info' and 'clear'; for a tar it is
   the caches worth carrying, which excludes 'scratch'.
+
+  'clear' is best effort. A cache holding what this user cannot unlink --
+  what a container's apt left behind belongs to a user of the container's
+  own -- does not stop the others being emptied: what was left is named,
+  with the way to remove it, and the command exits non-zero.
 
   'clear --older-than' removes one object at a time rather than a whole
   cache: what was last wanted longer ago than the span given. It asks the
