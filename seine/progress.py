@@ -43,6 +43,17 @@ def unicode_safe(stream):
         return False
     return True
 
+# How long something took, in the units someone reading it thinks in.
+# Out here rather than on the display because a build's steps are timed in
+# two places now: while they run, and afterwards by 'seine analyze'.
+def elapsed(seconds):
+    seconds = int(seconds)
+    if seconds < 60:
+        return "%ds" % seconds
+    if seconds < 3600:
+        return "%dm%02ds" % (seconds // 60, seconds % 60)
+    return "%dh%02dm" % (seconds // 3600, (seconds % 3600) // 60)
+
 class Display:
     def __init__(self, stream=None, total=0, environment=None, clock=time.time):
         self.stream = stream if stream is not None else sys.stdout
@@ -79,7 +90,7 @@ class Display:
             self._line("%s %-28s %s" % (
                 (FAILED if failed else DONE)[self.fancy], name,
                 "" if started is None
-                else self._elapsed(self.clock() - started)))
+                else elapsed(self.clock() - started)))
             self.lines = 0
             self._redraw()
 
@@ -114,7 +125,7 @@ class Display:
                                     key=lambda item: item[1]):
             self._line("  %s %-28s %s" % (
                 spinner[self.frame % len(spinner)], name,
-                self._elapsed(self.clock() - started)))
+                elapsed(self.clock() - started)))
         self._line(self._summary())
         self.stream.flush()
 
@@ -136,12 +147,3 @@ class Display:
         self.stream.write(text + "\n")
         if self.interactive:
             self.lines += 1
-
-    @staticmethod
-    def _elapsed(seconds):
-        seconds = int(seconds)
-        if seconds < 60:
-            return "%ds" % seconds
-        if seconds < 3600:
-            return "%dm%02ds" % (seconds // 60, seconds % 60)
-        return "%dh%02dm" % (seconds // 3600, (seconds % 3600) // 60)

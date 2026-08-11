@@ -1,11 +1,16 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
+import getopt
 import hashlib
 import json
 import os
+import sys
+import time
 
-from seine.utils import ContainerEngine
+from seine.cmd      import Cmd
+from seine.progress import elapsed
+from seine.utils    import ContainerEngine
 
 # What a build spent, step by step, kept so that it can be read once the
 # build is over.
@@ -90,3 +95,153 @@ def _prune(where, keep=KEEP):
                    if name.endswith(".json"))
     for name in names[:max(0, len(names) - keep)]:
         os.unlink(os.path.join(where, name))
+
+# What was recorded, newest run first. Without a digest, every plan's runs
+# are read: someone asking about the build they have just watched should
+# not have to name it again.
+#
+# A record that cannot be read is one run fewer rather than an error. These
+# are written by a build that may have been killed halfway through writing
+# one, and a half-written file is no reason to refuse the report.
+def runs(spec=None):
+    root = ContainerEngine.cache(RECORDS)
+    plans = [spec] if spec is not None else \
+            sorted(os.listdir(root)) if os.path.isdir(root) else []
+    found = []
+    for plan in plans:
+        where = os.path.join(root, plan)
+        if os.path.isdir(where) == False:
+            continue
+        for name in sorted(os.listdir(where)):
+            if name.endswith(".json") == False:
+                continue
+            try:
+                with open(os.path.join(where, name)) as f:
+                    found.append(json.load(f))
+            except (OSError, ValueError):
+                continue
+    return sorted(found, key=lambda run: run.get("started") or 0, reverse=True)
+
+# How long the build itself took, which is not the sum of its steps: with
+# more than one running at a time it is less, and the difference between
+# the two is what parallelism bought.
+def spent(run):
+    return max([task["end"] for task in run["tasks"]] or [0])
+
+def _header(run):
+    said = "plan %s, built %s" % (
+        run["spec"], time.strftime("%Y-%m-%d %H:%M",
+                                   time.localtime(run["started"])))
+    if run.get("jobs", 1) > 1:
+        said += ", %d steps at a time" % run["jobs"]
+    if run.get("ok") == False:
+        said += ", failed"
+    return said
+
+# Where the time went, longest step first. The two totals at the end are
+# the pair worth reading together: step time is the work the build did,
+# and build time is how long it took to do it.
+def blame(run):
+    print(_header(run))
+    print()
+    total = 0
+    for task in sorted(run["tasks"], key=lambda t: t["end"] - t["start"],
+                       reverse=True):
+        took = task["end"] - task["start"]
+        total += took
+        print("  %8s  %s%s" % (elapsed(took), task["name"],
+                               "  (failed)" if task["failed"] else ""))
+    print()
+    print("  %s of step time in %s of build" % (elapsed(total),
+                                                elapsed(spent(run))))
+    return 0
+
+REPORTS = {
+    "blame": blame,
+}
+
+class AnalyzeCmd(Cmd):
+    NAME = "analyze"
+
+    def main(self, argv):
+        if len(argv) == 0 or argv[0] in ["-h", "--help"]:
+            print(USAGE)
+            sys.exit(0 if len(argv) > 0 else 1)
+
+        report = REPORTS.get(argv[0])
+        if report is None:
+            sys.stderr.write("error: '%s' is not something seine analyzes%s"
+                             % (argv[0], USAGE))
+            sys.exit(1)
+
+        try:
+            opts, args = getopt.getopt(argv[1:], "h", ["help"])
+        except getopt.GetoptError as err:
+            sys.stderr.write("error: %s%s" % (err, USAGE))
+            sys.exit(1)
+        for o, _ in opts:
+            if o in ("-h", "--help"):
+                print(USAGE)
+                sys.exit()
+
+        sys.exit(report(self.latest(args)))
+
+    # The run to report on: the most recent one of the plan these
+    # specifications describe, or simply the most recent one when none are
+    # named. Nothing is fetched or built to work that out -- the
+    # specifications are loaded and parsed, which is what 'seine plan'
+    # already does without touching anything.
+    def latest(self, specifications):
+        spec = self._digest(specifications) if len(specifications) > 0 else None
+        recorded = runs(spec)
+        if len(recorded) == 0:
+            sys.stderr.write(
+                "error: nothing recorded%s yet; a build writes a record as "
+                "it runs\n" % ("" if spec is None else " for plan %s" % spec))
+            sys.exit(1)
+        return recorded[0]
+
+    def _digest(self, specifications):
+        # Here rather than at the top of the file: what loads a
+        # specification is the build command, which is reached through the
+        # image, which is what writes the records this reads.
+        from seine.build import BuildCmd
+
+        build = BuildCmd()
+        try:
+            for name in specifications:
+                build.load(name)
+            return spec_digest(build.parse())
+        except OSError as e:
+            sys.stderr.write("error: couldn't open build YAML file: %s\n" % e)
+            sys.exit(2)
+        except ValueError as e:
+            sys.stderr.write("error: YAML file is invalid: %s\n" % e)
+            sys.exit(3)
+
+USAGE = """
+Say where the time went in a build that ran
+
+Description:
+  Every build records what each of its steps cost. These read that record
+  back -- nothing is fetched, built or written.
+
+  Named specifications are loaded the way 'seine build' loads them, and the
+  report is of the last build of exactly those. Named none, it reports on
+  the last build of anything.
+
+Usage:
+  seine analyze blame [SPEC...]
+
+Reports:
+  blame                 the steps of the build, longest first, and what the
+                        build cost in total
+
+Examples:
+  seine analyze blame
+  seine analyze blame demo-image.yml
+
+Flags:
+  -h, --help            print this message
+
+"""

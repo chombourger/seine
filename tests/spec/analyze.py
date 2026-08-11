@@ -2,9 +2,12 @@
 
 import atexit
 import avocado
+import contextlib
+import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -43,6 +46,24 @@ def recorded(steps, spec, jobs=1, ok=True):
 def sleeper(name, seconds, needs=None):
     import time
     return Task(name, lambda: time.sleep(seconds), needs=needs)
+
+# A record as a build would have left it, without having to run one.
+def run_of(tasks, spec="fake", started=1770000000, jobs=1, ok=True):
+    return {"spec": spec, "graph": "0" * 12, "started": started,
+            "jobs": jobs, "ok": ok,
+            "tasks": [{"name": name, "needs": needs, "start": start,
+                       "end": end, "failed": False}
+                      for name, needs, start, end in tasks]}
+
+def said(report, *args):
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        report(*args)
+    return printed.getvalue()
+
+def seine(*args):
+    return subprocess.run([sys.executable, "./seine.py"] + list(args),
+                          cwd=path_to_sources, capture_output=True, text=True)
 
 class WhatEachStepCostIsKept(avocado.Test):
     def test(self):
@@ -134,6 +155,62 @@ class OnlySoManyRunsOfOnePlanAreKept(avocado.Test):
         # ones say what the build costs now.
         self.assertEqual(kept[0], "1770000005.json")
         self.assertEqual(kept[-1], "1770000024.json")
+
+class TheNewestRunIsReadFirst(avocado.Test):
+    def test(self):
+        for started in [1770000100, 1770000300, 1770000200]:
+            steps = [Task("step", lambda: None)]
+            steps[0].started, steps[0].ended = started, started + 1
+            analyze.record(steps, "newestfirst")
+
+        recorded = analyze.runs("newestfirst")
+        self.assertEqual([run["started"] for run in recorded],
+                         [1770000300, 1770000200, 1770000100])
+
+class WhereTheTimeWent(avocado.Test):
+    def test(self):
+        # Two steps running beside each other and a long one after them,
+        # which is the shape of every build worth asking about.
+        run = run_of([("bootstrap-host", [], 0, 120),
+                      ("packages", [], 0, 1200),
+                      ("rootfs", ["packages"], 1200, 1500)], jobs=2)
+        report = said(analyze.blame, run).splitlines()
+
+        self.assertIn("plan fake", report[0])
+        self.assertIn("2 steps at a time", report[0])
+        self.assertEqual(
+            [line.split()[-1] for line in report if line.startswith("  ")
+             and "step time" not in line],
+            ["packages", "rootfs", "bootstrap-host"])
+        # The pair worth reading together: what the build did, and how
+        # long it took to do it.
+        self.assertIn("27m00s of step time in 25m00s of build", report[-1])
+
+    def test_a_failed_build_says_which_step_failed(self):
+        run = run_of([("packages", [], 0, 60)], ok=False)
+        run["tasks"][0]["failed"] = True
+        report = said(analyze.blame, run)
+        self.assertIn("failed", report.splitlines()[0])
+        self.assertIn("(failed)", report)
+
+class APlanNobodyBuiltHasNothingToReport(avocado.Test):
+    def test(self):
+        where = os.path.join(self.workdir, "never-built.yml")
+        with open(where, "w") as f:
+            f.write(SPEC.replace("analyze-test.img", "never-built.img"))
+
+        run = seine("analyze", "blame", where)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("nothing recorded", run.stderr)
+        # And it says which plan it looked for, so someone who named the
+        # wrong specifications can see that they did.
+        self.assertIn("plan", run.stderr)
+
+    def test_a_report_it_does_not_have(self):
+        run = seine("analyze", "flamegraph")
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("not something seine analyzes", run.stderr)
+        self.assertIn("blame", run.stderr)
 
 if __name__ == "__main__":
     avocado.main()

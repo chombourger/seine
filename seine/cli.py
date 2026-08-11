@@ -3,6 +3,7 @@
 # SPDX-License-Identifier Apache-2.0
 
 import sys
+from seine.analyze import AnalyzeCmd
 from seine.build import BuildCmd, PlanCmd
 from seine.cache import CacheCmd
 
@@ -13,6 +14,7 @@ COMMANDS = {
     "build": (BuildCmd, "build an image from one or more specification files"),
     "plan":  (PlanCmd, "say what a build would do, without doing any of it"),
     "cache": (CacheCmd, "show what seine has cached, remove it, or move it"),
+    "analyze": (AnalyzeCmd, "say where the time went in a build that ran"),
 }
 
 USAGE = """
