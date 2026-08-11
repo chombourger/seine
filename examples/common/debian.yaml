@@ -1,0 +1,29 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# What is true of a Debian release whichever one it is, read for the one
+# the specification requiring this file names. bookworm.yaml and
+# trixie.yaml beside it are that name and what is particular to it, which
+# for trixie is nothing at all.
+
+distribution:
+    # Listed rather than assumed: a release, the updates that have
+    # accumulated since it, and its security suite, which Debian serves
+    # from a host of its own. Without the last two an image is built
+    # from packages that are known to be superseded, and cannot be
+    # brought up to date on the target either.
+    feeds:
+        - suite: [[ distribution.release ]]
+        - suite: [[ distribution.release ]]-updates
+        - suite: [[ distribution.release ]]-security
+          uri: http://security.debian.org/debian-security
+
+playbook:
+    - name: init packages
+      priority: 100
+      tasks:
+           - name: install init packages
+             apt:
+                 state: present
+                 name:
+                     - init
