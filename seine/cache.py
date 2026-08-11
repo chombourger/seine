@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import time
 
+from seine       import analyze
 from seine       import cache_index
 from seine.cmd   import Cmd
 from seine.utils import ContainerEngine
@@ -42,6 +43,12 @@ CACHES = {
     # that is, and how, is seine's business and not a user's.
     "bootstraps": lambda: ContainerEngine.cache("bootstraps"),
     IMAGES:      None,
+    # What every step of a build cost, which 'seine analyze' reads back.
+    # Not something a build takes out again -- it is read by hand and by
+    # nothing else -- but it is seine's, it is under seine's cache, and a
+    # directory that does not answer to 'seine cache' is a directory
+    # nobody finds.
+    analyze.RECORDS: lambda: ContainerEngine.cache(analyze.RECORDS),
     "scratch":   ContainerEngine.scratch,
 }
 

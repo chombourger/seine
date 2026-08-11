@@ -77,6 +77,13 @@ class Task:
         self.name = name
         self.run = run
         self.needs = list(needs or [])
+        # What running it cost, filled in as it runs. Left on the task
+        # rather than handed back, so that whoever built the graph can
+        # read it afterwards -- including after a failure, when what
+        # comes back is the exception instead.
+        self.started = None
+        self.ended = None
+        self.failed = False
 
     def __repr__(self):
         return "Task(%r)" % self.name
@@ -208,6 +215,7 @@ def _parallel(tasks, pool, jobs, verbose, logs, display):
 
 def _run_one(task, verbose, logs, display=None):
     started = time.time()
+    task.started = started
     if display is not None:
         display.started(task.name)
     failed = True
@@ -220,6 +228,8 @@ def _run_one(task, verbose, logs, display=None):
                 task.run()
         failed = False
     finally:
+        task.ended = time.time()
+        task.failed = failed
         if display is not None:
             display.finished(task.name, failed=failed)
     if verbose:

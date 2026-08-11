@@ -7,6 +7,7 @@ import subprocess
 import tarfile
 import tempfile
 
+from seine               import analyze
 from seine               import cache_index
 from seine               import packages
 from seine               import progress
@@ -335,9 +336,20 @@ class Image:
             if verbose == False:
                 display = progress.Display(total=len(steps),
                                            environment=os.environ)
-            with display if display is not None else contextlib.nullcontext():
-                tasks.run(steps, jobs=jobs, logs=logs, verbose=verbose,
-                          display=display)
+            # What every step cost, kept for 'seine analyze' to read back.
+            # Written in a finally because a build that failed is the one
+            # worth reading: the steps that did run still say where the
+            # time went, and the build that resumes this one is filed
+            # with it.
+            ok = False
+            try:
+                with display if display is not None else contextlib.nullcontext():
+                    tasks.run(steps, jobs=jobs, logs=logs, verbose=verbose,
+                              display=display)
+                ok = True
+            finally:
+                analyze.record(steps, analyze.spec_digest(self.spec),
+                               jobs=jobs, ok=ok)
 
             # What the caches spared this build, and what it had to make.
             # Printed after the steps rather than by them: it is the answer
