@@ -52,8 +52,9 @@ class AnsibleContainerRunner:
         self.cid = ContainerEngine.check_output(cmd).strip()
         try:
             if packages.has_packages(self.distro):
-                self._exec(["sh", "-c",
-                            packages.apt_configuration(packages.REPOSITORY)])
+                self._exec(["sh", "-c", packages.apt_configuration(
+                    packages.REPOSITORY,
+                    keyring=packages.keyring(self.distro))])
             # Keep apt's package index in sync with what TransportBootstrap
             # baked in, same as the Dockerfile-based path used to do before
             # running its own playbooks.

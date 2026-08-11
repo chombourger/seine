@@ -24,6 +24,10 @@ from seine.tasks import Task, ordered, run
 # defaulted so it holds however the suite was invoked; the tests that
 # build images for real pass their own to the seine they run.
 os.environ["SEINE_CACHE_DIR"] = tempfile.mkdtemp(prefix="seine-tests-")
+# And no key either: what a build signs with is read from the environment,
+# so a developer who signs their own builds would otherwise run a
+# different suite than everyone else.
+os.environ.pop("SEINE_SIGN_KEY", None)
 atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"],
                 ignore_errors=True)
 

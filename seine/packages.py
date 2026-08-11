@@ -19,6 +19,7 @@ from datetime import datetime
 from datetime import timezone
 from email.utils import format_datetime
 
+from seine        import signing
 from seine.cache_index import PACKAGE, Index, say, since
 from seine.sbuild import BuilderImage
 from seine.tasks  import Task
@@ -509,6 +510,12 @@ class Builder:
         self._workdirs = threading.Lock()
         self._built = {}
         self._repository = threading.Lock()
+        # The key this build signs with, if it was given one. Asked for
+        # here so a key that is not there stops the build now rather than
+        # after it has compiled.
+        self.signer = signing.signer(options)
+        if self.signer is not None:
+            self.signer.fingerprint()
 
     # Cores for one package build: what --parallel said, or the machine
     # divided by how many builds may run at once.
@@ -1644,7 +1651,15 @@ rm -rf .pc
         # it build-depends on to be of the *host* architecture, since that
         # is what runs there, and apt takes from this index what the
         # architecture it was asked about can use.
-        args += ["--extra-repository=deb [trusted=yes] file:%s ./" % REPOSITORY,
+        # The chroot reads the key where the repository is mounted rather
+        # than being given a copy of its own: sbuild bind-mounts the
+        # repository in, the key is in it, and a keyring installed by a
+        # setup command would have to be installed before the update that
+        # needs it.
+        signed = "[trusted=yes]"
+        if self.signer is not None:
+            signed = "[signed-by=%s/%s]" % (REPOSITORY, self.signer.keyring())
+        args += ["--extra-repository=deb %s file:%s ./" % (signed, REPOSITORY),
                  "--chroot-setup-commands=%s" % apt_preferences_command()]
 
         # And what this package asked for, in front of its own build and no
@@ -1703,12 +1718,30 @@ rm -rf .pc
     # is for is the machine handed a cache, and anything asking what a
     # modified binary was built from.
     def index(self):
+        # The Release file goes last and is made fresh every time: it
+        # holds the hashes of the indices above it, and the signatures
+        # beside it are of the file as it was. Removing them first is what
+        # stops apt-ftparchive from hashing yesterday's signature into
+        # today's Release.
+        for name in ["Release", "Release.gpg", "InRelease"]:
+            path = os.path.join(self.repository(), name)
+            if os.path.isfile(path):
+                os.unlink(path)
+
+        script = ("apt-ftparchive --db .packages.db packages . "
+                  "> Packages && gzip -9 -c Packages > Packages.gz && "
+                  "apt-ftparchive sources . "
+                  "> Sources && gzip -9 -c Sources > Sources.gz")
+        if self.signer is not None:
+            script += " && apt-ftparchive release . > Release"
         self.builderImage.exec(
-            ["sh", "-c", "apt-ftparchive --db .packages.db packages . "
-                         "> Packages && gzip -9 -c Packages > Packages.gz && "
-                         "apt-ftparchive sources . "
-                         "> Sources && gzip -9 -c Sources > Sources.gz"],
+            ["sh", "-c", script],
             volumes=[(self.repository(), REPOSITORY)], workdir=REPOSITORY)
+
+        # Signed here rather than in the container that wrote it: gpg runs
+        # on this machine, where the agent holding the key is.
+        if self.signer is not None:
+            self.signer.sign_release(os.path.join(self.repository(), "Release"))
 
     # What a rebuild of this package would depend on, as a file whose
     # presence means it has already been done. Everything the specification
@@ -1770,6 +1803,22 @@ rm -rf .pc
                      architecture,
                      "\n".join(apt_sources(self.distro, sources=True)),
                      self.chroot_architecture(package, architecture),
+                     # Who signed it. The .dsc and the .changes carry
+                     # their signature inside them, so a build signed by
+                     # another key -- or by none -- produced different
+                     # files, however identical the .debs beside them
+                     # are. Without this, changing the key would leave a
+                     # repository serving a source package signed by a
+                     # key it no longer carries, and adding one to a
+                     # specification already built would sign the index
+                     # over sources that are not signed at all.
+                     #
+                     # It follows that a cache built by somebody else is
+                     # rebuilt here rather than adopted, which is the
+                     # honest answer: their signature is not ours to
+                     # publish.
+                     str(self.signer.fingerprint()
+                         if self.signer is not None else None),
                      # Whether this is the build that makes the package's
                      # architecture-independent binaries, which is decided
                      # by what the *other* builds are: widening 'scope'
@@ -2063,7 +2112,25 @@ rm -rf .pc
     def _prepare(self, hostBootstrap):
         self.builderImage.create(hostBootstrap)
         with locked(self.repository()):
+            self._publish_key()
             self.index()
+
+    # The public half of the signing key, kept in the repository it signs.
+    # Anything the repository is mounted into can then find the key that
+    # answers for it without being told where it is, and a cache carried
+    # to another machine takes it along.
+    #
+    # Named for the key rather than for seine, since it ends up in
+    # /etc/apt/keyrings beside other people's.
+    def _publish_key(self):
+        for name in sorted(os.listdir(self.repository())):
+            # A key from a build signed by another key, or by none: what
+            # answers for this repository is what signed it last.
+            if name.endswith(".gpg"):
+                os.unlink(os.path.join(self.repository(), name))
+        if self.signer is not None:
+            self.signer.export(os.path.join(self.repository(),
+                                            self.signer.keyring()))
 
     def run(self, packages, hostBootstrap):
         pending = self._pending(packages)
@@ -2130,6 +2197,13 @@ rm -rf .pc
         self.local_release(package, sourcedir, epoch)
         self.extend_kernel(package, sourcedir, self.architectures(package))
         dsc = self.source_package(package, sourcedir)
+        # Signed before it is staged or built from: a .dsc carries its
+        # signature inside itself, so signing it here is what makes the
+        # copy that reaches the repository -- and any machine handed the
+        # cache -- say who built it. dpkg-source reads a signed one as
+        # readily as an unsigned one.
+        if self.signer is not None:
+            self.signer.clearsign(os.path.join(os.path.dirname(sourcedir), dsc))
         self._stage_source(package, os.path.dirname(sourcedir), dsc)
         return dsc, epoch
 
@@ -2203,6 +2277,16 @@ rm -rf .pc
         staged = self._source_packages.pop(package.name, None)
         sources = [] if staged is None else sorted(os.listdir(staged))
         everything.update(sources)
+
+        # The .changes says what a build produced and with what hashes,
+        # which is the thing worth a signature: the .debs beside it are
+        # named by it. Signed before anything is moved, so what lands in
+        # the repository is signed rather than signed in place afterwards.
+        if self.signer is not None:
+            for _, output, produced in built.values():
+                for name in produced:
+                    if name.endswith(".changes"):
+                        self.signer.clearsign(os.path.join(output, name))
 
         with self._repository, locked(self.repository()):
             for name in sources:
@@ -2359,13 +2443,52 @@ def package_preferences_command(preferences):
     return "printf '%%s' %s > %s" % (shlex.quote(preferences),
                                      PACKAGE_PREFERENCES)
 
-def apt_configuration(*mountpoints):
-    lines = " && ".join(
-        "echo 'deb [trusted=yes] file:%s ./' %s %s"
-        % (mountpoint, ">" if index == 0 else ">>", SOURCES_LIST)
-        for index, mountpoint in enumerate(mountpoints))
-    return "%s && %s" % (lines, apt_preferences_command())
+# Where a repository's own key is installed in whatever is going to read
+# from it. Under apt's keyrings directory rather than pointed at where the
+# repository is mounted, because it stays behind in the image: the
+# repository is gone from the sources.list by then, and what is left is a
+# key that can answer for one served from somewhere else.
+KEYRINGS = "/etc/apt/keyrings"
 
+def apt_configuration(*mountpoints, keyring=None):
+    # A repository nothing signed is trusted because it was made here a
+    # moment ago; one that is signed is verified instead, which is worth
+    # more the further it travels.
+    if keyring is None:
+        options = "[trusted=yes]"
+        install = ""
+    else:
+        options = "[signed-by=%s/%s]" % (KEYRINGS, keyring)
+        install = "install -D -m 0644 %s/%s %s/%s && " % (
+            mountpoints[0], keyring, KEYRINGS, keyring)
+    lines = " && ".join(
+        "echo 'deb %s file:%s ./' %s %s"
+        % (options, mountpoint, ">" if index == 0 else ">>", SOURCES_LIST)
+        for index, mountpoint in enumerate(mountpoints))
+    return "%s%s && %s" % (install, lines, apt_preferences_command())
+
+# The key a repository carries, if it carries one and is actually signed
+# -- which is how anything mounting it learns which key answers for it
+# without being told.
+#
+# Both halves of that matter. A cache carried to another machine brings
+# the public key with it, but not the private one, so the build there
+# writes indices nothing has signed: a repository configured 'signed-by'
+# on the strength of a key file alone would be one apt refuses to read.
+# What says a repository is signed is a signature.
+def keyring(distro):
+    where = repository(distro)
+    if os.path.isfile(os.path.join(where, "InRelease")) == False:
+        return None
+    for name in sorted(os.listdir(where)):
+        if name.endswith(".gpg") and name.startswith("Release") == False:
+            return name
+    return None
+
+# The sources.list and the pin go, since the repository they name is on
+# the machine that did the building. The keyring stays: it says which key
+# answers for those packages, and an image updated later from a repository
+# signed by the same key needs it to say so.
 def apt_deconfiguration():
     return "rm -f %s %s" % (SOURCES_LIST, PREFERENCES)
 
@@ -2377,7 +2500,7 @@ def apt_deconfiguration():
 def apt_setup_layer(distro):
     if has_packages(distro) == False:
         return ""
-    return "RUN %s\n" % apt_configuration(REPOSITORY)
+    return "RUN %s\n" % apt_configuration(REPOSITORY, keyring=keyring(distro))
 
 def build_volumes(distro):
     if has_packages(distro) == False:

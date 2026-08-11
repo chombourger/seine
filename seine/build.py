@@ -29,6 +29,7 @@ class BuildCmd(Cmd):
         "rebuild",
         "require-hashes",
         "sbom",
+        "sign-key=",
         "verbose"
     ]
 
@@ -37,7 +38,7 @@ class BuildCmd(Cmd):
         self.options = { "build": True, "debug": False, "dry_run": False, "jobs": 1, "keep": False,
                          "packages_only": False, "parallel": None,
                          "rebuild": False, "require_hashes": False,
-                         "sbom": False, "verbose": False }
+                         "sbom": False, "sign_key": None, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
 
@@ -508,6 +509,8 @@ class BuildCmd(Cmd):
                 self.options["require_hashes"] = True
             elif o in ("--rebuild"):
                 self.options["rebuild"] = True
+            elif o in ("--sign-key"):
+                self.options["sign_key"] = a
             elif o in ("--sbom"):
                 self.options["sbom"] = True
             elif o in ("-v", "--verbose"):
@@ -596,6 +599,12 @@ Flags:
       --parallel N      cores one package build may use. Unset, it is derived
                         from --jobs so that the builds running together do not
                         ask for more of the machine than it has
+  --sign-key KEY        sign the rebuilt packages and the repository holding
+                        them with this gpg key, named however gpg will take it
+                        -- a key id, a fingerprint, an email address. gpg runs
+                        on this machine and talks to your agent, so seine
+                        never sees the key itself. SEINE_SIGN_KEY says the
+                        same thing
   --rebuild             rebuild the packages of the 'packages' section even if
                         they were built before
   --require-hashes      refuse to build when a source is fetched over http with

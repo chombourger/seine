@@ -564,3 +564,150 @@ class ScopedRebuild(avocado.Test):
         for architecture in [HOST_ARCH, self.architecture]:
             self.assertIn("busybox:%s" % architecture, planned)
         self.assertIn("already built, and not built again", planned)
+
+# Signing, against a real archive, a real sbuild and a real apt.
+#
+# A key made for the test in a GNUPGHOME of its own, so nothing here
+# touches the keyring of whoever is running it and the key goes with the
+# test. gpg runs on this machine either way -- that is the point of
+# signing on the host -- so the only thing the containers ever see is a
+# signature and a public key.
+#
+# What matters is the last step: apt reading the repository with
+# verification on, no 'trusted=yes' anywhere, and installing out of it.
+# Everything before that is only evidence for why it worked.
+class SignedRebuild(avocado.Test):
+    """
+    :avocado: tags=full,container
+    """
+    timeout = 3600
+
+    def setUp(self):
+        self.spaces = []
+        if PLAN != "full":
+            self.cancel("SEINE_TEST_PLAN=full builds packages; this takes a while")
+        for tool in ["podman", "gpg"]:
+            if shutil.which(tool) is None:
+                self.cancel("%s is needed to build a signed repository" % tool)
+
+        self.gnupg = os.path.join(self.workdir, "gnupg")
+        os.makedirs(self.gnupg, mode=0o700, exist_ok=True)
+        made = subprocess.run(
+            ["gpg", "--batch", "--quiet", "--passphrase", "",
+             "--quick-generate-key", "Seine Image Test <image@example.invalid>",
+             "default", "default", "never"],
+            capture_output=True, env=dict(os.environ, GNUPGHOME=self.gnupg))
+        if made.returncode != 0:
+            self.cancel("could not make a key to sign with: %s"
+                        % made.stderr.decode(errors="replace"))
+
+    def tearDown(self):
+        for space in self.spaces:
+            subprocess.run(["podman", "unshare", "rm", "-rf", space], check=False)
+
+    def space(self, name):
+        path = os.path.join(self.workdir, name)
+        environment = dict(os.environ)
+        environment["PATH"] = "%s:%s" % (os.path.dirname(sys.executable),
+                                         environment.get("PATH", ""))
+        environment["SEINE_CACHE_DIR"] = os.path.join(path, "cache")
+        environment["SEINE_BUILD_DIR"] = os.path.join(path, "build")
+        environment["GNUPGHOME"] = self.gnupg
+        self.spaces.append(path)
+        return environment
+
+    def seine(self, space, args, log):
+        where = os.path.join(self.outputdir, "%s.log" % log)
+        with open(where, "w") as f:
+            run = subprocess.run([sys.executable, "-u", "./seine.py"] + args,
+                                 cwd=path_to_sources, env=space, stdout=f,
+                                 stderr=subprocess.STDOUT)
+        self.assertEqual(run.returncode, 0,
+                         "'%s' failed, see %s" % (" ".join(args), where))
+
+    def specification(self):
+        names = ["common/bookworm.yaml", "common/%s.yaml" % HOST_ARCH]
+        specs = [os.path.join(EXAMPLES, name) for name in names]
+        for spec in specs:
+            self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
+
+        where = os.path.join(self.workdir, "signed.yml")
+        with open(where, "w") as f:
+            f.write("packages:\n"
+                    "    - source: apt://busybox\n"
+                    "      profiles: [nocheck]\n"
+                    "image:\n"
+                    "    filename: signed.img\n"
+                    "    partitions:\n"
+                    "        - label: rootfs\n"
+                    "          where: /\n")
+        return specs + [where]
+
+    def gpg(self, *arguments):
+        return subprocess.run(["gpg"] + list(arguments), capture_output=True,
+                              env=dict(os.environ, GNUPGHOME=self.gnupg))
+
+    def test(self):
+        space = self.space("signed")
+        self.seine(space, ["build", "--packages-only", "-v",
+                           "--sign-key", "image@example.invalid"]
+                          + self.specification(), "build")
+
+        repository = os.path.join(space["SEINE_CACHE_DIR"], "packages", "bookworm")
+        held = os.listdir(repository)
+        for name in ["InRelease", "Release", "Release.gpg"]:
+            self.assertIn(name, held, "the repository was not signed")
+        keyring = [name for name in held
+                   if name.endswith(".gpg") and name != "Release.gpg"]
+        self.assertEqual(len(keyring), 1,
+                         "expected one key in the repository, found %s" % keyring)
+
+        # Every signature is this key's, checked with gpg rather than
+        # taken on trust from the file having a signature in it.
+        signed = [os.path.join(repository, "InRelease")]
+        signed += glob.glob(os.path.join(repository, "*.dsc"))
+        signed += glob.glob(os.path.join(repository, "*.changes"))
+        self.assertEqual(len(signed), 3, "not everything was signed: %s" % signed)
+        for path in signed:
+            self.assertEqual(self.gpg("--verify", path).returncode, 0,
+                             "%s is not signed by the key that built it"
+                             % os.path.basename(path))
+
+        # And the thing all of it is for: apt reading the repository with
+        # verification on, and installing out of it. No 'trusted=yes'
+        # anywhere -- the key in the repository is what says it is good.
+        script = (
+            "rm -f /etc/apt/sources.list.d/*.list "
+            "/etc/apt/sources.list.d/*.sources && "
+            "install -D -m 0644 /packages/%s /etc/apt/keyrings/%s && "
+            "echo 'deb [signed-by=/etc/apt/keyrings/%s] file:/packages ./' "
+            "> /etc/apt/sources.list.d/seine.list && "
+            "apt-get update -qq && "
+            "apt-get install -y --no-install-recommends busybox-syslogd && "
+            "dpkg-query -W -f '\\${Version}' busybox-syslogd"
+            % (keyring[0], keyring[0], keyring[0]))
+        installed = subprocess.run(
+            ["podman", "--root", os.path.join(space["SEINE_BUILD_DIR"], "storage"),
+             "run", "--rm", "-v", "%s:/packages:ro" % repository,
+             "builder/debian/bookworm", "sh", "-c", script],
+            capture_output=True)
+        self.assertEqual(installed.returncode, 0,
+                         "apt would not install from the signed repository:\n%s"
+                         % installed.stderr.decode(errors="replace"))
+        self.assertIn("+mod1", installed.stdout.decode(errors="replace"),
+                      "what was installed is not the rebuilt package")
+
+    # An unsigned build is the one everyone else runs, and it stays the
+    # one that works: the repository is trusted for having been made here.
+    def test_without_a_key_the_repository_is_unsigned(self):
+        space = self.space("unsigned")
+        self.seine(space, ["build", "--packages-only"] + self.specification(),
+                   "build-unsigned")
+
+        repository = os.path.join(space["SEINE_CACHE_DIR"], "packages", "bookworm")
+        held = os.listdir(repository)
+        self.assertIn("Packages", held)
+        for name in ["InRelease", "Release", "Release.gpg"]:
+            self.assertNotIn(name, held,
+                             "%s was written for a build nothing signed" % name)
+        self.assertEqual([n for n in held if n.endswith(".gpg")], [])

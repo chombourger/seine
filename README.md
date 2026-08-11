@@ -65,11 +65,16 @@ network. Without it every `podman run` fails with `could not find pasta` and
 a build stops at its first container.
 
 What has to be on the machine seine runs on is only this, plus
-`ansible-playbook` below. Everything a build does to a distribution happens
-inside a container: `mmdebstrap` bootstraps the root file-system, `sbuild`
-rebuilds packages, `apt-ftparchive` writes the repository index, `debsbom`
-reads the SBOM. None of those need installing here, and looking for them on
-the host says nothing about whether a build will work.
+`ansible-playbook` below, and `gnupg` for a build that signs what it
+produces. Everything a build does to a distribution happens inside a
+container: `mmdebstrap` bootstraps the root file-system, `sbuild` rebuilds
+packages, `apt-ftparchive` writes the repository index, `debsbom` reads the
+SBOM. None of those need installing here, and looking for them on the host
+says nothing about whether a build will work.
+
+`gnupg` is the exception that proves it: signing runs on the host on
+purpose, so that the key stays with the agent already holding it and no
+container ever sees it. See [Signing](#signing).
 
 Building for an `architecture` other than the host's (e.g. `arm64` images on
 an `amd64` host) additionally needs that architecture's qemu system emulator,
@@ -648,6 +653,59 @@ Marking the source unreleased also earns the kernel an ABI name of its
 own -- Debian derives it from the changelog, so `6.1.0-50` becomes
 `6.1.0-51` -- which is what keeps a reconfigured kernel from being
 mistaken for the distribution's.
+
+#### Signing
+
+`--sign-key` signs what a build produced, with a key seine never sees:
+
+```
+seine build --sign-key FA5C9FECC03529BF spec.yaml
+```
+
+The key is named however gpg will take it -- a short id, a long one, a
+fingerprint, an email address -- and `SEINE_SIGN_KEY` says the same
+thing. It is not a specification setting on purpose: which key a machine
+signs with belongs to that machine and the person at it, so a
+specification naming one would not build for anybody else.
+
+Three things are signed. The `.dsc` and the `.changes` carry their
+signature inside them, so it travels with them into the repository and on
+to whoever is handed the cache. The repository itself gets a `Release`
+file signed both ways -- `InRelease` and `Release.gpg` -- which is what
+apt verifies.
+
+Every `gpg` runs on the machine seine was started on and talks to the
+agent already running there. Nothing gnupg-related goes into a container:
+not the key, not the agent's socket. That matters most for the builder,
+which is the most privileged container seine makes and runs build scripts
+fetched from an archive -- handing it an agent socket would let anything
+it runs ask for a signature over anything at all. Whether the agent
+prompts for a passphrase, caches it, or keeps the key on a smartcard
+stays between you and your agent.
+
+The public half is exported into the repository, named for the key
+(`5B89F388.gpg`), and installed as `/etc/apt/keyrings/` in everything
+that reads from it. A repository that is signed is then read with
+`signed-by` rather than `trusted=yes`, so apt verifies it wherever it is
+used -- the sbuild chroots, the container composing the root file-system,
+and the imager. Unsigned, it stays trusted for having been made here a
+moment ago.
+
+The keyring stays in the image. The sources.list entry and the pin do
+not: the repository they name is on the machine that did the building.
+What is left is a trust anchor, so an image later pointed at an update
+server signed by the same key can verify it.
+
+Who signed a package is part of what says whether it needs building
+again. The `.dsc` and the `.changes` are different files when they are
+signed by a different key, or by none, however identical the `.debs`
+beside them -- so changing the key, or adding one to a specification
+already built, rebuilds. It follows that a cache built by somebody else
+is rebuilt here rather than adopted, which is the honest answer: their
+signature is not ours to publish.
+
+Signing needs `gnupg` on the host, alongside the other host
+prerequisites.
 
 #### Pinning a build
 

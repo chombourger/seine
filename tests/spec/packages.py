@@ -5,6 +5,7 @@ import avocado
 import errno
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -24,6 +25,10 @@ from seine.build import BuildCmd
 # defaulted so it holds however the suite was invoked; the tests that
 # build images for real pass their own to the seine they run.
 os.environ["SEINE_CACHE_DIR"] = tempfile.mkdtemp(prefix="seine-tests-")
+# And no key either: what a build signs with is read from the environment,
+# so a developer who signs their own builds would otherwise run a
+# different suite than everyone else.
+os.environ.pop("SEINE_SIGN_KEY", None)
 atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"],
                 ignore_errors=True)
 
@@ -2134,3 +2139,134 @@ Checksums-Sha256:
         self.assertEqual(len(commands), 1)
         self.assertIn("apt-ftparchive sources .", commands[0])
         self.assertIn("Sources.gz", commands[0])
+
+# A key seine never sees signs what a build produced. gpg runs on the
+# machine seine was started on and talks to the agent there, so these
+# check what seine asks of it and what it does with the answer, with a
+# key made for the test and thrown away with it.
+class Signing(avocado.Test):
+    def setUp(self):
+        if shutil.which("gpg") is None:
+            self.cancel("gpg is needed to sign anything")
+        self.gnupg = os.path.join(self.workdir, "gnupg")
+        os.makedirs(self.gnupg, mode=0o700, exist_ok=True)
+        os.environ["GNUPGHOME"] = self.gnupg
+        made = subprocess.run(
+            ["gpg", "--batch", "--quiet", "--passphrase", "",
+             "--quick-generate-key", "Seine Spec <spec@example.invalid>",
+             "default", "default", "never"],
+            capture_output=True)
+        if made.returncode != 0:
+            self.cancel("could not make a key to sign with: %s"
+                        % made.stderr.decode(errors="replace"))
+
+    def tearDown(self):
+        os.environ.pop("GNUPGHOME", None)
+
+    def signer(self):
+        from seine.signing import Signer
+        return Signer("spec@example.invalid")
+
+    # Whatever the key was named as, gpg's own answer for it: a name
+    # matching two keys would otherwise sign with neither on purpose.
+    def test_the_key_is_resolved(self):
+        signer = self.signer()
+        self.assertEqual(len(signer.fingerprint()), 40)
+        # Named for the key, since it is kept beside other people's.
+        self.assertEqual(signer.keyring(), "%s.gpg" % signer.fingerprint()[-8:])
+
+    def test_a_key_that_is_not_there_says_so(self):
+        from seine.signing import Signer
+        try:
+            Signer("nobody@example.invalid").fingerprint()
+            self.fail("a key that does not exist was accepted!")
+        except ValueError as e:
+            self.assertIn("nobody@example.invalid", str(e))
+
+    # A .dsc and a .changes carry the signature inside them, so what is
+    # published is signed rather than accompanied by a signature.
+    def test_a_file_is_signed_in_place(self):
+        where = os.path.join(self.workdir, "busybox_1.dsc")
+        with open(where, "w") as f:
+            f.write("Format: 3.0 (quilt)\nSource: busybox\n")
+        self.signer().clearsign(where)
+
+        with open(where) as f:
+            signed = f.read()
+        self.assertIn("BEGIN PGP SIGNED MESSAGE", signed)
+        self.assertIn("Source: busybox", signed)
+        self.assertEqual(subprocess.run(["gpg", "--verify", where],
+                                        capture_output=True).returncode, 0)
+
+    # Both, because apt looks for both.
+    def test_the_release_is_signed_both_ways(self):
+        release = os.path.join(self.workdir, "Release")
+        with open(release, "w") as f:
+            f.write("Suite: seine\n")
+        self.signer().sign_release(release)
+
+        for name in ["InRelease", "Release.gpg"]:
+            where = os.path.join(self.workdir, name)
+            self.assertTrue(os.path.isfile(where), "no %s was written" % name)
+        self.assertEqual(subprocess.run(
+            ["gpg", "--verify", os.path.join(self.workdir, "InRelease")],
+            capture_output=True).returncode, 0)
+        self.assertEqual(subprocess.run(
+            ["gpg", "--verify", os.path.join(self.workdir, "Release.gpg"), release],
+            capture_output=True).returncode, 0)
+
+    # What apt is told, which is to verify rather than to trust whatever
+    # is there.
+    def test_apt_is_pointed_at_the_key(self):
+        from seine.packages import apt_configuration, KEYRINGS
+        said = apt_configuration("/packages", keyring="ABCD1234.gpg")
+        self.assertIn("signed-by=%s/ABCD1234.gpg" % KEYRINGS, said)
+        self.assertNotIn("trusted=yes", said)
+        # And the key is put there before anything reads from it.
+        self.assertIn("install -D", said)
+        self.assertLess(said.index("install -D"), said.index("signed-by"))
+
+    # Unsigned, it is trusted because it was made here a moment ago.
+    def test_without_a_key_nothing_changes(self):
+        from seine.packages import apt_configuration
+        said = apt_configuration("/packages")
+        self.assertIn("trusted=yes", said)
+        self.assertNotIn("signed-by", said)
+
+    # A repository is signed when there is a signature, not when there is
+    # a key lying in it: a cache carried here brings the public key and
+    # leaves the private one behind.
+    def test_a_key_alone_is_not_a_signed_repository(self):
+        from seine import packages as module
+        where = os.path.join(self.workdir, "repository")
+        os.makedirs(where, exist_ok=True)
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        original = module.repository
+        module.repository = lambda d: where
+        try:
+            open(os.path.join(where, "ABCD1234.gpg"), "w").close()
+            self.assertEqual(module.keyring(distro), None)
+            open(os.path.join(where, "InRelease"), "w").close()
+            self.assertEqual(module.keyring(distro), "ABCD1234.gpg")
+        finally:
+            module.repository = original
+
+    # Signing changes the .dsc and the .changes, so who signed is part of
+    # what says whether a package needs building again.
+    def test_the_key_decides_whether_a_rebuild_is_needed(self):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "bookworm"}]}
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages
+
+        digests = set()
+        for key in [None, "spec@example.invalid"]:
+            builder = Builder(distro, {"sign_key": key}, None)
+            digests.add(os.path.basename(builder.stamps(package)[0][2]))
+        self.assertEqual(len(digests), 2,
+                         "signing a build did not ask for it to be rebuilt")
