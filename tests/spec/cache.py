@@ -14,7 +14,7 @@ sys.path.append(path_to_sources)
 
 from seine       import cache
 from seine       import cache_index
-from seine.cache import CacheCmd, CACHES, IMAGES, PORTABLE
+from seine.cache import CacheCmd, CACHES, IMAGES, PORTABLE, human
 
 # A cache with something in it, under the test's own directory rather than
 # the user's -- said the way a user would say it, with the two environment
@@ -72,8 +72,10 @@ class WhatIsCachedIsReported(Caches):
             self.assertIn(name, shown)
         for name, path in self.paths.items():
             self.assertIn(path, shown)
-        # Four directories of 2KiB each, and podman holding nothing.
-        self.assertIn("8.0 KiB", shown)
+        # 2KiB in each directory the fixture made, and podman holding
+        # nothing. Counted rather than written down, so a cache added to
+        # CACHES does not fail this for the wrong reason.
+        self.assertIn(human(2048 * len(self.paths)), shown)
 
 class OneCacheIsClearedWithoutTheOthers(Caches):
     def test(self):

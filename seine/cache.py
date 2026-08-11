@@ -37,6 +37,10 @@ CACHES = {
     "downloads": lambda: ContainerEngine.cache("downloads"),
     "packages":  lambda: ContainerEngine.cache("packages"),
     "chroots":   lambda: ContainerEngine.cache("chroots"),
+    # Packages the image builds fetched, which the engine keeps for them.
+    # Named for what it holds rather than for what keeps it: which engine
+    # that is, and how, is seine's business and not a user's.
+    "bootstraps": lambda: ContainerEngine.cache("bootstraps"),
     IMAGES:      None,
     "scratch":   ContainerEngine.scratch,
 }
@@ -911,6 +915,7 @@ Caches:
   downloads   packages fetched from the distribution's feeds
   packages    packages the 'packages' section built, as an apt repository
   chroots     buildd chroot tarballs sbuild unpacks to build a package
+  bootstraps  packages the bootstrap and builder image builds fetched
   images      the container images seine built: the bootstrap tooling, the
               builder, the imager's kernel and appliance and the transport
               bootstrap, in podman storage of its own

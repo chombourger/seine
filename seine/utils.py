@@ -266,6 +266,17 @@ class ContainerEngine:
         if ContainerEngine.build_dir() is None:
             return None
         return "%s-run" % ContainerEngine.root()
+    # The image builds cache the packages they fetch, through whatever the
+    # engine offers for it -- '--mount=type=cache' today, kept under
+    # TMPDIR. Unset, that is /var/tmp, so the archives end up somewhere
+    # 'seine cache info' does not count and 'seine cache clear' does not
+    # empty: a cleared cache that still feeds the next bootstrap.
+    @staticmethod
+    def _podman_env():
+        cache = ContainerEngine.cache("bootstraps")
+        os.makedirs(cache, exist_ok=True)
+        return dict(os.environ, TMPDIR=cache)
+
     @staticmethod
     def _podman_cmd(cmd):
         runroot = ContainerEngine.runroot()
@@ -286,12 +297,14 @@ class ContainerEngine:
         cmd = ContainerEngine._podman_cmd(cmd)
         output = tasks.output()
         return subprocess.run(cmd, check=check, stdout=output,
-                              stderr=subprocess.STDOUT if output else None)
+                              stderr=subprocess.STDOUT if output else None,
+                              env=ContainerEngine._podman_env())
     @staticmethod
     def check_output(cmd):
         cmd = ContainerEngine._podman_cmd(cmd)
-        return subprocess.check_output(cmd)
+        return subprocess.check_output(cmd, env=ContainerEngine._podman_env())
     @staticmethod
     def Popen(cmd, stdin=None, stdout=None, stderr=None):
         cmd = ContainerEngine._podman_cmd(cmd)
-        return subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr)
+        return subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr,
+                                env=ContainerEngine._podman_env())

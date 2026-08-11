@@ -1652,18 +1652,20 @@ elsewhere in seine.
 ### What a build keeps, and getting the space back
 
 A build keeps what it would otherwise make again: the packages it fetched,
-the packages it rebuilt, the buildd chroots sbuild unpacks, the container
-images it builds, and the scratch space sources and images are assembled in.
-`seine cache info` says how much each of them is holding:
+the packages the container image builds fetched, the packages it rebuilt,
+the buildd chroots sbuild unpacks, the container images it builds, and the
+scratch space sources and images are assembled in. `seine cache info` says
+how much each of them is holding:
 
 ```
 $ seine cache info
 downloads   253.7 MiB  /home/user/.cache/seine/downloads
 packages      1.1 GiB  /home/user/.cache/seine/packages
 chroots     278.4 MiB  /home/user/.cache/seine/chroots
+bootstraps  485.3 MiB  /home/user/.cache/seine/bootstraps
 images        9.3 GiB  /home/user/.local/share/seine
 scratch     365.5 KiB  /var/tmp/seine
-total        10.9 GiB
+total        11.4 GiB
 ```
 
 `seine cache clear` removes them, and naming one clears only that:
