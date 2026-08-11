@@ -63,10 +63,12 @@ class BuildCmd(Cmd):
         self._loading.append(path)
         try:
             with open(yaml_file, "r") as f:
-                return self._load(yaml_file, f)
+                return self._load(yaml_file, f.read())
         finally:
             self._loading.pop()
 
+    # The text of one specification file, not a stream: what a file says is
+    # read before it is parsed, and both callers hand over the same thing.
     def _load(self, yaml_filename, yaml_spec):
         spec = yaml.safe_load(yaml_spec)
 
