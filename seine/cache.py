@@ -327,7 +327,8 @@ class CacheCmd(Cmd):
                 os.unlink(os.path.join(stamps, stamp))
             # The index the .debs were described by is made from what is
             # there, so the next build writes one that matches.
-            for derived in ["Packages", "Packages.gz", ".packages.db"]:
+            for derived in ["Packages", "Packages.gz", "Sources", "Sources.gz",
+                            ".packages.db"]:
                 path = os.path.join(repository, derived)
                 if os.path.isfile(path):
                     os.unlink(path)
@@ -466,12 +467,12 @@ class CacheCmd(Cmd):
     #
     #   .lock, lock       the lock files that guard what two builds share,
     #                     seine's own and apt's own
-    #   /Packages         the repository index, and its .gz, and
-    #   /Packages.gz      apt-ftparchive's hash cache beside them: all three
-    #   /.packages.db     are made from the .debs in the directory, so the
-    #                     machine that receives those makes its own in one
-    #                     pass rather than being sent a description of a
-    #                     repository it is about to change
+    #   /Packages         the repository indices, binary and source, with
+    #   /Packages.gz      their .gz and apt-ftparchive's hash cache beside
+    #   /Sources          them: every one is made from what the directory
+    #   /Sources.gz       holds, so the machine that receives those makes
+    #   /.packages.db     its own in one pass rather than being sent a
+    #                     description of a repository it is about to change
     #   .build            sbuild's build logs, and the symlinks naming the
     #                     latest of them. A kernel's log rivals the .debs
     #                     it came with, and a log of a build that happened
@@ -489,7 +490,7 @@ class CacheCmd(Cmd):
     # .changes and .buildinfo are kept too -- small, and what says how the
     # .debs beside them were made.
     NOT_CARRIED = [".lock", "/lock", "/.packages.db", "/Packages", "/Packages.gz",
-                   ".build", "/partial"]
+                   "/Sources", "/Sources.gz", ".build", "/partial"]
 
     def _carried(self, name):
         return any(name.endswith(suffix)
@@ -635,19 +636,22 @@ class CacheCmd(Cmd):
         held = [name for name in sorted(os.listdir(repository))
                 if os.path.isfile(os.path.join(repository, name))]
         for name in held:
-            if name in reachable or name.startswith("Packages"):
+            if name in reachable or name.startswith("Packages") \
+                                 or name.startswith("Sources"):
                 continue
             if name in letting_go or force:
                 self.say("removing %s" % os.path.join(inside, name), where)
                 os.unlink(os.path.join(repository, name))
-            elif name.endswith(".deb"):
+            elif name.endswith(".deb") or name.endswith(".dsc"):
                 self.say("keeping %s, which no stamp names ('--force' removes it)"
                          % os.path.join(inside, name), where)
 
-        # The index describes what the directory held a moment ago. It is
-        # made from the directory rather than carried, so the honest thing to
-        # do with it here is take it away and let the next build write one.
-        for derived in ["Packages", "Packages.gz", ".packages.db"]:
+        # The indices describe what the directory held a moment ago. They
+        # are made from the directory rather than carried, so the honest
+        # thing to do with them here is take them away and let the next
+        # build write them.
+        for derived in ["Packages", "Packages.gz", "Sources", "Sources.gz",
+                        ".packages.db"]:
             path = os.path.join(repository, derived)
             if os.path.isfile(path):
                 os.unlink(path)

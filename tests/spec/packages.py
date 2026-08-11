@@ -1999,3 +1999,138 @@ class ASecondBuildReplacesTheFirst(Publishes):
         self.assertFalse(os.path.isfile(
             os.path.join(repository, "busybox_1-2026-01-01.build")),
             "the superseded build log was left behind")
+
+# The source package a rebuild was made from is published with the .debs,
+# once per package however many architectures were built from it.
+class SourcePackagesReachTheRepository(avocado.Test):
+    DSC = """Format: 3.0 (quilt)
+Source: busybox
+Version: 1:1.35.0-4+mod1
+Files:
+ 0123456789abcdef0123456789abcdef 1024 busybox_1.35.0.orig.tar.bz2
+ fedcba9876543210fedcba9876543210 2048 busybox_1.35.0-4+mod1.debian.tar.xz
+Checksums-Sha256:
+ aaaa 1024 busybox_1.35.0.orig.tar.bz2
+ bbbb 2048 busybox_1.35.0-4+mod1.debian.tar.xz
+"""
+
+    def builder(self, image=None):
+        from seine.packages import Builder
+
+        class Quiet:
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                return 0
+
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "arm64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        builder = Builder(distro, {}, image or Quiet())
+        self.repository = os.path.join(self.workdir, "repository")
+        os.makedirs(os.path.join(self.repository, ".stamps"), exist_ok=True)
+        builder.repository = lambda: self.repository
+        return builder
+
+    def source(self):
+        where = os.path.join(self.workdir, "source")
+        os.makedirs(where, exist_ok=True)
+        with open(os.path.join(where, "busybox_1.35.0-4+mod1.dsc"), "w") as f:
+            f.write(self.DSC)
+        for name in ["busybox_1.35.0.orig.tar.bz2",
+                     "busybox_1.35.0-4+mod1.debian.tar.xz",
+                     # What the source was fetched as, superseded by what
+                     # was just built and no part of it.
+                     "busybox_1.35.0-4.debian.tar.xz"]:
+            open(os.path.join(where, name), "w").close()
+        return where, "busybox_1.35.0-4+mod1.dsc"
+
+    # What the .dsc names, and not what happens to lie beside it.
+    def test_the_files_are_the_ones_the_dsc_names(self):
+        builder = self.builder()
+        where, dsc = self.source()
+        self.assertEqual(sorted(builder.source_files(where, dsc)),
+                         ["busybox_1.35.0-4+mod1.debian.tar.xz",
+                          "busybox_1.35.0-4+mod1.dsc",
+                          "busybox_1.35.0.orig.tar.bz2"])
+
+    def test_they_are_published_with_the_debs(self):
+        builder = self.builder()
+        where, dsc = self.source()
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        builder._stage_source(package, where, dsc)
+
+        output = tempfile.mkdtemp(dir=self.workdir)
+        open(os.path.join(output, "busybox_1_arm64.deb"), "w").close()
+        stamp = os.path.join(self.repository, ".stamps", "busybox_arm64_abcd")
+        builder._built[(package.name, "arm64")] = (stamp, output)
+        builder._deploy(package, ["arm64"])
+
+        held = sorted(os.listdir(self.repository))
+        for name in ["busybox_1.35.0-4+mod1.dsc",
+                     "busybox_1.35.0.orig.tar.bz2",
+                     "busybox_1.35.0-4+mod1.debian.tar.xz"]:
+            self.assertIn(name, held)
+        # The tarball it was fetched as is not part of what was built.
+        self.assertNotIn("busybox_1.35.0-4.debian.tar.xz", held)
+
+        # And the stamp names them, or nothing would ever retire them.
+        with open(stamp) as f:
+            recorded = f.read().split()
+        self.assertIn("busybox_1.35.0-4+mod1.dsc", recorded)
+        self.assertIn("busybox_1_arm64.deb", recorded)
+
+    # One publication for a package built for two architectures: a source
+    # package is not built for one, and both builds were handed this one.
+    def test_published_once_for_two_architectures(self):
+        from seine.utils import HOST_ARCH
+        moved = []
+
+        builder = self.builder()
+        where, dsc = self.source()
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+                      scope: [host, target]
+        """).image.packages[0]
+        builder._stage_source(package, where, dsc)
+
+        architectures = builder.architectures(package)
+        self.assertEqual(len(architectures), 2)
+        stamps = {}
+        for architecture in architectures:
+            output = tempfile.mkdtemp(dir=self.workdir)
+            open(os.path.join(output, "busybox_1_%s.deb" % architecture),
+                 "w").close()
+            stamps[architecture] = os.path.join(
+                self.repository, ".stamps", "busybox_%s_abcd" % architecture)
+            builder._built[(package.name, architecture)] = (
+                stamps[architecture], output)
+        builder._deploy(package, architectures)
+
+        # One copy of each file, and every build's stamp names them, so
+        # they go when the last of those builds does rather than when the
+        # first is forgotten.
+        held = sorted(os.listdir(self.repository))
+        self.assertEqual(held.count("busybox_1.35.0-4+mod1.dsc"), 1)
+        for architecture in architectures:
+            with open(stamps[architecture]) as f:
+                self.assertIn("busybox_1.35.0-4+mod1.dsc", f.read())
+
+    # The index describes them, or a repository holding source packages is
+    # not holding them in any way anything can find.
+    def test_the_index_describes_them(self):
+        commands = []
+
+        class Image:
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                commands.append(" ".join(args))
+                return 0
+
+        self.builder(Image()).index()
+        self.assertEqual(len(commands), 1)
+        self.assertIn("apt-ftparchive sources .", commands[0])
+        self.assertIn("Sources.gz", commands[0])

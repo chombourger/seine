@@ -500,6 +500,11 @@ class Builder:
         # the lock over the first -- the second is only ever written and
         # read under a key one task owns.
         self._sources = {}
+        # The source package each fetch produced, kept apart from the
+        # working directory it was built in: that directory belongs to the
+        # builds and goes when the last of them is done, which is before
+        # anything is published.
+        self._source_packages = {}
         self._holding = {}
         self._workdirs = threading.Lock()
         self._built = {}
@@ -1544,6 +1549,31 @@ rm -rf .pc
                 "expected one" % (package.source, len(dsc)))
         return dsc[0]
 
+    # A source package is the .dsc and the files it lists, which is not
+    # everything lying beside it: the directory a source was fetched into
+    # also holds what it was fetched as -- the distribution's own .debian
+    # tarball, superseded by the one just written, and for a graft the
+    # tarball the tree came in. Taking what the .dsc names is the only
+    # answer that stays right, and it is the answer apt-ftparchive checks
+    # against when it reads one.
+    def source_files(self, workdir, dsc):
+        files = [dsc]
+        with open(os.path.join(workdir, dsc), "r") as f:
+            listing = False
+            for line in f:
+                if line.startswith(" ") == False:
+                    # A field of its own ends the file list; 'Files' and
+                    # the Checksums fields all name the same files, so the
+                    # first of them is enough.
+                    listing = line.startswith("Files:")
+                    continue
+                if listing == False:
+                    continue
+                named = line.split()
+                if len(named) == 3 and named[2] not in files:
+                    files.append(named[2])
+        return files
+
     # Builds one prepared source package for one architecture and leaves
     # the .debs, .changes and .buildinfo it produced in that
     # architecture's host-side repository.
@@ -1665,10 +1695,19 @@ rm -rf .pc
     # The cache is keyed on what a file is and when it changed, so only
     # what arrived since the last time is read. It lives beside the index
     # it describes; apt has no interest in files it was not pointed at.
+    # The Sources index beside it describes the source packages the builds
+    # were made from, which are published with them. Nothing seine runs
+    # reads it: a build fetches its sources from the distribution, not from
+    # here. It is written because a repository holding source packages
+    # nothing can find is not holding them in any useful sense -- what it
+    # is for is the machine handed a cache, and anything asking what a
+    # modified binary was built from.
     def index(self):
         self.builderImage.exec(
             ["sh", "-c", "apt-ftparchive --db .packages.db packages . "
-                         "> Packages && gzip -9 -c Packages > Packages.gz"],
+                         "> Packages && gzip -9 -c Packages > Packages.gz && "
+                         "apt-ftparchive sources . "
+                         "> Sources && gzip -9 -c Sources > Sources.gz"],
             volumes=[(self.repository(), REPOSITORY)], workdir=REPOSITORY)
 
     # What a rebuild of this package would depend on, as a file whose
@@ -2090,7 +2129,22 @@ rm -rf .pc
         self.patch(package, sourcedir, epoch)
         self.local_release(package, sourcedir, epoch)
         self.extend_kernel(package, sourcedir, self.architectures(package))
-        return self.source_package(package, sourcedir), epoch
+        dsc = self.source_package(package, sourcedir)
+        self._stage_source(package, os.path.dirname(sourcedir), dsc)
+        return dsc, epoch
+
+    # The source package put where publishing will find it, which is not
+    # where it was built: the working directory is thrown away by the last
+    # build to finish, and publishing comes after that.
+    #
+    # Once per package rather than once per build, which is what it is:
+    # both architectures were handed this same .dsc, and a source package
+    # is not built for an architecture.
+    def _stage_source(self, package, workdir, dsc):
+        staged = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="source-")
+        for name in self.source_files(workdir, dsc):
+            shutil.copy(os.path.join(workdir, name), staged)
+        self._source_packages[package.name] = staged
 
     # One build's claim on a fetched source, given up. The last to do so
     # takes the directory with it.
@@ -2141,7 +2195,24 @@ rm -rf .pc
         for _, _, produced in built.values():
             everything.update(produced)
 
+        # The source package the builds were handed, published once
+        # however many of them there were: it is one set of files, named
+        # by one .dsc, and neither belongs to an architecture. Recorded in
+        # every build's stamp all the same, so it is retired when the last
+        # of them goes rather than by whichever is forgotten first.
+        staged = self._source_packages.pop(package.name, None)
+        sources = [] if staged is None else sorted(os.listdir(staged))
+        everything.update(sources)
+
         with self._repository, locked(self.repository()):
+            for name in sources:
+                destination = os.path.join(self.repository(), name)
+                if os.path.lexists(destination):
+                    os.remove(destination)
+                shutil.move(os.path.join(staged, name), destination)
+            if staged is not None:
+                shutil.rmtree(staged, ignore_errors=True)
+
             for architecture, (stamp, output, produced) in sorted(built.items()):
                 for name in produced:
                     destination = os.path.join(self.repository(), name)
@@ -2159,7 +2230,7 @@ rm -rf .pc
                     shutil.move(os.path.join(output, name), destination)
                 shutil.rmtree(output, ignore_errors=True)
                 self._forget(package, architecture, everything)
-                self._record(stamp, produced)
+                self._record(stamp, sorted(set(produced) | set(sources)))
             # Once, at the end: one repository, and an index of it made
             # while a build of it is half moved in describes neither what
             # was there nor what is.

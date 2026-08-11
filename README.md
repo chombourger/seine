@@ -598,6 +598,30 @@ when that one changes, so a change to a library rebuilds what `before`
 and `after` say is built on it, however many packages down the chain.
 Use `--rebuild` to force one.
 
+#### What the repository holds
+
+Everything a rebuild produced: the binary packages, the `.changes` and
+`.buildinfo` that say how they were made, sbuild's build log, and the
+source package they were built from -- the `.dsc` and the tarballs it
+names. `apt-ftparchive` writes a `Packages` index over the binaries and a
+`Sources` index over the sources.
+
+The source package is published once per package, however many
+architectures were built from it: it is one set of files named by one
+`.dsc`, and a Debian source package is not built for an architecture.
+Every build's stamp names it all the same, so it is retired when the last
+of those builds is, rather than when the first one is superseded.
+
+Nothing seine runs reads the `Sources` index -- a rebuild fetches its
+source from the distribution, not from here. It is written for the
+machine handed a cache, and for anything asking what a modified binary
+was built from, which for a package under a copyleft licence is a
+question with an answer someone is entitled to.
+
+It is not free: the orig tarball is carried with them, which for busybox
+is a couple of megabytes and for a kernel is a couple of hundred.
+`seine cache clear packages` is what takes it back.
+
 #### Local versions
 
 Every rebuilt package is given a version of its own: a changelog entry is
