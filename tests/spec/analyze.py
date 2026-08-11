@@ -203,6 +203,37 @@ class WhereTheTimeWent(avocado.Test):
         self.assertIn("failed", report.splitlines()[0])
         self.assertIn("(failed)", report)
 
+class WhatTheBuildWaitedOn(avocado.Test):
+    # A kernel and a root file-system built beside each other, both waited
+    # for by the image: the kernel is the reason the build took as long as
+    # it did, and the root file-system finished inside it.
+    BUILD = [("bootstrap", [], 0, 120),
+             ("kernel", ["bootstrap"], 120, 1920),
+             ("rootfs", ["bootstrap"], 120, 1320),
+             ("image", ["kernel", "rootfs"], 1920, 2100)]
+
+    def test(self):
+        took, path = analyze.critical(run_of(self.BUILD, jobs=4))
+        self.assertEqual(path, ["bootstrap", "kernel", "image"])
+        self.assertEqual(took, 120 + 1800 + 180)
+
+    def test_it_is_printed_end_first(self):
+        report = said(analyze.critical_chain, run_of(self.BUILD, jobs=4))
+        lines = [line for line in report.splitlines() if "└─" in line
+                 or line.startswith("image")]
+        self.assertEqual(lines[0], "image +3m00s")
+        self.assertEqual(lines[1], "  └─kernel +30m00s")
+        self.assertEqual(lines[2], "    └─bootstrap +2m00s")
+        self.assertIn("35m00s of the 35m00s the build took", report)
+        self.assertNotIn("rootfs", report)
+
+    def test_one_step_at_a_time_makes_the_question_moot(self):
+        # Every step waited for the one before it, so the chain is the
+        # build and a tree of it says nothing.
+        report = said(analyze.critical_chain, run_of(self.BUILD, jobs=1))
+        self.assertIn("one step at a time", report)
+        self.assertNotIn("└─", report)
+
 HOUR = 3600
 
 class ABuildIsTheRunsItWasResumedFrom(avocado.Test):

@@ -211,8 +211,57 @@ def blame(run):
                                                 elapsed(spent(run))))
     return 0
 
+# The longest way through the build, as (what it cost, the steps of it).
+#
+# Node weights rather than edge weights: what a step waits for is the step
+# before it, and what it costs is its own. The path with the largest sum is
+# what the build could not have gone faster than however many steps ran at
+# once -- so it is the list of steps worth making quicker, and every step
+# not on it is one whose time somebody else was spending anyway.
+def critical(build):
+    by_name = {task["name"]: task for task in build["tasks"]}
+    longest = {}
+
+    def upto(name):
+        if name not in longest:
+            task = by_name[name]
+            before = max((upto(need) for need in task["needs"]
+                          if need in by_name),
+                         key=lambda path: path[0], default=(0.0, []))
+            longest[name] = (before[0] + task["end"] - task["start"],
+                             before[1] + [name])
+        return longest[name]
+
+    return max((upto(name) for name in by_name),
+               key=lambda path: path[0], default=(0.0, []))
+
+def critical_chain(build):
+    print(_header(build))
+    print()
+    if build.get("jobs", 1) <= 1:
+        # Every step waited for the one before it, so the chain is the
+        # build and drawing it says nothing. What makes the question worth
+        # asking is steps running beside each other.
+        print("  one step at a time, so the whole build is the chain:")
+        print("  '--jobs' is what makes this worth asking")
+        return 0
+
+    took, path = critical(build)
+    print("  %s of the %s the build took is on this path" % (
+        elapsed(took), elapsed(spent(build))))
+    print()
+    tasks = {task["name"]: task for task in build["tasks"]}
+    # Printed end first, the way a build is read when it is late: what was
+    # waited for last, and then what that waited for.
+    for depth, name in enumerate(reversed(path)):
+        task = tasks[name]
+        print("%s%s%s +%s" % ("  " * depth, "" if depth == 0 else "└─",
+                              name, elapsed(task["end"] - task["start"])))
+    return 0
+
 REPORTS = {
     "blame": blame,
+    "critical-chain": critical_chain,
 }
 
 class AnalyzeCmd(Cmd):
@@ -293,15 +342,18 @@ Description:
   the last build of anything.
 
 Usage:
-  seine analyze blame [SPEC...]
+  seine analyze REPORT [SPEC...]
 
 Reports:
   blame                 the steps of the build, longest first, and what the
                         build cost in total
+  critical-chain        the longest way through the build: the steps it
+                        could not have gone faster than, whatever else ran
+                        beside them
 
 Examples:
   seine analyze blame
-  seine analyze blame demo-image.yml
+  seine analyze critical-chain demo-image.yml
 
 Flags:
   -h, --help            print this message
