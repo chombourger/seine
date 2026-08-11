@@ -39,6 +39,7 @@ may require disks/partitions to be created.
   * [What a build would do](#what-a-build-would-do)
   * [While a build runs](#while-a-build-runs)
   * [Building in parallel](#building-in-parallel)
+  * [Where the time went](#where-the-time-went)
   * [Cross-compiling](#cross-compiling)
   * [Reproducibility](#reproducibility)
   * [A note on privileges](#a-note-on-privileges)
@@ -1604,6 +1605,84 @@ partial disk image is removed. Killing a task skips all of that to save
 minutes of a build that has already failed, and leaves the mess for the
 next one. The failure is reported with the steps that never ran.
 
+### Where the time went
+
+Every build records what each of its steps cost, and `seine analyze`
+reads that back once the build is over -- which is when the question is
+asked. Nothing is fetched, built or written by any of it.
+
+```
+seine analyze blame
+seine analyze blame demo-image.yml
+```
+
+Named specifications are loaded the way a build loads them and the
+report is of the last build of exactly those. Named none, it reports on
+the last build of anything, so the build that has just finished needs no
+naming:
+
+```
+plan a1b2c3d4e5f6, built 2026-02-02 05:36, 4 steps at a time
+
+    25m00s  package:linux/arm64
+     6m40s  rootfs
+     3m20s  tarball
+       ...
+  42m40s of step time in 25m00s of build
+  the machine was 46% busy, load 4.4 of 8 cpus
+```
+
+Those last two lines are the pair worth reading together. Step time is
+the work the build did and build time is how long it took to do it, so
+the difference between them is what `--jobs` bought. And the machine's
+own numbers say whether raising it would buy any more: a build burning a
+third of the cores has room, while one whose load sits well above what it
+is burning is waiting for a disk or a mirror and will not go faster for
+any number of steps at once. They are the whole machine's numbers, not
+seine's -- anything else running lands in them too.
+
+Which step to make quicker is a different question again, and
+`critical-chain` answers it: the longest way through the build, weighted
+by what each step cost.
+
+```
+seine analyze critical-chain demo-image.yml
+```
+
+```
+38m20s of the 45m00s the build took is on this path
+
+image +2m20s
+  └─disk +1m00s
+    └─tarball +3m20s
+      └─rootfs +6m40s
+        └─package:linux/arm64 +25m00s
+```
+
+A root file-system that took twenty minutes and finished while the
+kernel was still going is not on that path, and making it quicker would
+buy nothing. At `--jobs 1` the chain is the whole build, and the report
+says so instead.
+
+`plot` draws the same build as a chart -- a bar per step on one clock,
+with the load and the cores being burnt underneath them -- as SVG on
+stdout:
+
+```
+seine analyze plot demo-image.yml > build.svg
+```
+
+A build that failed is recorded too, since it is the one worth reading.
+When it is fixed and run again, the second run does what the first did
+not -- the packages the first built are built no more -- so seine joins
+the two: every step keeps what it cost the last time it ran, the runs
+are laid end to end, and the hours between the failure and the fix are
+in no number. The report says how many runs it joined.
+
+The records live with the caches, under `analyze`, and `seine cache`
+shows and clears them with the rest. They are advisory: a record that
+could not be written costs a report, never a build.
+
 ### Cross-compiling
 
 When the target `architecture` differs from the host's, packages are
@@ -1654,8 +1733,9 @@ elsewhere in seine.
 A build keeps what it would otherwise make again: the packages it fetched,
 the packages the container image builds fetched, the packages it rebuilt,
 the buildd chroots sbuild unpacks, the container images it builds, and the
-scratch space sources and images are assembled in. `seine cache info` says
-how much each of them is holding:
+scratch space sources and images are assembled in -- and, beside them, what
+each of its steps cost. `seine cache info` says how much each of them is
+holding:
 
 ```
 $ seine cache info
@@ -1664,6 +1744,7 @@ packages      1.1 GiB  /home/user/.cache/seine/packages
 chroots     278.4 MiB  /home/user/.cache/seine/chroots
 bootstraps  485.3 MiB  /home/user/.cache/seine/bootstraps
 images        9.3 GiB  /home/user/.local/share/seine
+analyze      24.0 KiB  /home/user/.cache/seine/analyze
 scratch     365.5 KiB  /var/tmp/seine
 total        11.4 GiB
 ```
