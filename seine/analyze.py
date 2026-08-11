@@ -245,7 +245,7 @@ def chain(recorded):
 def merged(taken):
     if len(taken) == 0:
         return None
-    tasks, samples, offset = {}, [], 0.0
+    tasks, samples, boundaries, offset = {}, [], [], 0.0
     for run in sorted(taken, key=lambda run: run["started"]):
         for task in run["tasks"]:
             tasks[task["name"]] = dict(task,
@@ -256,6 +256,7 @@ def merged(taken):
         samples += [dict(sample, t=sample["t"] + offset)
                     for sample in run.get("samples") or []]
         offset += spent(run)
+        boundaries.append(offset)
 
     newest = taken[0]
     return {"spec": newest["spec"],
@@ -265,6 +266,10 @@ def merged(taken):
             "runs": len(taken),
             "graphs": len({run.get("graph") for run in taken}),
             "cpus": newest.get("cpus"),
+            # Where one run ended and the next began, for a chart to say
+            # so. The last one is where the build ends, which is a line
+            # nobody needs.
+            "boundaries": boundaries[:-1],
             "samples": samples,
             "tasks": sorted(tasks.values(), key=lambda task: task["start"])}
 
@@ -368,9 +373,118 @@ def critical_chain(build):
                               name, elapsed(task["end"] - task["start"])))
     return 0
 
+# The build as a chart: a bar per step on one clock, and what the machine
+# was doing underneath them.
+#
+# Written by hand because that is all it takes -- a rectangle per step and
+# a line per series -- and because a chart nobody has to install anything
+# to read is a chart that gets read. It goes to stdout, for a browser or
+# for an issue.
+WIDTH  = 1000    # of the whole chart
+GUTTER = 220     # left of the bars, where the names are
+ROW    = 18      # per step
+TOP    = 44      # above the bars, for the title
+BAND   = 96      # under them, where the machine is drawn
+
+def plot(build):
+    if sys.stdout.isatty():
+        sys.stderr.write("error: the chart is SVG, and this is a terminal; "
+                         "redirect it: seine analyze plot > build.svg\n")
+        return 1
+
+    tasks = sorted(build["tasks"], key=lambda task: task["start"])
+    samples = build.get("samples") or []
+    took = spent(build) or 1
+    bars = WIDTH - GUTTER - 20
+    band = TOP + ROW * len(tasks) + 24
+    height = band + (BAND if len(samples) > 0 else 0)
+
+    def x(second):
+        return GUTTER + second / took * bars
+
+    out = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
+           'font-family="sans-serif" font-size="11">' % (WIDTH, height),
+           '<rect width="100%" height="100%" fill="white"/>',
+           # The first line of it: what a chart adds to the header is the
+           # picture, and the notes under it are for the reports that
+           # have no picture.
+           '<text x="10" y="20" font-size="13">%s</text>'
+           % _text(_header(build).split("\n")[0])]
+
+    # The clock the whole chart is read against.
+    for tick in _ticks(took):
+        out.append('<line x1="%.1f" y1="%d" x2="%.1f" y2="%d" '
+                   'stroke="#dddddd"/>' % (x(tick), TOP - 12, x(tick), height))
+        out.append('<text x="%.1f" y="%d" fill="#666666">%s</text>'
+                   % (x(tick) + 2, TOP - 16, elapsed(tick)))
+
+    # Where one run of a resumed build ends and the next begins. The gap
+    # between them is not drawn: nobody was building during it.
+    for boundary in build.get("boundaries") or []:
+        out.append('<line x1="%.1f" y1="%d" x2="%.1f" y2="%d" stroke="#999999" '
+                   'stroke-dasharray="4 3"/>' % (x(boundary), TOP - 12,
+                                                 x(boundary), height))
+
+    for row, task in enumerate(tasks):
+        y = TOP + row * ROW
+        out.append('<text x="%d" y="%d" text-anchor="end" fill="#333333">%s</text>'
+                   % (GUTTER - 8, y + 10, _text(task["name"][:34])))
+        out.append('<rect class="step" x="%.1f" y="%d" width="%.1f" height="%d" '
+                   'fill="%s"><title>%s: %s</title></rect>'
+                   % (x(task["start"]), y + 2,
+                      max(1.0, x(task["end"]) - x(task["start"])), ROW - 5,
+                      "#e45756" if task["failed"] else "#4c78a8",
+                      _text(task["name"]),
+                      elapsed(task["end"] - task["start"])))
+
+    out += _plot_machine(build, samples, band, x)
+    out.append('</svg>')
+    print("\n".join(out))
+    return 0
+
+# The load average and the busy cpus, both in cores so that one axis says
+# both: a load well above the cores being burnt is a build waiting for
+# something that is not a processor.
+def _plot_machine(build, samples, band, x):
+    if len(samples) == 0:
+        return []
+    cpus = build.get("cpus") or 1
+    top = max([cpus] + [sample["load"] for sample in samples])
+
+    def y(cores):
+        return band + BAND - 20 - (cores / top) * (BAND - 34)
+
+    drawn = ['<line x1="%d" y1="%.1f" x2="%d" y2="%.1f" stroke="#cccccc" '
+             'stroke-dasharray="2 4"/>' % (GUTTER, y(cpus), WIDTH - 20, y(cpus)),
+             '<text x="%d" y="%.1f" fill="#999999">%d cpus</text>'
+             % (WIDTH - 60, y(cpus) - 4, cpus)]
+    for name, colour, cores in [
+            ("cores busy", "#54a24b",
+             [(s["t"], s["cpu"] * cpus) for s in samples]),
+            ("load", "#e49444", [(s["t"], s["load"]) for s in samples])]:
+        drawn.append('<polyline fill="none" stroke="%s" points="%s"/>'
+                     % (colour, " ".join("%.1f,%.1f" % (x(at), y(value))
+                                         for at, value in cores)))
+        drawn.append('<text x="%d" y="%d" fill="%s">%s</text>'
+                     % (10 if name == "cores busy" else 90, band + BAND - 4,
+                        colour, name))
+    return drawn
+
+# Something to read the clock against, without so many that the chart is
+# ticks. Whichever of these gives ten or fewer.
+def _ticks(took):
+    for every in [30, 60, 300, 600, 1800, 3600, 7200]:
+        if took / every <= 10:
+            return [tick * every for tick in range(int(took // every) + 1)]
+    return []
+
+def _text(said):
+    return said.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 REPORTS = {
     "blame": blame,
     "critical-chain": critical_chain,
+    "plot": plot,
 }
 
 class AnalyzeCmd(Cmd):
@@ -459,10 +573,14 @@ Reports:
   critical-chain        the longest way through the build: the steps it
                         could not have gone faster than, whatever else ran
                         beside them
+  plot                  the build as a chart, as SVG on stdout: a bar per
+                        step on one clock, and what the machine was doing
+                        underneath them
 
 Examples:
   seine analyze blame
   seine analyze critical-chain demo-image.yml
+  seine analyze plot demo-image.yml > build.svg
 
 Flags:
   -h, --help            print this message

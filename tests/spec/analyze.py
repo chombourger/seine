@@ -338,6 +338,48 @@ class AnEarlierSuccessIsABuildOfItsOwn(avocado.Test):
         leave("inarow", 1770000000 + HOUR, [("rootfs", [], 0, 200)])
         self.assertEqual(len(analyze.chain(analyze.runs("inarow"))), 1)
 
+class TheBuildAsAChart(avocado.Test):
+    def chart(self, run):
+        import xml.etree.ElementTree as elements
+        # It has to parse: a chart that a browser refuses is not a chart.
+        return elements.fromstring(said(analyze.plot, run))
+
+    def test(self):
+        run = run_of([("bootstrap", [], 0, 120),
+                      ("kernel", ["bootstrap"], 120, 1920),
+                      ("rootfs", ["bootstrap"], 120, 1320)], jobs=2)
+        chart = self.chart(run)
+
+        drawn = [rect for rect in chart.iter("{http://www.w3.org/2000/svg}rect")
+                 if rect.get("class") == "step"]
+        self.assertEqual(len(drawn), 3)
+        # The one that took fifteen times as long is fifteen times as
+        # wide, which is the whole point of drawing it.
+        widths = [float(rect.get("width")) for rect in drawn]
+        self.assertAlmostEqual(widths[1] / widths[0], 15.0, places=1)
+        self.assertIn("kernel", said(analyze.plot, run))
+
+    def test_a_failed_step_is_drawn_apart(self):
+        run = run_of([("kernel", [], 0, 120)], ok=False)
+        run["tasks"][0]["failed"] = True
+        drawn = [rect for rect in self.chart(run).iter(
+            "{http://www.w3.org/2000/svg}rect") if rect.get("class") == "step"]
+        self.assertEqual(len(drawn), 1)
+        self.assertNotEqual(drawn[0].get("fill"), "#4c78a8")
+
+    def test_the_machine_is_drawn_under_the_steps(self):
+        run = run_of([("kernel", [], 0, 120)])
+        run["cpus"] = 4
+        run["samples"] = [{"t": 10, "load": 3.0, "cpu": 0.5},
+                          {"t": 60, "load": 4.0, "cpu": 0.9}]
+        chart = self.chart(run)
+        lines = list(chart.iter("{http://www.w3.org/2000/svg}polyline"))
+        # One for the cores it was burning and one for the load, on the
+        # same axis so that the gap between them is readable.
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            self.assertEqual(len(line.get("points").split()), 2)
+
 class APlanNobodyBuiltHasNothingToReport(avocado.Test):
     def test(self):
         where = os.path.join(self.workdir, "never-built.yml")
