@@ -1496,22 +1496,37 @@ rm -rf .pc
     # Nominating one is also what Debian does: arch-all is built once, by
     # one buildd, not once per architecture.
     #
-    # It has to be a native build. sbuild hands a cross build '-B' of its
-    # own accord, and rightly: an architecture-independent binary is
-    # commonly made by running something that was just built, which a
-    # cross build has no way to run. So a package whose builds are all
-    # cross builds has no arch-all binaries at all -- the same as today,
-    # and a gap worth closing separately.
+    # A native build for preference. sbuild hands a cross build '-B' of
+    # its own accord, and with reason: an architecture-independent binary
+    # is sometimes made by running something that was just built, which a
+    # cross build has no way to run.
     #
     # Between two native builds -- which is what 'cross: false' on a
     # package built for two architectures leaves -- the machine's own
     # architecture wins, since the other is being emulated.
+    #
+    # But a preference is all it is. When every build of a package is a
+    # cross build, which is the ordinary shape of a specification building
+    # for one board on somebody's laptop, the alternative to asking a
+    # cross build for them is not getting them: the .debs would be
+    # published without the arch-all packages beside them, and an image
+    # installing one would take the distribution's copy of a package it
+    # asked to have rebuilt, looking exactly as it should.
+    #
+    # So the cross build is asked. Most packaging manages it -- an
+    # arch-indep binary is commonly documentation or configuration -- and
+    # packaging that does not now fails loudly instead of quietly
+    # producing less, with 'cross: false' as the way to say so: it builds
+    # under emulation, natively, where the question does not arise.
     def indep_architecture(self, package):
-        natives = [a for a in self.architectures(package)
-                   if self.cross(package, a) == False]
-        if len(natives) == 0:
-            return None
-        return HOST_ARCH if HOST_ARCH in natives else natives[0]
+        architectures = self.architectures(package)
+        natives = [a for a in architectures if self.cross(package, a) == False]
+        for candidate in [natives, architectures]:
+            if HOST_ARCH in candidate:
+                return HOST_ARCH
+            if len(candidate) > 0:
+                return candidate[0]
+        return None
 
     # What a package's steps are called. The architecture is only added
     # when the package is built for more than one: the graph of a

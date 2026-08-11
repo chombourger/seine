@@ -1601,9 +1601,12 @@ class ArchitectureAllIsBuiltOnce(avocado.Test):
         self.assertEqual(builder.cross(package, other), False)
         self.assertEqual(builder.indep_architecture(package), HOST_ARCH)
 
-    # Every build a cross build, so nobody can: the same gap a package
-    # built for the image alone has always had.
-    def test_nobody_when_every_build_is_a_cross_build(self):
+    # Every build a cross build -- a specification building for one board
+    # on somebody's laptop -- and the cross build is asked for them
+    # anyway. The alternative is publishing the .debs without the arch-all
+    # packages beside them, and an image installing one would take the
+    # distribution's copy of a package it asked to have rebuilt.
+    def test_a_cross_build_is_asked_when_it_is_the_only_one(self):
         from seine.utils import HOST_ARCH
         other = "arm64" if HOST_ARCH != "arm64" else "amd64"
         builder = self.builder(other)
@@ -1611,7 +1614,40 @@ class ArchitectureAllIsBuiltOnce(avocado.Test):
                 packages:
                     - source: apt://busybox
         """).image.packages[0]
-        self.assertEqual(builder.indep_architecture(package), None)
+        self.assertEqual(builder.cross(package, other), True)
+        self.assertEqual(builder.indep_architecture(package), other)
+
+    # And it is told so: sbuild would otherwise decide for itself, and
+    # what it decides for a cross build is to leave them out.
+    def test_the_only_build_is_told_to_make_them(self):
+        from seine.packages import Builder
+        from seine.utils import HOST_ARCH
+
+        class Image:
+            def __init__(self):
+                self.calls = []
+
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                self.calls.append(" ".join(args))
+                return 0
+
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": other, "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        image = Image()
+        builder = Builder(distro, {}, image)
+        builder.repository = lambda: self.workdir
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+
+        builder.build(package, self.workdir, "busybox_1.dsc", "0", other,
+                      self.workdir)
+        self.assertIn("--arch-all", image.calls[-1].split())
+        self.assertNotIn("--no-arch-all", image.calls[-1].split())
 
     # And it is said to sbuild either way rather than left to its default,
     # which builds them whenever the build is a native one.

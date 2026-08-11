@@ -821,10 +821,22 @@ entries, since an explicit scope is an answer rather than a default.
 `Architecture: all` binaries are built by exactly one of a package's
 builds, the way Debian builds them on one buildd. Two builds producing
 them would write one filename twice, and which of them landed last would
-decide what the image installs. The job goes to a native build, since
-sbuild hands a cross build `-B` and an architecture-independent binary is
-commonly made by running something that was just built; between two
-native builds the machine's own architecture takes it.
+decide what the image installs.
+
+The job goes to a native build for preference -- sbuild hands a cross
+build `-B` of its own accord, since an architecture-independent binary is
+sometimes made by running something that was just built -- and between
+two native builds the machine's own architecture takes it.
+
+A preference is all it is. When every build of a package is a cross
+build, which is the ordinary shape of building for one board on a laptop,
+the cross build is asked for them anyway: the alternative is not getting
+them, and an image installing one would take the distribution's copy of a
+package it asked to have rebuilt, looking exactly as it should. Most
+packaging manages it, since an arch-indep binary is usually documentation
+or configuration. Packaging that does not now fails rather than quietly
+producing less, and `cross: false` is how to say so -- it builds under
+emulation, natively, where the question does not arise.
 
 The source is fetched, patched and packed into a `.dsc` once, and that
 one source package is built twice. A Debian source package is not built
