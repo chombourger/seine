@@ -11,6 +11,7 @@ import shlex
 import shutil
 import tempfile
 import threading
+import time
 import tomllib
 import yaml
 
@@ -40,6 +41,18 @@ from seine.utils  import HOST_ARCH
 # debian/ directory and so cannot be built, and pairing one with packaging
 # taken from somewhere else is a second source this does not model yet.
 SCHEMES = ["apt", "git", "https"]
+
+# Who a rebuild is for. 'target' is what the image installs and is what a
+# package that says nothing gets. 'host' is for the machine doing the
+# building: a code generator a later package build-depends on, or a tool
+# the imager runs.
+#
+# A list of roles rather than a word meaning "two of them": a compat
+# architecture beside the image's -- i386 on amd64, armhf on arm64 -- is a
+# third role to come, and a specification that had said 'both' would then
+# be saying which two without naming them.
+SCOPES = ["host", "target"]
+DEFAULT_SCOPE = ["target"]
 
 # Build types 'extends' knows about, and the settings each of them takes.
 # A kernel is configured rather than patched: Debian builds its kernels
@@ -187,6 +200,20 @@ class Package:
         self.revision = spec.get("revision", DEFAULT_REVISION)
         if type(self.revision) != type(""):
             raise self._error("'revision' shall be a string")
+        self.scope = self._parse_scope(spec)
+        # A kernel is described per architecture and named for one. Its
+        # flavour is a name within an architecture -- 'arm64', 'amd64',
+        # 'rpi' -- so one 'flavour' cannot be right for two of them, and a
+        # specification asking for both would be asking for a kernel it
+        # has not described. Two entries, each naming its own flavour, is
+        # what that means.
+        if self.kernel and len(self.scope) > 1:
+            raise self._error(
+                "'extends: kernel' takes one 'scope' role: a kernel is "
+                "configured per architecture, down to the name of its "
+                "flavour, and '%s' asks for one kernel to be several. List "
+                "the architectures as separate packages, each with the "
+                "'flavour' that architecture has." % ", ".join(self.scope))
         self.source_date_epoch = self._parse_epoch(spec)
 
     def _error(self, message):
@@ -308,6 +335,32 @@ class Package:
         self.kernel = "kernel" in extends
         return extends
 
+    # Who this rebuild is for, as one role or a list of them. Whether it
+    # was written down at all is kept beside it: a scope nothing asked for
+    # is one a dependent may widen, and one the specification wrote is an
+    # answer rather than a default.
+    def _parse_scope(self, spec):
+        scope = spec.get("scope")
+        self.scoped = scope is not None
+        if scope is None:
+            return list(DEFAULT_SCOPE)
+        if type(scope) == type(""):
+            scope = [scope]
+        if type(scope) != type([]) or any(type(r) != type("") for r in scope):
+            raise self._error(
+                "'scope' shall be a role or a list of them, one of %s"
+                % ", ".join(SCOPES))
+        for role in scope:
+            if role not in SCOPES:
+                raise self._error(
+                    "'scope' has no '%s' role, expected one of %s"
+                    % (role, ", ".join(SCOPES)))
+        if len(scope) == 0:
+            raise self._error(
+                "'scope' is empty: a package is rebuilt for someone, and a "
+                "package for no one is one to leave out")
+        return sorted(set(scope))
+
     # A sha256 as it is written down: sixty-four hexadecimal digits,
     # checked here so a truncated one is reported against the file that
     # holds it rather than against the download it fails to match.
@@ -392,9 +445,14 @@ class Builder:
         # built at the same time. Compiling is not: that is the part
         # worth doing beside each other.
         self._chroots = threading.Lock()
-        # What each package's fetch left behind, until its build takes it,
-        # and what each build produced, until it is published.
+        # What each package's fetch left behind, until the last build that
+        # reads it is done, and what each build produced, until it is
+        # published. Both are reached from several tasks at once, hence
+        # the lock over the first -- the second is only ever written and
+        # read under a key one task owns.
         self._sources = {}
+        self._holding = {}
+        self._workdirs = threading.Lock()
         self._built = {}
         self._repository = threading.Lock()
 
@@ -933,34 +991,43 @@ rm -rf .pc
     #
     # None of this needs a patch: the configuration lives in debian/, which
     # a "3.0 (quilt)" package lets us edit directly.
-    def extend_kernel(self, package, sourcedir):
+    #
+    # Per architecture the package is built for, which for a kernel is
+    # exactly one: the parser refuses 'scope: both' on a kernel, since a
+    # flavour is a name within an architecture and one cannot be right for
+    # two of them. The loop is over what the package says it is built for
+    # rather than over the image's architecture, so the two cannot drift.
+    def extend_kernel(self, package, sourcedir, architectures):
         if package.kernel == False:
             return
-
-        architecture = self.distro["architecture"]
-        config = os.path.join(sourcedir, "debian", "config", architecture, "config")
-        if os.path.isfile(config) == False:
-            raise ValueError(
-                "package '%s' is built as a kernel, but its source has no "
-                "debian/config/%s/config to configure"
-                % (package.source, architecture))
 
         fragments = package.kernel_config_files()
         for fragment in fragments:
             if os.path.isfile(fragment) == False:
                 raise ValueError("package '%s': no such kernel configuration "
                                  "fragment: %s" % (package.source, fragment))
-        if len(fragments) > 0:
-            with open(config, "a") as f:
-                for fragment in fragments:
-                    f.write("\n# %s, added by seine\n" % os.path.basename(fragment))
-                    with open(fragment, "r") as contents:
-                        f.write(contents.read())
 
-        if package.kernel_flavour is not None:
-            self._restrict_flavour(package, sourcedir, architecture)
-        if package.kernel_upstream is not None:
-            self._disable_signed(package, sourcedir, architecture)
+        for architecture in architectures:
+            config = os.path.join(sourcedir, "debian", "config", architecture,
+                                  "config")
+            if os.path.isfile(config) == False:
+                raise ValueError(
+                    "package '%s' is built as a kernel, but its source has no "
+                    "debian/config/%s/config to configure"
+                    % (package.source, architecture))
+
+            if len(fragments) > 0:
+                with open(config, "a") as f:
+                    for fragment in fragments:
+                        f.write("\n# %s, added by seine\n"
+                                % os.path.basename(fragment))
+                        with open(fragment, "r") as contents:
+                            f.write(contents.read())
+
+            if package.kernel_flavour is not None:
+                self._restrict_flavour(package, sourcedir, architecture)
+            if package.kernel_upstream is not None:
+                self._disable_signed(package, sourcedir, architecture)
 
         # debian/control lists a binary package per flavour and is generated
         # from the files edited above, so it has to be rebuilt before the
@@ -995,7 +1062,8 @@ rm -rf .pc
             check=False)
 
         if package.kernel_flavour is not None:
-            self._check_flavour(package, sourcedir, architecture)
+            for architecture in architectures:
+                self._check_flavour(package, sourcedir, architecture)
 
     # Restricting the build only takes effect once the rules have been
     # regenerated from the edited defines, and that regeneration reports
@@ -1328,27 +1396,84 @@ rm -rf .pc
     # build is slow enough to be worth avoiding, even though not every
     # package can be cross-built. 'cross: false' asks for the slow, always
     # working way instead.
-    def cross(self, package):
+    def cross(self, package, architecture):
+        # Nothing to cross to: a host package is built for the machine
+        # already running the compiler, whatever the specification said.
+        if architecture == HOST_ARCH:
+            return False
         if package.cross is not None:
             return package.cross
-        return self.distro["architecture"] != HOST_ARCH
+        return True
 
     # The architecture of the chroot the build runs in: the host's when
     # cross-compiling, since that is what runs the compiler, and the
-    # target's when emulating it.
-    def chroot_architecture(self, package):
-        if self.cross(package):
+    # package's own when emulating it.
+    def chroot_architecture(self, package, architecture):
+        if self.cross(package, architecture):
             return HOST_ARCH
-        return self.distro["architecture"]
+        return architecture
 
-    # Rebuilds one package and leaves the .debs, .changes and .buildinfo it
-    # produced in the host-side repository. The source tree is turned back
-    # into a source package first: patches added to a quilt series are
-    # applied by dpkg-source on the way, and sbuild wants a .dsc anyway.
-    def build(self, package, sourcedir, epoch, output):
+    # The architectures a package is built for, which is what 'scope' says.
+    # Collapsed to one when the image is of the machine's own architecture:
+    # 'both' then asks for the same source, built the same way, into the
+    # same repository, and building it twice would only race with itself.
+    def architectures(self, package):
+        wanted = []
+        if "target" in package.scope:
+            wanted.append(self.distro["architecture"])
+        if "host" in package.scope:
+            wanted.append(HOST_ARCH)
+        return sorted(set(wanted))
+
+    # Which of a package's builds produces its 'Architecture: all'
+    # binaries, when any of them can.
+    #
+    # Nominated rather than left to chance. Those binaries are one package
+    # under one filename, and one repository holds every architecture, so
+    # two builds of a source that both build them write the same file --
+    # and which of them landed last would decide what an image installs.
+    # Nominating one is also what Debian does: arch-all is built once, by
+    # one buildd, not once per architecture.
+    #
+    # It has to be a native build. sbuild hands a cross build '-B' of its
+    # own accord, and rightly: an architecture-independent binary is
+    # commonly made by running something that was just built, which a
+    # cross build has no way to run. So a package whose builds are all
+    # cross builds has no arch-all binaries at all -- the same as today,
+    # and a gap worth closing separately.
+    #
+    # Between two native builds -- which is what 'cross: false' on a
+    # package built for two architectures leaves -- the machine's own
+    # architecture wins, since the other is being emulated.
+    def indep_architecture(self, package):
+        natives = [a for a in self.architectures(package)
+                   if self.cross(package, a) == False]
+        if len(natives) == 0:
+            return None
+        return HOST_ARCH if HOST_ARCH in natives else natives[0]
+
+    # What a package's steps are called. The architecture is only added
+    # when the package is built for more than one: the graph of a
+    # specification that builds for the image alone -- which is every
+    # specification that says nothing about 'scope' -- reads as it always
+    # has, and 'before'/'after' go on naming a package rather than a build
+    # of one.
+    def label(self, package, architecture):
+        if len(self.architectures(package)) > 1:
+            return "%s:%s" % (package.name, architecture)
+        return package.name
+
+    # Turns the prepared source tree back into a source package, and says
+    # what it is called. Patches added to a quilt series are applied by
+    # dpkg-source on the way, and sbuild wants a .dsc anyway.
+    #
+    # Done once per package rather than once per architecture: a Debian
+    # source package is not built for an architecture, it describes every
+    # one the packaging supports. Both builds of a 'scope: both' package
+    # are then demonstrably of the same source rather than of two trees
+    # prepared the same way.
+    def source_package(self, package, sourcedir):
         workdir = os.path.dirname(sourcedir)
-        volumes = [(workdir, WORKDIR), (self.repository(), REPOSITORY),
-                   (output, OUTPUT)]
 
         # The fetched source came with a .dsc of its own, and ours is about
         # to be written beside it under a different name -- the local
@@ -1368,6 +1493,14 @@ rm -rf .pc
             raise ValueError(
                 "building the source package for '%s' produced %d .dsc files, "
                 "expected one" % (package.source, len(dsc)))
+        return dsc[0]
+
+    # Builds one prepared source package for one architecture and leaves
+    # the .debs, .changes and .buildinfo it produced in that
+    # architecture's host-side repository.
+    def build(self, package, workdir, dsc, epoch, architecture, output):
+        volumes = [(workdir, WORKDIR), (self.repository(), REPOSITORY),
+                   (output, OUTPUT)]
 
         # SOURCE_DATE_EPOCH and DEB_BUILD_OPTIONS are passed in the
         # environment: sbuild forwards both into the build, as they are on
@@ -1386,11 +1519,18 @@ rm -rf .pc
             # we have no reason to install.
             "--no-run-lintian", "--no-run-piuparts", "--no-run-autopkgtest",
         ]
-        if self.cross(package):
+        if self.cross(package, architecture):
             args += ["--build=%s" % HOST_ARCH,
-                     "--host=%s" % self.distro["architecture"]]
+                     "--host=%s" % architecture]
         else:
-            args += ["--arch=%s" % self.distro["architecture"]]
+            args += ["--arch=%s" % architecture]
+
+        # Said either way rather than left to sbuild's default, which is
+        # to build them whenever the build is a native one: a package
+        # built for two architectures natively would then build them
+        # twice, into one repository, under one name.
+        args += ["--arch-all" if architecture == self.indep_architecture(package)
+                 else "--no-arch-all"]
         # How much of the machine this build may use. sbuild works it out
         # from the machine itself, which is right for the one build that
         # was ever running at a time and wrong the moment there are
@@ -1410,7 +1550,7 @@ rm -rf .pc
         # the native one under '<!cross>', so without the profile a cross
         # build asks its chroot for a compiler not installable there.
         profiles = list(package.profiles)
-        if self.cross(package) and "cross" not in profiles:
+        if self.cross(package, architecture) and "cross" not in profiles:
             profiles.append("cross")
         if len(profiles) > 0:
             args += ["--profiles=%s" % ",".join(profiles)]
@@ -1419,10 +1559,16 @@ rm -rf .pc
         # reaches the repository through the bind mount configured in the
         # builder image, so it is an ordinary sources.list entry there --
         # same repository, same pin, same behaviour as everywhere else.
+        #
+        # One entry covers every architecture, which is what makes a
+        # 'scope: host' rebuild useful: a cross build's chroot needs what
+        # it build-depends on to be of the *host* architecture, since that
+        # is what runs there, and apt takes from this index what the
+        # architecture it was asked about can use.
         args += ["--extra-repository=deb [trusted=yes] file:%s ./" % REPOSITORY,
                  "--chroot-setup-commands=%s" % apt_preferences_command()]
 
-        args += ["%s/%s" % (WORKDIR, dsc[0])]
+        args += ["%s/%s" % (WORKDIR, dsc)]
 
         # sbuild bind-mounts a handful of device nodes into its chroot and
         # complains about each one the container does not have. podman only
@@ -1435,7 +1581,8 @@ rm -rf .pc
         # Run from the output directory so sbuild drops what it built
         # there, where it is this build's and nobody else's.
         self.builderImage.exec(
-            ["sh", "-c", script], architecture=self.chroot_architecture(package),
+            ["sh", "-c", script],
+            architecture=self.chroot_architecture(package, architecture),
             volumes=volumes, workdir=OUTPUT, environment=environment)
 
     def repository(self):
@@ -1486,7 +1633,8 @@ rm -rf .pc
     # built against the buildd chroot, which is made from the distribution
     # settings above; the image the root file-system is later composed from
     # has no bearing on what comes out of the build.
-    def stamp(self, package, depends=None):
+    def stamp(self, package, architecture=None, depends=None):
+        architecture = architecture or self.distro["architecture"]
         digest = hashlib.sha256()
         # Sets, not sequences: which patches are kept and which are dropped
         # does not depend on the order they were written in, and a digest
@@ -1494,7 +1642,7 @@ rm -rf .pc
         for part in [package.source,
                      ",".join(package.profiles),
                      ",".join(package.options),
-                     str(self.cross(package)),
+                     str(self.cross(package, architecture)),
                      str(package.source_date_epoch),
                      package.revision,
                      str(package.kernel_featureset),
@@ -1512,9 +1660,16 @@ rm -rf .pc
                      ",".join(sorted(package.kernel_build_files)),
                      self.distro["source"],
                      self.distro["release"],
-                     self.distro["architecture"],
+                     architecture,
                      "\n".join(apt_sources(self.distro, sources=True)),
-                     self.chroot_architecture(package)]:
+                     self.chroot_architecture(package, architecture),
+                     # Whether this is the build that makes the package's
+                     # architecture-independent binaries, which is decided
+                     # by what the *other* builds are: widening 'scope'
+                     # can move the job to another architecture, and the
+                     # build that no longer has it produces different
+                     # files than the stamp beside it says it did.
+                     str(architecture == self.indep_architecture(package))]:
             digest.update(part.encode())
         # Patches and kernel configuration fragments count by content, not
         # by name: editing one without touching the specification has to be
@@ -1542,28 +1697,36 @@ rm -rf .pc
             digest.update(depends[name].encode())
 
         # The architecture is in the name, not only in the digest: one
-        # repository holds every architecture's stamps, and what a stamp is
-        # looked up by is the build it belongs to. Without it the amd64
-        # build of a package would find the arm64 build's stamp when asking
-        # what it left behind last time, and take its .debs away as
-        # superseded.
+        # repository holds every architecture's stamps, and what a stamp
+        # is looked up by is the build it belongs to. Without it the
+        # amd64 build of a package would find the arm64 build's stamp
+        # when asking what it left behind last time, and take its .debs
+        # away as superseded.
         return os.path.join(self._stamps(), "%s_%s_%s"
-                            % (package.name, self.distro["architecture"],
+                            % (package.name, architecture,
                                digest.hexdigest()[:16]))
 
-    # The stamp of every package, in build order, each one folding in the
-    # stamps of what it is built after. The order is what makes that
-    # possible: a package's dependencies have been given their digest
-    # before it is given its own.
+    # The stamp of every package it is built for, in build order, each one
+    # folding in the stamps of what it is built after. The order is what
+    # makes that possible: a package's dependencies have been given their
+    # digest before it is given its own.
+    #
+    # A dependency is followed within an architecture rather than across
+    # them: what a build was compiled and linked against is the
+    # dependency's build for the same architecture, and the host build of
+    # a package has no bearing on what its target build produced.
     def stamps(self, packages):
         digests = {}
         stamps = []
         for package in packages:
-            depends = {d.name: digests[d.name] for d in getattr(package, "depends", [])
-                       if d.name in digests}
-            stamp = self.stamp(package, depends)
-            digests[package.name] = os.path.basename(stamp).rsplit("_", 1)[1]
-            stamps.append((package, stamp))
+            for architecture in self.architectures(package):
+                depends = {d.name: digests[(d.name, architecture)]
+                           for d in getattr(package, "depends", [])
+                           if (d.name, architecture) in digests}
+                stamp = self.stamp(package, architecture, depends)
+                digests[(package.name, architecture)] = \
+                    os.path.basename(stamp).rsplit("_", 1)[1]
+                stamps.append((package, architecture, stamp))
         return stamps
 
     def _stamps(self):
@@ -1576,11 +1739,10 @@ rm -rf .pc
     # be undone without having to guess which binary packages came from
     # which source -- the names rarely match, and one source package
     # commonly produces several.
-    def _previous(self, package):
+    def _previous(self, package, architecture):
         previous = {}
         for stamp in sorted(os.listdir(self._stamps())):
-            if stamp.startswith("%s_%s_" % (package.name,
-                                            self.distro["architecture"])) == False:
+            if stamp.startswith("%s_%s_" % (package.name, architecture)) == False:
                 continue
             path = os.path.join(self._stamps(), stamp)
             with open(path, "r") as f:
@@ -1596,8 +1758,13 @@ rm -rf .pc
     # go on offering them: the index lists all of them, and apt installs
     # the highest version it is offered, which after a downgrade is the one
     # that was meant to be replaced.
-    def _forget(self, package, produced):
-        for stamp, files in self._previous(package).items():
+    # 'produced' is what every build being published now made, not only
+    # this architecture's: the architecture-independent binaries move
+    # between architectures when 'scope' changes, and the build that has
+    # just lost them would otherwise take away the copy the build that
+    # gained them has only just written.
+    def _forget(self, package, architecture, produced):
+        for stamp, files in self._previous(package, architecture).items():
             for name in files:
                 if name in produced:
                     continue
@@ -1607,13 +1774,8 @@ rm -rf .pc
             os.unlink(stamp)
 
     # What a build left in the directory it was given. Everything there is
-    # its own, so there is nothing to date or to tell apart: it is the only
-    # thing that wrote there.
-    #
-    # Dating them was the way this used to be asked, and it is wrong the
-    # moment two packages build at once: a build that starts while another
-    # is running claims every file the other writes after it, records them
-    # in its own stamp, and takes them away as superseded next time.
+    # its own, so there is nothing to date or to tell apart: it is the
+    # only thing that wrote there.
     def _produced(self, output):
         return sorted(name for name in os.listdir(output)
                       if os.path.isfile(os.path.join(output, name))
@@ -1650,7 +1812,7 @@ rm -rf .pc
             first = []
             if self._indexable():
                 first = [Task("packages-prepare",
-                              lambda: self._prepare(hostBootstrap),
+                              functools.partial(self._prepare, hostBootstrap),
                               needs=["bootstrap-host"])]
             return first + [Task("packages",
                                  functools.partial(self._reused, reused),
@@ -1658,7 +1820,7 @@ rm -rf .pc
                                        + [t.name for t in first])]
 
         tasks = [Task("packages-prepare",
-                      lambda: self._prepare(hostBootstrap),
+                      functools.partial(self._prepare, hostBootstrap),
                       needs=["bootstrap-host"])]
 
         # A package built against another has to be built after it, which
@@ -1668,47 +1830,79 @@ rm -rf .pc
         # package where it can be installed from, not the one that built
         # it.
         names = {package.name: "deploy:%s" % package.name
-                 for package, _ in pending}
-        for package, stamp in pending:
+                 for package, _, _ in pending}
+
+        # A package's builds, gathered so its steps are declared together:
+        # one fetch, a build per architecture, and one step publishing
+        # them.
+        grouped = collections.OrderedDict()
+        for package, architecture, stamp in pending:
+            grouped.setdefault(package.name, (package, []))[1].append(
+                (architecture, stamp))
+
+        for name, (package, builds) in grouped.items():
             # Fetching waits on a server and building waits on the
             # machine, so they are separate: a large download no longer
             # holds a slot that could be compiling something else, and a
             # source that cannot be fetched says so early rather than
             # after everything before it has been built.
-            fetch = "fetch:%s" % package.name
+            #
+            # One fetch for a package built for two architectures. The
+            # same source package is what both builds are handed, so two
+            # roles are two builds of one source rather than two sources
+            # that ought to be the same.
+            fetch = "fetch:%s" % name
             tasks.append(Task(fetch,
                               functools.partial(self._fetched, package),
                               needs=["packages-prepare"]))
-            needs = [fetch] + [
-                names[d.name] for d in getattr(package, "depends", [])
-                if d.name in names]
-            tasks.append(Task("package:%s" % package.name,
-                              functools.partial(self._rebuild, package, stamp),
-                              needs=needs))
-            tasks.append(Task(names[package.name],
-                              functools.partial(self._deploy, package),
-                              needs=["package:%s" % package.name]))
+            waits = [fetch] + [names[d.name]
+                               for d in getattr(package, "depends", [])
+                               if d.name in names]
+            built = []
+            for architecture, stamp in builds:
+                step = "package:%s" % self.label(package, architecture)
+                tasks.append(Task(step,
+                                  functools.partial(self._rebuild, package,
+                                                    architecture, stamp),
+                                  needs=waits))
+                built.append(step)
+
+            # One publishing step for every architecture, rather than one
+            # each. What comes out of the builds is not a repository per
+            # architecture and nothing else: an 'Architecture: all' binary
+            # belongs in all of them and is built by only one of them, so
+            # somebody has to hold the whole picture -- and the step that
+            # decides what an earlier build left behind should be forgotten
+            # is the natural somebody.
+            tasks.append(Task(names[name],
+                              functools.partial(self._deploy, package,
+                                                [a for a, _ in builds]),
+                              needs=built))
 
         return tasks + [Task("packages",
                              functools.partial(self._reused, reused),
                              needs=[t.name for t in tasks])]
+
 
     # The packages this build did not have to build, recorded as taken from
     # the cache. At the barrier rather than where the decision is made: that
     # decision is also made by '--dry-run', which uses nothing and should
     # leave the index saying so.
     def _reused(self, current):
-        for package, stamp in current:
-            entry = Index().hit(PACKAGE, self.key(package))
+        for package, architecture, stamp in current:
+            key = self.key(package, architecture)
+            entry = Index().hit(PACKAGE, key)
             say(self.options, "package %s reused, made %s"
-                              % (self.key(package), since(entry.get("made"))))
+                              % (key, since(entry.get("made"))))
 
     # What a package is called in the cache index. The release and the
     # architecture are part of it: one index covers a machine, and the same
-    # source built for two releases is two different sets of .debs.
-    def key(self, package):
+    # source built for two releases -- or for two architectures -- is two
+    # different sets of .debs.
+    def key(self, package, architecture=None):
         return "%s/%s/%s" % (self.distro["release"],
-                             self.distro["architecture"], package.name)
+                             architecture or self.distro["architecture"],
+                             package.name)
 
     # The packages this build would leave alone, with the stamp that says
     # so. A stamp names the digest of everything that would go into the
@@ -1718,7 +1912,7 @@ rm -rf .pc
         rebuild = self.options.get("rebuild", False)
         if rebuild:
             return []
-        return [(p, s) for p, s in self.stamps(packages)
+        return [(p, a, s) for p, a, s in self.stamps(packages)
                 if os.path.isfile(s)]
 
     # Which packages this build actually has to rebuild, decided before
@@ -1729,7 +1923,7 @@ rm -rf .pc
         if len(packages) == 0:
             return []
         rebuild = self.options.get("rebuild", False)
-        return [(p, s) for p, s in self.stamps(packages)
+        return [(p, a, s) for p, a, s in self.stamps(packages)
                 if rebuild or os.path.isfile(s) == False]
 
     # Whether the repository is holding .debs its index does not describe.
@@ -1770,9 +1964,14 @@ rm -rf .pc
             return
 
         self._prepare(hostBootstrap)
-        for package, stamp in pending:
-            self._rebuild(package, stamp)
-            self._deploy(package)
+        grouped = collections.OrderedDict()
+        for package, architecture, stamp in pending:
+            grouped.setdefault(package.name, (package, []))[1].append(
+                (architecture, stamp))
+        for package, builds in grouped.values():
+            for architecture, stamp in builds:
+                self._rebuild(package, architecture, stamp)
+            self._deploy(package, [a for a, _ in builds])
 
     # Fetching a source and building it are two different jobs: one waits
     # on a server, the other on the machine. Kept together, a package with
@@ -1782,6 +1981,13 @@ rm -rf .pc
     # So what a fetch leaves behind outlives it: the directory belongs to
     # the package rather than to the step, and the build that follows
     # finds it there.
+    #
+    # Preparing the source is part of it -- grafting, patching, the local
+    # changelog entry, the kernel's configuration, and dpkg-source over
+    # the result. All of that describes a source package rather than a
+    # build of one, and doing it here is what lets a package built for two
+    # architectures be built from one .dsc: the two are then demonstrably
+    # the same source rather than two trees prepared the same way.
     def _fetched(self, package):
         workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
                                    prefix="source-")
@@ -1789,11 +1995,51 @@ rm -rf .pc
             print("fetching '%s'" % package.source)
             sourcedir = self.fetch(package, workdir)
             self.fetch_upstream(package, workdir)
+            dsc, epoch = self._prepared(package, workdir, sourcedir)
         except:
             shutil.rmtree(workdir, ignore_errors=True)
             raise
-        self._sources[package.name] = (workdir, sourcedir)
-        return workdir, sourcedir
+
+        source = (workdir, dsc, epoch)
+        with self._workdirs:
+            self._sources[package.name] = source
+            # How many builds are still to be handed this source. The
+            # directory outlives the fetch but not the last build that
+            # reads it, and with two architectures reading one tree the
+            # first to finish is not the one that may throw it away.
+            self._holding[package.name] = len(self.architectures(package))
+        return source
+
+    # A fetched tree turned into the source package the builds are handed,
+    # and the date they are all pinned to.
+    def _prepared(self, package, workdir, sourcedir):
+        # Taken before the graft, which replaces the changelog it is read
+        # from: what dates the build is the packaging we started from,
+        # which is a thing the specification pins.
+        epoch = self.source_date_epoch(package, sourcedir)
+        if package.kernel_upstream is not None:
+            sourcedir = self.graft(package, workdir, sourcedir, epoch)
+        self.patch(package, sourcedir, epoch)
+        self.local_release(package, sourcedir, epoch)
+        self.extend_kernel(package, sourcedir, self.architectures(package))
+        return self.source_package(package, sourcedir), epoch
+
+    # One build's claim on a fetched source, given up. The last to do so
+    # takes the directory with it.
+    def _release(self, package):
+        with self._workdirs:
+            holding = self._holding.get(package.name, 1) - 1
+            self._holding[package.name] = holding
+            if holding > 0:
+                return
+            workdir = (self._sources.pop(package.name, None) or (None,))[0]
+        if workdir is None:
+            return
+        if self.options.get("keep"):
+            print("keeping '%s' (source of '%s') as requested"
+                  % (workdir, package.name))
+        else:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     # Putting what was built where the rest of the build can install it
     # from: the repository, and the index apt reads there.
@@ -1806,67 +2052,76 @@ rm -rf .pc
     # One at a time, and against every other build on the machine as well:
     # an index rewritten while another build's apt reads it is a failure
     # that arrives much later and makes no sense when it does.
-    def _deploy(self, package):
-        stamp, output = self._built.pop(package.name, (None, None))
-        if stamp is None:
+    def _deploy(self, package, architectures=None):
+        if architectures is None:
+            architectures = [self.distro["architecture"]]
+
+        built = {}
+        for architecture in architectures:
+            stamp, output = self._built.pop((package.name, architecture),
+                                            (None, None))
+            if stamp is not None:
+                built[architecture] = (stamp, output, self._produced(output))
+        if len(built) == 0:
             return
-        produced = self._produced(output)
+
+        # What all of these builds made, which is what none of them may
+        # take away. A build's own files are its to record; keeping the
+        # others safe is what stops one architecture from tidying away
+        # another's as superseded.
+        everything = set()
+        for _, _, produced in built.values():
+            everything.update(produced)
+
         with self._repository, locked(self.repository()):
-            for name in produced:
-                shutil.move(os.path.join(output, name),
-                            os.path.join(self.repository(), name))
-            shutil.rmtree(output, ignore_errors=True)
-            self._forget(package, produced)
-            self._record(stamp, produced)
+            for architecture, (stamp, output, produced) in sorted(built.items()):
+                for name in produced:
+                    shutil.move(os.path.join(output, name),
+                                os.path.join(self.repository(), name))
+                shutil.rmtree(output, ignore_errors=True)
+                self._forget(package, architecture, everything)
+                self._record(stamp, produced)
+            # Once, at the end: one repository, and an index of it made
+            # while a build of it is half moved in describes neither what
+            # was there nor what is.
             self.index()
-        Index().made(PACKAGE, self.key(package))
-        say(self.options, "package %s made" % self.key(package))
+
+        for architecture in sorted(built):
+            key = self.key(package, architecture)
+            Index().made(PACKAGE, key)
+            say(self.options, "package %s made" % key)
 
     # One package: patched, built, and recorded as built. The chroot is
     # shared with whatever else is building at the same time, so it is
     # taken one at a time.
-    def _rebuild(self, package, stamp):
+    def _rebuild(self, package, architecture, stamp):
         with self._chroots:
             chroot = SbuildChroot(self.distro, self.options,
-                                  self.chroot_architecture(package))
+                                  self.chroot_architecture(package, architecture))
             chroot.create(self.builderImage)
 
-        workdir, sourcedir = self._sources.pop(
-            package.name, (None, None))
-        if workdir is None:
-            workdir, sourcedir = self._fetched(package)
-            self._sources.pop(package.name, None)
+        with self._workdirs:
+            source = self._sources.get(package.name)
+        if source is None:
+            source = self._fetched(package)
+        workdir, dsc, epoch = source
 
         # Where this build writes, which is nowhere anything else does.
         output = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="built-")
         try:
-            print("rebuilding '%s'" % package.source)
-            # Taken before the graft, which replaces the changelog it is
-            # read from: what dates the build is the packaging we started
-            # from, which is a thing the specification pins.
-            epoch = self.source_date_epoch(package, sourcedir)
-            if package.kernel_upstream is not None:
-                sourcedir = self.graft(package, workdir, sourcedir, epoch)
-            self.patch(package, sourcedir, epoch)
-            self.local_release(package, sourcedir, epoch)
-            self.extend_kernel(package, sourcedir)
-
-            self.build(package, sourcedir, epoch, output)
+            print("rebuilding '%s' for %s" % (package.source, architecture))
+            self.build(package, workdir, dsc, epoch, architecture, output)
 
             # Handed to the step that publishes it. What a package built
             # against another needs is that one's .deb in the repository,
             # for sbuild to install out of -- which is a later moment than
             # its build finishing.
-            self._built[package.name] = (stamp, output)
+            self._built[(package.name, architecture)] = (stamp, output)
         except:
             shutil.rmtree(output, ignore_errors=True)
             raise
         finally:
-            if self.options.get("keep"):
-                print("keeping '%s' (source of '%s') as requested"
-                      % (workdir, package.name))
-            else:
-                shutil.rmtree(workdir, ignore_errors=True)
+            self._release(package)
 
 
 # Identity the patch commits are made under. Fixed, like their date: a
@@ -1907,18 +2162,21 @@ def apt_preferences_command():
         "echo 'Pin-Priority: 900' >> %s" % PREFERENCES,
     ])
 
-def apt_configuration(mountpoint):
-    return "echo 'deb [trusted=yes] file:%s ./' > %s && %s" % (
-        mountpoint, SOURCES_LIST, apt_preferences_command())
+def apt_configuration(*mountpoints):
+    lines = " && ".join(
+        "echo 'deb [trusted=yes] file:%s ./' %s %s"
+        % (mountpoint, ">" if index == 0 else ">>", SOURCES_LIST)
+        for index, mountpoint in enumerate(mountpoints))
+    return "%s && %s" % (lines, apt_preferences_command())
 
 def apt_deconfiguration():
     return "rm -f %s %s" % (SOURCES_LIST, PREFERENCES)
 
 # The same configuration for images built from a Dockerfile: a layer that
-# sets apt up, and the bind mount that makes the repository readable while
-# that image is being built. Both are empty when the specification rebuilt
-# nothing, so an image that has no use for the repository is not given a
-# sources.list pointing at a directory that will not be there.
+# sets apt up, and the bind mounts that make the repositories readable
+# while that image is being built. Both are empty when the specification
+# rebuilt nothing, so an image that has no use for a repository is not
+# given a sources.list pointing at a directory that will not be there.
 def apt_setup_layer(distro):
     if has_packages(distro) == False:
         return ""
@@ -1929,14 +2187,15 @@ def build_volumes(distro):
         return []
     return ["-v", "%s:%s:ro" % (repository(distro), REPOSITORY)]
 
-# Where the rebuilt packages of a specification are kept -- one flat
-# repository per release, holding every architecture built for -- and
-# whether there is anything there to install: a specification with no
-# 'packages' section leaves the directory without an index, and pointing
-# apt at it would only earn a failed 'apt-get update'.
+# Where the rebuilt packages of a specification are kept: one flat
+# repository per release, holding every architecture built for, the way a
+# distribution's archive does.
 def repository(distro):
     return ContainerEngine.packages(distro["release"])
 
+# Whether there is anything there to install: a specification with no
+# 'packages' section leaves the directory without an index, and pointing
+# apt at it would only earn a failed 'apt-get update'.
 def has_packages(distro):
     return os.path.isfile(os.path.join(repository(distro), "Packages"))
 
@@ -1981,7 +2240,42 @@ def parse(spec):
         raise ValueError("'packages' shall be a list of source packages!")
 
     parsed = [Package(p, i + 1) for i, p in enumerate(packages)]
-    return order(parsed)
+    return propagate(order(parsed))
+
+# Carries a package's scope down to what it is built after.
+#
+# A package built for the host is compiled and linked against what its
+# dependencies installed, which have to be of the host's architecture too
+# -- so a dependency that said nothing about who it is for is built for
+# whoever needs it, on top of the image it was already going to be in.
+# Saying it twice is bookkeeping the specification should not have to do.
+#
+# A dependency that *did* say is not widened, it is an error: an explicit
+# scope is an answer, and quietly building a package for an architecture
+# its specification ruled out is how a build gives you something you said
+# you did not want. The message names both entries, since which of them is
+# wrong is not seine's to decide.
+#
+# In reverse build order, so one pass carries a role the length of a
+# chain: a package is reached before everything it is built after.
+def propagate(packages):
+    for package in reversed(packages):
+        for dependency in getattr(package, "depends", []):
+            missing = [r for r in package.scope if r not in dependency.scope]
+            if len(missing) == 0:
+                continue
+            if dependency.scoped:
+                raise dependency._error(
+                    "'scope' is '%s', but '%s' is built for '%s' and is built "
+                    "after it -- so it would be built against a '%s' that was "
+                    "never built. Add %s to this package's scope, or take it "
+                    "off '%s'."
+                    % (", ".join(dependency.scope), package.source,
+                       ", ".join(package.scope), dependency.name,
+                       " and ".join("'%s'" % r for r in missing),
+                       package.source))
+            dependency.scope = sorted(set(dependency.scope) | set(missing))
+    return packages
 
 # Orders packages for building. 'priority' says which package would rather
 # go first; 'before' and 'after' say which package *has* to, naming the

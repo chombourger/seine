@@ -281,7 +281,7 @@ class DependentsRebuildWithTheirDependencies(avocado.Test):
         """ % profiles)
         builder = Builder(distro, {}, BuilderImage(distro, {}))
         return {p.name: os.path.basename(s).rsplit("_", 1)[1]
-                for p, s in builder.stamps(build.image.packages)}
+                for p, a, s in builder.stamps(build.image.packages)}
 
     def test(self):
         before = self.stamps("")
@@ -469,7 +469,8 @@ class CrossBuildProfile(avocado.Test):
         builder, image = self.builder(architecture)
         source = os.path.join(self.workdir, "linux-1")
         os.makedirs(source, exist_ok=True)
-        builder.build(package, source, "0", self.workdir)
+        builder.build(package, self.workdir, "linux_1.dsc", "0", architecture,
+                      self.workdir)
         # sbuild is run through a shell, so its arguments arrive as one
         # string rather than as a list.
         command = " ".join(image.calls[-1])
@@ -1103,7 +1104,9 @@ class RequireHashes(avocado.Test):
         """, require=False)
 
 # A builder image that unpacks something when it is asked to fetch, so a
-# fetch can be exercised without a network or a container.
+# fetch can be exercised without a network or a container. Preparing the
+# source package is part of that step, so it answers for dpkg-source and
+# dpkg-parsechangelog as well.
 class FakeFetch:
     def __init__(self, fails=False):
         self.fetches = 0
@@ -1111,12 +1114,21 @@ class FakeFetch:
 
     def exec(self, args, architecture=None, volumes=None, workdir=None,
              environment=None, check=True):
+        if args[0] == "dpkg-source":
+            open(os.path.join(volumes[0][0], "busybox_1.37.0-1.dsc"), "w").close()
+            return 0
         self.fetches += 1
         if self.fails:
             raise RuntimeError("the server said no")
-        os.makedirs(os.path.join(volumes[0][0], "busybox-1.37.0"),
-                    exist_ok=True)
+        source = os.path.join(volumes[0][0], "busybox-1.37.0", "debian")
+        os.makedirs(source, exist_ok=True)
+        with open(os.path.join(source, "changelog"), "w") as f:
+            f.write("busybox (1:1.37.0-6) unstable; urgency=medium\n")
         return 0
+
+    def output(self, args, architecture=None, volumes=None, workdir=None,
+               environment=None):
+        return b"1700000000\n"
 
 class FetchedSourcesOutliveTheirStep(avocado.Test):
     def builder(self, image):
@@ -1138,14 +1150,14 @@ class FetchedSourcesOutliveTheirStep(avocado.Test):
         builder = self.builder(image)
         package = self.package()
 
-        workdir, sourcedir = builder._fetched(package)
+        workdir, dsc, epoch = builder._fetched(package)
         try:
             # What the fetch left behind belongs to the package, so the
             # step that builds it can be a different step.
             self.assertIn(package.name, builder._sources)
             self.assertEqual(builder._sources[package.name],
-                             (workdir, sourcedir))
-            self.assertTrue(os.path.isdir(sourcedir))
+                             (workdir, dsc, epoch))
+            self.assertTrue(os.path.isfile(os.path.join(workdir, dsc)))
             self.assertEqual(image.fetches, 1)
         finally:
             import shutil
@@ -1206,7 +1218,10 @@ class AKernelsTreeIsFetchedWithItsSource(avocado.Test):
         """).image.packages[0]
 
         builder = Builder(distro, {"keep": False}, Image())
-        workdir, sourcedir = builder._fetched(package)
+        # What is under test is the fetching; turning what came down into
+        # a source package is the next step's business.
+        builder._prepared = lambda *arguments: ("linux_6.18.43-1.dsc", 0)
+        workdir, dsc, epoch = builder._fetched(package)
         try:
             # The kernel's own tree comes down with the packaging, in the
             # step that waits on the network -- not later, in the one that
@@ -1290,8 +1305,8 @@ class PublishingRecordsWhatWasBuilt(Publishes):
         output = os.path.join(self.workdir, "output")
         os.makedirs(output, exist_ok=True)
         open(os.path.join(output, "busybox_1.37.0-6_amd64.deb"), "w").close()
-        builder._built[package.name] = (stamp, output)
-        builder._deploy(package)
+        builder._built[(package.name, "amd64")] = (stamp, output)
+        builder._deploy(package, ["amd64"])
 
         # The stamp is written and the index rewritten, in that order and
         # only once the .deb has been moved in to be recorded.
@@ -1354,3 +1369,257 @@ class TheChrootDigestCannotBeMistakenForAChroot(avocado.Test):
                              os.path.dirname(chroot.path))
         finally:
             os.environ.pop("SEINE_CACHE_DIR", None)
+
+class ScopeSaysWhoARebuildIsFor(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://busybox
+                      scope: host
+                    - source: apt://coreutils
+                      scope: [host, target]
+                    - source: apt://bash
+        """)
+        scopes = {p.name: p.scope for p in build.image.packages}
+        # A single role is a list of one, so nothing downstream has to ask
+        # which of the two spellings it was given.
+        self.assertEqual(scopes["busybox"], ["host"])
+        self.assertEqual(scopes["coreutils"], ["host", "target"])
+        # A rebuild is for the image unless it says otherwise.
+        self.assertEqual(scopes["bash"], ["target"])
+
+    def test_an_unknown_scope_is_rejected(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      scope: builder
+            """)
+            self.fail("parsing succeeded for an unknown 'scope'!")
+        except ValueError as e:
+            self.assertIn("scope", str(e))
+
+    # A flavour is a name within an architecture, so one cannot be right
+    # for two of them.
+    def test_a_kernel_cannot_be_built_for_both(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      scope: [host, target]
+                      extends:
+                          kernel:
+                              flavour: arm64
+            """)
+            self.fail("parsing succeeded for a kernel built for both!")
+        except ValueError as e:
+            self.assertIn("scope", str(e))
+            self.assertIn("flavour", str(e))
+
+class ScopeDecidesWhichArchitecturesAreBuilt(avocado.Test):
+    def builder(self, architecture):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": architecture, "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        return Builder(distro, {}, None)
+
+    def packages(self):
+        return {p.name: p for p in parse("""
+                packages:
+                    - source: apt://target-only
+                    - source: apt://host-only
+                      scope: host
+                    - source: apt://both-of-them
+                      scope: [host, target]
+        """).image.packages}
+
+    def test(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        builder = self.builder(other)
+        packages = self.packages()
+
+        self.assertEqual(builder.architectures(packages["target-only"]), [other])
+        self.assertEqual(builder.architectures(packages["host-only"]), [HOST_ARCH])
+        self.assertEqual(builder.architectures(packages["both-of-them"]),
+                         sorted([HOST_ARCH, other]))
+
+    def test_a_host_package_is_never_cross_built(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        builder = self.builder(other)
+        package = self.packages()["both-of-them"]
+
+        # The machine running the compiler is the machine the host build
+        # is for, so there is nothing to cross to.
+        self.assertEqual(builder.cross(package, HOST_ARCH), False)
+        self.assertEqual(builder.cross(package, other), True)
+
+    def test_each_architecture_has_a_repository_and_a_stamp_of_its_own(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        builder = self.builder(other)
+        package = self.packages()["both-of-them"]
+
+        stamps = {a: s for p, a, s in builder.stamps([package])}
+        self.assertEqual(sorted(stamps), sorted([HOST_ARCH, other]))
+        self.assertNotEqual(os.path.basename(stamps[HOST_ARCH]),
+                            os.path.basename(stamps[other]))
+        self.assertIn(HOST_ARCH, stamps[HOST_ARCH])
+        self.assertIn(other, stamps[other])
+
+# A package built for the host is linked against what its dependencies
+# installed, so those have to be built for the host too. Saying it twice
+# is bookkeeping the specification should not have to do.
+class ScopePropagatesToDependencies(avocado.Test):
+    def scopes(self, spec):
+        return {p.name: p.scope for p in parse(spec).image.packages}
+
+    def test(self):
+        scopes = self.scopes("""
+                packages:
+                    - source: apt://tool
+                      scope: host
+                      after:
+                          - library
+                    - source: apt://library
+        """)
+        # The library keeps the image it was already going to be in, and
+        # gains the role of what is built on it.
+        self.assertEqual(scopes["library"], ["host", "target"])
+        self.assertEqual(scopes["tool"], ["host"])
+
+    # One pass carries a role the length of a chain.
+    def test_it_reaches_all_the_way_down(self):
+        scopes = self.scopes("""
+                packages:
+                    - source: apt://tool
+                      scope: host
+                      after:
+                          - middle
+                    - source: apt://middle
+                      after:
+                          - bottom
+                    - source: apt://bottom
+        """)
+        for name in ["middle", "bottom"]:
+            self.assertIn("host", scopes[name], "%s was left behind" % name)
+
+    # An explicit scope is an answer, not a default to widen.
+    def test_an_explicit_scope_is_not_widened(self):
+        try:
+            self.scopes("""
+                packages:
+                    - source: apt://tool
+                      scope: host
+                      after:
+                          - library
+                    - source: apt://library
+                      scope: target
+            """)
+            self.fail("a host package was built against a target-only one!")
+        except ValueError as e:
+            # Both entries are named: which of the two is wrong is not
+            # seine's to decide.
+            self.assertIn("apt://library", str(e))
+            self.assertIn("apt://tool", str(e))
+
+    # Nothing to carry when the two already agree.
+    def test_matching_scopes_are_left_alone(self):
+        scopes = self.scopes("""
+                packages:
+                    - source: apt://tool
+                      scope: host
+                      after:
+                          - library
+                    - source: apt://library
+                      scope: [host, target]
+        """)
+        self.assertEqual(scopes["library"], ["host", "target"])
+
+# An 'Architecture: all' binary is one package under one filename, and one
+# repository holds every architecture -- so exactly one of a package's
+# builds may produce it.
+class ArchitectureAllIsBuiltOnce(avocado.Test):
+    def builder(self, architecture):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": architecture, "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        return Builder(distro, {}, None)
+
+    def package(self, cross=""):
+        return parse("""
+                packages:
+                    - source: apt://busybox
+                      scope: [host, target]
+%s
+        """ % cross).image.packages[0]
+
+    def test(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        builder = self.builder(other)
+        package = self.package()
+
+        # The cross build cannot make them -- sbuild hands it '-B', and an
+        # arch-indep binary is commonly made by running what was just
+        # built -- so the native build is the one that does.
+        self.assertEqual(builder.indep_architecture(package), HOST_ARCH)
+
+    # 'cross: false' leaves two native builds, and exactly one of them may
+    # still have the job.
+    def test_two_native_builds_still_nominate_one(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        builder = self.builder(other)
+        package = self.package("                      cross: false\n")
+
+        self.assertEqual(builder.cross(package, other), False)
+        self.assertEqual(builder.indep_architecture(package), HOST_ARCH)
+
+    # Every build a cross build, so nobody can: the same gap a package
+    # built for the image alone has always had.
+    def test_nobody_when_every_build_is_a_cross_build(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        builder = self.builder(other)
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        self.assertEqual(builder.indep_architecture(package), None)
+
+    # And it is said to sbuild either way rather than left to its default,
+    # which builds them whenever the build is a native one.
+    def test_sbuild_is_told_which_build_has_the_job(self):
+        from seine.packages import Builder
+        from seine.utils import HOST_ARCH
+
+        class Image:
+            def __init__(self):
+                self.calls = []
+
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                self.calls.append(" ".join(args))
+                return 0
+
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": other, "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        image = Image()
+        builder = Builder(distro, {}, image)
+        builder.repository = lambda: self.workdir
+        package = self.package()
+
+        asked = {}
+        for architecture in [HOST_ARCH, other]:
+            builder.build(package, self.workdir, "busybox_1.dsc", "0",
+                          architecture, self.workdir)
+            asked[architecture] = [a for a in image.calls[-1].split()
+                                   if a.endswith("arch-all")]
+        self.assertEqual(asked[HOST_ARCH], ["--arch-all"])
+        self.assertEqual(asked[other], ["--no-arch-all"])

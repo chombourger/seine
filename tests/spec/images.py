@@ -416,3 +416,151 @@ class CarriedCacheTrixie(CarriedCache):
     :avocado: tags=full,container
     """
     release = "trixie"
+
+# Two scope roles against real archives and a real sbuild: one source
+# fetched, two builds of it, and a repository per architecture with the
+# same version in each.
+#
+# Cross-architecture on purpose. Native is the case where the two
+# collapse into one build, which the unit tests already say; what is only
+# testable here is the pair -- the host build native in its own chroot,
+# the target build cross in the same one, and the two not writing over
+# each other.
+#
+# busybox rather than a kernel: it is a real build with real build
+# dependencies, and it needs no kernel compile to prove it. Everything is
+# in spaces of its own, so nothing here touches the caches or the storage
+# of whoever is running it.
+class ScopedRebuild(avocado.Test):
+    """
+    :avocado: tags=full,container
+    """
+    timeout = 7200
+
+    # Which architecture is not this machine's, since that is the case
+    # worth building: a host build and a target build that are different
+    # builds.
+    OTHER = {"amd64": "arm64", "arm64": "amd64"}
+
+    def setUp(self):
+        self.spaces = []
+        if PLAN != "full":
+            self.cancel("SEINE_TEST_PLAN=full builds packages; this takes a while")
+        if shutil.which("podman") is None:
+            self.cancel("podman is needed to rebuild a package")
+        if HOST_ARCH not in self.OTHER:
+            self.cancel("no other architecture known for %s" % HOST_ARCH)
+        self.architecture = self.OTHER[HOST_ARCH]
+
+    def tearDown(self):
+        for space in self.spaces:
+            subprocess.run(["podman", "unshare", "rm", "-rf", space],
+                           check=False)
+
+    def space(self, name):
+        path = os.path.join(self.workdir, name)
+        environment = dict(os.environ)
+        environment["PATH"] = "%s:%s" % (os.path.dirname(sys.executable),
+                                         environment.get("PATH", ""))
+        environment["SEINE_CACHE_DIR"] = os.path.join(path, "cache")
+        environment["SEINE_BUILD_DIR"] = os.path.join(path, "build")
+        self.spaces.append(path)
+        return environment
+
+    def seine(self, space, args, log):
+        where = os.path.join(self.outputdir, "%s.log" % log)
+        with open(where, "w") as f:
+            run = subprocess.run(
+                [sys.executable, "-u", "./seine.py"] + args,
+                cwd=path_to_sources, env=space, stdout=f,
+                stderr=subprocess.STDOUT)
+        with open(where, "r", errors="replace") as f:
+            said = f.read()
+        self.assertEqual(run.returncode, 0,
+                         "'%s' failed, see %s" % (" ".join(args), where))
+        return said
+
+    # The release and architecture fragments as they are shipped, with the
+    # rebuild written here: what the example says about busybox is right,
+    # and what this test adds is who it is for.
+    def specification(self):
+        names = ["common/bookworm.yaml", "common/%s.yaml" % self.architecture]
+        specs = [os.path.join(EXAMPLES, name) for name in names]
+        for spec in specs:
+            self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
+
+        where = os.path.join(self.workdir, "scoped.yml")
+        with open(where, "w") as f:
+            f.write("packages:\n"
+                    "    - source: apt://busybox\n"
+                    "      scope: [host, target]\n"
+                    "      profiles: [nocheck]\n"
+                    "image:\n"
+                    "    filename: scoped.img\n"
+                    "    partitions:\n"
+                    "        - label: rootfs\n"
+                    "          where: /\n")
+        return specs + [where]
+
+    def repository(self, space):
+        return os.path.join(space["SEINE_CACHE_DIR"], "packages", "bookworm")
+
+    def debs(self, space, pattern):
+        return sorted(os.path.basename(path) for path in
+                      glob.glob(os.path.join(self.repository(space), pattern)))
+
+    def test(self):
+        space = self.space("scoped")
+        # --packages-only: what is under test is the rebuilds, and a root
+        # file-system and an image after them prove nothing more about
+        # 'scope'.
+        said = self.seine(space, ["build", "-v", "--jobs", "2",
+                                  "--packages-only"] + self.specification(),
+                          "build")
+
+        # One source, fetched once, a build of it per architecture, and
+        # one step publishing them.
+        for architecture in [HOST_ARCH, self.architecture]:
+            self.assertIn("package:busybox:%s" % architecture, said)
+        self.assertEqual(
+            len([line for line in said.splitlines() if "deploy:busybox" in line]),
+            1, "publishing was not one step")
+        # One fetch between the two builds, read off the steps rather than
+        # off what the fetch printed: with more than one step running, what
+        # a step's containers print goes to a log of its own.
+        self.assertEqual(
+            len([line for line in said.splitlines() if "fetch:busybox" in line]),
+            1, "busybox was fetched more than once")
+
+        # One repository holding both architectures, at the same version,
+        # since one source package is what each build was handed.
+        versions = set()
+        for architecture in [HOST_ARCH, self.architecture]:
+            debs = self.debs(space, "busybox_*_%s.deb" % architecture)
+            self.assertNotEqual(debs, [], "no busybox built for %s" % architecture)
+            versions.update(name.split("_")[1] for name in debs)
+        self.assertEqual(len(versions), 1,
+                         "the two builds are of different versions: %s"
+                         % ", ".join(sorted(versions)))
+
+        # And exactly one copy of the architecture-independent binary the
+        # source also builds, made by the native build: two would be one
+        # filename written twice, with whichever landed last deciding what
+        # an image installs.
+        self.assertEqual(len(self.debs(space, "*_all.deb")), 1,
+                         "the arch-all package was not built exactly once")
+
+        # Its index describes every architecture at once, which is what
+        # lets one repository serve them all.
+        with open(os.path.join(self.repository(space), "Packages")) as f:
+            described = set(line.split()[1] for line in f
+                            if line.startswith("Architecture:"))
+        self.assertEqual(described,
+                         set([HOST_ARCH, self.architecture, "all"]))
+
+        # And a rebuild asks for neither of them again.
+        planned = self.seine(space, ["build", "--dry-run", "--packages-only"]
+                                    + self.specification(), "plan")
+        for architecture in [HOST_ARCH, self.architecture]:
+            self.assertIn("busybox:%s" % architecture, planned)
+        self.assertIn("already built, and not built again", planned)

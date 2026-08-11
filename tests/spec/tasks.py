@@ -543,3 +543,89 @@ class ThePlanIsTheBuildUnwalked(avocado.Test):
         command = PlanCmd()
         self.assertEqual(command.options["dry_run"], True)
         self.assertEqual(command.options["build"], True)
+
+# What two 'scope' roles do to the graph: an architecture per build, one
+# fetch between them, and one step publishing what they made.
+SCOPED = """
+distribution:
+    release: trixie
+    architecture: %s
+packages:
+    - source: apt://seine-test-application
+      scope: [host, target]
+      after:
+          - seine-test-library
+    - source: apt://seine-test-library
+      scope: [host, target]
+image:
+    filename: tasks-test.img
+    partitions:
+        - label: rootfs
+          where: /
+"""
+
+class TwoRolesAreTwoBuildsOfOneSource(avocado.Test):
+    def graph(self, architecture):
+        build = BuildCmd()
+        build.loads(SCOPED % architecture)
+        build.parse()
+        return {t.name: t for t in build.image.tasks()}
+
+    def test(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        tasks = self.graph(other)
+
+        # One build per architecture, named for the one it is for, and one
+        # fetch feeding both: the same source package is what each is
+        # handed.
+        for architecture in sorted([HOST_ARCH, other]):
+            self.assertIn("package:seine-test-library:%s" % architecture, tasks)
+        self.assertEqual(
+            len([n for n in tasks if n.startswith("fetch:seine-test-library")]), 1)
+
+    # One step publishes every architecture, since an arch-all binary
+    # belongs in all their repositories and is built by one of them.
+    def test_publishing_is_one_step_for_every_architecture(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        tasks = self.graph(other)
+
+        deploys = [n for n in tasks if n.startswith("deploy:seine-test-library")]
+        self.assertEqual(deploys, ["deploy:seine-test-library"])
+        for architecture in sorted([HOST_ARCH, other]):
+            self.assertIn("package:seine-test-library:%s" % architecture,
+                          tasks["deploy:seine-test-library"].needs)
+
+    # A package built against another waits for it to be published, which
+    # is one step however many architectures it was built for.
+    def test_dependents_wait_for_what_they_are_built_against(self):
+        from seine.utils import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        tasks = self.graph(other)
+
+        for architecture in sorted([HOST_ARCH, other]):
+            needs = tasks["package:seine-test-application:%s" % architecture].needs
+            self.assertIn("deploy:seine-test-library", needs)
+
+    # Same architecture on both sides is one build, not the same work done
+    # twice into the same repository.
+    def test_a_native_build_collapses_to_one(self):
+        from seine.utils import HOST_ARCH
+        tasks = self.graph(HOST_ARCH)
+        self.assertIn("package:seine-test-library", tasks)
+        for name in tasks:
+            self.assertNotIn(":%s" % HOST_ARCH, name)
+
+# A specification that says nothing about 'scope' has the graph it always
+# had: no architecture in a step's name.
+class OneScopeKeepsThePlainNames(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(PACKAGES)
+        build.parse()
+        names = [t.name for t in build.image.tasks()]
+
+        self.assertIn("package:seine-test-library", names)
+        self.assertIn("deploy:seine-test-library", names)
+        self.assertNotIn("package:seine-test-library:amd64", names)

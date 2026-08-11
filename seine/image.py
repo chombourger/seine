@@ -297,8 +297,9 @@ class Image:
         current = builder.current(self.packages)
         if len(current) > 0:
             print("\nalready built, and not built again:")
-            for package, stamp in current:
-                print("  %-30s %s" % (package.name, os.path.basename(stamp)))
+            for package, architecture, stamp in current:
+                print("  %-30s %s" % (builder.label(package, architecture),
+                                      os.path.basename(stamp)))
             print("\n'--rebuild' builds them anyway.")
 
         print("\nsteps:")

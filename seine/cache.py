@@ -157,11 +157,12 @@ class Wanted:
             # asked to build for -- so what a specification wants out of it
             # is a set of files rather than a set of directories.
             files_wanted = self.repositories.setdefault(release, set())
-            for package, stamp in builder.stamps(build.image.packages):
+            for package, built_for, stamp in builder.stamps(build.image.packages):
                 files_wanted.add(os.path.join(STAMPS, os.path.basename(stamp)))
                 for name in CacheCmd()._named_by(stamp):
                     files_wanted.add(name)
-                self.chroots.add((release, builder.chroot_architecture(package)))
+                self.chroots.add(
+                    (release, builder.chroot_architecture(package, built_for)))
 
     # Whether an entry of the record belongs to what was asked for, keyed the
     # way the index keys them.

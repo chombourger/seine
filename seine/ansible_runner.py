@@ -41,15 +41,19 @@ class AnsibleContainerRunner:
         cmd = ["container", "run", "-d",
                "-v", "%s:/var/cache/apt/archives" % ContainerEngine.downloads(self.distro["release"])]
         # Packages rebuilt from the spec's 'packages' section, if any, so the
-        # playbooks can install them with a plain apt task.
+        # playbooks can install them with a plain apt task. One repository
+        # holds every architecture that was built for, and apt takes from
+        # it what this root file-system's architecture can use.
         if packages.has_packages(self.distro):
-            cmd += ["-v", "%s:%s" % (packages.repository(self.distro), packages.REPOSITORY)]
+            cmd += ["-v", "%s:%s" % (packages.repository(self.distro),
+                                     packages.REPOSITORY)]
         cmd += [transport.name, "sleep", "infinity"]
 
         self.cid = ContainerEngine.check_output(cmd).strip()
         try:
             if packages.has_packages(self.distro):
-                self._exec(["sh", "-c", packages.apt_configuration(packages.REPOSITORY)])
+                self._exec(["sh", "-c",
+                            packages.apt_configuration(packages.REPOSITORY)])
             # Keep apt's package index in sync with what TransportBootstrap
             # baked in, same as the Dockerfile-based path used to do before
             # running its own playbooks.

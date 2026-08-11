@@ -451,6 +451,7 @@ The following attributes are supported:
 | priority          | no       | Build order, `0`-`999`, `500` by default        |
 | profiles          | no       | Debian build profiles (`--profiles`)            |
 | revision          | no       | Local version suffix, `mod1` by default         |
+| scope             | no       | Who the rebuild is for (see [Host packages](#host-packages)) |
 | source_date_epoch | no       | Date to build at, seconds since the epoch       |
 
 Anything fetched over http is checked against a hash the specification
@@ -622,6 +623,86 @@ Marking the source unreleased also earns the kernel an ABI name of its
 own -- Debian derives it from the changelog, so `6.1.0-50` becomes
 `6.1.0-51` -- which is what keeps a reconfigured kernel from being
 mistaken for the distribution's.
+
+#### Host packages
+
+A rebuild is for the image by default. `scope` says otherwise:
+
+| `scope`  | Built for                                                  |
+| -------- | ---------------------------------------------------------- |
+| `target` | The image's architecture. The default.                     |
+| `host`   | The machine running seine.                                 |
+| `both`   | Both, from one source.                                     |
+
+`host` is for what is used while the image is being made rather than
+inside it: a code generator a later package build-depends on, a tool the
+imager runs. Those have to run on the machine doing the building, which
+for a cross build is not the image's architecture.
+
+```
+packages:
+    - source: apt://busybox
+      scope: [host, target]
+```
+
+A single role may be written on its own; `scope: host` is `scope: [host]`.
+
+There is one repository per release, holding every architecture built
+for, the way a distribution's archive does. It is offered to the sbuild
+chroots, to the container composing the root file-system and to the
+imager, and apt takes from its index what the architecture it was asked
+about can use -- so a package can build-depend on a host rebuild in the
+ordinary way, while what is installed into the image stays the image's
+own architecture.
+
+A dependency inherits the roles of what is built on it: a package built
+for the host is linked against what its dependencies installed, so those
+are built for the host too, however far down the chain. A dependency that
+names its own `scope` is not widened -- it is an error naming both
+entries, since an explicit scope is an answer rather than a default.
+
+`Architecture: all` binaries are built by exactly one of a package's
+builds, the way Debian builds them on one buildd. Two builds producing
+them would write one filename twice, and which of them landed last would
+decide what the image installs. The job goes to a native build, since
+sbuild hands a cross build `-B` and an architecture-independent binary is
+commonly made by running something that was just built; between two
+native builds the machine's own architecture takes it.
+
+The source is fetched, patched and packed into a `.dsc` once, and that
+one source package is built twice. A Debian source package is not built
+for an architecture -- it describes every one its packaging supports --
+so both builds are demonstrably of the same source rather than of two
+trees prepared the same way.
+
+With two roles, the build steps carry the architecture they are for:
+
+```
+fetch:busybox
+package:busybox:amd64
+package:busybox:arm64
+deploy:busybox
+```
+
+A package built for one architecture keeps the plain `package:busybox`,
+so `--dry-run` on a specification that says nothing about `scope` reads
+as it always has. `before` and `after` go on naming a package rather than
+a build of one.
+
+Publishing is one step for every architecture rather than one each. What
+comes out of the builds is not a repository per architecture: an arch-all
+binary belongs to all of them and is built by one of them, so the step
+that decides which of an earlier build's files are superseded has to hold
+the whole picture.
+
+On a machine of the image's own architecture, `[host, target]` is one
+build -- same source, same chroot, same repository -- rather than the
+same work done twice.
+
+A kernel takes one role. It is configured per architecture, down to the
+name of its flavour, so one entry cannot describe two; list the
+architectures as separate packages, each with the flavour that
+architecture has.
 
 ### imager
 
