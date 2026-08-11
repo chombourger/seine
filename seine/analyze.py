@@ -128,14 +128,69 @@ def runs(spec=None):
 def spent(run):
     return max([task["end"] for task in run["tasks"]] or [0])
 
+# The runs that make up one build, newest first.
+#
+# A build that failed is fixed and run again, and the second run does what
+# the first did not: the packages the first one built are built no more, so
+# it is a shorter run of the same plan and half of the story. Reading only
+# the newest run describes that half as if it were the build.
+#
+# So: the newest run, and then every run before it that failed. A run that
+# succeeded ends the chain -- what happened before it was a build of its
+# own, finished, and nothing to do with this one.
+def chain(recorded):
+    taken = recorded[:1]
+    for run in recorded[1:]:
+        if run.get("ok"):
+            break
+        taken.append(run)
+    return taken
+
+# Those runs read as one build.
+#
+# A step keeps the last time it ran: a bootstrap that ran again on the
+# resume cost what it cost the second time, and adding the two would
+# invent time nobody waited.
+#
+# The runs are laid end to end, oldest first, so what ran beside what
+# inside a run is kept while the wait between a failure and the day
+# someone came back to it is in no number here.
+def merged(taken):
+    if len(taken) == 0:
+        return None
+    tasks, offset = {}, 0.0
+    for run in sorted(taken, key=lambda run: run["started"]):
+        for task in run["tasks"]:
+            tasks[task["name"]] = dict(task,
+                                       start=task["start"] + offset,
+                                       end=task["end"] + offset)
+        offset += spent(run)
+
+    newest = taken[0]
+    return {"spec": newest["spec"],
+            "started": newest["started"],
+            "jobs": newest.get("jobs", 1),
+            "ok": newest.get("ok", True),
+            "runs": len(taken),
+            "graphs": len({run.get("graph") for run in taken}),
+            "tasks": sorted(tasks.values(), key=lambda task: task["start"])}
+
 def _header(run):
     said = "plan %s, built %s" % (
         run["spec"], time.strftime("%Y-%m-%d %H:%M",
                                    time.localtime(run["started"])))
     if run.get("jobs", 1) > 1:
         said += ", %d steps at a time" % run["jobs"]
+    if run.get("runs", 1) > 1:
+        said += ", %d runs joined" % run["runs"]
     if run.get("ok") == False:
         said += ", failed"
+    # Which is expected of a resume and worth saying anyway: the steps of
+    # these runs were not the same set, so what is reported is what each
+    # step cost the last time it ran rather than one walk of one graph.
+    if run.get("graphs", 1) > 1:
+        said += "\nthe runs ran different steps: a resumed build no longer " \
+                "builds what the failed one built"
     return said
 
 # Where the time went, longest step first. The two totals at the end are
@@ -186,11 +241,12 @@ class AnalyzeCmd(Cmd):
 
         sys.exit(report(self.latest(args)))
 
-    # The run to report on: the most recent one of the plan these
+    # The build to report on: the most recent one of the plan these
     # specifications describe, or simply the most recent one when none are
-    # named. Nothing is fetched or built to work that out -- the
-    # specifications are loaded and parsed, which is what 'seine plan'
-    # already does without touching anything.
+    # named -- and the runs it was resumed from, read as the one build they
+    # are. Nothing is fetched or built to work that out: the specifications
+    # are loaded and parsed, which is what 'seine plan' already does
+    # without touching anything.
     def latest(self, specifications):
         spec = self._digest(specifications) if len(specifications) > 0 else None
         recorded = runs(spec)
@@ -199,7 +255,13 @@ class AnalyzeCmd(Cmd):
                 "error: nothing recorded%s yet; a build writes a record as "
                 "it runs\n" % ("" if spec is None else " for plan %s" % spec))
             sys.exit(1)
-        return recorded[0]
+        # Whatever was built last, and then that plan alone: runs of two
+        # plans are two builds however close together they ran, and a
+        # chain across them would join a kernel's build to somebody
+        # else's.
+        newest = recorded[0]["spec"]
+        return merged(chain([run for run in recorded
+                             if run["spec"] == newest]))
 
     def _digest(self, specifications):
         # Here rather than at the top of the file: what loads a

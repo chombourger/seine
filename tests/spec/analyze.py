@@ -55,6 +55,16 @@ def run_of(tasks, spec="fake", started=1770000000, jobs=1, ok=True):
                        "end": end, "failed": False}
                       for name, needs, start, end in tasks]}
 
+# And a record as a build would have left on disk, so that what reads them
+# back is read too.
+def leave(spec, started, tasks, ok=True, jobs=1):
+    steps = []
+    for name, needs, start, end in tasks:
+        step = Task(name, lambda: None, needs=needs)
+        step.started, step.ended = started + start, started + end
+        steps.append(step)
+    analyze.record(steps, spec, jobs=jobs, ok=ok)
+
 def said(report, *args):
     printed = io.StringIO()
     with contextlib.redirect_stdout(printed):
@@ -192,6 +202,65 @@ class WhereTheTimeWent(avocado.Test):
         report = said(analyze.blame, run)
         self.assertIn("failed", report.splitlines()[0])
         self.assertIn("(failed)", report)
+
+HOUR = 3600
+
+class ABuildIsTheRunsItWasResumedFrom(avocado.Test):
+    def setUp(self):
+        # A build that failed on the kernel, a second that failed on the
+        # root file-system, and a third that finished -- the shape of a
+        # Friday afternoon.
+        leave("resumed", 1770000000, [("packages", [], 0, 600),
+                                      ("kernel", ["packages"], 600, 900)],
+              ok=False)
+        leave("resumed", 1770000000 + HOUR, [("kernel", [], 0, 300),
+                                             ("rootfs", ["kernel"], 300, 400)],
+              ok=False)
+        leave("resumed", 1770000000 + 2 * HOUR, [("rootfs", [], 0, 200)])
+
+    def test(self):
+        taken = analyze.chain(analyze.runs("resumed"))
+        self.assertEqual([run["started"] for run in taken],
+                         [1770000000 + 2 * HOUR, 1770000000 + HOUR, 1770000000])
+
+    def test_a_step_that_ran_twice_is_counted_once(self):
+        build = analyze.merged(analyze.chain(analyze.runs("resumed")))
+        self.assertEqual([task["name"] for task in build["tasks"]],
+                         ["packages", "kernel", "rootfs"])
+        # What it cost the last time it ran, and not the two attempts
+        # added together: nobody waited 500 seconds for that kernel.
+        kernel = build["tasks"][1]
+        self.assertEqual(kernel["end"] - kernel["start"], 300)
+        self.assertEqual(build["runs"], 3)
+
+    def test_the_hours_between_the_runs_are_nobodys_build_time(self):
+        build = analyze.merged(analyze.chain(analyze.runs("resumed")))
+        # 900 + 400 + 200, and not the two hours somebody spent at lunch
+        # and on the fix.
+        self.assertEqual(analyze.spent(build), 1500)
+
+    def test_it_says_the_runs_were_joined(self):
+        build = analyze.merged(analyze.chain(analyze.runs("resumed")))
+        report = said(analyze.blame, build)
+        self.assertIn("3 runs joined", report)
+        self.assertIn("different steps", report)
+
+class AnEarlierSuccessIsABuildOfItsOwn(avocado.Test):
+    def test(self):
+        leave("earlier", 1770000000, [("rootfs", [], 0, 100)])
+        leave("earlier", 1770000000 + HOUR, [("rootfs", [], 0, 200)], ok=False)
+        leave("earlier", 1770000000 + 2 * HOUR, [("rootfs", [], 0, 300)])
+
+        # The failure and the run that fixed it, and not the build that
+        # had already finished before either of them.
+        taken = analyze.chain(analyze.runs("earlier"))
+        self.assertEqual([run["started"] for run in taken],
+                         [1770000000 + 2 * HOUR, 1770000000 + HOUR])
+
+    def test_two_builds_in_a_row_stay_apart(self):
+        leave("inarow", 1770000000, [("rootfs", [], 0, 100)])
+        leave("inarow", 1770000000 + HOUR, [("rootfs", [], 0, 200)])
+        self.assertEqual(len(analyze.chain(analyze.runs("inarow"))), 1)
 
 class APlanNobodyBuiltHasNothingToReport(avocado.Test):
     def test(self):
