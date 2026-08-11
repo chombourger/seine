@@ -34,6 +34,12 @@ TEMPLATE = jinja2.Environment(
     trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True,
     undefined=jinja2.StrictUndefined)
 
+# The same, for the pass that only wants to know what a specification sets:
+# a name it has not reached yet renders to nothing instead of stopping the
+# walk. Its output is thrown away, so nothing is decided on what it makes of
+# a half-known file.
+PROBE = TEMPLATE.overlay(undefined=jinja2.ChainableUndefined)
+
 class BuildCmd(Cmd):
     # What this command is called and what it prints for '-h'. A command that
     # is the same build with one option decided for it says so by overriding
@@ -65,9 +71,32 @@ class BuildCmd(Cmd):
         self.partitionHandler = PartitionHandler()
         self.spec = None
         self._loading = []
+        self._probing = False
+        self._variables = None
 
+    # A specification handed over as text, rather than as a tree of files to
+    # walk: there is nothing to probe, so it renders against the
+    # specification merged so far and reads what earlier calls have set.
     def loads(self, yaml_spec):
         return self._load("<string>", yaml_spec)
+
+    # What a specification sets, learned before it is loaded for real.
+    #
+    # Rendering against the specification merged so far is enough for a
+    # fragment to read what the file that reached for it said, and not
+    # enough for it to read what a fragment listed after it says. That is an
+    # ordering nobody should have to keep in their head, so the tree is
+    # walked once beforehand with a lenient jinja, purely to collect what it
+    # sets, and the result of that walk is thrown away.
+    #
+    # Only the names it found survive it, as the context the real walk
+    # renders against. Nothing the lenient render made of a half-known file
+    # reaches the specification that gets built.
+    def _probe(self, yaml_file):
+        probe = BuildCmd()
+        probe._probing = True
+        probe.load(yaml_file)
+        self._variables = {**(self._variables or {}), **(probe.spec or {})}
 
     # The files being loaded, innermost last. 'requires' pulls in files that
     # pull in files themselves, and nothing stopped two of them from reaching
@@ -79,6 +108,8 @@ class BuildCmd(Cmd):
     # twice: that is a specification listing a fragment its fragments also
     # list, which is how they are meant to be composed.
     def load(self, yaml_file):
+        if self._probing is False and len(self._loading) == 0:
+            self._probe(yaml_file)
         path = os.path.realpath(yaml_file)
         if path in self._loading:
             loop = self._loading[self._loading.index(path):] + [path]
@@ -119,16 +150,31 @@ class BuildCmd(Cmd):
             if TEMPLATE.variable_start_string in requires.group(0):
                 raise ValueError("%s: 'requires' cannot be templated!"
                                  % yaml_filename)
+        context = self._variables if self._variables is not None else self.spec
         try:
-            return TEMPLATE.from_string(yaml_spec).render(self.spec or {})
+            template = PROBE if self._probing else TEMPLATE
+            return template.from_string(yaml_spec).render(context or {})
         except jinja2.TemplateError as e:
             raise ValueError("%s:%s: %s"
                 % (yaml_filename, getattr(e, "lineno", "?"), e)) from e
 
     # The text of one specification file, not a stream: what a file says is
     # read before it is parsed, and both callers hand over the same thing.
+    #
+    # A file that does not parse is skipped while probing rather than
+    # reported. What failed to parse there is a lenient render, where a name
+    # the walk had not reached yet left a value empty, so the fault may be
+    # the render's rather than the file's. The real walk reads the same file
+    # with every name in hand and reports what is wrong with the file
+    # itself; what is lost by skipping it here is the names it would have
+    # contributed.
     def _load(self, yaml_filename, yaml_spec):
-        spec = yaml.safe_load(self._render(yaml_filename, yaml_spec))
+        try:
+            spec = yaml.safe_load(self._render(yaml_filename, yaml_spec))
+        except yaml.YAMLError:
+            if self._probing:
+                return self.spec
+            raise
 
         # Patches and kconfig fragments are listed relative to the file
         # listing them, which merging would otherwise lose. Resolved here,

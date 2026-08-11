@@ -60,6 +60,70 @@ class AnsibleKeepsItsOwnTemplating(avocado.Test):
             build.spec["playbook"][0]["tasks"][0]["debug"]["msg"],
             "{{ ansible_facts.hostname }} {% if x %}on{% endif %}")
 
+# The tree is walked once before it is loaded, so that where a name is set
+# stops being something anyone has to keep in their head.
+class NamesAreFoundWhereverTheyAreSet(avocado.Test):
+    def write(self, name, content):
+        path = os.path.join(self.workdir, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    # 'arch' is listed after 'kernel', so nothing had set the architecture
+    # by the time the fragment reading it was loaded.
+    def test_a_fragment_reads_what_a_later_fragment_sets(self):
+        self.write("kernel.yaml",
+                   "imager:\n"
+                   "    kernel: linux-image-[[ distribution.architecture ]]\n")
+        self.write("arch.yaml", "distribution:\n    architecture: arm64\n")
+        main = self.write("main.yaml",
+                          "requires:\n    - kernel\n    - arch\n")
+
+        build = BuildCmd()
+        spec = build.load(main)
+        self.assertEqual(spec["imager"]["kernel"], "linux-image-arm64")
+
+    # Including the file doing the asking, which renders before anything has
+    # been merged at all.
+    def test_the_first_file_reads_what_it_sets_itself(self):
+        main = self.write("main.yaml",
+                          "distribution:\n"
+                          "    release: trixie\n"
+                          "imager:\n"
+                          "    kernel: linux-image-[[ distribution.release ]]\n")
+
+        build = BuildCmd()
+        spec = build.load(main)
+        self.assertEqual(spec["imager"]["kernel"], "linux-image-trixie")
+
+    # The walk is lenient so that it can finish; the load that follows it is
+    # not, or a name nothing sets would go quietly empty.
+    def test_a_name_nothing_sets_is_still_an_error(self):
+        main = self.write("main.yaml",
+                          "imager:\n    kernel: linux-image-[[ nowhere ]]\n")
+
+        build = BuildCmd()
+        with self.assertRaises(ValueError) as caught:
+            build.load(main)
+        self.assertIn("nowhere", str(caught.exception))
+
+    # Nothing the lenient walk made of a half-known file survives it: the
+    # kernel below is empty while probing and has to be the real one after.
+    def test_the_lenient_render_does_not_reach_the_specification(self):
+        self.write("kernel.yaml",
+                   "imager:\n"
+                   "    kernel: linux-image-[[ distribution.architecture ]]\n")
+        self.write("arch.yaml", "distribution:\n    architecture: amd64\n")
+        main = self.write("main.yaml",
+                          "requires:\n    - kernel\n    - arch\n")
+
+        build = BuildCmd()
+        spec = build.load(main)
+        self.assertEqual(spec["imager"]["kernel"], "linux-image-amd64")
+        # The walk itself did read that line before it knew the
+        # architecture, and what it made of it stayed where it belongs.
+        self.assertEqual(build._variables["imager"]["kernel"], "linux-image-")
+
 class OnlySubstitutionsAreAccepted(avocado.Test):
     # Branching in a specification is 'requires': which fragments are listed
     # says which apply, and a file can be read without being run.
