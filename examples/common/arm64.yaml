@@ -15,4 +15,3 @@ defaults:
 
 imager:
     kernel: linux-image-arm64
-    hypervisor: /usr/bin/qemu-system-aarch64

@@ -198,6 +198,41 @@ NATIVE = {"amd64": "pc-image", "arm64": "rpi4-image"}
 # trixie's skips the empty ones first. A cache seine writes has more than
 # the tarball in it, so a name that is safe on one is not evidence about the
 # other.
+# Which emulator boots the appliance is a property of the target
+# architecture, so seine keeps the table and an architecture file does not
+# repeat it. A specification still overrides it.
+class TheHypervisorFollowsTheArchitecture(avocado.Test):
+    class Source:
+        def __init__(self, spec):
+            self.spec = spec
+            self.options = {"keep": False, "verbose": False}
+
+    def setUp(self):
+        # Imported here rather than at the top: seine.imager needs
+        # python3-guestfs, and a machine without it still runs everything
+        # else in this file.
+        try:
+            from seine.imager import Imager, DEFAULT_HYPERVISORS
+        except ImportError as e:
+            self.cancel("python3-guestfs is missing: %s" % e)
+        self.imager = lambda spec: Imager(
+            TheHypervisorFollowsTheArchitecture.Source(spec))
+        self.hypervisors = DEFAULT_HYPERVISORS
+
+    def test_every_architecture_has_one_without_being_told(self):
+        for architecture in ["amd64", "arm64", "armhf"]:
+            self.assertEqual(self.imager({"imager": {}})._hypervisor(architecture),
+                             self.hypervisors[architecture])
+
+    def test_a_specification_still_says_otherwise(self):
+        imager = self.imager({"imager": {"hypervisor": "/opt/qemu-of-my-own"}})
+        self.assertEqual(imager._hypervisor("arm64"), "/opt/qemu-of-my-own")
+
+    # What examples/common/arm64.yaml used to say, now that it does not.
+    def test_arm64_is_what_the_example_named(self):
+        self.assertEqual(self.hypervisors["arm64"],
+                         "/usr/bin/qemu-system-aarch64")
+
 class CarriedCache(avocado.Test):
     """
     :avocado: disable
