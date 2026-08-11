@@ -3,6 +3,7 @@
 
 import getopt
 import jinja2
+import jinja2.meta
 import os
 import re
 import subprocess
@@ -73,6 +74,7 @@ class BuildCmd(Cmd):
         self._loading = []
         self._probing = False
         self._variables = None
+        self._names = []
 
     # A specification handed over as text, rather than as a tree of files to
     # walk: there is nothing to probe, so it renders against the
@@ -97,6 +99,25 @@ class BuildCmd(Cmd):
         probe._probing = True
         probe.load(yaml_file)
         self._variables = {**(self._variables or {}), **(probe.spec or {})}
+        self._check_names(probe._names)
+
+    # Every name the specification asks for that it never sets, in one
+    # message. The walk has been to every file by the time this runs, so
+    # reporting the first and stopping would be a choice to make someone
+    # find the rest one build at a time.
+    #
+    # Names, not paths: what a file asks of a name it does read -- the
+    # 'architecture' of a 'distribution' that is set -- is a question about
+    # a value rather than about the specification's shape, and the load that
+    # follows answers it against the real values.
+    def _check_names(self, names):
+        missing = []
+        for filename, asked in names:
+            for name in sorted(asked - set(self._variables or {})):
+                missing.append("%s: '%s' is not set by this specification"
+                               % (filename, name))
+        if len(missing) > 0:
+            raise ValueError("\n".join(missing))
 
     # The files being loaded, innermost last. 'requires' pulls in files that
     # pull in files themselves, and nothing stopped two of them from reaching
@@ -153,6 +174,10 @@ class BuildCmd(Cmd):
         context = self._variables if self._variables is not None else self.spec
         try:
             template = PROBE if self._probing else TEMPLATE
+            if self._probing:
+                self._names.append((yaml_filename,
+                    jinja2.meta.find_undeclared_variables(
+                        template.parse(yaml_spec))))
             return template.from_string(yaml_spec).render(context or {})
         except jinja2.TemplateError as e:
             raise ValueError("%s:%s: %s"

@@ -124,6 +124,44 @@ class NamesAreFoundWhereverTheyAreSet(avocado.Test):
         # architecture, and what it made of it stayed where it belongs.
         self.assertEqual(build._variables["imager"]["kernel"], "linux-image-")
 
+# The walk has been to every file before anything is loaded, so what it
+# knows is worth saying all at once.
+class EveryNameThatIsNeverSetIsReported(avocado.Test):
+    def write(self, name, content):
+        path = os.path.join(self.workdir, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def test_two_bad_specifications_make_one_error(self):
+        self.write("kernel.yaml", "imager:\n    kernel: [[ arch ]]\n")
+        self.write("boot.yaml", "imager:\n    bootloader: [[ board ]]\n")
+        main = self.write("main.yaml",
+                          "requires:\n    - kernel\n    - boot\n")
+
+        build = BuildCmd()
+        with self.assertRaises(ValueError) as caught:
+            build.load(main)
+        reported = str(caught.exception)
+        self.assertIn("kernel.yaml", reported)
+        self.assertIn("'arch'", reported)
+        self.assertIn("boot.yaml", reported)
+        self.assertIn("'board'", reported)
+
+    # What a file asks of a name the specification does set is a question
+    # about a value, which the load answers against the real ones.
+    def test_a_setting_a_name_does_not_have_is_left_to_the_load(self):
+        self.write("arch.yaml", "distribution:\n    architecture: amd64\n")
+        main = self.write("main.yaml",
+                          "requires:\n    - arch\n"
+                          "imager:\n"
+                          "    kernel: [[ distribution.flavour ]]\n")
+
+        build = BuildCmd()
+        with self.assertRaises(ValueError) as caught:
+            build.load(main)
+        self.assertIn("flavour", str(caught.exception))
+
 class OnlySubstitutionsAreAccepted(avocado.Test):
     # Branching in a specification is 'requires': which fragments are listed
     # says which apply, and a file can be read without being run.
