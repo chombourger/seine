@@ -76,12 +76,25 @@ class BuildCmd(Cmd):
         self._probing = False
         self._variables = None
         self._names = []
+        self._prober = None
+        self._probed = set()
 
     # A specification handed over as text, rather than as a tree of files to
     # walk: there is nothing to probe, so it renders against the
     # specification merged so far and reads what earlier calls have set.
     def loads(self, yaml_spec):
         return self._load("<string>", yaml_spec)
+
+    # Every file the command names, probed before any of them is loaded:
+    # what one asks for may be set by another further along the line, and
+    # 'seine build' takes as many of them as a user cares to compose.
+    def load_all(self, yaml_files):
+        for yaml_file in yaml_files:
+            self._probe(yaml_file, check=False)
+        self._check_names(self._prober._names if self._prober else [])
+        for yaml_file in yaml_files:
+            self.load(yaml_file)
+        return self.spec
 
     # What a specification sets, learned before it is loaded for real.
     #
@@ -95,12 +108,21 @@ class BuildCmd(Cmd):
     # Only the names it found survive it, as the context the real walk
     # renders against. Nothing the lenient render made of a half-known file
     # reaches the specification that gets built.
-    def _probe(self, yaml_file):
-        probe = BuildCmd()
-        probe._probing = True
-        probe.load(yaml_file)
-        self._variables = {**(self._variables or {}), **(probe.spec or {})}
-        self._check_names(probe._names)
+    #
+    # One walk for every file, merged the way a specification is merged
+    # rather than by replacing whole sections: two files both naming
+    # 'distribution' -- one the architecture, one the components a board's
+    # firmware needs -- each said half of it, and the second took the
+    # first's half away.
+    def _probe(self, yaml_file, check=True):
+        if self._prober is None:
+            self._prober = BuildCmd()
+            self._prober._probing = True
+        self._prober.load(yaml_file)
+        self._probed.add(os.path.realpath(yaml_file))
+        self._variables = self._prober.spec or {}
+        if check:
+            self._check_names(self._prober._names)
 
     # Every name the specification asks for that it never sets, in one
     # message. The walk has been to every file by the time this runs, so
@@ -130,7 +152,8 @@ class BuildCmd(Cmd):
     # twice: that is a specification listing a fragment its fragments also
     # list, which is how they are meant to be composed.
     def load(self, yaml_file):
-        if self._probing is False and len(self._loading) == 0:
+        if self._probing is False and len(self._loading) == 0 \
+                and os.path.realpath(yaml_file) not in self._probed:
             self._probe(yaml_file)
         path = os.path.realpath(yaml_file)
         if path in self._loading:
@@ -687,8 +710,7 @@ class BuildCmd(Cmd):
             sys.exit(1)
 
         try:
-            for spec in args:
-                self.load(spec)
+            self.load_all(args)
 
             spec = self.parse()
             result = 0

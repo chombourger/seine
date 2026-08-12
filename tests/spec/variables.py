@@ -124,6 +124,44 @@ class NamesAreFoundWhereverTheyAreSet(avocado.Test):
         # architecture, and what it made of it stayed where it belongs.
         self.assertEqual(build._variables["imager"]["kernel"], "linux-image-")
 
+# 'seine build' takes several specifications on one command line, and they
+# are files like any others: one may set what another reads.
+class FilesNamedOnTheCommandLineSeeEachOther(avocado.Test):
+    def write(self, name, content):
+        path = os.path.join(self.workdir, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    # Each was probed as it was loaded and the results merged by replacing
+    # whole sections, so a second file naming 'distribution' took away what
+    # the first had said about it -- an architecture, in the case that
+    # brought this up.
+    def test_a_section_two_of_them_write_is_merged(self):
+        arch = self.write("arch.yaml", "distribution:\n    architecture: arm64\n")
+        board = self.write("board.yaml",
+                           "distribution:\n    components: main non-free-firmware\n")
+        kernel = self.write("kernel.yaml",
+                            "imager:\n"
+                            "    kernel: linux-image-[[ distribution.architecture ]]\n")
+
+        build = BuildCmd()
+        spec = build.load_all([arch, board, kernel])
+        self.assertEqual(spec["imager"]["kernel"], "linux-image-arm64")
+        self.assertEqual(spec["distribution"]["components"],
+                         "main non-free-firmware")
+
+    # And the last of them may be what sets a name the first one reads.
+    def test_a_file_reads_what_a_later_one_sets(self):
+        kernel = self.write("kernel.yaml",
+                            "imager:\n"
+                            "    kernel: linux-image-[[ distribution.architecture ]]\n")
+        arch = self.write("arch.yaml", "distribution:\n    architecture: amd64\n")
+
+        build = BuildCmd()
+        spec = build.load_all([kernel, arch])
+        self.assertEqual(spec["imager"]["kernel"], "linux-image-amd64")
+
 # The walk has been to every file before anything is loaded, so what it
 # knows is worth saying all at once.
 class EveryNameThatIsNeverSetIsReported(avocado.Test):
