@@ -326,13 +326,42 @@ class ContainerEngine:
     # with a task capturing it goes to that task's file. Passing the file
     # rather than reading the pipe ourselves keeps podman writing straight
     # into it, so a long build can be watched with tail while it runs.
+    # The last of what a failing command wrote, so that an error is a
+    # sentence rather than a number.
+    #
+    # Read back from the task's log rather than captured through a pipe:
+    # podman is handed the file descriptor and writes into it itself, which
+    # is what lets a long step be watched with tail while it runs. A pipe
+    # would take that away to say the same thing.
+    SAID_LINES = 8
+    SAID_BYTES = 8192
+
+    @staticmethod
+    def _said(output):
+        name = getattr(output, "name", None)
+        if not isinstance(name, str):
+            return None
+        try:
+            with open(name, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - ContainerEngine.SAID_BYTES))
+                tail = f.read().decode("utf-8", "replace")
+        except OSError:
+            return None
+        said = tail.splitlines()[-ContainerEngine.SAID_LINES:]
+        return "\n".join(line.rstrip() for line in said).strip() or None
+
     @staticmethod
     def run(cmd, check=False):
         cmd = ContainerEngine._podman_cmd(cmd)
         output = tasks.output()
-        return subprocess.run(cmd, check=check, stdout=output,
-                              stderr=subprocess.STDOUT if output else None,
-                              env=ContainerEngine._podman_env())
+        run = subprocess.run(cmd, check=False, stdout=output,
+                             stderr=subprocess.STDOUT if output else None,
+                             env=ContainerEngine._podman_env())
+        if check and run.returncode != 0:
+            raise subprocess.CalledProcessError(
+                run.returncode, cmd, output=ContainerEngine._said(output))
+        return run
     @staticmethod
     def check_output(cmd):
         cmd = ContainerEngine._podman_cmd(cmd)

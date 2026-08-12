@@ -149,7 +149,21 @@ class Failed(Exception):
         for name, error in failures:
             said = str(error) or error.__class__.__name__
             message += "\n  %s: %s" % (name, said)
+            # And the last of what the command itself wrote, where it was
+            # kept. 'returned non-zero exit status 255' is a number: what
+            # says whether podman failed or what it ran did is the line
+            # above it, which was in the step's log and nowhere a person
+            # reading this would look.
+            for line in Failed._spoke(error):
+                message += "\n    %s" % line
         super().__init__(message)
+
+    @staticmethod
+    def _spoke(error):
+        said = getattr(error, "output", None) or getattr(error, "stderr", None)
+        if isinstance(said, bytes):
+            said = said.decode("utf-8", "replace")
+        return str(said).splitlines() if said else []
 
 # What a build would do, without doing any of it: every step in the order
 # they would run, and what each waits for. The order is the same one run()
