@@ -68,7 +68,26 @@ ANY_RELEASE = None
 EXTENSIONS = {
     "kernel": ["build-files", "config", "drop-patches", "featureset",
                "flavour", "keep-patches", "upstream", "upstream-sha256"],
+    "module": ["build", "make-vars", "modules"],
 }
+
+# Which kernels a module is built against, said once per architecture:
+# 'amd64-kernels', 'arm64-kernels'. Keyed by architecture rather than
+# listed flat so that a specification building for one architecture never
+# has to resolve another's kernels -- a name it would have to reach into
+# a foreign apt index to make sense of, for a build it is not doing.
+#
+# The shape is checked, not the architecture: seine takes the
+# 'distribution' architecture as written and holds no list of Debian's. A
+# misspelt one is caught all the same, by the build finding no kernels for
+# the architecture it is building, in a message naming what was found.
+MODULE_KERNELS = re.compile(r"^([a-z][a-z0-9]*(-[a-z0-9]+)*)-kernels$")
+
+# What a module is built against, named by its headers package rather
+# than by the image package beside it: the headers are what a module
+# compiles and links against, and naming the image would be naming a
+# thing the build never opens.
+MODULE_IMAGE_PREFIX = "linux-image-"
 
 # Where a kernel tree comes from when it is not the one the distribution
 # packages: 'extends: kernel: upstream:'. The distribution's debian/ is
@@ -134,6 +153,12 @@ DEFAULT_FEATURESET = "none"
 # the distribution's own and says plainly that it is not it. 'revision'
 # overrides it per package.
 DEFAULT_REVISION = "mod1"
+
+# Debian's build profiles for a kernel's tools. The first drops
+# linux-kbuild with them, which a module built against that kernel needs;
+# the second drops the same tools and keeps it.
+NO_TOOLS = "pkg.linux.notools"
+MIN_TOOLS = "pkg.linux.mintools"
 
 # The tree named by 'extends: kernel: upstream:'. It carries the same
 # fields a Package does -- scheme, name, parameters -- so the code that
@@ -228,6 +253,15 @@ class Package:
                 "the architectures as separate packages, each with the "
                 "'flavour' that architecture has." % ", ".join(self.scope))
         self.source_date_epoch = self._parse_epoch(spec)
+        self.upstream_version = self._parse_version(spec)
+
+        # Modules are built natively for now, which off the image's own
+        # architecture means emulated. The headers a module builds against
+        # pull in linux-kbuild, whose fixdep and modpost are compiled for
+        # the kernel's architecture, so a cross chroot has nothing it can
+        # run.
+        if self.module and self.cross is None:
+            self.cross = False
 
     def _error(self, message):
         return ValueError("package #%d ('%s'): %s" % (self.index, self.source, message))
@@ -338,10 +372,19 @@ class Package:
             if type(settings) != type({}):
                 raise self._error("'extends: %s' shall be a dictionary" % kind)
             for setting in settings:
-                if setting not in EXTENSIONS[kind]:
-                    raise self._error(
-                        "'extends: %s' has no '%s' setting, expected one of %s"
-                        % (kind, setting, ", ".join(sorted(EXTENSIONS[kind]))))
+                if setting in EXTENSIONS[kind]:
+                    continue
+                # A module names its kernels once per architecture, so its
+                # settings are not a fixed list: '<arch>-kernels' is one
+                # of them for whatever architecture is being built for.
+                if kind == "module" and MODULE_KERNELS.match(setting):
+                    continue
+                expected = ", ".join(sorted(EXTENSIONS[kind]))
+                if kind == "module":
+                    expected += ", <architecture>-kernels"
+                raise self._error(
+                    "'extends: %s' has no '%s' setting, expected one of %s"
+                    % (kind, setting, expected))
 
         kernel = extends.get("kernel", {})
         self.kernel_config = self._parse_list(kernel, "config")
@@ -386,7 +429,116 @@ class Package:
                 raise self._error(
                     "'extends: kernel: %s' shall be a string" % setting)
         self.kernel = "kernel" in extends
+
+        module = extends.get("module", {})
+        self.module = "module" in extends
+        # Where the module's own makefile is, for a tree that keeps it in
+        # a subdirectory -- NVIDIA's is under kernel-open. The tree's root
+        # when nothing says otherwise.
+        self.module_build = module.get("build", ".")
+        if type(self.module_build) != type(""):
+            raise self._error("'extends: module: build' shall be a string")
+        # Which .ko files the build is expected to produce. Named rather
+        # than found: a build that quietly produced none, or produced one
+        # of two, would otherwise make a package that installs nothing and
+        # looks exactly as it should.
+        self.module_modules = self._parse_list(module, "modules")
+        for name in self.module_modules:
+            if type(name) != type(""):
+                raise self._error(
+                    "'extends: module: modules' shall be a list of module "
+                    "names")
+        self.module_make_vars = self._parse_make_vars(module)
+        self.module_kernels = self._parse_module_kernels(module)
         return extends
+
+    # What to put on the make command line, for a tree that needs telling
+    # where things are -- NVIDIA's wants SYSSRC. Taken as written: what a
+    # module's makefile accepts is its own business.
+    def _parse_make_vars(self, module):
+        variables = module.get("make-vars", {})
+        if type(variables) != type({}):
+            raise self._error(
+                "'extends: module: make-vars' shall be a dictionary of "
+                "variables to pass to make")
+        for name, value in variables.items():
+            if type(value) not in [type(""), type(0)]:
+                raise self._error(
+                    "'extends: module: make-vars' has '%s', whose value is "
+                    "neither a string nor a number" % name)
+        return {name: str(value) for name, value in variables.items()}
+
+    # The kernels this module is built against, per architecture.
+    #
+    # Each is named by its headers package -- 'apt://linux-headers-amd64',
+    # 'apt://linux-headers-6.12.101+deb13-amd64' -- or by the name of a
+    # kernel this specification builds, whose headers seine knows how to
+    # name for itself.
+    def _parse_module_kernels(self, module):
+        kernels = {}
+        for setting, listed in module.items():
+            architecture = MODULE_KERNELS.match(setting)
+            if architecture is None:
+                continue
+            if type(listed) != type([]):
+                raise self._error("'extends: module: %s' shall be a list of "
+                                  "kernels" % setting)
+            for kernel in listed:
+                if type(kernel) != type(""):
+                    raise self._error(
+                        "'extends: module: %s' shall be a list of kernels, "
+                        "named as strings" % setting)
+                self._check_module_kernel(setting, kernel)
+            kernels[architecture.group(1)] = list(listed)
+        return kernels
+
+    # A kernel is named by what a module is built against, which is a
+    # headers package. The image package beside it holds a compiled
+    # kernel and nothing to compile against, so naming it is a mistake
+    # worth spelling out rather than a name to quietly translate: which
+    # headers package an image package belongs to is a question with more
+    # than one answer where featuresets are involved.
+    def _check_module_kernel(self, setting, kernel):
+        name = kernel
+        if "://" in kernel:
+            scheme, _, name = kernel.partition("://")
+            if scheme != "apt":
+                raise self._error(
+                    "'extends: module: %s' names '%s': a kernel is named by "
+                    "an 'apt://' headers package, or by a kernel this "
+                    "specification builds" % (setting, kernel))
+        if name.startswith(MODULE_IMAGE_PREFIX):
+            raise self._error(
+                "'extends: module: %s' names '%s', which is a kernel image. "
+                "A module is built against headers: name "
+                "'linux-headers-%s' instead."
+                % (setting, kernel, name[len(MODULE_IMAGE_PREFIX):]))
+
+    # The upstream version of a source seine writes the packaging for.
+    # Not the 'version' a 'source' URI pins, which says which of the
+    # archive's versions to fetch -- this one says what is being built,
+    # for a tree that has no way of saying it.
+    #
+    # A tree that carries its own debian/ carries a changelog, and that
+    # says what version is being built. A bare upstream tree says nothing:
+    # a git revision is not a version, and a tag is not one either until
+    # somebody decides which part of it counts. So the specification says
+    # it, and says it for every package seine packages itself.
+    def _parse_version(self, spec):
+        version = spec.get("version")
+        # A string, and not a number that looks like one: yaml reads an
+        # unquoted 1.10 as a float, and a float is 1.1, which is a
+        # different version and a silent one.
+        if version is not None and type(version) != type(""):
+            raise self._error(
+                "'version' shall be a string: write it in quotes, since a "
+                "version is not a number -- yaml reads 1.10 as 1.1")
+        if self.module and version is None and self.source is not None:
+            raise self._error(
+                "'version' is not set. seine writes the packaging for an "
+                "out-of-tree module, so nothing in the tree says what "
+                "version is being built -- the specification has to.")
+        return version
 
     # apt preferences to put in front of this package's build, as
     # apt_preferences(5) writes them. Taken verbatim: what can be said in
@@ -2003,6 +2155,32 @@ rm -rf .pc
             for name in produced:
                 f.write("%s\n" % name)
 
+
+    # A module is built against its kernel's headers, which depend on the
+    # linux-kbuild of the same ABI. Debian builds that one for every
+    # profile but 'pkg.linux.notools', and a kernel grafted here has an ABI
+    # no archive can answer for -- so the modules fail to install their
+    # build dependencies. Refused here rather than by sbuild, which
+    # reaches it only after the kernel has been built.
+    # 'pkg.linux.mintools' drops the same tools and keeps kbuild.
+    def _kernels_keep_their_kbuild(self, packages):
+        built = {p.name: p for p in packages if p.kernel}
+        for package in packages:
+            if package.module == False:
+                continue
+            for architecture in sorted(package.module_kernels):
+                for reference in package.module_kernels[architecture]:
+                    kernel = built.get(reference)
+                    if kernel is None or NO_TOOLS not in kernel.profiles:
+                        continue
+                    raise package._error(
+                        "it is built against '%s', which is built with '%s' "
+                        "-- so no linux-kbuild is made for it, and no archive "
+                        "has one for a kernel built here. Use '%s' on '%s' "
+                        "instead, which drops the same tools and keeps "
+                        "kbuild, or name no tools profile at all."
+                        % (reference, NO_TOOLS, MIN_TOOLS, reference))
+
     # Rebuilds every package the specification asked for, in the order they
     # were sorted into. Each gets a working directory of its own, thrown
     # away afterwards unless --keep was asked for: what is worth keeping
@@ -2631,7 +2809,48 @@ def parse(spec):
                 "package '%s' has no 'source' to build from. An entry under "
                 "'packages' asks for a package to be built; one that only "
                 "describes a package goes under 'defaults'." % package.name)
-    return propagate(order(parsed))
+    ordered = propagate(order(parsed))
+    _check_module_kernels(ordered, spec)
+    return ordered
+
+# Every module has to say which kernels it is built against for each
+# architecture it is built for. Answered when the specification is
+# parsed: the architectures are known without fetching anything, so an
+# arm64 build of a specification that names only amd64 kernels fails in a
+# second rather than after cloning somebody's tree.
+#
+# Every package at fault is named in one message. A specification with
+# three modules and one architecture missing from all of them is three
+# lines of one error rather than three builds, each finding the next.
+#
+# Not a skip: an entry under 'packages' asks for a build, and a module
+# built against no kernels produces nothing. The image would come out,
+# boot, carry none of the modules asked for, and look exactly as it
+# should.
+def _check_module_kernels(packages, spec):
+    target = (spec.get("distribution") or {}).get("architecture")
+    missing = []
+    for package in packages:
+        if package.module == False:
+            continue
+        wanted = []
+        if "target" in package.scope and target is not None:
+            wanted.append(target)
+        if "host" in package.scope:
+            wanted.append(HOST_ARCH)
+        for architecture in sorted(set(wanted)):
+            if len(package.module_kernels.get(architecture, [])) > 0:
+                continue
+            named = sorted(package.module_kernels)
+            missing.append(
+                "package '%s' builds no kernel modules for %s: it names "
+                "kernels for %s. Add '%s-kernels' to its 'extends: module', "
+                "or take the package out of a specification building for %s."
+                % (package.name, architecture,
+                   ", ".join(named) if len(named) > 0 else "no architecture",
+                   architecture, architecture))
+    if len(missing) > 0:
+        raise ValueError("\n".join(missing))
 
 # Carries a package's scope down to what it is built after.
 #

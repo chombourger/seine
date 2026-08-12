@@ -46,6 +46,18 @@ def parse(packages):
     build.parse()
     return build
 
+# As parse(), for what only means something once the architecture being
+# built for is known -- which kernels a module has to name, above all.
+def parse_for(architecture, packages):
+    build = BuildCmd()
+    build.loads("""
+                distribution:
+                    release: trixie
+                    architecture: %s
+    """ % architecture + packages + IMAGE)
+    build.parse()
+    return build
+
 class SupportedSources(avocado.Test):
     def test(self):
         try:
@@ -254,6 +266,219 @@ class PackageNameIsNotASourcePackageName(avocado.Test):
                 self.fail("parsing succeeded for the package name '%s'!" % name)
             except ValueError:
                 pass
+
+MODULE = """
+                packages:
+                    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=deadbeef
+                      name: nvidia-open
+                      version: "580.95.05"
+                      extends:
+                          module:
+%s
+"""
+
+class ModuleExtension(avocado.Test):
+    def test(self):
+        build = parse_for("amd64", MODULE % """
+                              build: kernel-open
+                              modules:
+                                  - nvidia
+                                  - nvidia-drm
+                              make-vars:
+                                  SYSSRC: /usr/src/linux
+                              amd64-kernels:
+                                  - apt://linux-headers-amd64
+                                  - linux
+        """)
+        package = build.image.packages[0]
+        self.assertEqual(package.module, True)
+        self.assertEqual(package.module_build, "kernel-open")
+        self.assertEqual(package.module_modules, ["nvidia", "nvidia-drm"])
+        self.assertEqual(package.module_make_vars, {"SYSSRC": "/usr/src/linux"})
+        self.assertEqual(package.module_kernels,
+                         {"amd64": ["apt://linux-headers-amd64", "linux"]})
+        self.assertEqual(package.upstream_version, "580.95.05")
+
+class ModuleDefaults(avocado.Test):
+    def test(self):
+        build = parse_for("amd64", MODULE % """
+                              amd64-kernels: [apt://linux-headers-amd64]
+        """)
+        package = build.image.packages[0]
+        # The tree's root, for packaging that keeps its makefile there.
+        self.assertEqual(package.module_build, ".")
+        self.assertEqual(package.module_modules, [])
+        self.assertEqual(package.module_make_vars, {})
+
+class ModulesAreBuiltNativelyForNow(avocado.Test):
+    def test(self):
+        build = parse_for("amd64", MODULE % """
+                              amd64-kernels: [apt://linux-headers-amd64]
+        """)
+        # Until a module has kbuild tools it can run, which is a later
+        # commit. Not the default anything else gets.
+        self.assertEqual(build.image.packages[0].cross, False)
+
+# A module is built against its kernel's headers, which depend on the
+# linux-kbuild of the same ABI -- and 'pkg.linux.notools' is the one
+# profile that does not build one. For a kernel grafted here no archive
+# can supply it either, so this is refused when the specification is read
+# rather than by the build that would fail on it.
+class AKernelWithModulesKeepsItsKbuild(avocado.Test):
+    KERNEL_AND_MODULE = """
+                packages:
+                    - source: git://example.com/driver.git;rev=deadbeef
+                      name: driver
+                      version: "1.0"
+                      extends:
+                          module:
+                              amd64-kernels: [linux]
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+                      profiles: [%s]
+    """
+
+    def tasks(self, profiles):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        build = parse_for("amd64", self.KERNEL_AND_MODULE % profiles)
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        builder._kernels_keep_their_kbuild(build.image.packages)
+
+    def test_notools_is_refused(self):
+        from seine.packages import MIN_TOOLS
+        try:
+            self.tasks("pkg.linux.notools")
+            self.fail("a kernel with no kbuild was accepted!")
+        except ValueError as e:
+            # The way out is named, since the profile that works is not
+            # one anybody guesses.
+            self.assertIn(MIN_TOOLS, str(e))
+
+    def test_mintools_is_not(self):
+        self.tasks("pkg.linux.mintools")
+
+    def test_asking_for_every_tool_is_not(self):
+        self.tasks("nodoc")
+
+class UnknownModuleSetting(avocado.Test):
+    def test(self):
+        try:
+            parse_for("amd64", MODULE % """
+                              amd64-kernels: [apt://linux-headers-amd64]
+                              kernels: [linux]
+            """)
+            self.fail("parsing succeeded for an unknown 'module' setting!")
+        except ValueError as e:
+            # The message says how kernels are named, since naming them
+            # flat is the mistake somebody makes once.
+            self.assertIn("<architecture>-kernels", str(e))
+
+class ModuleNamesAKernelImage(avocado.Test):
+    def test(self):
+        try:
+            parse_for("amd64", MODULE % """
+                              amd64-kernels: [apt://linux-image-amd64]
+            """)
+            self.fail("parsing succeeded for a kernel image package!")
+        except ValueError as e:
+            self.assertIn("linux-headers-amd64", str(e))
+
+class ModuleNamesAnUnsupportedScheme(avocado.Test):
+    def test(self):
+        try:
+            parse_for("amd64", MODULE % """
+                              amd64-kernels: [git://example.com/linux.git;rev=1]
+            """)
+            self.fail("parsing succeeded for a kernel named by a git tree!")
+        except ValueError:
+            pass
+
+class ModuleKernelsAreAList(avocado.Test):
+    def test(self):
+        try:
+            parse_for("amd64", MODULE % """
+                              amd64-kernels: apt://linux-headers-amd64
+            """)
+            self.fail("parsing succeeded for a kernel list that is not one!")
+        except ValueError:
+            pass
+
+class ModuleWithoutAVersion(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    release: trixie
+                    architecture: amd64
+                packages:
+                    - source: git://example.com/driver.git;rev=deadbeef
+                      name: driver
+                      extends:
+                          module:
+                              amd64-kernels: [apt://linux-headers-amd64]
+        """ + IMAGE)
+        try:
+            build.parse()
+            self.fail("parsing succeeded for a module with no version!")
+        except ValueError:
+            pass
+
+class ModuleWithoutKernelsForItsArchitecture(avocado.Test):
+    def test(self):
+        try:
+            parse_for("arm64", MODULE % """
+                              amd64-kernels: [apt://linux-headers-amd64]
+            """)
+            self.fail("parsing succeeded for a module built for no kernels!")
+        except ValueError as e:
+            message = str(e)
+            self.assertIn("nvidia-open", message)
+            self.assertIn("arm64", message)
+            # What it does name, so a misspelt architecture is read off
+            # the message rather than hunted for.
+            self.assertIn("amd64", message)
+
+class EveryModuleMissingKernelsIsNamed(avocado.Test):
+    def test(self):
+        try:
+            parse_for("arm64", """
+                packages:
+                    - source: git://example.com/one.git;rev=deadbeef
+                      name: driver-one
+                      version: "1.0"
+                      extends:
+                          module:
+                              amd64-kernels: [apt://linux-headers-amd64]
+                    - source: git://example.com/two.git;rev=deadbeef
+                      name: driver-two
+                      version: "2.0"
+                      extends:
+                          module:
+                              amd64-kernels: [apt://linux-headers-amd64]
+            """)
+            self.fail("parsing succeeded for two modules built for no kernels!")
+        except ValueError as e:
+            # One message, not one build each finding the next.
+            self.assertIn("driver-one", str(e))
+            self.assertIn("driver-two", str(e))
+
+class ModuleKernelsAreCheckedPerArchitecture(avocado.Test):
+    def test(self):
+        try:
+            build = parse_for("arm64", MODULE % """
+                              amd64-kernels: [apt://linux-headers-amd64]
+                              arm64-kernels: [apt://linux-headers-arm64]
+            """)
+        except ValueError as e:
+            self.fail("a module naming this architecture's kernels was "
+                      "refused: %s" % e)
+        self.assertEqual(sorted(build.image.packages[0].module_kernels),
+                         ["amd64", "arm64"])
 
 class PackageWithoutExtensions(avocado.Test):
     def test(self):
