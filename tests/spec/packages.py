@@ -5,6 +5,7 @@ import avocado
 import errno
 import os
 import shutil
+import re
 import subprocess
 import sys
 import tempfile
@@ -1134,6 +1135,59 @@ class MakeVarsNameTheKernelBeingBuiltFor(avocado.Test):
         # the kernel differs on every turn of the loop.
         self.assertEqual(build.image.packages[0].module_make_vars,
                          {"SYSSRC": "$KERNEL_SRC", "SYSOUT": "$KERNEL_OBJ"})
+
+# The two architecture tables in the module packaging, read back. They
+# answer different questions -- the kernel's name for an architecture and
+# uname's -- and the way to get them wrong is to add one and forget the
+# other, which nothing about a build would notice on the architecture
+# that was added.
+class ArchitecturesAreMappedBothWays(avocado.Test):
+    def tables(self):
+        from seine.packages import KERNEL_ARCHITECTURES, KERNEL_MACHINES
+        # The tables themselves, not the packaging rendered from them:
+        # this is where an architecture is added, and where one gets
+        # added to only one of the two.
+        return {"KERNEL_ARCH_": KERNEL_ARCHITECTURES,
+                "KERNEL_MACHINE_": KERNEL_MACHINES}
+
+    def test_both_tables_name_the_same_architectures(self):
+        tables = self.tables()
+        self.assertEqual(sorted(tables["KERNEL_ARCH_"]),
+                         sorted(tables["KERNEL_MACHINE_"]),
+                         "an architecture is mapped one way and not the "
+                         "other, so a module built for it gets an empty "
+                         "value where the other table would have answered")
+
+    def test_the_architectures_the_suite_builds_are_mapped(self):
+        tables = self.tables()
+        for architecture in ["amd64", "arm64"]:
+            for prefix in sorted(tables):
+                self.assertIn(architecture, tables[prefix],
+                              "%s has no %s" % (prefix, architecture))
+
+    def test_the_two_spellings_differ_where_they_should(self):
+        tables = self.tables()
+        # The whole reason there are two: they agree on amd64, which is
+        # how a specification that confuses them looks correct.
+        self.assertEqual(tables["KERNEL_ARCH_"]["amd64"],
+                         tables["KERNEL_MACHINE_"]["amd64"])
+        self.assertNotEqual(tables["KERNEL_ARCH_"]["arm64"],
+                            tables["KERNEL_MACHINE_"]["arm64"])
+
+    def test_an_unmapped_architecture_stops_the_build(self):
+        from seine.packages import module_packaging, kernel_architecture
+        templates, _ = module_packaging()
+        # Rather than handing the tree an empty ARCH, which a tree that
+        # falls back to uname reads as the builder's own. Refused in the
+        # packaging, for a build seine did not decide the architecture
+        # of, and in seine, for one it did.
+        self.assertIn("$(error seine has no kernel architecture",
+                      templates["rules"])
+        try:
+            kernel_architecture("sparc64")
+            self.fail("an architecture seine has never heard of was mapped!")
+        except ValueError:
+            pass
 
 class PackagingDecidesWhetherToRebuild(avocado.Test):
     def test(self):

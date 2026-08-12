@@ -40,6 +40,19 @@ KERNEL_MACHINE_[[ architecture ]] = [[ machine ]]
 [% endfor %]
 export KERNEL_MACHINE = $(KERNEL_MACHINE_$(DEB_HOST_ARCH))
 
+# An architecture nobody wrote down says so here, rather than by handing
+# the tree an empty ARCH and letting it decide what that means -- which
+# for a tree that falls back to uname is the builder's architecture, and
+# a module built for the wrong one is a module that builds.
+ifeq ($(KERNEL_ARCH),)
+$(error seine has no kernel architecture for $(DEB_HOST_ARCH). Add it to \
+	KERNEL_ARCH_* and KERNEL_MACHINE_* in seine/data/module/rules.)
+endif
+ifeq ($(KERNEL_MACHINE),)
+$(error seine has no machine name for $(DEB_HOST_ARCH). Add it to \
+	KERNEL_MACHINE_* in seine/data/module/rules.)
+endif
+
 # Debian keeps a kernel's headers in two packages: the generic sources in
 # '-common', and the configuration, Module.symvers and generated headers
 # in the one named for the flavour. Trees that test the kernel by
