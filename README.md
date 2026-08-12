@@ -35,6 +35,11 @@ may require disks/partitions to be created.
 * [Kernels](#kernels)
   * [Rebuilding the kernel](#rebuilding-the-kernel)
   * [Bring your own kernel](#bring-your-own-kernel)
+  * [Bring your own modules](#bring-your-own-modules)
+    * [Naming the kernels](#naming-the-kernels)
+    * [What comes out](#what-comes-out)
+    * [What the build is told](#what-the-build-is-told)
+    * [Cross-compiling modules](#cross-compiling-modules)
 * [Building](#building)
   * [What a build would do](#what-a-build-would-do)
   * [While a build runs](#while-a-build-runs)
@@ -511,6 +516,8 @@ The following attributes are supported:
 | apt-preferences   | no       | What this build may install (see [Pinning a build](#pinning-a-build)) |
 | before            | no       | Packages that shall be built after this one     |
 | cross             | no       | Cross-compile (see [Cross-compiling](#cross-compiling)) |
+| extends           | no       | Settings for a kind of package (see [Bring your own modules](#bring-your-own-modules)) |
+| name              | no       | The source package this builds, when the URI does not say |
 | options           | no       | Debian build options (`DEB_BUILD_OPTIONS`)      |
 | patches           | no       | Patches to apply, relative to this YAML file    |
 | priority          | no       | Build order, `0`-`999`, `500` by default        |
@@ -518,6 +525,7 @@ The following attributes are supported:
 | revision          | no       | Local version suffix, `mod1` by default         |
 | scope             | no       | Who the rebuild is for (see [Host packages](#host-packages)) |
 | source_date_epoch | no       | Date to build at, seconds since the epoch       |
+| version           | no       | Upstream version, for a tree seine packages itself |
 
 Anything fetched over http is checked against a hash the specification
 declares, since nothing else vouches for it:
@@ -639,7 +647,9 @@ loaded after the file that asked for it.
 
 A file that wants to describe a package *without* asking for it to be
 built -- an architecture file naming a kernel flavour, say -- puts the
-entry under [`defaults`](#defaults) instead.
+entry under [`defaults`](#defaults) instead. Such an entry may name the
+package by `name` alone, since where the source comes from is the job of
+whichever file asks for the build.
 
 Patches are applied in the way the source format calls for. A
 `3.0 (quilt)` package gets them added to `debian/patches/series`; anything
@@ -1487,6 +1497,136 @@ Worth being plain about, since the aim here is a true replacement:
    local repository, above the distribution's, so packages built after
    the kernel and the image itself get its headers. Usually what you
    want; worth knowing when it is not.
+
+### Bring your own modules
+
+A driver that lives outside the kernel tree is a package like any
+other, built by `extends: module:`:
+
+```
+packages:
+    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=c8e6998…
+      name: nvidia-open
+      version: "580.178.04"
+      extends:
+          module:
+              build: .
+              modules: [nvidia, nvidia-drm, nvidia-modeset, nvidia-uvm]
+              make-vars:
+                  SYSSRC: $KERNEL_SRC
+                  SYSOUT: $KERNEL_OBJ
+                  ARCH: $KERNEL_ARCH
+                  TARGET_ARCH: $KERNEL_MACHINE
+              amd64-kernels:
+                  - apt://linux-headers-amd64
+```
+
+Such a tree carries a makefile and no `debian/` directory, so seine
+writes the packaging. That is what `name` and `version` are for: the
+repository a clone came from is not what the driver is called, and a
+tree with no changelog cannot say what version is being built. A
+version is a string -- yaml reads an unquoted `1.10` as `1.1`.
+
+| Setting          | Required | Description                                  |
+| ---------------- |:--------:| -------------------------------------------- |
+| `<arch>-kernels` | yes      | Kernels to build against, per architecture   |
+| build            | no       | Directory whose makefile to run, `.` by default |
+| build-depends    | no       | What the tree needs to compile                |
+| make-vars        | no       | Variables to pass to make                     |
+| modules          | no       | The `.ko` files that should come out          |
+| runtime-depends  | no       | What the modules need once installed          |
+| target           | no       | Make target, `modules` by default             |
+
+The tree is built through its own makefile rather than by driving
+kbuild at it. Packaging that has something to do first, or that works
+out what kbuild needs, is skipped entirely otherwise -- and skipped
+quietly, leaving a build that succeeded and a package with no modules
+in it.
+
+#### Naming the kernels
+
+Kernels are named per architecture, by their **headers** package:
+
+```
+              amd64-kernels:
+                  - apt://linux-headers-amd64
+                  - apt://linux-headers-6.12.101+deb13-rt-amd64
+              arm64-kernels:
+                  - linux
+```
+
+Three ways to name one. A metapackage (`linux-headers-amd64`) follows
+whichever kernel that flavour is at, and seine rebuilds the modules
+when the answer moves -- which is what a specification wants, since an
+ABI changes under it with every kernel update. An ABI written out names
+one kernel exactly. A bare name is a kernel this specification builds,
+and saying so is all that is needed: the module is built after it, and
+a kernel that changes for any reason rebuilds the modules on it.
+
+Naming an *image* package is refused. A module is compiled against
+headers, and which headers belong to an image is a question with more
+than one answer once featuresets exist.
+
+Per architecture, rather than one flat list, so that a specification
+building for amd64 never has to make sense of arm64's kernels. A module
+that names no kernels for an architecture it is built for is refused
+when the specification is parsed, rather than producing an image that
+boots and carries none of the modules asked for.
+
+#### What comes out
+
+One binary package per kernel, named for the kernel the modules will
+load into, and a metapackage beside it named for the flavour:
+
+```
+nvidia-open-modules-6.12.101+deb13-amd64
+nvidia-open-modules-amd64
+```
+
+A playbook installs the second. The first is renamed by every kernel
+update; the flavour is not.
+
+#### What the build is told
+
+A tree left to itself asks `uname` which machine it is building for,
+which answers for the builder rather than for the package. So the
+rules set these, and a `make-vars` value may name them:
+
+| Variable          | What it is                                        |
+| ----------------- | ------------------------------------------------- |
+| `$KERNEL_SRC`     | The kernel's generic sources (`-common`)           |
+| `$KERNEL_OBJ`     | Its configuration and `Module.symvers` (flavour)   |
+| `$KERNEL_RELEASE` | `<abi>-<flavour>`                                  |
+| `$KERNEL_ARCH`    | What the kernel calls the architecture             |
+| `$KERNEL_MACHINE` | What `uname -m` calls it                           |
+
+The last two are not the same thing. The kernel says `arm64` where
+`uname` says `aarch64` -- and both say `x86_64`, which is how a
+specification that confuses them looks correct until it is built for
+something else.
+
+`$KERNEL_SRC` and `$KERNEL_OBJ` are two paths because Debian splits a
+kernel's headers into two packages. A tree that tests the kernel by
+compiling against it needs the first; kbuild needs the second. Given
+only one, such a tree concludes the kernel is missing headers it has,
+and fails much later and somewhere else.
+
+#### Cross-compiling modules
+
+Modules cross-compile like everything else. It takes some arranging,
+which seine does without being asked: a kernel's headers reach for
+`linux-kbuild`, whose `fixdep` and `modpost` are compiled for the
+kernel's architecture and cannot run on a machine of another -- and a
+kernel seine grafted has no such package in any archive at all.
+
+So seine builds one: that kernel's headers with the tools rebuilt for
+the machine doing the building, from the kernel's own source. It is
+built once per kernel however many modules are built against it, and
+it lands in the local repository like anything else.
+
+Nothing about a specification changes for it. `cross: false` still
+means what it means elsewhere -- build under emulation, for packaging
+that has to run what it just built.
 
 ## Building
 
