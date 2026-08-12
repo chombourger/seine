@@ -1401,6 +1401,49 @@ class GeneratedCrossPackaging(avocado.Test):
         # one before it.
         self.assertNotEqual(first.split("\n")[0], second.split("\n")[0])
 
+# A cross headers package is fetched and stamped like anything else, but
+# it was made up rather than asked for, so what those come to is worth
+# reading back.
+class CrossHeadersAreFetchedAndStamped(avocado.Test):
+    def parts(self, release="6.18+unreleased-arm64"):
+        from seine.packages import Builder, Kernel
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "arm64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        kernel = Kernel("linux", "linux-headers-%s" % release, release, None)
+        return builder, builder._cross_package(kernel, 1)
+
+    def test_the_source_is_asked_of_apt_rather_than_named(self):
+        builder, package = self.parts()
+        command = " ".join(builder._fetch_cross_args(package, "arm64")[2].split())
+        # Which source a headers package came from is written in the
+        # headers package. Guessing 'linux' is right for Debian's kernel
+        # and wrong for anybody else's.
+        self.assertIn("apt-get source $source=$version", command)
+        self.assertIn("^Source:", command)
+        self.assertIn("apt-get download linux-headers-6.18+unreleased-arm64:arm64",
+                      command)
+        # The architecture of the kernel, which is not the architecture
+        # this package is built for.
+        self.assertIn("dpkg --add-architecture arm64", command)
+
+    def test_a_kernel_that_moved_is_a_different_package(self):
+        first, package = self.parts()
+        second, other = self.parts(release="6.18+unreleased2-arm64")
+        # A grafted kernel rebuilt has a new ABI, and headers left
+        # describing the one before it would have modules built against
+        # a kernel that is not there.
+        self.assertNotEqual(
+            os.path.basename(first.stamp(package, "amd64")).rsplit("_", 1)[1],
+            os.path.basename(second.stamp(other, "amd64")).rsplit("_", 1)[1])
+
+    def test_it_is_stamped_for_the_machine_that_builds_it(self):
+        builder, package = self.parts()
+        from seine.packages import HOST_ARCH
+        self.assertIn("_%s_" % HOST_ARCH,
+                      os.path.basename(builder.stamp(package, HOST_ARCH)))
+
 class MetapackagesAreRecognised(avocado.Test):
     def test(self):
         from seine.packages import is_kernel_metapackage, is_built_kernel

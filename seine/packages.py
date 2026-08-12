@@ -123,6 +123,12 @@ CROSS_SUFFIX = "-cross"
 # itself.
 CROSS_STAGED = "debian/headers"
 
+# Where the fetch leaves them beside the source it unpacked. Hidden,
+# because what a fetch produced is found by looking for the one directory
+# it left behind, and anything seine put there itself has to stay out of
+# that count.
+CROSS_FETCHED = ".headers"
+
 # What a Debian architecture is called by the kernel, and what uname
 # would have called it. Two answers to one question, and a tree wants
 # whichever its own build system asks for -- the kernel's for ARCH, and
@@ -168,6 +174,12 @@ def kernel_architecture(architecture):
 
 def cross_headers_name(release):
     return "%s%s%s" % (MODULE_HEADERS_PREFIX, release, CROSS_SUFFIX)
+
+# Whether a package is one seine made up rather than one a specification
+# asked for. They have no source URI: what they are built from is worked
+# out from the kernel they are of.
+def is_cross_package(package):
+    return getattr(package, "cross_kernel", None) is not None
 
 # What a module is built against, once the name it was written as has
 # been made sense of.
@@ -920,6 +932,10 @@ class Builder:
         # told what the kernel it names resolved to. A module is described
         # by its own entry and by the kernel's, which is a different one.
         self.packages = []
+        # Which kernels' cross headers this run has already seen to, so
+        # that several modules against one kernel do not each decide to
+        # make it.
+        self._crossed = set()
         # Held while unpacking a chroot and while rewriting the
         # repository, both of which are shared by every package being
         # built at the same time. Compiling is not: that is the part
@@ -964,6 +980,18 @@ class Builder:
 
     def fetch(self, package, workdir):
         volumes = [(workdir, WORKDIR)]
+        # A cross headers package reads from the repository this build is
+        # filling, since a kernel built here has its source nowhere else.
+        if is_cross_package(package):
+            # A pair, not the '-v host:container' pair of arguments
+            # build_volumes() makes: what exec() takes is the former and
+            # it says nothing about being handed the latter.
+            volumes.append((repository(self.distro), REPOSITORY))
+            self.builderImage.exec(
+                self._fetch_cross_args(package, self.distro["architecture"]),
+                volumes=volumes, workdir=WORKDIR)
+            return self._source_dir(package.name, workdir)
+
         ssh_volumes, environment = self._ssh(package)
         self.builderImage.exec(
             self._fetch_args(package), volumes=volumes + ssh_volumes,
@@ -1050,6 +1078,38 @@ class Builder:
         if os.path.isfile(known_hosts):
             volumes.append((known_hosts, SSH_KNOWN_HOSTS))
         return volumes, {"SSH_AUTH_SOCK": SSH_AUTH_SOCK}
+
+    # A cross headers package is fetched rather than described: what it
+    # is built from is the kernel's own source, and what it carries is
+    # the headers that kernel's build produced. Both are asked of apt,
+    # which is the one thing that knows where either lives -- the
+    # distribution's for a kernel it ships, seine's own repository for a
+    # kernel built here, and the same two commands for both.
+    #
+    # The source package is not named by the specification: it is read
+    # off the headers package, which says which source it came from and
+    # at what version. Guessing 'linux' would be right for Debian's
+    # kernel and wrong for anybody else's.
+    def _fetch_cross_args(self, package, architecture):
+        headers = package.cross_kernel.headers
+        return ["sh", "-c",
+                "set -e; "
+                "dpkg --add-architecture %(architecture)s; "
+                "apt-get update -qq; "
+                "mkdir -p .headers; "
+                "cd .headers; "
+                "apt-get download %(headers)s:%(architecture)s "
+                "  $(apt-cache depends %(headers)s:%(architecture)s "
+                "    | sed -n 's/.*[<]\\?\\(linux-headers-[^ :<>]*-common[^ :<>]*\\).*/\\1/p' "
+                "    | head -1); "
+                "cd ..; "
+                "source=$(apt-cache show %(headers)s:%(architecture)s "
+                "  | sed -n 's/^Source: \\([^ ]*\\).*/\\1/p' | head -1); "
+                "version=$(apt-cache show %(headers)s:%(architecture)s "
+                "  | sed -n 's/^Version: //p' | head -1); "
+                "test -n \"$source\" || source=linux; "
+                "apt-get source $source=$version"
+                % {"headers": headers, "architecture": architecture}]
 
     def _fetch_args(self, package):
         if package.scheme == "apt":
@@ -2149,6 +2209,33 @@ rm -rf .pc
         return [self._cross_package(wanted[release], index)
                 for index, release in enumerate(sorted(wanted), 1)]
 
+    # The cross headers a build is about to need, made if they are not
+    # made already.
+    #
+    # Once per kernel and not once per module: the second module built
+    # against a kernel finds the first one's package in the repository
+    # and its stamp beside it, so nothing is built twice however many
+    # modules there are. The lock is for the builds seine runs beside
+    # each other, which would otherwise each decide to make it.
+    def _cross_headers_built(self, package, architecture):
+        if package.module == False:
+            return
+        if self.cross(package, architecture) == False:
+            return
+        for kernel in self.resolved_kernels(package, architecture,
+                                            self.packages):
+            with self._chroots:
+                if kernel.release in self._crossed:
+                    continue
+                self._crossed.add(kernel.release)
+            cross = self._cross_package(kernel, package.index)
+            stamp = self.stamp(cross, HOST_ARCH)
+            if os.path.isfile(stamp):
+                continue
+            print("building '%s' for %s" % (cross.name, HOST_ARCH))
+            self._rebuild(cross, HOST_ARCH, stamp)
+            self._deploy(cross, [HOST_ARCH])
+
     # Built for the machine doing the building, which is what 'host'
     # says, and named for the kernel it carries so that two kernels do
     # not write one package.
@@ -2655,7 +2742,7 @@ rm -rf .pc
         # Sets, not sequences: which patches are kept and which are dropped
         # does not depend on the order they were written in, and a digest
         # that says otherwise costs a kernel build to reorder two lines.
-        for part in [package.source,
+        for part in [str(package.source),
                      ",".join(package.profiles),
                      ",".join(package.options),
                      str(self.cross(package, architecture)),
@@ -2765,6 +2852,18 @@ rm -rf .pc
         # ones yesterday's rules produced.
         if package.module:
             digest.update(module_packaging()[1])
+
+        # A cross headers package is of one kernel and made by one
+        # packaging, and neither is anything the settings above describe:
+        # it was made up rather than asked for. The kernel's release
+        # changes when that kernel does, which is what has to rebuild it
+        # -- a grafted kernel rebuilt is a new ABI, and headers left
+        # describing the one before it would have modules built against
+        # a kernel that is not there.
+        if is_cross_package(package):
+            digest.update(package.cross_kernel.release.encode())
+            digest.update(package.cross_kernel.headers.encode())
+            digest.update(cross_packaging()[1])
 
         # A package built against another has to be rebuilt when that one
         # changes: it was compiled and linked against what that package
@@ -2956,12 +3055,24 @@ rm -rf .pc
             # roles are two builds of one source rather than two sources
             # that ought to be the same.
             fetch = "fetch:%s" % name
+            depends = [names[d.name] for d in getattr(package, "depends", [])
+                       if d.name in names]
+            # A module is the exception to fetching early. Its packaging
+            # is written as its source is prepared, and what that
+            # packaging says -- which binary packages there are, what
+            # they are named -- is decided by the ABI of the kernels it
+            # is built against. A kernel this specification builds has no
+            # ABI until it has been built, so preparing the module before
+            # then is asking a question that has no answer yet.
+            #
+            # Only for the kernels it waits on anyway: a module built
+            # against the distribution's kernels alone fetches as early
+            # as anything else.
             tasks.append(Task(fetch,
                               functools.partial(self._fetched, package),
-                              needs=["packages-prepare"]))
-            waits = [fetch] + [names[d.name]
-                               for d in getattr(package, "depends", [])
-                               if d.name in names]
+                              needs=["packages-prepare"]
+                                    + (depends if package.module else [])))
+            waits = [fetch] + depends
             built = []
             for architecture, stamp in builds:
                 step = "package:%s" % self.label(package, architecture)
@@ -3115,7 +3226,9 @@ rm -rf .pc
         workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
                                    prefix="source-")
         try:
-            print("fetching '%s'" % package.source)
+            # A package seine made up has no source to name, and saying
+            # 'fetching None' is how a log stops being read.
+            print("fetching '%s'" % (package.source or package.name))
             sourcedir = self.fetch(package, workdir)
             self.fetch_upstream(package, workdir)
             dsc, epoch = self._prepared(package, workdir, sourcedir)
@@ -3140,6 +3253,17 @@ rm -rf .pc
         # from: what dates the build is the packaging we started from,
         # which is a thing the specification pins.
         epoch = self.source_date_epoch(package, sourcedir)
+        # A cross headers package is not the kernel it is built from, and
+        # none of what follows is about it: no graft, no patches, no
+        # local changelog entry on somebody else's source.
+        if is_cross_package(package):
+            self.extend_cross_headers(package, sourcedir, epoch,
+                                      os.path.join(os.path.dirname(sourcedir),
+                                                   CROSS_FETCHED))
+            dsc = self.source_package(package, sourcedir)
+            self._stage_source(package, os.path.dirname(sourcedir), dsc)
+            return dsc, epoch
+
         if package.kernel_upstream is not None:
             sourcedir = self.graft(package, workdir, sourcedir, epoch)
         # Before the patches and before the local changelog entry: both
@@ -3282,6 +3406,14 @@ rm -rf .pc
     # shared with whatever else is building at the same time, so it is
     # taken one at a time.
     def _rebuild(self, package, architecture, stamp):
+        # What this build needs installed that no specification asked
+        # for. Built here rather than planned earlier because a kernel
+        # built by this specification only says what its ABI is once its
+        # own source has been prepared -- so which cross headers are
+        # wanted is not knowable until the kernel that decides it has
+        # been built, which 'after' guarantees has happened by now.
+        self._cross_headers_built(package, architecture)
+
         with self._chroots:
             chroot = SbuildChroot(self.distro, self.options,
                                   self.chroot_architecture(package, architecture))
@@ -3414,10 +3546,17 @@ def apt_configuration(*mountpoints, keyring=None):
         options = "[signed-by=%s/%s]" % (KEYRINGS, keyring)
         install = "install -D -m 0644 %s/%s %s/%s && " % (
             mountpoints[0], keyring, KEYRINGS, keyring)
+    # deb-src beside deb: the repository carries a Sources index over the
+    # source packages it holds, and a kernel built here is the only place
+    # its source can be fetched from -- there is no archive that has it.
+    # What needs it is the headers package built for another architecture
+    # out of that kernel's own source.
     lines = " && ".join(
-        "echo 'deb %s file:%s ./' %s %s"
-        % (options, mountpoint, ">" if index == 0 else ">>", SOURCES_LIST)
-        for index, mountpoint in enumerate(mountpoints))
+        "echo 'deb%s %s file:%s ./' %s %s"
+        % (kind, options, mountpoint,
+           ">" if (index == 0 and kind == "") else ">>", SOURCES_LIST)
+        for index, mountpoint in enumerate(mountpoints)
+        for kind in ["", "-src"])
     return "%s%s && %s" % (install, lines, apt_preferences_command())
 
 # The key a repository carries, if it carries one and is actually signed
