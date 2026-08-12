@@ -193,6 +193,7 @@ RUN --mount=type=cache,target=/var/cache/mmdebstrap,id={4},sharing=locked \
         --skip=essential/unlink                                      \
         --setup-hook='mkdir -p "$1"/var/cache/apt/archives/'         \
         --setup-hook='sync-in /var/cache/mmdebstrap /var/cache/apt/archives/' \
+        --customize-hook='rm -rf "$1"/var/cache/apt/archives/partial' \
         --customize-hook='sync-out /var/cache/apt/archives /var/cache/mmdebstrap' \
         --arch {1} {2} rootfs {3} &&                                 \
     cp /usr/bin/qemu-*-static rootfs/usr/bin/ &&                     \

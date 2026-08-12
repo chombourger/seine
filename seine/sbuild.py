@@ -226,6 +226,12 @@ class SbuildChroot:
             "--arch=%s" % self.architecture,
             "--setup-hook=mkdir -p \"$1\"/var/cache/apt/archives/",
             "--setup-hook=sync-in /var/cache/mmdebstrap /var/cache/apt/archives/",
+            # apt's staging directory belongs to a user of the chroot's
+            # own, so copying it out puts a directory in the cache that
+            # this user cannot unlink -- which is what stopped 'seine
+            # cache clear' from emptying the downloads. Nothing wants it:
+            # what is in it is a download that did not finish.
+            "--customize-hook=rm -rf \"$1\"/var/cache/apt/archives/partial",
             "--customize-hook=sync-out /var/cache/apt/archives /var/cache/mmdebstrap",
             self.distro["release"],
             "/root/.cache/sbuild/%s" % self.filename,
