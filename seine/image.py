@@ -148,6 +148,33 @@ class Image:
             self._from, self.spec["distribution"], self.options, verbose=self._verbose)
         self._cid = runner.run(self.spec["playbook"])
 
+    # What was exported is a root file-system, rather than whatever came out
+    # of a podman that said nothing was wrong.
+    #
+    # 'check=True' catches an export that failed and nothing else. One that
+    # exits zero having written a tar with no file-system in it is taken as
+    # good, written into the image, and reported three steps later by
+    # libguestfs as
+    #
+    #   internal_write: open: /etc/fstab: No such file or directory
+    #
+    # which says nothing about where it went wrong. A root file-system has
+    # an /etc: looking for it costs a walk of the first few thousand
+    # members of a tar this build is about to read in full anyway.
+    ROOT_EVIDENCE = 5000
+
+    def _exported(self, tarball):
+        with tarfile.open(tarball) as tar:
+            for count, member in enumerate(tar):
+                if member.name.lstrip("./").startswith("etc/"):
+                    return tarball
+                if count >= Image.ROOT_EVIDENCE:
+                    break
+        raise RuntimeError(
+            "the exported root file-system holds no '/etc' (%s): the "
+            "container it came from was empty or the export was cut short"
+            % tarball)
+
     def build_tarball(self):
         try:
             self._tarball = None
@@ -159,7 +186,7 @@ class Image:
                 mode="w", delete=False, dir=ContainerEngine.scratch(),
                 prefix="root-", suffix=".tar")
             ContainerEngine.run(["container", "export", "-o", image.name, self._cid], check=True)
-            self._tarball = image.name
+            self._tarball = self._exported(image.name)
         except subprocess.CalledProcessError:
             os.unlink(image.name)
             raise
