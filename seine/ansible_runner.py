@@ -11,6 +11,25 @@ from seine.transport_bootstrap import TransportBootstrap
 from seine import tasks
 from seine.utils                import ContainerEngine
 
+# Where the downloads cache is mounted, which is deliberately not apt's own
+# archives directory.
+#
+# It used to be exactly that, and the cache is one directory per release
+# shared by every build on the machine -- so two builds reaching the point
+# of installing packages at the same time put two apts on one archives
+# directory, and apt takes a lock there. The second does not wait for it:
+#
+#   E: Unable to lock directory /var/cache/apt/archives/
+#
+# apt gets an archives directory of the container's own instead, seeded
+# from the cache and copied back when the playbooks are done -- which is
+# what the bootstrap already does with mmdebstrap's sync-in and sync-out
+# hooks, for the same reason.
+DOWNLOADS = "/var/cache/seine/downloads"
+
+# apt's own, inside the container and nobody else's.
+ARCHIVES = "/var/cache/apt/archives"
+
 # Runs the spec's Ansible playbooks against a live, host-architecture-driven
 # ansible-playbook process connecting into the (possibly foreign-arch)
 # target container via the containers.podman connection plugin, instead of
@@ -30,6 +49,44 @@ class AnsibleContainerRunner:
     def _exec(self, args, check=True):
         return ContainerEngine.run(["container", "exec", self.cid] + args, check=check)
 
+    def _volumes(self):
+        volumes = ["-v", "%s:%s" % (
+            ContainerEngine.downloads(self.distro["release"]), DOWNLOADS)]
+        # Packages rebuilt from the spec's 'packages' section, if any, so the
+        # playbooks can install them with a plain apt task. One repository
+        # holds every architecture that was built for, and apt takes from
+        # it what this root file-system's architecture can use.
+        if packages.has_packages(self.distro):
+            volumes += ["-v", "%s:%s" % (packages.repository(self.distro),
+                                         packages.REPOSITORY)]
+        return volumes
+
+    # The cache into apt's own archives directory, so what another build
+    # already fetched is not fetched again.
+    def _seed_downloads(self):
+        self._exec(["sh", "-c",
+                    "mkdir -p %(to)s && "
+                    "cp -n %(from)s/*.deb %(to)s/ 2>/dev/null; "
+                    "true" % {"from": DOWNLOADS, "to": ARCHIVES}])
+
+    # And back again, for the build after this one. One file at a time and
+    # through a rename, since another build may be seeding itself from this
+    # directory while this runs: a whole .deb appears under its name or
+    # nothing does, and the dot keeps what is half-written out of the glob
+    # that reads it.
+    #
+    # Nothing here fails a build. What this writes is a saving for the next
+    # one rather than anything this one needs.
+    def _save_downloads(self):
+        self._exec(["sh", "-c",
+                    'for deb in %(from)s/*.deb; do '
+                    '  [ -e "$deb" ] || continue; '
+                    '  name=$(basename "$deb"); '
+                    '  [ -e "%(to)s/$name" ] && continue; '
+                    '  cp "$deb" "%(to)s/.$name.$$" 2>/dev/null && '
+                    '    mv "%(to)s/.$name.$$" "%(to)s/$name"; '
+                    'done; true' % {"from": ARCHIVES, "to": DOWNLOADS}], check=False)
+
     # Creates the target container, runs 'playbooks' against it and leaves
     # it running (stopped callers are expected to 'container export' it
     # then 'container rm' it) for build_tarball() to pick up. On failure,
@@ -38,15 +95,7 @@ class AnsibleContainerRunner:
         transport = TransportBootstrap(self.baseline, self.distro, self.options)
         transport.create()
 
-        cmd = ["container", "run", "-d",
-               "-v", "%s:/var/cache/apt/archives" % ContainerEngine.downloads(self.distro["release"])]
-        # Packages rebuilt from the spec's 'packages' section, if any, so the
-        # playbooks can install them with a plain apt task. One repository
-        # holds every architecture that was built for, and apt takes from
-        # it what this root file-system's architecture can use.
-        if packages.has_packages(self.distro):
-            cmd += ["-v", "%s:%s" % (packages.repository(self.distro),
-                                     packages.REPOSITORY)]
+        cmd = ["container", "run", "-d"] + self._volumes()
         cmd += [transport.name, "sleep", "infinity"]
 
         self.cid = ContainerEngine.check_output(cmd).strip()
@@ -55,11 +104,13 @@ class AnsibleContainerRunner:
                 self._exec(["sh", "-c", packages.apt_configuration(
                     packages.REPOSITORY,
                     keyring=packages.keyring(self.distro))])
+            self._seed_downloads()
             # Keep apt's package index in sync with what TransportBootstrap
             # baked in, same as the Dockerfile-based path used to do before
             # running its own playbooks.
             self._exec(["apt-get", "update", "-qqy"])
             self._run_playbooks(playbooks)
+            self._save_downloads()
             self._finalize()
         except:
             ContainerEngine.run(["container", "rm", "-f", self.cid], check=False)
