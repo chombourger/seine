@@ -25,6 +25,16 @@ def leftovers():
                   + [path for path in glob.glob(os.path.join(path_to_sources, "tmp*"))
                      if os.path.isdir(path)])
 
+# What a build of these tests produced, once the assertions have read it:
+# a disk image and the tar a cache was carried in are both large, and a job
+# that keeps four tests' worth keeps them for as long as its results are
+# kept. What is worth having after a failure is the logs, which are written
+# to outputdir rather than here.
+def remove_artifacts(workdir):
+    for name in ["*.img", "*.tar"]:
+        for leftover in glob.glob(os.path.join(workdir, name)):
+            os.unlink(leftover)
+
 # Building an image takes a kernel build with it, so these do not run
 # unless asked for. Not a tag alone: a tag says which tests to select,
 # and the default run selects everything.
@@ -143,6 +153,13 @@ class Image(avocado.Test):
         else:
             self.assertEqual(debs, [],
                              "this one was to take the distribution's kernel")
+
+        # Nothing boots it: what it was worth is that it was produced, and
+        # that has been asked. Left behind, four of these are gigabytes a
+        # job keeps for as long as its results are kept -- and a run that
+        # fills the disk takes the next one down with it. A failure keeps
+        # the image, since then there is something to look at.
+        os.remove(self.filename)
 
 class PcImageBookworm(Image):
     """
@@ -303,6 +320,7 @@ class CarriedCache(avocado.Test):
         for space in self.spaces:
             subprocess.run(["podman", "unshare", "rm", "-rf", space],
                            check=False)
+        remove_artifacts(self.workdir)
 
     def space(self, name):
         path = os.path.join(self.workdir, name)
@@ -535,6 +553,7 @@ class ScopedRebuild(avocado.Test):
         for space in self.spaces:
             subprocess.run(["podman", "unshare", "rm", "-rf", space],
                            check=False)
+        remove_artifacts(self.workdir)
 
     def space(self, name):
         path = os.path.join(self.workdir, name)
@@ -683,6 +702,7 @@ class SignedRebuild(avocado.Test):
     def tearDown(self):
         for space in self.spaces:
             subprocess.run(["podman", "unshare", "rm", "-rf", space], check=False)
+        remove_artifacts(self.workdir)
 
     def space(self, name):
         path = os.path.join(self.workdir, name)
