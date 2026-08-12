@@ -163,9 +163,24 @@ class ContainerEngine:
     # tar member and only extracts the ones it accepts -- used to pull a
     # single directory or a handful of files out of an otherwise large
     # image without writing the whole thing to disk first.
+    # A name for a container that exists only to be read and removed again.
+    #
+    # It was the image's own name with the slashes taken out, which two
+    # builds extracting from one image both picked: the second was told the
+    # name was in use and failed the step. Nothing waits for this one --
+    # it is created, streamed out and removed inside one call, so there is
+    # nothing for a waiter to find -- and two of them have no reason not to
+    # run at once. So each takes a name of its own.
+    #
+    # Random rather than the pid: a build's steps run in threads of one
+    # process, and two of those extract different images at the same time.
+    @staticmethod
+    def _scratch_name(image):
+        return "%s-%s" % (image.replace("/", "-"), os.urandom(4).hex())
+
     @staticmethod
     def extractImage(image, output_dir, member_filter=None):
-        cid = image.replace("/", "-")
+        cid = ContainerEngine._scratch_name(image)
         try:
             ContainerEngine.run(["container", "create", "--name", cid, image], check=True)
             proc = ContainerEngine.Popen(["container", "export", cid], stdout=subprocess.PIPE)

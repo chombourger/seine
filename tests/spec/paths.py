@@ -99,6 +99,23 @@ class TheRunrootGoesWithTheStorage(avocado.Test):
         self.assertEqual(cmd[cmd.index("--runroot") + 1],
                          ContainerEngine.runroot())
 
+
+
+# A container that exists only to be read and removed again takes a name of
+# its own: it was the image's, so two builds extracting from one image
+# collided and podman failed the second with 'name already in use'.
+class ScratchContainersDoNotShareAName(avocado.Test):
+    def test_two_readers_of_one_image_differ(self):
+        image = "imager-kernel/debian/bookworm/amd64"
+        names = {ContainerEngine._scratch_name(image) for _ in range(20)}
+        self.assertEqual(len(names), 20, "two readers picked one name")
+
+    # Still recognisable as what it is reading, for anyone looking at
+    # 'podman ps' while a build runs.
+    def test_the_name_says_which_image_it_is(self):
+        name = ContainerEngine._scratch_name("imager-kernel/debian/bookworm/amd64")
+        self.assertTrue(name.startswith("imager-kernel-debian-bookworm-amd64-"),
+                        name)
+        self.assertNotIn("/", name)
 if __name__ == "__main__":
     avocado.main()
-
