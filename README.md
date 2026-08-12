@@ -179,16 +179,19 @@ Note that the proxy must be reachable from inside a container: a proxy on
 The tests under `tests/spec/` use
 [avocado](https://avocado-framework.github.io/), which Debian does not
 package -- install it in a virtual environment that can still see the
-system's `python3-guestfs`, which pip cannot install:
+system packages pip cannot install:
 
 ```
+sudo apt-get install -y python3-guestfs python3-libarchive-c
 python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
 pip install -r requirements.txt avocado-framework 'setuptools<81'
 avocado run tests/spec/*.py
 ```
 
-`--system-site-packages` is what makes `guestfs` importable in there.
+`--system-site-packages` is what makes `guestfs` and `libarchive`
+importable in there. `libarchive` is what reads a kernel module out of the
+package it was shipped in, whichever compression that kernel chose.
 `setuptools<81` is for avocado itself, which still imports `pkg_resources`;
 without it every test errors out before it runs.
 

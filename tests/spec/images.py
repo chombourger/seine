@@ -4,6 +4,7 @@ import avocado
 import glob
 import io
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -167,6 +168,82 @@ class Image(avocado.Test):
                              "%s was not applied: %s is still enabled"
                              % (fragment, symbols[0]))
 
+    # What an out-of-tree module has to be to be worth building: compiled
+    # for the image's architecture, and for the kernel the package it is
+    # in is named after. A module that is neither still installs, and is
+    # then a file the kernel refuses to load -- which an image test that
+    # only asked whether a .deb appeared would call a pass.
+    #
+    # Read out of the .deb rather than off the build: what was published
+    # is what an image installs, and the build said it succeeded either
+    # way.
+    ELF_MACHINES = {"amd64": 0x3E, "arm64": 0xB7, "armhf": 0x28,
+                    "i386": 0x03, "ppc64el": 0x15, "riscv64": 0xF3}
+
+    # A module is installed as its kernel's configuration asks for it:
+    # CONFIG_MODULE_COMPRESS_XZ and its siblings decide, so the same
+    # source produces '.ko' against one kernel and '.ko.xz' against
+    # another. Both are the module, and which one arrives says nothing
+    # about whether the build was right -- a newer kernel compressing
+    # what an older one did not is not a thing to fail over.
+    MODULE_SUFFIXES = (".ko", ".ko.xz", ".ko.gz", ".ko.zst", ".ko.bz2",
+                       ".ko.lz4")
+
+    # Through libarchive rather than a suffix-to-module table, so whatever
+    # a kernel compresses with is read without this having heard of it.
+    # Its 'raw' format is what reads a compressed file that is not an
+    # archive; an uncompressed module comes back through it unchanged.
+    def unpackModule(self, tar, name):
+        import libarchive
+        data = tar.extractfile(name).read()
+        blocks = []
+        with libarchive.memory_reader(data, format_name="raw",
+                                      filter_name="all") as archive:
+            for entry in archive:
+                blocks.extend(entry.get_blocks())
+        return b"".join(blocks)
+
+    def assertModulesMatchTheirKernel(self, debs):
+        checked = 0
+        for deb in debs:
+            tarball = subprocess.run(["dpkg-deb", "--fsys-tarfile", deb],
+                                     stdout=subprocess.PIPE, check=True).stdout
+            with tarfile.open(fileobj=io.BytesIO(tarball)) as tar:
+                modules = [n for n in tar.getnames()
+                           if n.endswith(self.MODULE_SUFFIXES)]
+                # The metapackage of a flavour carries no modules of its
+                # own, only a dependency on the package that does.
+                if len(modules) == 0:
+                    continue
+                for name in modules:
+                    # '.../lib/modules/<release>/updates/<module>.ko[.xz]'
+                    parts = name.split("/lib/modules/", 1)
+                    self.assertEqual(len(parts), 2,
+                                     "%s is not under /lib/modules" % name)
+                    release = parts[1].split("/")[0]
+                    self.assertIn("%s_" % release, os.path.basename(deb),
+                                  "%s holds a module for %s"
+                                  % (os.path.basename(deb), release))
+
+                    ko = self.unpackModule(tar, name)
+                    self.assertEqual(ko[:4], b"\x7fELF", "%s is not an ELF" % name)
+                    machine = int.from_bytes(ko[18:20], "little")
+                    self.assertEqual(
+                        machine, self.ELF_MACHINES[self.architecture],
+                        "%s was built for machine 0x%x, not %s"
+                        % (name, machine, self.architecture))
+
+                    vermagic = re.search(rb"vermagic=([^\x00]+)", ko)
+                    self.assertIsNotNone(vermagic, "%s has no vermagic" % name)
+                    self.assertTrue(
+                        vermagic.group(1).decode().startswith(release),
+                        "%s says vermagic %s, but is installed for %s"
+                        % (name, vermagic.group(1).decode(), release))
+                    checked += 1
+        self.assertGreater(checked, 0,
+                           "none of %d module packages held a module"
+                           % len(debs))
+
     # What this build put in the repository, out of everything matching.
     # The repository outlives a run, so a test asking "was this built" has
     # to mean "by me" -- otherwise a build that produced nothing passes
@@ -239,13 +316,15 @@ class Image(avocado.Test):
         # for the kernel they were built against rather than for the
         # package, so what this asks is that a module was built for a
         # kernel of this architecture -- not merely that the build ran.
-        modules = glob.glob(os.path.join(
-            repository, "nvidia-open-modules-*_%s.deb" % self.architecture))
+        built = os.path.join(
+            repository, "nvidia-open-modules-*_%s.deb" % self.architecture)
         if builds_nvidia(self):
+            modules = glob.glob(built)
             self.assertNotEqual(modules, [],
                                 "no NVIDIA modules in %s" % repository)
+            self.assertModulesMatchTheirKernel(modules)
         else:
-            self.assertEqual(modules, [],
+            self.assertEqual(self.builtHere(built), [],
                              "this one was to build no out-of-tree modules")
 
         # Nothing boots it: what it was worth is that it was produced, and
