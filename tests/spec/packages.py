@@ -944,8 +944,8 @@ class GeneratedPackaging(avocado.Test):
             ("arm64", "apt://linux-headers-arm64"):
                 "linux-headers-6.12.101+deb13-arm64"})["control"]
         # So an amd64 build installs amd64's headers and no others.
-        self.assertIn("linux-headers-6.12.101+deb13-amd64 [amd64],", control)
-        self.assertIn("linux-headers-6.12.101+deb13-arm64 [arm64],", control)
+        self.assertIn("linux-headers-6.12.101+deb13-amd64 [amd64]", control)
+        self.assertIn("linux-headers-6.12.101+deb13-arm64 [arm64]", control)
 
     def test_a_metapackage_pins_what_it_points_at(self):
         control = self.packaging(resolved={
@@ -1075,6 +1075,52 @@ class GeneratedPackaging(avocado.Test):
         # The loop variable has to reach the macro that sets up the
         # environment, or every kernel is described as the empty one.
         self.assertIn("$(call kernel_env,$$k)", rules)
+
+    def test_the_control_file_is_shaped_like_one(self):
+        control = self.packaging(spec=MODULE % """
+                              build-depends:
+                                  - python3
+                              runtime-depends:
+                                  - firmware-nvidia-gsp
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+        """)["control"]
+        # A template that swallows a newline joins two fields into one,
+        # which dpkg reads as a field nobody has heard of rather than as
+        # the two that were meant. Every line is a field or a
+        # continuation of one.
+        for line in control.split("\n"):
+            if line == "" or line.startswith(" "):
+                continue
+            self.assertRegex(line, r"^[A-Z][A-Za-z-]*: ",
+                             "'%s' is not a field" % line)
+        self.assertIn("\nRules-Requires-Root: no\n", control)
+
+    def test_either_headers_are_installed_by_profile(self):
+        control = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["control"]
+        # One source package, built on machines of either architecture:
+        # which headers it needs is not a property of the package but of
+        # the build, so dpkg's own 'cross' profile decides rather than
+        # this file naming one of them.
+        self.assertIn("linux-headers-6.12.101+deb13-arm64 [arm64] <!cross>",
+                      control)
+        self.assertIn(
+            "linux-headers-6.12.101+deb13-arm64-cross:native [arm64] <cross>",
+            control)
+
+    def test_the_whole_toolchain_is_named_when_crossing(self):
+        rules = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["rules"]
+        # Not only CC: a tree's own build stage reaches for these by
+        # bare name and gets the builder's otherwise, which is a module
+        # that compiles and a package that is wrong.
+        for tool in ["CC", "CXX", "LD", "AR", "AS", "NM",
+                     "OBJCOPY", "OBJDUMP", "RANLIB", "STRIP"]:
+            self.assertIn("export %-7s = $(DEB_HOST_GNU_TYPE)-" % tool, rules)
+        self.assertIn("ifneq ($(DEB_BUILD_ARCH),$(DEB_HOST_ARCH))", rules)
 
     def test_modules_may_ask_for_what_they_need_installed(self):
         control = self.packaging(spec=MODULE % """

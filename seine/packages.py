@@ -1993,6 +1993,14 @@ rm -rf .pc
                 "qualifier": "[%s]" % architecture,
                 "kernels": [{"release": kernel.release,
                              "headers": kernel.headers,
+                             # What the same headers are called once they
+                             # carry tools the builder can run. Which of
+                             # the two a build installs is decided by the
+                             # 'cross' build profile rather than here:
+                             # one source package is built both ways, on
+                             # machines of either architecture.
+                             "cross_headers":
+                                 cross_headers_name(kernel.release),
                              "flavour": kernel.flavour,
                              "package": "%s-modules-%s"
                                         % (package.name, kernel.release)}

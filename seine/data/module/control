@@ -5,21 +5,21 @@ Maintainer: [[ maintainer ]] <[[ email ]]>
 Build-Depends: debhelper-compat (= 13),
 [% for build in builds %]
 [% for kernel in build.kernels %]
-               [[ kernel.headers ]] [[ build.qualifier ]],
+               [[ kernel.headers ]] [[ build.qualifier ]] <!cross>,
+               [[ kernel.cross_headers ]]:native [[ build.qualifier ]] <cross>,
 [% endfor %]
 [% endfor %]
                dwarves,
                kmod,
                xz-utils,
-               zstd[% for depends in build_depends %],
-               [[ depends ]][% endfor %]
+               zstd[[ ",\n               " + build_depends|join(",\n               ") if build_depends else "" ]]
 Rules-Requires-Root: no
 
 [% for build in builds %]
 [% for kernel in build.kernels %]
 Package: [[ kernel.package ]]
 Architecture: [[ build.architecture ]]
-Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-[[ kernel.release ]][% for depends in runtime_depends %], [[ depends ]][% endfor %]
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-[[ kernel.release ]][[ ", " + runtime_depends|join(", ") if runtime_depends else "" ]]
 Description: [[ name ]] modules for Linux [[ kernel.release ]]
  Built out of tree against the headers of [[ kernel.headers ]].
 

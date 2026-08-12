@@ -79,6 +79,30 @@ endef
 # it back. It is a no-op on 6.12, where the module built with it is
 # byte-identical, BuildID included.
 
+# Cross-compiling, when the machine building is not the machine the
+# modules are for. Every tool is named, not only CC: a tree's own build
+# stage is an ordinary userspace build that reaches for g++, objcopy and
+# nm by their bare names, and each one it finds is the builder's. Those
+# are the failures that cost a whole build apiece to discover, since the
+# first of them comes after everything before it has succeeded.
+#
+# The triplet is dpkg's, not a table of seine's: dpkg-architecture is
+# what knows that arm64 is aarch64-linux-gnu, and dh has already worked
+# it out by the time this is read.
+ifneq ($(DEB_BUILD_ARCH),$(DEB_HOST_ARCH))
+export CROSS_COMPILE = $(DEB_HOST_GNU_TYPE)-
+export CC      = $(DEB_HOST_GNU_TYPE)-gcc
+export CXX     = $(DEB_HOST_GNU_TYPE)-g++
+export LD      = $(DEB_HOST_GNU_TYPE)-ld
+export AR      = $(DEB_HOST_GNU_TYPE)-ar
+export AS      = $(DEB_HOST_GNU_TYPE)-as
+export NM      = $(DEB_HOST_GNU_TYPE)-nm
+export OBJCOPY = $(DEB_HOST_GNU_TYPE)-objcopy
+export OBJDUMP = $(DEB_HOST_GNU_TYPE)-objdump
+export RANLIB  = $(DEB_HOST_GNU_TYPE)-ranlib
+export STRIP   = $(DEB_HOST_GNU_TYPE)-strip
+endif
+
 # dh exports the distribution's build flags, which are for userspace: a
 # kernel module compiled with them is compiled against the wrong world.
 %:
