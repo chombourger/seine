@@ -5,6 +5,7 @@ import collections
 import fnmatch
 import functools
 import hashlib
+import jinja2
 import os
 import re
 import shlex
@@ -68,7 +69,8 @@ ANY_RELEASE = None
 EXTENSIONS = {
     "kernel": ["build-files", "config", "drop-patches", "featureset",
                "flavour", "keep-patches", "upstream", "upstream-sha256"],
-    "module": ["build", "make-vars", "modules"],
+    "module": ["build", "build-depends", "make-vars", "modules",
+               "runtime-depends", "target"],
 }
 
 # Which kernels a module is built against, said once per architecture:
@@ -103,6 +105,13 @@ MODULE_HEADERS_PREFIX = "linux-headers-"
 # tells them apart -- a featureset and a flavour are both words.
 MODULE_ABI = re.compile(r"^[0-9]")
 
+# The date a build is pinned to when the source can say nothing about
+# one: no changelog, and no revision with a date on it. Fixed rather than
+# now, since a date that moves makes two builds of one specification
+# produce different source packages. 2000-01-01, which is nobody's
+# release date and obviously not a real one.
+FALLBACK_EPOCH = 946684800
+
 # What a module is built against, once the name it was written as has
 # been made sense of.
 #
@@ -110,7 +119,15 @@ MODULE_ABI = re.compile(r"^[0-9]")
 # binary package the modules are shipped in, the directory they are
 # installed into, and the kernel they refuse to load into if it is wrong.
 # 'headers' is what has to be installed to build against it.
-Kernel = collections.namedtuple("Kernel", ["reference", "headers", "release"])
+#
+# 'flavour' is what a metapackage over these modules is named for, and is
+# None when there is nothing safe to call it. A reference that named a
+# flavour gives one; an ABI written out does not, since splitting it back
+# into an ABI and a flavour cannot be done from the name. Nothing is lost
+# by that: a specification that pinned an exact kernel can name the exact
+# package its modules are in.
+Kernel = collections.namedtuple("Kernel",
+                                ["reference", "headers", "release", "flavour"])
 
 # Whether a kernel reference names a package this specification builds,
 # as opposed to one the distribution ships. Written without a scheme:
@@ -125,6 +142,21 @@ def is_kernel_metapackage(reference):
     if name.startswith(MODULE_HEADERS_PREFIX) == False:
         return True
     return MODULE_ABI.match(name[len(MODULE_HEADERS_PREFIX):]) is None
+
+
+# A kernel built here is published under the distribution's own names, so
+# a metapackage naming that flavour names the graft once the image is
+# composed. Both resolving builds the modules twice -- once for a kernel
+# the image does not carry -- and writes the flavour metapackage into
+# debian/control twice, which dh refuses. An ABI written out is not
+# superseded: it names one kernel and has no flavour to clash on.
+def supersede_grafted(kernels):
+    grafted = set(kernel.flavour for kernel in kernels
+                  if is_built_kernel(kernel.reference)
+                  and kernel.flavour is not None)
+    return [kernel for kernel in kernels
+            if is_built_kernel(kernel.reference)
+            or kernel.flavour not in grafted]
 
 # Where a kernel tree comes from when it is not the one the distribution
 # packages: 'extends: kernel: upstream:'. The distribution's debian/ is
@@ -150,6 +182,45 @@ TARBALL_SUFFIXES = [".tar.xz", ".tar.gz", ".tar.bz2"]
 # already has, and features/* is keyed to config symbols that oldconfig
 # drops along with the patch.
 KERNEL_RULES = os.path.join(os.path.dirname(__file__), "data", "kernel.yml")
+
+# The packaging seine writes for an out-of-tree module, kept beside the
+# code rather than in it, as the kernel rules above are: what a
+# debian/rules has to say is Debian's to define, and following it should
+# be an edit to a file that looks like what it produces.
+#
+# Read as bytes as well as rendered: those bytes are part of what decides
+# whether a module needs building again, so editing the packaging is
+# enough to ask for a rebuild -- without it a module would go on being
+# the one yesterday's rules produced.
+MODULE_PACKAGING = os.path.join(os.path.dirname(__file__), "data", "module")
+MODULE_FILES = ["changelog", "control", "rules"]
+
+@functools.lru_cache(maxsize=None)
+def module_packaging():
+    templates = {}
+    content = b""
+    for name in MODULE_FILES:
+        with open(os.path.join(MODULE_PACKAGING, name), "rb") as f:
+            raw = f.read()
+        content += raw
+        templates[name] = raw.decode()
+    return templates, content
+
+# The same delimiters a specification is rendered with, so that one
+# notation is seine's throughout: somebody editing this packaging already
+# knows '[[ ]]' from the yaml. Spelt out here rather than shared with
+# build.py, which cannot be imported from this module -- it reaches this
+# one through seine.image.
+#
+# The one thing to keep out of a template because of it is bash's '[[ ]]'
+# test in a rules recipe; '[' does the same job and dh runs recipes under
+# /bin/sh anyway.
+MODULE_TEMPLATE = jinja2.Environment(
+    variable_start_string="[[", variable_end_string="]]",
+    block_start_string="[%", block_end_string="%]",
+    comment_start_string="[#", comment_end_string="#]",
+    trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True,
+    undefined=jinja2.StrictUndefined)
 
 KernelRules = collections.namedtuple("KernelRules",
                                      ["build_files", "drop_patches", "content"])
@@ -475,6 +546,12 @@ class Package:
         self.module_build = module.get("build", ".")
         if type(self.module_build) != type(""):
             raise self._error("'extends: module: build' shall be a string")
+        # What to ask that makefile for. 'modules' is what kbuild calls
+        # it and what nearly every out-of-tree tree follows, but not all:
+        # some call it 'all', some 'default'.
+        self.module_target = module.get("target", "modules")
+        if type(self.module_target) != type(""):
+            raise self._error("'extends: module: target' shall be a string")
         # Which .ko files the build is expected to produce. Named rather
         # than found: a build that quietly produced none, or produced one
         # of two, would otherwise make a package that installs nothing and
@@ -485,6 +562,26 @@ class Package:
                 raise self._error(
                     "'extends: module: modules' shall be a list of module "
                     "names")
+        # What this tree needs to build that seine cannot know about: a
+        # conftest that runs python, a driver that links against a
+        # library. Taken verbatim -- what may be said in a Build-Depends
+        # is Debian's to define, and a setting that parsed it would be a
+        # second, smaller language to keep up to date.
+        self.module_build_depends = self._parse_list(module, "build-depends")
+        # And what the modules need once installed, which seine knows
+        # less about still: firmware the driver asks the kernel to load,
+        # a userspace half that has to match. The kernel they were built
+        # for is added to these; it is the one relationship seine can
+        # work out for itself.
+        self.module_runtime_depends = self._parse_list(module, "runtime-depends")
+        for setting, listed in [("build-depends", self.module_build_depends),
+                                ("runtime-depends", self.module_runtime_depends)]:
+            for depends in listed:
+                if type(depends) != type("") or "\n" in depends:
+                    raise self._error(
+                        "'extends: module: %s' shall be a list of package "
+                        "relationships, one per entry, as debian/control "
+                        "writes them" % setting)
         self.module_make_vars = self._parse_make_vars(module)
         self.module_kernels = self._parse_module_kernels(module)
         return extends
@@ -503,6 +600,19 @@ class Package:
                 raise self._error(
                     "'extends: module: make-vars' has '%s', whose value is "
                     "neither a string nor a number" % name)
+            # A value reaches a shell in the generated rules, where it is
+            # quoted so that '$KERNEL_SRC' and the rest expand. That is
+            # the whole of what may expand: a value that could run
+            # something would be running it as part of a build somebody
+            # else's specification asked for.
+            for forbidden in ["`", "$(", ";", "&", "|", "\n"]:
+                if forbidden in str(value):
+                    raise self._error(
+                        "'extends: module: make-vars' has '%s', whose value "
+                        "contains '%s'. A value may name the variables the "
+                        "rules set -- $KERNEL_SRC, $KERNEL_OBJ, "
+                        "$KERNEL_RELEASE, $KERNEL_ARCH -- and nothing that "
+                        "runs a command." % (name, forbidden.strip()))
         return {name: str(value) for name, value in variables.items()}
 
     # The kernels this module is built against, per architecture.
@@ -736,6 +846,10 @@ class Builder:
         # kept for the run: it is the archive's answer, so caching it
         # between runs would be caching the thing that moves.
         self.metapackages = {}
+        # Every package this build was asked for, so that a module can be
+        # told what the kernel it names resolved to. A module is described
+        # by its own entry and by the kernel's, which is a different one.
+        self.packages = []
         # Held while unpacking a chroot and while rewriting the
         # repository, both of which are shared by every package being
         # built at the same time. Compiling is not: that is the part
@@ -1281,11 +1395,36 @@ rm -rf .pc
     def source_date_epoch(self, package, sourcedir):
         if package.source_date_epoch is not None:
             return package.source_date_epoch
+        # A tree seine writes the packaging for has no changelog to read
+        # one from -- that changelog is about to be written, and dated
+        # with what this returns. What it has instead is a revision, and
+        # the date that revision was made is a property of the source
+        # rather than of the machine or the day, which is what a date a
+        # build is pinned to has to be.
+        if package.module:
+            return self._committed(package, sourcedir)
         source = os.path.join(WORKDIR, os.path.basename(sourcedir))
         timestamp = self.builderImage.output(
             ["dpkg-parsechangelog", "-STimestamp"],
             volumes=[(os.path.dirname(sourcedir), WORKDIR)], workdir=source)
         return int(timestamp.strip())
+
+    # When the revision this was fetched at was made, which for a git
+    # tree is the one date about it that is neither the machine's nor
+    # today's. A tree that came from anywhere else -- or a clone with the
+    # history dropped -- has nothing to say, and the epoch falls back to
+    # a fixed one rather than to now: a date that moves is a source
+    # package that differs between two builds of the same specification.
+    def _committed(self, package, sourcedir):
+        source = os.path.join(WORKDIR, os.path.basename(sourcedir))
+        try:
+            when = self.builderImage.output(
+                ["git", "-C", source, "log", "-1", "--format=%ct"],
+                volumes=[(os.path.dirname(sourcedir), WORKDIR)],
+                workdir=source)
+            return int(when.strip())
+        except Exception:
+            return FALLBACK_EPOCH
 
     # Applies the 'extends: kernel:' settings to a fetched kernel source.
     #
@@ -1746,6 +1885,95 @@ rm -rf .pc
             return HOST_ARCH
         return architecture
 
+    # The packaging for an out-of-tree module, written into the tree that
+    # carries none.
+    #
+    # Everything here is generated from what the specification said, so
+    # the source package is a function of the specification and the tree,
+    # and two builds of it are the same source package. It is written
+    # before the local changelog entry is added, since that reads the
+    # changelog this puts there.
+    def extend_module(self, package, sourcedir, epoch):
+        if package.module == False:
+            return
+
+        debian = os.path.join(sourcedir, "debian")
+        if os.path.isdir(debian):
+            raise ValueError(
+                "package '%s' carries a debian/ directory of its own. seine "
+                "writes the packaging for an out-of-tree module, so a tree "
+                "that has packaging already is built as an ordinary package "
+                "-- take 'extends: module' off it." % package.name)
+        os.makedirs(os.path.join(debian, "source"), exist_ok=True)
+
+        # Every architecture's kernels, not only the one being built for.
+        # The source package is published once however many architectures
+        # are built from it, so the control file has to describe all of
+        # them or two builds would write one filename with two contents.
+        # Which of them a build makes is decided by the Architecture
+        # field, and the build-dependencies are qualified the same way.
+        builds = []
+        for architecture in sorted(package.module_kernels):
+            kernels = self.resolved_kernels(package, architecture, self.packages)
+            builds.append({
+                "architecture": architecture,
+                # Written here rather than in the template: '[[[ x ]]]'
+                # reads as a list literal inside a substitution, not as
+                # brackets around one.
+                "qualifier": "[%s]" % architecture,
+                "kernels": [{"release": kernel.release,
+                             "headers": kernel.headers,
+                             "flavour": kernel.flavour,
+                             "package": "%s-modules-%s"
+                                        % (package.name, kernel.release)}
+                            for kernel in kernels]})
+
+        # A native source package: what is built is a tree, with no
+        # upstream tarball beside it to be a delta against. Inventing one
+        # would only say that the packaging and the source were published
+        # apart, which they were not.
+        self._write(os.path.join(debian, "source", "format"), "3.0 (native)\n")
+
+        templates, _ = module_packaging()
+        context = {
+            "name": package.name,
+            "version": package.upstream_version,
+            "source": package.source,
+            "maintainer": GIT_NAME,
+            "email": GIT_EMAIL,
+            "date": format_datetime(datetime.fromtimestamp(epoch, timezone.utc)),
+            "builds": builds,
+            "build_dir": package.module_build,
+            "target": package.module_target,
+            "build_depends": package.module_build_depends,
+            "runtime_depends": package.module_runtime_depends,
+            "modules": " ".join(sorted(package.module_modules)),
+            # Double quotes, not shlex.quote: the point of a value is
+            # often to name one of the variables the rules set per
+            # kernel, and single quotes would pass '$KERNEL_SRC' to make
+            # as those nine characters. Quoted all the same, so a path
+            # with a space in it stays one argument.
+            #
+            # And every '$' doubled, because what reads this first is
+            # make: '$KERNEL_ARCH' is the variable K followed by the word
+            # ERNEL_ARCH to make, and the shell that was meant to expand
+            # it never sees a dollar at all.
+            "make_vars": " ".join(
+                '%s="%s"' % (name, package.module_make_vars[name]
+                             .replace('"', '\\"').replace("$", "$$"))
+                for name in sorted(package.module_make_vars)),
+        }
+        for name in MODULE_FILES:
+            self._write(os.path.join(debian, name),
+                        MODULE_TEMPLATE.from_string(templates[name]).render(context),
+                        mode=0o755 if name == "rules" else None)
+
+    def _write(self, path, content, mode=None):
+        with open(path, "w") as f:
+            f.write(content)
+        if mode is not None:
+            os.chmod(path, mode)
+
     # What a module is built against for one architecture, with every
     # reference made sense of.
     #
@@ -1764,12 +1992,30 @@ rm -rf .pc
             if is_built_kernel(reference):
                 kernels.append(self._built_kernel(package, reference, packages))
             else:
-                headers = self.metapackages.get((architecture, reference),
-                                                reference.partition("://")[2])
+                named = reference.partition("://")[2]
+                headers = self.metapackages.get((architecture, reference))
+                if headers is None and is_kernel_metapackage(reference):
+                    # Rather than carrying on with the metapackage's own
+                    # name, which strips to a plausible-looking release
+                    # -- 'linux-headers-amd64' becomes 'amd64' -- and
+                    # names the modules after a kernel that does not
+                    # exist. dpkg noticed only because that collided
+                    # with the flavour package beside it.
+                    raise package._error(
+                        "'%s' was never resolved to a kernel for %s. A "
+                        "metapackage names whichever kernel is current, "
+                        "which has to be asked of apt before anything can "
+                        "be named after it." % (reference, architecture))
+                headers = headers or named
+                # A metapackage names a flavour and nothing else, which is
+                # what modules built for it can be named after too.
+                flavour = None
+                if is_kernel_metapackage(reference):
+                    flavour = named[len(MODULE_HEADERS_PREFIX):]
                 kernels.append(Kernel(
                     reference, headers,
-                    headers[len(MODULE_HEADERS_PREFIX):]))
-        return kernels
+                    headers[len(MODULE_HEADERS_PREFIX):], flavour))
+        return supersede_grafted(kernels)
 
     # What the kernels named as metapackages actually are, asked of apt
     # before anything is stamped.
@@ -1786,11 +2032,17 @@ rm -rf .pc
     # writes its ABIs down, or builds its own kernels, still decides what
     # to rebuild without creating anything.
     def resolve_kernels(self, packages, hostBootstrap):
+        self.packages = list(packages)
         wanted = {}
         for package in packages:
             if package.module == False:
                 continue
-            for architecture in self.architectures(package):
+            # Every architecture the module names, not only the ones
+            # being built for. The control file describes all of them --
+            # that is what keeps one .dsc honest across architectures --
+            # so a name it has to write has to be resolved, whichever
+            # machine is doing the writing.
+            for architecture in sorted(package.module_kernels):
                 for reference in package.module_kernels.get(architecture, []):
                     if is_built_kernel(reference):
                         continue
@@ -1871,8 +2123,16 @@ rm -rf .pc
                 "the kernel '%s' has not been prepared yet, so what its "
                 "modules will have to be built against is not known. A "
                 "module is built after the kernels it names." % reference)
-        release = "%s-%s" % (abi, kernel.kernel_flavour)
-        return Kernel(reference, MODULE_HEADERS_PREFIX + release, release)
+        # A featureset is part of what a kernel is called: amd64's
+        # realtime kernel and its ordinary one are both the 'amd64'
+        # flavour, of the 'rt' and 'none' featuresets, and 'none' is the
+        # one that goes unsaid.
+        flavour = kernel.kernel_flavour
+        if kernel.kernel_featureset not in [None, DEFAULT_FEATURESET]:
+            flavour = "%s-%s" % (kernel.kernel_featureset, flavour)
+        release = "%s-%s" % (abi, flavour)
+        return Kernel(reference, MODULE_HEADERS_PREFIX + release, release,
+                      flavour)
 
 
     # The ABI of a kernel this build is not rebuilding, read off the stamp
@@ -2286,6 +2546,9 @@ rm -rf .pc
                               in sorted(self.metapackages.items())
                               if a == architecture),
                      str(package.module_build),
+                     str(package.module_target),
+                     ",".join(package.module_build_depends),
+                     ",".join(package.module_runtime_depends),
                      ",".join(sorted(package.module_modules)),
                      ",".join("%s=%s" % (name, package.module_make_vars[name])
                               for name in sorted(package.module_make_vars)),
@@ -2308,6 +2571,14 @@ rm -rf .pc
         # for a graft -- an ordinary rebuild never consults them.
         if package.kernel_upstream is not None:
             digest.update(kernel_rules().content)
+
+        # And a module is built by the packaging seine writes for it, so
+        # that packaging decides what comes out as surely as a patch
+        # does. By content, for the same reason: editing the rules has to
+        # be enough to ask for a rebuild, or the modules go on being the
+        # ones yesterday's rules produced.
+        if package.module:
+            digest.update(module_packaging()[1])
 
         # A package built against another has to be rebuilt when that one
         # changes: it was compiled and linked against what that package
@@ -2685,6 +2956,10 @@ rm -rf .pc
         epoch = self.source_date_epoch(package, sourcedir)
         if package.kernel_upstream is not None:
             sourcedir = self.graft(package, workdir, sourcedir, epoch)
+        # Before the patches and before the local changelog entry: both
+        # read a debian/ directory, and for a module this is what puts
+        # one there.
+        self.extend_module(package, sourcedir, epoch)
         self.patch(package, sourcedir, epoch)
         self.local_release(package, sourcedir, epoch)
         self.extend_kernel(package, sourcedir, self.architectures(package))

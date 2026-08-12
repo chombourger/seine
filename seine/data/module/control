@@ -1,0 +1,37 @@
+Source: [[ name ]]
+Section: kernel
+Priority: optional
+Maintainer: [[ maintainer ]] <[[ email ]]>
+Build-Depends: debhelper-compat (= 13),
+[% for build in builds %]
+[% for kernel in build.kernels %]
+               [[ kernel.headers ]] [[ build.qualifier ]],
+[% endfor %]
+[% endfor %]
+               dwarves,
+               kmod,
+               xz-utils,
+               zstd[% for depends in build_depends %],
+               [[ depends ]][% endfor %]
+Rules-Requires-Root: no
+
+[% for build in builds %]
+[% for kernel in build.kernels %]
+Package: [[ kernel.package ]]
+Architecture: [[ build.architecture ]]
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-[[ kernel.release ]][% for depends in runtime_depends %], [[ depends ]][% endfor %]
+Description: [[ name ]] modules for Linux [[ kernel.release ]]
+ Built out of tree against the headers of [[ kernel.headers ]].
+
+[% if kernel.flavour %]
+Package: [[ name ]]-modules-[[ kernel.flavour ]]
+Architecture: [[ build.architecture ]]
+Depends: ${misc:Depends}, [[ kernel.package ]] (= ${binary:Version})
+Description: [[ name ]] modules for the [[ kernel.flavour ]] kernel
+ A name that outlives an ABI. What this depends on is renamed by every
+ kernel update; this is not, so a playbook can install the modules that
+ match the kernel without naming a version.
+
+[% endif %]
+[% endfor %]
+[% endfor %]

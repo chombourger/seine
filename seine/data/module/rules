@@ -1,0 +1,100 @@
+#!/usr/bin/make -f
+# Written by seine from seine/data/module/rules.
+
+[% for build in builds %]
+KERNELS_[[ build.architecture ]] =[% for kernel in build.kernels %] [[ kernel.release ]][% endfor %]
+
+[% endfor %]
+KERNELS = $(KERNELS_$(DEB_HOST_ARCH))
+BUILD = [[ build_dir ]]
+TARGET = [[ target ]]
+MODULES = [[ modules ]]
+PACKAGE = [[ name ]]
+HEADERS = /usr/src/linux-headers
+
+# How many jobs the build was asked for. dh_auto_build would work this
+# out and pass it on, and these rules do not go through dh_auto_build --
+# so without this a module tree compiles one file at a time however many
+# processors the build was given.
+NUMJOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+JOBS    = $(if $(NUMJOBS),-j$(NUMJOBS))
+
+# What the kernel calls this architecture, which is not what Debian calls
+# it. Taken from the package being built rather than from the machine
+# doing the building: a tree left to ask uname is a tree that compiles
+# for the builder when it is cross-compiling, and that is right only by
+# luck when it is not.
+KERNEL_ARCH_amd64   = x86_64
+KERNEL_ARCH_arm64   = arm64
+KERNEL_ARCH_armel   = arm
+KERNEL_ARCH_armhf   = arm
+KERNEL_ARCH_i386    = i386
+KERNEL_ARCH_ppc64el = powerpc
+KERNEL_ARCH_riscv64 = riscv
+KERNEL_ARCH_s390x   = s390
+export KERNEL_ARCH = $(KERNEL_ARCH_$(DEB_HOST_ARCH))
+
+# Debian keeps a kernel's headers in two packages: the generic sources in
+# '-common', and the configuration, Module.symvers and generated headers
+# in the one named for the flavour. Trees that test the kernel by
+# compiling against it need the first; kbuild needs the second. The
+# flavour package's makefile is a single line naming the other, so where
+# the sources are is read from it rather than guessed -- and a kernel
+# whose headers are not split answers with the directory it was asked
+# about.
+define kernel_env
+KERNEL_RELEASE=$(1); \
+KERNEL_OBJ=$(HEADERS)-$(1); \
+KERNEL_SRC=`sed -n 's|^include \(.*\)/Makefile$$|\1|p' $(HEADERS)-$(1)/Makefile`; \
+if [ -z "$$KERNEL_SRC" ]; then KERNEL_SRC=$$KERNEL_OBJ; fi; \
+KBUILD_OUTPUT=$$KERNEL_OBJ; \
+export KERNEL_RELEASE KERNEL_OBJ KERNEL_SRC KBUILD_OUTPUT
+endef
+
+# KBUILD_OUTPUT above is not for this makefile's benefit but for the
+# tree's: a tree that does no more than 'make -C $(KDIR) M=$(PWD)' leaves
+# kbuild to work out where the configuration is, and from 6.13 kbuild
+# answers with the directory of the last makefile it included -- which
+# for Debian's split headers is the -common package, carrying neither
+# .config nor include/config/auto.conf. Naming the flavour directory puts
+# it back. It is a no-op on 6.12, where the module built with it is
+# byte-identical, BuildID included.
+
+# dh exports the distribution's build flags, which are for userspace: a
+# kernel module compiled with them is compiled against the wrong world.
+%:
+	CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= dh $@
+
+override_dh_auto_configure:
+
+# Built through the tree's own makefile, with the kernel named by a
+# variable. Driving kbuild directly instead -- 'make -C <headers> M=<dir>'
+# -- works only for a tree that is nothing but kbuild files: packaging
+# that has its own targets to run first, or that computes what kbuild
+# needs, is skipped entirely and produces a build that succeeds and ships
+# nothing.
+override_dh_auto_build:
+	set -e; for k in $(KERNELS); do \
+	  $(call kernel_env,$$k); \
+	  $(MAKE) $(JOBS) -C $(BUILD) $(TARGET) [[ make_vars ]]; \
+	done
+
+# The tree installs its own modules: it knows where they end up, which
+# for packaging that builds in a subdirectory is not where make was run.
+override_dh_auto_install:
+	set -e; for k in $(KERNELS); do \
+	  $(call kernel_env,$$k); \
+	  $(MAKE) -C $(BUILD) modules_install [[ make_vars ]] \
+	      INSTALL_MOD_PATH=$(CURDIR)/debian/$(PACKAGE)-modules-$$k; \
+	  for m in $(MODULES); do \
+	    find $(CURDIR)/debian/$(PACKAGE)-modules-$$k \
+	      \( -name $$m.ko -o -name $$m.ko.\* \) -print \
+	      | grep -q . || { echo "$$m.ko was not installed for $$k" >&2; exit 1; }; \
+	  done; \
+	done
+
+override_dh_auto_clean:
+	set -e; for k in $(KERNELS); do \
+	  $(call kernel_env,$$k); \
+	  $(MAKE) -C $(BUILD) clean [[ make_vars ]] || true; \
+	done

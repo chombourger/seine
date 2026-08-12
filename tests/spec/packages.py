@@ -415,6 +415,65 @@ class AnAbiSurvivesTheBuildThatMadeIt(avocado.Test):
         self.assertEqual([k.release for k in kernels],
                          ["6.18+unreleased-amd64"])
 
+# A kernel built here is published under the distribution's own names, so
+# a metapackage naming that flavour resolves to the graft once the image
+# is composed. Resolving both builds the modules for a kernel the image
+# does not carry, and writes one metapackage stanza twice.
+class AGraftSupersedesTheMetapackageItReplaces(avocado.Test):
+    def resolved(self, kernels):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        build = parse_for("amd64", """
+                packages:
+                    - source: git://example.com/driver.git;rev=deadbeef
+                      name: driver
+                      version: "1.0"
+                      extends:
+                          module:
+                              amd64-kernels: [%s]
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+        """ % kernels)
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        builder.abinames["linux"] = "6.18+unreleased"
+        builder.metapackages[("amd64", "apt://linux-headers-amd64")] = \
+            "linux-headers-6.12.101+deb13-amd64"
+        module = [p for p in build.image.packages if p.module][0]
+        return builder.resolved_kernels(module, "amd64", build.image.packages)
+
+    def test_the_graft_is_what_is_left(self):
+        kernels = self.resolved("linux, apt://linux-headers-amd64")
+        self.assertEqual([k.release for k in kernels],
+                         ["6.18+unreleased-amd64"])
+
+    def test_an_abi_written_out_is_kept(self):
+        # It names one kernel rather than a flavour, so it is not the one
+        # the graft takes over, and it has no name to collide on.
+        kernels = self.resolved(
+            "linux, apt://linux-headers-6.12.101+deb13-amd64")
+        self.assertEqual(sorted(k.release for k in kernels),
+                         ["6.12.101+deb13-amd64", "6.18+unreleased-amd64"])
+
+    def test_a_metapackage_alone_is_untouched(self):
+        build = parse_for("amd64", MODULE % """
+                              amd64-kernels: [apt://linux-headers-amd64]
+        """)
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        builder.metapackages[("amd64", "apt://linux-headers-amd64")] = \
+            "linux-headers-6.12.101+deb13-amd64"
+        kernels = builder.resolved_kernels(build.image.packages[0], "amd64",
+                                           build.image.packages)
+        self.assertEqual([k.release for k in kernels],
+                         ["6.12.101+deb13-amd64"])
+
 class UnknownModuleSetting(avocado.Test):
     def test(self):
         try:
@@ -836,6 +895,269 @@ class ResolvedKernels(avocado.Test):
             self.fail("a kernel with no ABI yet resolved to something!")
         except ValueError:
             pass
+
+# The packaging seine writes for a tree that carries none.
+class GeneratedPackaging(avocado.Test):
+    def packaging(self, architecture="amd64", spec=None, resolved=None):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        build = parse_for(architecture, spec or MODULE % """
+                              build: kernel-open
+                              modules: [nvidia, nvidia-drm]
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+                              arm64-kernels:
+                                  - apt://linux-headers-arm64
+        """)
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": architecture,
+                  "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        builder.packages = build.image.packages
+        for key, value in (resolved or {}).items():
+            builder.metapackages[key] = value
+        package = [p for p in build.image.packages if p.module][0]
+        source = os.path.join(self.workdir, package.name)
+        os.makedirs(source, exist_ok=True)
+        builder.extend_module(package, source, 1700000000)
+        written = {}
+        for name in ["changelog", "control", "rules", "source/format"]:
+            with open(os.path.join(source, "debian", name), "r") as f:
+                written[name] = f.read()
+        return written
+
+    def test_every_architecture_is_described(self):
+        control = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["control"]
+        # One .dsc is published however many architectures are built
+        # from it, so the control file has to describe all of them --
+        # two builds writing one filename with two contents otherwise.
+        self.assertIn("Package: nvidia-open-modules-6.12.101+deb13-amd64", control)
+        self.assertIn("Package: nvidia-open-modules-6.12.101+deb13-arm64", control)
+        self.assertIn("Architecture: amd64", control)
+        self.assertIn("Architecture: arm64", control)
+
+    def test_headers_are_qualified_by_architecture(self):
+        control = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["control"]
+        # So an amd64 build installs amd64's headers and no others.
+        self.assertIn("linux-headers-6.12.101+deb13-amd64 [amd64],", control)
+        self.assertIn("linux-headers-6.12.101+deb13-arm64 [arm64],", control)
+
+    def test_a_metapackage_pins_what_it_points_at(self):
+        control = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["control"]
+        # Exactly, or apt is free to pair a metapackage from this build
+        # with modules from an earlier one -- which is a machine running
+        # a driver nobody built for the kernel it has.
+        self.assertIn(
+            "nvidia-open-modules-6.12.101+deb13-arm64 (= ${binary:Version})",
+            control)
+
+    def test_a_flavour_gets_a_metapackage(self):
+        control = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["control"]
+        # Named for the flavour, which outlives the ABI under it, so a
+        # playbook installs modules without naming a kernel version.
+        self.assertIn("Package: nvidia-open-modules-arm64", control)
+        # The pinned kernel gets none: an ABI cannot be split back into
+        # an ABI and a flavour, and a specification that named an exact
+        # kernel can name the exact package.
+        self.assertNotIn("Package: nvidia-open-modules-amd64\n", control)
+
+    def test_the_rules_name_each_architectures_kernels(self):
+        rules = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["rules"]
+        self.assertIn("KERNELS_amd64 = 6.12.101+deb13-amd64", rules)
+        self.assertIn("KERNELS_arm64 = 6.12.101+deb13-arm64", rules)
+        self.assertIn("KERNELS = $(KERNELS_$(DEB_HOST_ARCH))", rules)
+
+    def test_the_build_names_kbuild_output(self):
+        rules = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["rules"]
+        # Exported for the tree's benefit: one that does no more than
+        # 'make -C $(KDIR) M=$(PWD)' would otherwise have kbuild put
+        # objtree in the -common package, which carries neither .config
+        # nor auto.conf.
+        self.assertIn("KBUILD_OUTPUT=$$KERNEL_OBJ", rules)
+
+    def test_the_modules_may_be_compressed_when_installed(self):
+        written = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})
+        # A kernel installs its modules compressed if it was built that
+        # way, so the compressor has to be there -- and what it was built
+        # with is the kernel's business rather than this package's.
+        self.assertIn("xz-utils", written["control"])
+        self.assertIn("zstd", written["control"])
+        # And what came out is looked for under either name.
+        self.assertIn("-name $$m.ko.\\*", written["rules"])
+
+    def test_the_build_is_given_the_jobs_it_was_asked_for(self):
+        rules = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["rules"]
+        # dh_auto_build would have worked this out, and these rules do
+        # not go through it: without saying so a module tree compiles one
+        # file at a time however many processors it was given.
+        self.assertIn("parallel=%", rules)
+        self.assertIn("$(MAKE) $(JOBS)", rules)
+
+    def test_the_tree_is_built_through_its_own_makefile(self):
+        rules = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["rules"]
+        # Driving kbuild directly skips whatever the tree does first,
+        # and packaging that computes what kbuild needs produces a build
+        # that succeeds and ships nothing.
+        self.assertIn("-C $(BUILD) $(TARGET)", rules)
+        self.assertIn("TARGET = modules", rules)
+
+    def test_the_architecture_is_not_asked_of_the_machine(self):
+        rules = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["rules"]
+        # A tree left to ask uname compiles for the builder when it is
+        # cross-compiling, and is right only by luck when it is not.
+        self.assertIn("KERNEL_ARCH_amd64   = x86_64", rules)
+        self.assertIn("KERNEL_ARCH_arm64   = arm64", rules)
+        self.assertIn("$(KERNEL_ARCH_$(DEB_HOST_ARCH))", rules)
+
+    def test_the_distributions_build_flags_are_kept_out(self):
+        rules = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["rules"]
+        # They are for userspace: a module compiled with them is
+        # compiled against the wrong world.
+        self.assertIn("CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= dh $@", rules)
+
+    def test_both_halves_of_the_headers_are_named(self):
+        rules = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})["rules"]
+        # A tree that tests the kernel by compiling against it needs the
+        # generic sources, which Debian keeps in the -common package.
+        # Read out of the flavour package's makefile rather than guessed.
+        self.assertIn("KERNEL_OBJ=$(HEADERS)-$(1)", rules)
+        self.assertIn("KERNEL_SRC=`sed -n", rules)
+
+    def test_a_value_naming_a_variable_reaches_the_shell(self):
+        rules = self.packaging(spec=MODULE % """
+                              make-vars:
+                                  SYSSRC: $KERNEL_SRC
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+        """)["rules"]
+        # Doubled, because make reads it first: '$KERNEL_SRC' is the
+        # variable K and the word ERNEL_SRC to make, and the shell that
+        # was meant to expand it never sees a dollar.
+        self.assertIn('SYSSRC="$$KERNEL_SRC"', rules)
+
+    def test_each_kernel_is_named_to_the_environment(self):
+        rules = self.packaging(spec=MODULE % """
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+        """)["rules"]
+        # The loop variable has to reach the macro that sets up the
+        # environment, or every kernel is described as the empty one.
+        self.assertIn("$(call kernel_env,$$k)", rules)
+
+    def test_modules_may_ask_for_what_they_need_installed(self):
+        control = self.packaging(spec=MODULE % """
+                              runtime-depends:
+                                  - firmware-nvidia-gsp
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+        """)["control"]
+        # Beside the kernel they were built for, which seine adds itself.
+        self.assertIn("linux-image-6.12.101+deb13-amd64, firmware-nvidia-gsp",
+                      control)
+
+    def test_a_tree_may_ask_for_what_it_needs_to_build(self):
+        control = self.packaging(spec=MODULE % """
+                              build-depends:
+                                  - python3
+                                  - libelf-dev
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+        """)["control"]
+        self.assertIn("python3,", control)
+        self.assertIn("libelf-dev", control)
+
+    def test_the_source_package_is_native(self):
+        written = self.packaging(resolved={
+            ("arm64", "apt://linux-headers-arm64"):
+                "linux-headers-6.12.101+deb13-arm64"})
+        # There is no upstream tarball to be a delta against: what is
+        # built is a tree.
+        self.assertEqual(written["source/format"], "3.0 (native)\n")
+        self.assertIn("nvidia-open (580.95.05) unstable", written["changelog"])
+
+
+class MakeVarsCannotRunCommands(avocado.Test):
+    def test(self):
+        for value in ["$(id)", "`id`", "x; id", "x && id"]:
+            try:
+                parse_for("amd64", MODULE % ("""
+                              make-vars:
+                                  SYSSRC: "%s"
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+                """ % value))
+                self.fail("a make variable running '%s' was accepted!" % value)
+            except ValueError:
+                pass
+
+class MakeVarsNameTheKernelBeingBuiltFor(avocado.Test):
+    def test(self):
+        build = parse_for("amd64", MODULE % """
+                              make-vars:
+                                  SYSSRC: $KERNEL_SRC
+                                  SYSOUT: $KERNEL_OBJ
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+        """)
+        # The variables the rules set per kernel are what a value is for:
+        # the kernel differs on every turn of the loop.
+        self.assertEqual(build.image.packages[0].module_make_vars,
+                         {"SYSSRC": "$KERNEL_SRC", "SYSOUT": "$KERNEL_OBJ"})
+
+class PackagingDecidesWhetherToRebuild(avocado.Test):
+    def test(self):
+        from seine.packages import module_packaging
+        # The packaging is data, and the digest reads it: editing the
+        # rules has to be enough to ask for a rebuild, or the modules go
+        # on being the ones the old rules produced.
+        _, content = module_packaging()
+        self.assertGreater(len(content), 0)
+        self.assertIn(b"KERNEL_ARCH", content)
+
+# A metapackage names whichever kernel is current, and until somebody
+# has asked apt which that is, nothing can be named after it.
+class UnresolvedMetapackagesAreRefused(avocado.Test):
+    def test(self):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "arm64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        build = parse_for("arm64", MODULE % """
+                              arm64-kernels: [apt://linux-headers-arm64]
+        """)
+        try:
+            builder.resolved_kernels(build.image.packages[0], "arm64",
+                                     build.image.packages)
+            self.fail("a metapackage nobody resolved was named anyway!")
+        except ValueError as e:
+            # Carrying on would strip 'linux-headers-arm64' to 'arm64'
+            # and name the modules after a kernel that does not exist.
+            self.assertIn("resolved", str(e))
 
 class MetapackagesAreRecognised(avocado.Test):
     def test(self):
