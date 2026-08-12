@@ -52,6 +52,28 @@ KERNELS = {
     "trixie":   "linux-6.18/kernel.yml",
 }
 
+# Which kernel a configuration ends up with, since that -- rather than
+# the release -- is what an out-of-tree module is built against.
+STOCK_KERNEL   = {"bookworm": (6, 1), "trixie": (6, 12)}
+GRAFTED_KERNEL = (6, 18)
+
+# Where the modules are built: the newest release, both of its
+# architectures. Not a flag on each test -- a release added later takes
+# them over without anyone remembering to move them.
+NVIDIA_RELEASE = max(KERNELS)
+
+# And not below this. NVIDIA's tree follows the kernels of its own era,
+# and bookworm's own 6.1 is older than the branch supports -- so a
+# bookworm configuration qualifies only by grafting a newer one, which is
+# what the companion test below insists on rather than leaves to memory.
+MINIMUM_KERNEL = (6, 12)
+
+def kernel_of(test):
+    return GRAFTED_KERNEL if test.grafted else STOCK_KERNEL[test.release]
+
+def builds_nvidia(test):
+    return test.release == NVIDIA_RELEASE and kernel_of(test) >= MINIMUM_KERNEL
+
 # An image built from the examples as they are shipped, for one release
 # and one board. Nothing is copied here: the specification is the files
 # under examples/, composed on the command line the way a user composes
@@ -105,7 +127,8 @@ class Image(avocado.Test):
             "common/%s.yaml" % self.image,
             "common/conf-accounts.yaml",
             "common/conf-locales.yaml",
-        ] + ([KERNELS[self.release], "slim-kernel.yml"] if self.grafted else [])
+        ] + ([KERNELS[self.release], "slim-kernel.yml"] if self.grafted else []) \
+          + (["nvidia-open.yml"] if builds_nvidia(self) else [])
         specs = [os.path.join(EXAMPLES, name) for name in names]
         for spec in specs:
             self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
@@ -212,6 +235,19 @@ class Image(avocado.Test):
             self.assertEqual(self.builtHere(kernels), [],
                              "this one was to take the distribution's kernel")
 
+        # And which modules, for the configurations that build them. Named
+        # for the kernel they were built against rather than for the
+        # package, so what this asks is that a module was built for a
+        # kernel of this architecture -- not merely that the build ran.
+        modules = glob.glob(os.path.join(
+            repository, "nvidia-open-modules-*_%s.deb" % self.architecture))
+        if builds_nvidia(self):
+            self.assertNotEqual(modules, [],
+                                "no NVIDIA modules in %s" % repository)
+        else:
+            self.assertEqual(modules, [],
+                             "this one was to build no out-of-tree modules")
+
         # Nothing boots it: what it was worth is that it was produced, and
         # that has been asked. Left behind, four of these are gigabytes a
         # job keeps for as long as its results are kept -- and a run that
@@ -291,6 +327,39 @@ class TheGraftedKernelsCoverBothWays(avocado.Test):
     def test_the_others_take_the_distribution_kernel(self):
         self.assertEqual(len(self.grafting()), 2)
         self.assertGreater(len(Image.__subclasses__()), 2)
+
+# Which configurations build out-of-tree modules is worked out rather than
+# written down, so this reads back what that came to. NVIDIA's tree
+# follows the kernels of its own era: put the modules on a release whose
+# kernel is older than the driver branch supports and the build fails
+# only once it has got as far as it could.
+#
+# Needs neither podman nor a build, like the test above it.
+class TheModulesAreBuiltOnAKernelThatSupportsThem(avocado.Test):
+    def building(self):
+        return [test for test in Image.__subclasses__() if builds_nvidia(test)]
+
+    def test_both_architectures_build_them(self):
+        self.assertEqual({test.architecture for test in self.building()},
+                         {"amd64", "arm64"},
+                         "modules built for one architecture prove nothing "
+                         "about the other, which is the cross-compiled one")
+
+    def test_every_kernel_they_are_built_on_is_new_enough(self):
+        for test in self.building():
+            self.assertGreaterEqual(
+                kernel_of(test), MINIMUM_KERNEL,
+                "%s builds the modules against %s, older than the driver "
+                "branch supports. Graft a newer kernel on it, or build the "
+                "modules elsewhere." % (test.__name__,
+                                        ".".join(str(p) for p in kernel_of(test))))
+
+    # One of them grafts a kernel and the other takes the distribution's,
+    # which is what makes the pair worth building: the two ways a module
+    # can be told which kernel to build against, exercised once each.
+    def test_one_is_grafted_and_one_is_not(self):
+        self.assertEqual(sorted(test.grafted for test in self.building()),
+                         [False, True])
 
 # Which board's example this machine can build without emulating anything.
 # The round trip below is about what a cache carries, not about an
