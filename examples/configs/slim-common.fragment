@@ -1,0 +1,436 @@
+# Kernel configuration fragment for a slim appliance image, of whatever
+# architecture: what a Debian kernel drives that no appliance has, wherever
+# it runs.
+#
+# Debian's kernel is built to boot anything; an appliance image knows what
+# it runs on and can drop whole driver classes. Every symbol below was
+# checked against this kernel's own configuration: a line naming a symbol
+# that does not exist is accepted and ignored, so an unverified fragment
+# quietly does less than it appears to.
+#
+# What is deliberately left alone, because the image would stop working:
+#
+#  * virtio and 9p: seine's imager boots a libguestfs appliance with this
+#    same kernel, which reaches its disks and its host directories through
+#    them. The rebuilt kernel is pinned above the distribution's, so the
+#    imager gets it too.
+#  * ext2/ext4, vfat and device-mapper: the partitions, the EFI system
+#    partition and the LVM volumes an image puts the system on.
+#  * USB: the bus, hubs, storage and human-interface devices. A keyboard
+#    and a memory stick are the point of having USB at all.
+#  * the serial console.
+#
+# What is particular to one machine -- which graphics, which disk
+# controller, which network chip -- is in the fragment named after the
+# architecture beside this one.
+
+# Media: DVB tuners, analogue capture, cameras and the remote-control
+# stack underneath them. None of it belongs in an appliance.
+# CONFIG_MEDIA_SUPPORT is not set
+
+# Sound, in its entirety.
+# CONFIG_SOUND is not set
+
+# Wireless: no radios, and nothing to drive them with.
+# CONFIG_WLAN is not set
+# CONFIG_CFG80211 is not set
+# CONFIG_MAC80211 is not set
+# CONFIG_RFKILL is not set
+
+# File-systems kept out. ext2/ext4 and vfat are what this image is built
+# on and stay in; the rest are here for interoperability the appliance
+# does not need. nilfs2 is left enabled: another example puts its root
+# file-system on it, and NTFS is not listed because Debian already
+# ships it disabled.
+# CONFIG_BTRFS_FS is not set
+# CONFIG_XFS_FS is not set
+# CONFIG_F2FS_FS is not set
+# CONFIG_JFS_FS is not set
+# CONFIG_GFS2_FS is not set
+# CONFIG_OCFS2_FS is not set
+# CONFIG_HFS_FS is not set
+# CONFIG_HFSPLUS_FS is not set
+# CONFIG_UFS_FS is not set
+# CONFIG_BEFS_FS is not set
+# CONFIG_JFFS2_FS is not set
+# CONFIG_UBIFS_FS is not set
+
+# Networking that is not IP: telephony stacks, radio protocols and
+# fieldbuses an appliance does not speak.
+# (not in this kernel, so not listed: X25, DECNET, HSR, MPLS)
+# CONFIG_ATM is not set
+# CONFIG_LAPB is not set
+# CONFIG_PHONET is not set
+# CONFIG_IEEE802154 is not set
+# CONFIG_NFC is not set
+# CONFIG_AF_RXRPC is not set
+# CONFIG_RDS is not set
+# CONFIG_TIPC is not set
+# CONFIG_ATALK is not set
+# CONFIG_BATMAN_ADV is not set
+# CONFIG_6LOWPAN is not set
+# CONFIG_L2TP is not set
+
+# Buses and interfaces of another era, or another kind of machine.
+# (not in this kernel, so not listed: THUNDERBOLT)
+# CONFIG_FIREWIRE is not set
+# CONFIG_PARPORT is not set
+# CONFIG_GAMEPORT is not set
+# CONFIG_W1 is not set
+# CONFIG_MEMSTICK is not set
+# CONFIG_ISDN is not set
+# CONFIG_CAN is not set
+# CONFIG_HAMRADIO is not set
+# CONFIG_WAN is not set
+# CONFIG_INFINIBAND is not set
+# CONFIG_FUSION is not set
+# CONFIG_ACCESSIBILITY is not set
+
+# Input devices a headless appliance has no use for. The keyboard and
+# the serial console stay.
+# CONFIG_INPUT_JOYSTICK is not set
+# CONFIG_INPUT_TABLET is not set
+# CONFIG_INPUT_TOUCHSCREEN is not set
+# CONFIG_INPUT_MISC is not set
+# CONFIG_JOYSTICK_XPAD is not set
+
+# USB: the bus, hubs, storage and human-interface devices stay --
+# a keyboard and a memory stick are the point of having USB at all.
+
+# What goes is the long tail of single-product drivers.
+#
+# Serial adapters: the four chips everything on a desk uses (FTDI,
+# PL2303, CP210x, CH341) stay, the other 48 go.
+# CONFIG_USB_SERIAL_AIRCABLE is not set
+# CONFIG_USB_SERIAL_ARK3116 is not set
+# CONFIG_USB_SERIAL_BELKIN is not set
+# CONFIG_USB_SERIAL_CYBERJACK is not set
+# CONFIG_USB_SERIAL_CYPRESS_M8 is not set
+# CONFIG_USB_SERIAL_DEBUG is not set
+# CONFIG_USB_SERIAL_DIGI_ACCELEPORT is not set
+# CONFIG_USB_SERIAL_EDGEPORT is not set
+# CONFIG_USB_SERIAL_EDGEPORT_TI is not set
+# CONFIG_USB_SERIAL_EMPEG is not set
+# CONFIG_USB_SERIAL_F81232 is not set
+# CONFIG_USB_SERIAL_F8153X is not set
+# CONFIG_USB_SERIAL_GARMIN is not set
+# CONFIG_USB_SERIAL_IPAQ is not set
+# CONFIG_USB_SERIAL_IPW is not set
+# CONFIG_USB_SERIAL_IR is not set
+# CONFIG_USB_SERIAL_IUU is not set
+# CONFIG_USB_SERIAL_KEYSPAN is not set
+# CONFIG_USB_SERIAL_KEYSPAN_PDA is not set
+# CONFIG_USB_SERIAL_KLSI is not set
+# CONFIG_USB_SERIAL_KOBIL_SCT is not set
+# CONFIG_USB_SERIAL_MCT_U232 is not set
+# CONFIG_USB_SERIAL_METRO is not set
+# CONFIG_USB_SERIAL_MOS7715_PARPORT is not set
+# CONFIG_USB_SERIAL_MOS7720 is not set
+# CONFIG_USB_SERIAL_MOS7840 is not set
+# CONFIG_USB_SERIAL_MXUPORT is not set
+# CONFIG_USB_SERIAL_NAVMAN is not set
+# CONFIG_USB_SERIAL_OMNINET is not set
+# CONFIG_USB_SERIAL_OPTICON is not set
+# CONFIG_USB_SERIAL_OPTION is not set
+# CONFIG_USB_SERIAL_OTI6858 is not set
+# CONFIG_USB_SERIAL_QCAUX is not set
+# CONFIG_USB_SERIAL_QT2 is not set
+# CONFIG_USB_SERIAL_QUALCOMM is not set
+# CONFIG_USB_SERIAL_SAFE is not set
+# CONFIG_USB_SERIAL_SIERRAWIRELESS is not set
+# CONFIG_USB_SERIAL_SIMPLE is not set
+# CONFIG_USB_SERIAL_SPCP8X5 is not set
+# CONFIG_USB_SERIAL_SSU100 is not set
+# CONFIG_USB_SERIAL_SYMBOL is not set
+# CONFIG_USB_SERIAL_TI is not set
+# CONFIG_USB_SERIAL_UPD78F0730 is not set
+# CONFIG_USB_SERIAL_VISOR is not set
+# CONFIG_USB_SERIAL_WHITEHEAT is not set
+# CONFIG_USB_SERIAL_WISHBONE is not set
+# CONFIG_USB_SERIAL_XR is not set
+# CONFIG_USB_SERIAL_XSENS_MT is not set
+
+# USB ethernet: the CDC standards and the ASIX chips common in
+# adapters stay; the rest are one device each.
+# CONFIG_USB_NET_AQC111 is not set
+# CONFIG_USB_NET_CDC_EEM is not set
+# CONFIG_USB_NET_CDC_MBIM is not set
+# CONFIG_USB_NET_CDC_SUBSET is not set
+# CONFIG_USB_NET_CH9200 is not set
+# CONFIG_USB_NET_CX82310_ETH is not set
+# CONFIG_USB_NET_DM9601 is not set
+# CONFIG_USB_NET_GL620A is not set
+# CONFIG_USB_NET_HUAWEI_CDC_NCM is not set
+# CONFIG_USB_NET_INT51X1 is not set
+# CONFIG_USB_NET_KALMIA is not set
+# CONFIG_USB_NET_MCS7830 is not set
+# CONFIG_USB_NET_NET1080 is not set
+# CONFIG_USB_NET_PLUSB is not set
+# CONFIG_USB_NET_QMI_WWAN is not set
+# CONFIG_USB_NET_RNDIS_HOST is not set
+# CONFIG_USB_NET_SMSC75XX is not set
+# CONFIG_USB_NET_SMSC95XX is not set
+# CONFIG_USB_NET_SR9700 is not set
+# CONFIG_USB_NET_SR9800 is not set
+# CONFIG_USB_NET_ZAURUS is not set
+
+# USB devices that are one product apiece, and the gadget stack,
+# which is for being a device rather than having them.
+# CONFIG_USB_ATM is not set
+# CONFIG_USB_GADGET is not set
+# CONFIG_USB_MICROTEK is not set
+# CONFIG_USB_MDC800 is not set
+# CONFIG_USB_APPLEDISPLAY is not set
+# CONFIG_USB_LCD is not set
+# CONFIG_USB_CYPRESS_CY7C63 is not set
+# CONFIG_USB_CYTHERM is not set
+# CONFIG_USB_IDMOUSE is not set
+# CONFIG_USB_ADUTUX is not set
+# CONFIG_USB_SEVSEG is not set
+# CONFIG_USB_LEGOTOWER is not set
+# CONFIG_USB_YUREX is not set
+# CONFIG_USB_ISIGHTFW is not set
+# CONFIG_USB_TEST is not set
+# CONFIG_USB_EHSET_TEST_FIXTURE is not set
+# CONFIG_USB_CHAOSKEY is not set
+# CONFIG_USB_PRINTER is not set
+# CONFIG_USB_TMC is not set
+# CONFIG_USB_USS720 is not set
+# CONFIG_USB_EMI62 is not set
+# CONFIG_USB_EMI26 is not set
+
+# Bluetooth, in its entirety: an appliance pairs with nothing.
+# CONFIG_BT is not set
+
+# Motherboard sensor chips. Reading a CPU temperature is worth keeping;
+# the other hundred-odd chips belong to boards this is not.
+# Kept: SENSORS_CORETEMP.
+# CONFIG_SENSORS_ACPI_POWER is not set
+# CONFIG_SENSORS_AD7414 is not set
+# CONFIG_SENSORS_AD7418 is not set
+# CONFIG_SENSORS_ADCXX is not set
+# CONFIG_SENSORS_ADM1025 is not set
+# CONFIG_SENSORS_ADM1026 is not set
+# CONFIG_SENSORS_ADM1029 is not set
+# CONFIG_SENSORS_ADM1031 is not set
+# CONFIG_SENSORS_ADM9240 is not set
+# CONFIG_SENSORS_ADS7828 is not set
+# CONFIG_SENSORS_ADS7871 is not set
+# CONFIG_SENSORS_ADT7411 is not set
+# CONFIG_SENSORS_ADT7462 is not set
+# CONFIG_SENSORS_ADT7470 is not set
+# CONFIG_SENSORS_ADT7475 is not set
+# CONFIG_SENSORS_AMC6821 is not set
+# CONFIG_SENSORS_APDS990X is not set
+# CONFIG_SENSORS_AQUACOMPUTER_D5NEXT is not set
+# CONFIG_SENSORS_ASC7621 is not set
+# CONFIG_SENSORS_ATXP1 is not set
+# CONFIG_SENSORS_BH1770 is not set
+# CONFIG_SENSORS_CORSAIR_CPRO is not set
+# CONFIG_SENSORS_CORSAIR_PSU is not set
+# CONFIG_SENSORS_DME1737 is not set
+# CONFIG_SENSORS_DRIVETEMP is not set
+# CONFIG_SENSORS_DS1621 is not set
+# CONFIG_SENSORS_DS620 is not set
+# CONFIG_SENSORS_EMC1403 is not set
+# CONFIG_SENSORS_EMC2103 is not set
+# CONFIG_SENSORS_EMC6W201 is not set
+# CONFIG_SENSORS_F71805F is not set
+# CONFIG_SENSORS_F71882FG is not set
+# CONFIG_SENSORS_F75375S is not set
+# CONFIG_SENSORS_FTSTEUTATES is not set
+# CONFIG_SENSORS_G760A is not set
+# CONFIG_SENSORS_GL518SM is not set
+# CONFIG_SENSORS_GL520SM is not set
+# CONFIG_SENSORS_HMC5843_I2C is not set
+# CONFIG_SENSORS_HMC5843_SPI is not set
+# CONFIG_SENSORS_I5K_AMB is not set
+# CONFIG_SENSORS_IBMAEM is not set
+# CONFIG_SENSORS_IBMPEX is not set
+# CONFIG_SENSORS_ISL29018 is not set
+# CONFIG_SENSORS_ISL29028 is not set
+# CONFIG_SENSORS_IT87 is not set
+# CONFIG_SENSORS_JC42 is not set
+# CONFIG_SENSORS_LINEAGE is not set
+# CONFIG_SENSORS_LIS3_I2C is not set
+# CONFIG_SENSORS_LM63 is not set
+# CONFIG_SENSORS_LM70 is not set
+# CONFIG_SENSORS_LM73 is not set
+# CONFIG_SENSORS_LM75 is not set
+# CONFIG_SENSORS_LM77 is not set
+# CONFIG_SENSORS_LM78 is not set
+# CONFIG_SENSORS_LM80 is not set
+# CONFIG_SENSORS_LM83 is not set
+# CONFIG_SENSORS_LM85 is not set
+# CONFIG_SENSORS_LM87 is not set
+# CONFIG_SENSORS_LM90 is not set
+# CONFIG_SENSORS_LM92 is not set
+# CONFIG_SENSORS_LM93 is not set
+# CONFIG_SENSORS_LM95241 is not set
+# CONFIG_SENSORS_LM95245 is not set
+# CONFIG_SENSORS_LTC4151 is not set
+# CONFIG_SENSORS_LTC4215 is not set
+# CONFIG_SENSORS_LTC4245 is not set
+# CONFIG_SENSORS_LTC4261 is not set
+# CONFIG_SENSORS_MAX1111 is not set
+# CONFIG_SENSORS_MAX16065 is not set
+# CONFIG_SENSORS_MAX1619 is not set
+# CONFIG_SENSORS_MAX1668 is not set
+# CONFIG_SENSORS_MAX6639 is not set
+# CONFIG_SENSORS_MAX6650 is not set
+# CONFIG_SENSORS_NCT6683 is not set
+# CONFIG_SENSORS_NCT6775 is not set
+# CONFIG_SENSORS_NCT7802 is not set
+# CONFIG_SENSORS_NCT7904 is not set
+# CONFIG_SENSORS_NPCM7XX is not set
+# CONFIG_SENSORS_NTC_THERMISTOR is not set
+# CONFIG_SENSORS_PC87360 is not set
+# CONFIG_SENSORS_PC87427 is not set
+# CONFIG_SENSORS_PCF8591 is not set
+# CONFIG_SENSORS_RM3100_I2C is not set
+# CONFIG_SENSORS_RM3100_SPI is not set
+# CONFIG_SENSORS_SCH5627 is not set
+# CONFIG_SENSORS_SCH5636 is not set
+# CONFIG_SENSORS_SHT21 is not set
+# CONFIG_SENSORS_SIS5595 is not set
+# CONFIG_SENSORS_SMSC47B397 is not set
+# CONFIG_SENSORS_SMSC47M1 is not set
+# CONFIG_SENSORS_SMSC47M192 is not set
+# CONFIG_SENSORS_THMC50 is not set
+# CONFIG_SENSORS_TMP102 is not set
+# CONFIG_SENSORS_TMP401 is not set
+# CONFIG_SENSORS_TMP421 is not set
+# CONFIG_SENSORS_TSL2550 is not set
+# CONFIG_SENSORS_TSL2563 is not set
+# CONFIG_SENSORS_VIA686A is not set
+# CONFIG_SENSORS_VT1211 is not set
+# CONFIG_SENSORS_VT8231 is not set
+# CONFIG_SENSORS_W83627EHF is not set
+# CONFIG_SENSORS_W83627HF is not set
+# CONFIG_SENSORS_W83773G is not set
+# CONFIG_SENSORS_W83781D is not set
+# CONFIG_SENSORS_W83791D is not set
+# CONFIG_SENSORS_W83792D is not set
+# CONFIG_SENSORS_W83793 is not set
+# CONFIG_SENSORS_W83795 is not set
+# CONFIG_SENSORS_W83L785TS is not set
+# CONFIG_SENSORS_W83L786NG is not set
+
+# Per-vendor HID drivers, for devices with a person using them.
+# The generic driver covers a keyboard and qemu's tablet.
+# Kept: HID_GENERIC.
+# CONFIG_HID_A4TECH is not set
+# CONFIG_HID_ACCUTOUCH is not set
+# CONFIG_HID_ACRUX is not set
+# CONFIG_HID_ACRUX_FF is not set
+# CONFIG_HID_ALPS is not set
+# CONFIG_HID_APPLE is not set
+# CONFIG_HID_APPLEIR is not set
+# CONFIG_HID_ASUS is not set
+# CONFIG_HID_AUREAL is not set
+# CONFIG_HID_BATTERY_STRENGTH is not set
+# CONFIG_HID_BELKIN is not set
+# CONFIG_HID_BETOP_FF is not set
+# CONFIG_HID_BIGBEN_FF is not set
+# CONFIG_HID_CHERRY is not set
+# CONFIG_HID_CHICONY is not set
+# CONFIG_HID_CMEDIA is not set
+# CONFIG_HID_CORSAIR is not set
+# CONFIG_HID_COUGAR is not set
+# CONFIG_HID_CP2112 is not set
+# CONFIG_HID_CREATIVE_SB0540 is not set
+# CONFIG_HID_CYPRESS is not set
+# CONFIG_HID_DRAGONRISE is not set
+# CONFIG_HID_ELAN is not set
+# CONFIG_HID_ELECOM is not set
+# CONFIG_HID_ELO is not set
+# CONFIG_HID_EMS_FF is not set
+# CONFIG_HID_EZKEY is not set
+# CONFIG_HID_FT260 is not set
+# CONFIG_HID_GEMBIRD is not set
+# CONFIG_HID_GFRM is not set
+# CONFIG_HID_GLORIOUS is not set
+# CONFIG_HID_GOOGLE_HAMMER is not set
+# CONFIG_HID_GREENASIA is not set
+# CONFIG_HID_GT683R is not set
+# CONFIG_HID_GYRATION is not set
+# CONFIG_HID_HOLTEK is not set
+# CONFIG_HID_ICADE is not set
+# CONFIG_HID_ITE is not set
+# CONFIG_HID_JABRA is not set
+# CONFIG_HID_KENSINGTON is not set
+# CONFIG_HID_KEYTOUCH is not set
+# CONFIG_HID_KYE is not set
+# CONFIG_HID_LCPOWER is not set
+# CONFIG_HID_LED is not set
+# CONFIG_HID_LENOVO is not set
+# CONFIG_HID_LOGITECH is not set
+# CONFIG_HID_LOGITECH_DJ is not set
+# CONFIG_HID_MACALLY is not set
+# CONFIG_HID_MAGICMOUSE is not set
+# CONFIG_HID_MALTRON is not set
+# CONFIG_HID_MAYFLASH is not set
+# CONFIG_HID_MCP2221 is not set
+# CONFIG_HID_MICROSOFT is not set
+# CONFIG_HID_MONTEREY is not set
+# CONFIG_HID_MULTITOUCH is not set
+# CONFIG_HID_NINTENDO is not set
+# CONFIG_HID_NTI is not set
+# CONFIG_HID_NTRIG is not set
+# CONFIG_HID_ORTEK is not set
+# CONFIG_HID_PANTHERLORD is not set
+# CONFIG_HID_PENMOUNT is not set
+# CONFIG_HID_PETALYNX is not set
+# CONFIG_HID_PICOLCD is not set
+# CONFIG_HID_PICOLCD_BACKLIGHT is not set
+# CONFIG_HID_PICOLCD_CIR is not set
+# CONFIG_HID_PICOLCD_FB is not set
+# CONFIG_HID_PICOLCD_LEDS is not set
+# CONFIG_HID_PID is not set
+# CONFIG_HID_PLANTRONICS is not set
+# CONFIG_HID_PLAYSTATION is not set
+# CONFIG_HID_PRIMAX is not set
+# CONFIG_HID_PRODIKEYS is not set
+# CONFIG_HID_REDRAGON is not set
+# CONFIG_HID_RETRODE is not set
+# CONFIG_HID_RMI is not set
+# CONFIG_HID_ROCCAT is not set
+# CONFIG_HID_SAITEK is not set
+# CONFIG_HID_SAMSUNG is not set
+# CONFIG_HID_SEMITEK is not set
+# CONFIG_HID_SENSOR_ACCEL_3D is not set
+# CONFIG_HID_SENSOR_ALS is not set
+# CONFIG_HID_SENSOR_CUSTOM_SENSOR is not set
+# CONFIG_HID_SENSOR_DEVICE_ROTATION is not set
+# CONFIG_HID_SENSOR_GYRO_3D is not set
+# CONFIG_HID_SENSOR_HUB is not set
+# CONFIG_HID_SENSOR_INCLINOMETER_3D is not set
+# CONFIG_HID_SENSOR_MAGNETOMETER_3D is not set
+# CONFIG_HID_SENSOR_PRESS is not set
+# CONFIG_HID_SENSOR_PROX is not set
+# CONFIG_HID_SENSOR_TEMP is not set
+# CONFIG_HID_SMARTJOYPLUS is not set
+# CONFIG_HID_SONY is not set
+# CONFIG_HID_SPEEDLINK is not set
+# CONFIG_HID_STEAM is not set
+# CONFIG_HID_STEELSERIES is not set
+# CONFIG_HID_SUNPLUS is not set
+# CONFIG_HID_THINGM is not set
+# CONFIG_HID_THRUSTMASTER is not set
+# CONFIG_HID_TIVO is not set
+# CONFIG_HID_TOPSEED is not set
+# CONFIG_HID_TWINHAN is not set
+# CONFIG_HID_U2FZERO is not set
+# CONFIG_HID_UCLOGIC is not set
+# CONFIG_HID_UDRAW_PS3 is not set
+# CONFIG_HID_VIEWSONIC is not set
+# CONFIG_HID_VIVALDI is not set
+# CONFIG_HID_WACOM is not set
+# CONFIG_HID_WALTOP is not set
+# CONFIG_HID_WIIMOTE is not set
+# CONFIG_HID_XINMO is not set
+# CONFIG_HID_ZEROPLUS is not set
+# CONFIG_HID_ZYDACRON is not set
+
+# Drivers not finished enough to have left staging.
+# CONFIG_STAGING is not set

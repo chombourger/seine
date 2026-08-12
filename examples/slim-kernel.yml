@@ -12,10 +12,10 @@
 # shipped should not have to wait for one -- so an example boots the
 # distribution's kernel until this file is named.
 #
-# Which fragment is read follows the architecture being built for, so this
-# file says nothing about any one machine. configs/slim-amd64.fragment is
-# the one written so far; another architecture is another fragment beside
-# it, and nothing here changes.
+# Two fragments: what any appliance can drop wherever it runs, and what is
+# particular to the architecture being built for. So this file says nothing
+# about any one machine, and another architecture is another fragment beside
+# the first with nothing here changing.
 #
 # The flavour is not named either: it is a property of the architecture,
 # and examples/common/<arch>.yaml says it under 'defaults'.
@@ -25,6 +25,7 @@ packages:
       extends:
           kernel:
               config:
+                  - configs/slim-common.fragment
                   - configs/slim-[[ distribution.architecture ]].fragment
       profiles:
           - pkg.linux.nokerneldbginfo

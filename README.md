@@ -1139,6 +1139,7 @@ packages:
       extends:
           kernel:
               config:
+                  - configs/slim-common.fragment
                   - configs/slim-amd64.fragment
       profiles:
           - pkg.linux.nokerneldbginfo
@@ -1221,8 +1222,9 @@ Two things to keep in mind when writing a fragment. The rebuilt kernel is
 pinned above the distribution's, so seine's own imager boots it as well --
 it needs virtio and 9p to reach its disks and the host's files, and an
 image whose kernel cannot mount its root file-system will fail at the end
-of a long build rather than the start. `examples/configs/slim-amd64.fragment`
-documents what it leaves enabled, and why, for this reason.
+of a long build rather than the start. `examples/configs/slim-common.fragment`
+and the architecture's own beside it document what they leave enabled,
+and why, for this reason.
 
 A kernel is also where the rebuild cache earns its keep: the fragments are
 part of what decides whether a package needs rebuilding, by content, so
