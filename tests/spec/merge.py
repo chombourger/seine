@@ -376,6 +376,64 @@ class PackagesAreMergedInsideExtends(avocado.Test):
         # is added.
         self.assertEqual(kernel, {"flavour": "rpi", "featureset": "rt"})
 
+class PackagesAreMergedByName(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # What asks for the build, naming the tree and what it is called.
+        build.loads("""
+                packages:
+                    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=deadbeef
+                      name: nvidia-open
+                      version: 580.95.05
+        """)
+        # What adds to it, which knows the package by name and has no
+        # opinion about the revision it is pinned to.
+        build.loads("""
+                packages:
+                    - name: nvidia-open
+                      profiles:
+                          - nocheck
+        """)
+        packages = build.spec["packages"]
+        self.assertEqual(len(packages), 1)
+        self.assertEqual(packages[0]["version"], "580.95.05")
+        self.assertEqual(packages[0]["profiles"], ["nocheck"])
+
+class PackagesWithDifferentNamesAreNotMerged(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # One tree, two packages built from it: the name decides, so the
+        # same 'source' twice is not one package when they are named
+        # apart.
+        build.loads("""
+                packages:
+                    - source: git://example.com/drivers.git;rev=deadbeef
+                      name: driver-one
+                    - source: git://example.com/drivers.git;rev=deadbeef
+                      name: driver-two
+        """)
+        self.assertEqual([p["name"] for p in build.spec["packages"]],
+                         ["driver-one", "driver-two"])
+
+class ANamedPackageStillMergesBySource(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # A file that names no package still merges into one that does,
+        # since the name it would have had is the one the URI gives.
+        build.loads("""
+                packages:
+                    - source: apt://busybox
+                      name: busybox
+        """)
+        build.loads("""
+                packages:
+                    - source: apt://busybox
+                      profiles:
+                          - nocheck
+        """)
+        self.assertEqual(len(build.spec["packages"]), 1)
+        self.assertEqual(build.spec["packages"][0]["profiles"], ["nocheck"])
+
 class DifferentPackagesAreLeftApart(avocado.Test):
     def test(self):
         build = BuildCmd()

@@ -492,12 +492,22 @@ class BuildCmd(Cmd):
                     self._take_origin(package, newpackage,
                                       "extends.%s.%s" % (kind, setting))
 
-    # The source package a 'source' URI names, which is what decides
-    # whether two entries are the same package. Kept simple on purpose:
-    # the URI is parsed properly later, and a name that comes out wrong
-    # here merges nothing that was not already separate.
+    # What decides whether two entries are the same package: the name it
+    # was given, or failing that the source package its 'source' URI
+    # names. Kept simple on purpose: the URI is parsed properly later, and
+    # a name that comes out wrong here merges nothing that was not already
+    # separate.
+    #
+    # 'name' first, because it is the package's name and the URI only says
+    # where the source came from: a file adding to a package described
+    # elsewhere then names it, rather than repeating a git URI complete
+    # with a revision it has no opinion about.
     def _package_name(self, package):
-        if type(package) != type({}) or type(package.get("source")) != type(""):
+        if type(package) != type({}):
+            return None
+        if type(package.get("name")) == type(""):
+            return package["name"]
+        if type(package.get("source")) != type(""):
             return None
         _, _, rest = package["source"].partition("://")
         rest = rest.split(";")[0].partition("=")[0]
