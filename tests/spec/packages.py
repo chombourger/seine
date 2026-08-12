@@ -1028,6 +1028,13 @@ class GeneratedPackaging(avocado.Test):
         self.assertIn("KERNEL_ARCH_amd64   = x86_64", rules)
         self.assertIn("KERNEL_ARCH_arm64   = arm64", rules)
         self.assertIn("$(KERNEL_ARCH_$(DEB_HOST_ARCH))", rules)
+        # And uname's spelling beside the kernel's, which are the same
+        # word on amd64 and different ones on arm64 -- so a value that
+        # wants the second and is given the first is right until the day
+        # it is built for something else.
+        self.assertIn("KERNEL_MACHINE_amd64   = x86_64", rules)
+        self.assertIn("KERNEL_MACHINE_arm64   = aarch64", rules)
+        self.assertIn("$(KERNEL_MACHINE_$(DEB_HOST_ARCH))", rules)
 
     def test_the_distributions_build_flags_are_kept_out(self):
         rules = self.packaging(resolved={

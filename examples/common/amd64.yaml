@@ -14,6 +14,16 @@ defaults:
           extends:
               kernel:
                   flavour: amd64
+        # And that a module built for this architecture is built against
+        # that kernel as well as the distribution's. Under 'defaults', so
+        # it asks for nothing: an image that builds no kernel of its own
+        # -- which is most of them -- drops this, and an image that
+        # builds no modules never reads it at all.
+        - name: nvidia-open
+          extends:
+              module:
+                  amd64-kernels:
+                      - linux
 
 imager:
     kernel: linux-image-amd64

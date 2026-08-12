@@ -1,0 +1,93 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# NVIDIA's open GPU kernel modules, built out of tree against the kernels
+# of the specification that includes this file. Added to one rather than
+# being one:
+#
+#   ./seine.py build examples/common/trixie.yaml \
+#              examples/common/amd64.yaml       \
+#              examples/common/pc-image.yaml    \
+#              examples/nvidia-open.yml
+#
+# The tree carries a makefile and no debian/ directory, so seine writes
+# the packaging: one binary package of modules per kernel, named for the
+# kernel they will load into, and a metapackage per flavour beside them.
+#
+# What an image installs is the metapackage --
+# 'nvidia-open-modules-amd64' -- which follows whichever kernel that
+# flavour is at. Naming the package with the ABI in it would mean
+# editing the specification every time Debian moved the kernel.
+#
+# The userspace half of the driver is not here. These are the kernel
+# modules; the libraries that talk to them are the distribution's to
+# install.
+
+packages:
+    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=c8e699821c23e4335bf23330a54a23d15cfb95e9
+      # The source package seine builds, which the repository the clone
+      # came from does not name: 'open-gpu-kernel-modules' is what NVIDIA
+      # calls the repository, not what the driver is called.
+      name: nvidia-open
+      # 580 is NVIDIA's long-term support branch; 595 and newer are not.
+      # A bare tree has no changelog to read a version from, and a git
+      # revision is not a version. Quoted, because a version is not a
+      # number: yaml reads an unquoted 1.10 as 1.1.
+      version: "580.178.04"
+      extends:
+          module:
+              # Built through NVIDIA's own makefile at the root of the
+              # tree, which compiles src/nvidia first and only then hands
+              # over to kbuild. Driving kbuild directly at kernel-open
+              # leaves obj-m empty and produces no modules at all.
+              build: .
+              target: modules
+              modules:
+                  - nvidia
+                  - nvidia-drm
+                  - nvidia-modeset
+                  - nvidia-uvm
+              make-vars:
+                  # Debian keeps a kernel's headers in two packages, and
+                  # NVIDIA has a variable for each: SYSSRC for the
+                  # generic sources its conftest compiles against, SYSOUT
+                  # for the configuration and Module.symvers. Pointed at
+                  # one directory alone, conftest concludes that the
+                  # kernel is missing headers it has, and the build dies
+                  # much later on <stdarg.h>.
+                  SYSSRC: $KERNEL_SRC
+                  SYSOUT: $KERNEL_OBJ
+                  # What the tree would otherwise take from uname, which
+                  # answers for the machine doing the building rather
+                  # than for the package being built.
+                  #
+                  # Two spellings, because NVIDIA reads two: ARCH is the
+                  # kernel's, which kernel-open's makefile passes to
+                  # kbuild, and TARGET_ARCH is uname's, which utils.mk
+                  # matches on to name the directory src/nvidia builds
+                  # into. They are both 'x86_64' on amd64 and part
+                  # company on arm64, where the kernel says 'arm64' and
+                  # uname says 'aarch64'.
+                  ARCH: $KERNEL_ARCH
+                  TARGET_ARCH: $KERNEL_MACHINE
+                  # The build refuses a PREEMPT_RT kernel unless told
+                  # otherwise. Set here so a specification that names an
+                  # rt kernel gets modules rather than a refusal.
+                  IGNORE_PREEMPT_RT_PRESENCE: 1
+              # The driver asks the kernel to load these when it starts,
+              # so a machine without them has modules that will not run.
+              runtime-depends:
+                  - firmware-nvidia-gsp
+              # The distribution's own kernels, by the metapackage of
+              # each flavour rather than by an ABI: an ABI moves with
+              # every kernel update, and a specification naming one would
+              # be edited every time it did. seine resolves it and
+              # rebuilds the modules when the answer changes.
+              #
+              # A specification that builds a kernel of its own adds it
+              # to these -- see examples/common/amd64.yaml, which says so
+              # for every amd64 image that builds one.
+              amd64-kernels:
+                  - apt://linux-headers-amd64
+              arm64-kernels:
+                  - apt://linux-headers-arm64

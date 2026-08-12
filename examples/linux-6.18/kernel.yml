@@ -51,7 +51,7 @@ packages:
                   - debian/fixdep-allow-overriding-hostcc-and-hostld.patch
       profiles:
           - pkg.linux.nokerneldbginfo
-          - pkg.linux.notools
+          - pkg.linux.mintools
           - pkg.linux.nosource
           - nodoc
           - noudeb

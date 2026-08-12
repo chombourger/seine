@@ -611,8 +611,9 @@ class Package:
                         "'extends: module: make-vars' has '%s', whose value "
                         "contains '%s'. A value may name the variables the "
                         "rules set -- $KERNEL_SRC, $KERNEL_OBJ, "
-                        "$KERNEL_RELEASE, $KERNEL_ARCH -- and nothing that "
-                        "runs a command." % (name, forbidden.strip()))
+                        "$KERNEL_RELEASE, $KERNEL_ARCH, $KERNEL_MACHINE -- "
+                        "and nothing that runs a command."
+                        % (name, forbidden.strip()))
         return {name: str(value) for name, value in variables.items()}
 
     # The kernels this module is built against, per architecture.

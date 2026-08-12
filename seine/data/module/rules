@@ -34,6 +34,22 @@ KERNEL_ARCH_riscv64 = riscv
 KERNEL_ARCH_s390x   = s390
 export KERNEL_ARCH = $(KERNEL_ARCH_$(DEB_HOST_ARCH))
 
+# And what uname would have called it, which is a third spelling again:
+# the kernel says 'arm64' where uname says 'aarch64', and 'powerpc' where
+# it says 'ppc64le'. A tree that would have run uname wants this one --
+# and wants it from here, for the same reason. The two agree on amd64,
+# which is exactly how a specification gets this wrong and does not find
+# out until it builds for something else.
+KERNEL_MACHINE_amd64   = x86_64
+KERNEL_MACHINE_arm64   = aarch64
+KERNEL_MACHINE_armel   = armv7l
+KERNEL_MACHINE_armhf   = armv7l
+KERNEL_MACHINE_i386    = i686
+KERNEL_MACHINE_ppc64el = ppc64le
+KERNEL_MACHINE_riscv64 = riscv64
+KERNEL_MACHINE_s390x   = s390x
+export KERNEL_MACHINE = $(KERNEL_MACHINE_$(DEB_HOST_ARCH))
+
 # Debian keeps a kernel's headers in two packages: the generic sources in
 # '-common', and the configuration, Module.symvers and generated headers
 # in the one named for the flavour. Trees that test the kernel by
