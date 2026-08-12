@@ -506,6 +506,98 @@ class DefaultsDescribeAPackageWithoutBuildingIt(avocado.Test):
         # Nothing asked for a kernel, so nothing is built.
         self.assertEqual(build.spec.get("packages"), None)
 
+IMAGE = """
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+"""
+
+class ADefaultNeedsNoSourceOfItsOwn(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # An architecture file, adding to a package it knows by name. It
+        # has no opinion about where the source comes from -- that is
+        # said by whoever asks for the build.
+        build.loads("""
+                defaults:
+                    packages:
+                        - name: nvidia-open
+                          profiles:
+                              - nocheck
+        """ + IMAGE)
+        build.loads("""
+                packages:
+                    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=deadbeef
+                      name: nvidia-open
+        """)
+        spec = build.parse()
+        self.assertEqual(len(spec["packages"]), 1)
+        self.assertEqual(spec["packages"][0]["profiles"], ["nocheck"])
+
+class ASourcelessDefaultNobodyBuildsIsDropped(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                defaults:
+                    packages:
+                        - name: nvidia-open
+                          profiles:
+                              - nocheck
+        """ + IMAGE)
+        build.parse()
+        # It described a package nothing asked for, so it described
+        # nothing -- and it did not conjure a build with no source.
+        self.assertEqual(build.spec.get("packages"), None)
+
+class ADescriptionIsStillChecked(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                defaults:
+                    packages:
+                        - name: nvidia-open
+                          extends:
+                              kernel:
+                                  flavur: amd64
+        """ + IMAGE)
+        try:
+            build.parse()
+            self.fail("a misspelt setting under 'defaults' was accepted!")
+        except ValueError:
+            pass
+
+class APackageStillNeedsASource(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                packages:
+                    - name: nvidia-open
+                      profiles:
+                          - nocheck
+        """ + IMAGE)
+        try:
+            build.parse()
+            self.fail("an entry under 'packages' was built with no source!")
+        except ValueError:
+            pass
+
+class AnEntryWithNeitherSourceNorNameIsRefused(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                defaults:
+                    packages:
+                        - profiles:
+                              - nocheck
+        """ + IMAGE)
+        try:
+            build.parse()
+            self.fail("an entry saying which package it is about was accepted!")
+        except ValueError:
+            pass
+
 class DefaultsAreFoldedIntoWhatIsBuilt(avocado.Test):
     def test(self):
         build = BuildCmd()

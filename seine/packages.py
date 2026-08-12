@@ -184,8 +184,13 @@ class Package:
         self.index = index
         if type(spec) != type({}):
             raise ValueError("package #%d is not a dictionary!" % index)
-        if "source" not in spec:
-            raise ValueError("package #%d has no 'source' specified!" % index)
+        # An entry says what it is, one way or the other: a 'source' is how
+        # a package asking to be built says it, and a 'name' alone is how a
+        # description under 'defaults' says which package it is about.
+        if "source" not in spec and type(spec.get("name")) != type(""):
+            raise ValueError(
+                "package #%d has neither a 'source' to build nor a 'name' "
+                "saying which package it describes!" % index)
 
         self.spec = spec
         self.priority = spec.get("priority", 500)
@@ -194,7 +199,7 @@ class Package:
         # answers, and the useful one is per setting.
         self.origins = spec.get("_origins", {})
 
-        self._parse_source(spec["source"])
+        self._parse_source(spec.get("source"))
         self.name = self._parse_name(spec)
         self.extends = self._parse_extends(spec)
         self.after = self._parse_list(spec, "after")
@@ -229,6 +234,21 @@ class Package:
 
     def _parse_source(self, source):
         self.source = source
+        # Defaults for the fields only some of the schemes carry, so callers
+        # may read them without caring which scheme they got -- or, for an
+        # entry that only describes a package, that it named no source.
+        self.scheme = None
+        self.name = None
+        self.version = None
+        self.parameters = {}
+        self.source_name = None
+
+        # A description leaves where the source comes from to the file that
+        # asks for the build. It is checked like any other entry, so a
+        # misspelt setting is reported by the file holding it.
+        if source is None:
+            return
+
         if type(source) != type(""):
             raise ValueError("package #%d has a non-string 'source'!" % self.index)
         if "://" not in source:
@@ -242,12 +262,6 @@ class Package:
                 % (self.scheme, ", ".join("%s://" % s for s in SCHEMES)))
         if len(rest) == 0:
             raise self._error("URI has nothing after its scheme")
-
-        # Defaults for the fields only some of the schemes carry, so callers
-        # may read them without caring which scheme they got.
-        self.name = None
-        self.version = None
-        self.parameters = {}
 
         if self.scheme == "apt":
             self.name, _, self.version = rest.partition("=")
@@ -2607,6 +2621,16 @@ def parse(spec):
         raise ValueError("'packages' shall be a list of source packages!")
 
     parsed = [Package(p, i + 1) for i, p in enumerate(packages)]
+    # An entry here asks for a build, and a build needs something to
+    # fetch. Naming a package without saying where its source comes from
+    # describes it, which is what 'defaults' is for -- and a description
+    # left under 'packages' would otherwise be a build of nothing.
+    for package in parsed:
+        if package.source is None:
+            raise ValueError(
+                "package '%s' has no 'source' to build from. An entry under "
+                "'packages' asks for a package to be built; one that only "
+                "describes a package goes under 'defaults'." % package.name)
     return propagate(order(parsed))
 
 # Carries a package's scope down to what it is built after.
