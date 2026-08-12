@@ -195,6 +195,7 @@ class Package:
         self.origins = spec.get("_origins", {})
 
         self._parse_source(spec["source"])
+        self.name = self._parse_name(spec)
         self.extends = self._parse_extends(spec)
         self.after = self._parse_list(spec, "after")
         self.before = self._parse_list(spec, "before")
@@ -273,6 +274,37 @@ class Package:
                     "git sources shall be pinned with ';rev=<commit>' so the "
                     "same specification always rebuilds the same source")
             self.name = os.path.basename(location).removesuffix(".git")
+
+        # What the URI says this is called, kept apart from what the package
+        # is called: fetching uses this one, while 'name' is what the
+        # specification and the repository call the result.
+        self.source_name = self.name
+
+    # What this package is called, which is the source package it produces
+    # rather than the last word of the URI it came from. The two are the
+    # same for a source carrying its own debian/ directory, and not for a
+    # tree carrying none: what seine generates from a clone should not be
+    # named after the repository that happens to hold it.
+    #
+    # It is the name everything else uses -- 'before' and 'after', the
+    # build's stamp, what the graph calls the step -- so a package renamed
+    # is renamed everywhere at once.
+    def _parse_name(self, spec):
+        name = spec.get("name")
+        if name is None:
+            return self.source_name
+        if type(name) != type(""):
+            raise self._error("'name' shall be a string")
+        # Checked here rather than by dpkg part-way through a build: what
+        # this names is a Debian source package, and policy says what one
+        # may be called.
+        if re.match(r"^[a-z0-9][a-z0-9+.-]+$", name) is None:
+            raise self._error(
+                "'name' is '%s', which is not a source package name: those "
+                "are lowercase, start with a letter or a digit, are at "
+                "least two characters, and hold only letters, digits and "
+                "'+', '-' or '.'" % name)
+        return name
 
     # Settings that only mean something for a particular kind of package go
     # under 'extends', named after the kind. A kernel's configuration and
@@ -623,9 +655,9 @@ class Builder:
 
     def _fetch_args(self, package):
         if package.scheme == "apt":
-            source = package.name
+            source = package.source_name
             if package.version is not None:
-                source = "%s=%s" % (package.name, package.version)
+                source = "%s=%s" % (package.source_name, package.version)
             return ["apt-get", "source", source]
 
         if package.scheme == "https":
@@ -644,11 +676,11 @@ class Builder:
         args = ["git", "clone"]
         if "branch" in package.parameters:
             args += ["--branch", package.parameters["branch"]]
-        args += [url, package.name]
+        args += [url, package.source_name]
         # The revision is what the specification pinned; the branch only
         # says where to look for it.
         return ["sh", "-c", "%s && cd %s && git checkout --detach %s" % (
-            " ".join(args), package.name, package.parameters["rev"])]
+            " ".join(args), package.source_name, package.parameters["rev"])]
 
     # Every scheme leaves exactly one unpacked source tree behind, next to
     # the .dsc/tarballs it came from, but only apt-get source and dget name

@@ -205,6 +205,56 @@ class KernelFeatureset(avocado.Test):
         """)
         self.assertEqual(build.image.packages[0].kernel_featureset, "rt")
 
+class PackageNamedAfterItsSource(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://busybox
+                    - source: git://example.com/team/busybox-utils.git;rev=deadbeef
+        """)
+        names = [(p.name, p.source_name) for p in build.image.packages]
+        self.assertEqual(sorted(names), [("busybox", "busybox"),
+                                         ("busybox-utils", "busybox-utils")])
+
+class PackageNamesItsSourcePackage(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=deadbeef
+                      name: nvidia-open
+        """)
+        package = build.image.packages[0]
+        self.assertEqual(package.name, "nvidia-open")
+        # What it is fetched by is not renamed with it: that is the
+        # repository the clone comes from, not the package it makes.
+        self.assertEqual(package.source_name, "open-gpu-kernel-modules")
+
+class PackageNameIsReferencedByOrdering(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://application
+                      after:
+                          - nvidia-open
+                    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=deadbeef
+                      name: nvidia-open
+        """)
+        self.assertEqual([p.name for p in build.image.packages],
+                         ["nvidia-open", "application"])
+
+class PackageNameIsNotASourcePackageName(avocado.Test):
+    def test(self):
+        for name in ["NVIDIA-open", "nvidia_open", "-nvidia", "n"]:
+            try:
+                parse("""
+                packages:
+                    - source: apt://busybox
+                      name: %s
+                """ % name)
+                self.fail("parsing succeeded for the package name '%s'!" % name)
+            except ValueError:
+                pass
+
 class PackageWithoutExtensions(avocado.Test):
     def test(self):
         build = parse("""
