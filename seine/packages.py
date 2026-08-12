@@ -112,6 +112,14 @@ MODULE_ABI = re.compile(r"^[0-9]")
 # release date and obviously not a real one.
 FALLBACK_EPOCH = 946684800
 
+# What the headers of a kernel are called once they carry tools another
+# architecture can run. Not a name any archive uses: it is built here,
+# for the machine doing the building, out of a kernel meant for another.
+CROSS_SUFFIX = "-cross"
+
+def cross_headers_name(release):
+    return "%s%s%s" % (MODULE_HEADERS_PREFIX, release, CROSS_SUFFIX)
+
 # What a module is built against, once the name it was written as has
 # been made sense of.
 #
@@ -1974,6 +1982,49 @@ rm -rf .pc
             f.write(content)
         if mode is not None:
             os.chmod(path, mode)
+
+    # The headers packages a cross build needs, one per kernel.
+    #
+    # A module cross-compiled for another architecture cannot use that
+    # architecture's headers as they are: they reach for
+    # linux-kbuild-<abi>, whose fixdep and modpost are compiled for the
+    # kernel's architecture and cannot run on the machine doing the
+    # building. What is needed is the same headers with tools this
+    # machine can run, built from that kernel's own source -- and for a
+    # kernel seine grafts, no such package exists in any archive at all.
+    #
+    # So seine builds one, and builds it once: it is a property of the
+    # kernel rather than of the module, so many modules against one kernel
+    # need one of these. Deduplicated on the release rather than on how a
+    # specification spelt the kernel, since a headers metapackage and the
+    # ABI written out are the same kernel named two ways.
+    #
+    # Nothing is made for a build that is not crossing: a module built
+    # for the machine it is building on has tools it can run already.
+    def cross_headers(self, packages):
+        wanted = {}
+        for package in packages:
+            if package.module == False:
+                continue
+            for architecture in self.architectures(package):
+                if self.cross(package, architecture) == False:
+                    continue
+                for kernel in self.resolved_kernels(package, architecture,
+                                                    packages):
+                    wanted.setdefault(kernel.release, kernel)
+        return [self._cross_package(wanted[release], index)
+                for index, release in enumerate(sorted(wanted), 1)]
+
+    # Built for the machine doing the building, which is what 'host'
+    # says, and named for the kernel it carries so that two kernels do
+    # not write one package.
+    def _cross_package(self, kernel, index):
+        package = Package({"name": cross_headers_name(kernel.release),
+                           "scope": ["host"]}, index)
+        # Which kernel it is of, for the packaging that has yet to be
+        # written and for the module that will build against it.
+        package.cross_kernel = kernel
+        return package
 
     # What a module is built against for one architecture, with every
     # reference made sense of.

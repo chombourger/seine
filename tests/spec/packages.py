@@ -1166,6 +1166,63 @@ class UnresolvedMetapackagesAreRefused(avocado.Test):
             # and name the modules after a kernel that does not exist.
             self.assertIn("resolved", str(e))
 
+# One kernel, one cross headers package, however many modules are built
+# against it: it is a property of the kernel rather than of the module,
+# and building it per module would build the same thing repeatedly.
+class CrossHeadersAreBuiltOncePerKernel(avocado.Test):
+    def builder(self, architecture="arm64"):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": architecture,
+                  "uri": "http://example.com/debian"}
+        return Builder(distro, {}, BuilderImage(distro, {}))
+
+    def modules(self, architecture, kernels, count=2, cross=True):
+        listed = "\n".join("                                  - %s" % kernel
+                           for kernel in kernels)
+        entries = "\n".join("""
+                    - source: git://example.com/driver%d.git;rev=deadbeef
+                      name: driver%d
+                      version: "1.0"
+                      cross: %s
+                      extends:
+                          module:
+                              %s-kernels:
+%s""" % (index, index, "true" if cross else "false", architecture, listed)
+                            for index in range(count))
+        return parse_for(architecture, "\n                packages:" + entries)
+
+    def test_two_modules_on_one_kernel_need_one_package(self):
+        build = self.modules("arm64", ["apt://linux-headers-6.12.101+deb13-arm64"])
+        headers = self.builder().cross_headers(build.image.packages)
+        self.assertEqual([p.name for p in headers],
+                         ["linux-headers-6.12.101+deb13-arm64-cross"])
+
+    def test_two_kernels_need_one_each(self):
+        build = self.modules("arm64", ["apt://linux-headers-6.12.101+deb13-arm64",
+                                       "apt://linux-headers-6.12.101+deb13-rt-arm64"])
+        headers = self.builder().cross_headers(build.image.packages)
+        self.assertEqual(sorted(p.name for p in headers),
+                         ["linux-headers-6.12.101+deb13-arm64-cross",
+                          "linux-headers-6.12.101+deb13-rt-arm64-cross"])
+
+    def test_they_are_built_for_the_machine_doing_the_building(self):
+        build = self.modules("arm64", ["apt://linux-headers-6.12.101+deb13-arm64"])
+        headers = self.builder().cross_headers(build.image.packages)
+        # 'host', so the tools in it run where the compiler runs rather
+        # than where the modules will.
+        self.assertEqual(headers[0].scope, ["host"])
+        self.assertEqual(headers[0].cross_kernel.release,
+                         "6.12.101+deb13-arm64")
+
+    def test_a_build_that_is_not_crossing_needs_none(self):
+        build = self.modules("arm64", ["apt://linux-headers-6.12.101+deb13-arm64"],
+                             cross=False)
+        # Built on the architecture it is built for -- emulated or
+        # otherwise -- the tools it needs are the ones it has.
+        self.assertEqual(self.builder().cross_headers(build.image.packages), [])
+
 class MetapackagesAreRecognised(avocado.Test):
     def test(self):
         from seine.packages import is_kernel_metapackage, is_built_kernel
