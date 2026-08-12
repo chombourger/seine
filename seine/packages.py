@@ -129,6 +129,11 @@ CROSS_STAGED = "debian/headers"
 # that count.
 CROSS_FETCHED = ".headers"
 
+# What apt-ftparchive remembers about the packages it has already read,
+# so that indexing the repository after every build does not re-hash a
+# kernel's worth of .debs each time.
+INDEX_CACHE = ".packages.db"
+
 # What a Debian architecture is called by the kernel, and what uname
 # would have called it. Two answers to one question, and a tree wants
 # whichever its own build system asks for -- the kernel's for ARCH, and
@@ -2679,7 +2684,24 @@ rm -rf .pc
     # nothing can find is not holding them in any useful sense -- what it
     # is for is the machine handed a cache, and anything asking what a
     # modified binary was built from.
-    def index(self):
+    # 'cached' is false when a package took the place of one already in
+    # the repository, which happens whenever a rebuild produces the same
+    # version -- a change to the packaging seine writes, or to anything
+    # else the digest counts but the version does not.
+    #
+    # apt-ftparchive keeps what it has already read in a database, and
+    # for a file replaced under its own name it goes on describing the
+    # one before: an index announcing the size and hash of a package that
+    # is no longer there, which apt fetches and refuses as a hash
+    # mismatch. Rather than repair it, the database is set aside for that
+    # one run, since what it holds about that file is wrong and it cannot
+    # be told which.
+    def index(self, cached=True):
+        if cached == False:
+            stale = os.path.join(self.repository(), INDEX_CACHE)
+            if os.path.isfile(stale):
+                os.unlink(stale)
+
         # The Release file goes last and is made fresh every time: it
         # holds the hashes of the indices above it, and the signatures
         # beside it are of the file as it was. Removing them first is what
@@ -2690,7 +2712,7 @@ rm -rf .pc
             if os.path.isfile(path):
                 os.unlink(path)
 
-        script = ("apt-ftparchive --db .packages.db packages . "
+        script = ("apt-ftparchive --db " + INDEX_CACHE + " packages . "
                   "> Packages && gzip -9 -c Packages > Packages.gz && "
                   "apt-ftparchive sources . "
                   "> Sources && gzip -9 -c Sources > Sources.gz")
@@ -3358,11 +3380,17 @@ rm -rf .pc
                     if name.endswith(".changes"):
                         self.signer.clearsign(os.path.join(output, name))
 
+        # Whether anything published here took the place of a file that
+        # was already in the repository. It decides whether the index can
+        # be made from what it remembers; see index().
+        replaced = False
+
         with self._repository, locked(self.repository()):
             for name in sources:
                 destination = os.path.join(self.repository(), name)
                 if os.path.lexists(destination):
                     os.remove(destination)
+                    replaced = True
                 shutil.move(os.path.join(staged, name), destination)
             if staged is not None:
                 shutil.rmtree(staged, ignore_errors=True)
@@ -3381,6 +3409,7 @@ rm -rf .pc
                     # an earlier build of the same package has taken away.
                     if os.path.lexists(destination):
                         os.remove(destination)
+                        replaced = True
                     shutil.move(os.path.join(output, name), destination)
                 shutil.rmtree(output, ignore_errors=True)
                 self._forget(package, architecture, everything)
@@ -3388,7 +3417,7 @@ rm -rf .pc
             # Once, at the end: one repository, and an index of it made
             # while a build of it is half moved in describes neither what
             # was there nor what is.
-            self.index()
+            self.index(cached=replaced == False)
 
         for architecture in sorted(built):
             key = self.key(package, architecture)

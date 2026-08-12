@@ -3337,6 +3337,61 @@ Checksums-Sha256:
         self.assertIn("apt-ftparchive sources .", commands[0])
         self.assertIn("Sources.gz", commands[0])
 
+    # apt-ftparchive keeps what it has read, so that indexing after every
+    # build does not re-hash every .deb again. For a file replaced under
+    # its own name it goes on describing the one before, and what comes
+    # out is an index advertising the size and hash of a package that is
+    # not there -- which apt fetches and refuses as a hash mismatch.
+    def test_the_index_is_kept_when_nothing_was_replaced(self):
+        from seine.packages import INDEX_CACHE
+        builder = self.builder()
+        cache = os.path.join(self.repository, INDEX_CACHE)
+        open(cache, "w").close()
+        builder.index()
+        self.assertTrue(os.path.isfile(cache),
+                        "the cache was thrown away for nothing")
+
+    def test_a_replaced_package_is_indexed_from_the_files(self):
+        from seine.packages import INDEX_CACHE
+        builder = self.builder()
+        cache = os.path.join(self.repository, INDEX_CACHE)
+        open(cache, "w").close()
+        builder.index(cached=False)
+        self.assertFalse(os.path.isfile(cache),
+                         "an index made from what it remembers describes the "
+                         "package that was replaced")
+
+    def test_publishing_over_a_package_says_so(self):
+        from seine.packages import INDEX_CACHE
+        builder = self.builder()
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        cache = os.path.join(self.repository, INDEX_CACHE)
+
+        # Built once, then built again at the same version -- which is
+        # every rebuild caused by something the digest counts and the
+        # version does not: a patch, a profile, the packaging itself.
+        for contents in ["first", "second and longer"]:
+            open(cache, "w").close()
+            output = tempfile.mkdtemp(dir=self.workdir)
+            with open(os.path.join(output, "busybox_1_arm64.deb"), "w") as f:
+                f.write(contents)
+            stamp = os.path.join(self.repository, ".stamps",
+                                 "busybox_arm64_%s" % contents[:5])
+            builder._built[(package.name, "arm64")] = (stamp, output)
+            builder._deploy(package, ["arm64"])
+            published = os.path.join(self.repository, "busybox_1_arm64.deb")
+            with open(published) as f:
+                self.assertEqual(f.read(), contents)
+
+        # The second one took the place of the first, so what
+        # apt-ftparchive remembered about that name is wrong.
+        self.assertFalse(os.path.isfile(cache),
+                         "a package published over another left the index "
+                         "describing the one before it")
+
 # A key seine never sees signs what a build produced. gpg runs on the
 # machine seine was started on and talks to the agent there, so these
 # check what seine asks of it and what it does with the answer, with a
