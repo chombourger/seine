@@ -2182,6 +2182,10 @@ Checksums-Sha256:
 # key made for the test and thrown away with it.
 class Signing(avocado.Test):
     def setUp(self):
+        # Set before anything can cancel: tearDown runs after a cancelled
+        # setUp, and a home directory it cannot ask about is one no agent
+        # was ever started for.
+        self.gnupg = None
         if shutil.which("gpg") is None:
             self.cancel("gpg is needed to sign anything")
         self.gnupg = os.path.join(self.workdir, "gnupg")
@@ -2196,7 +2200,15 @@ class Signing(avocado.Test):
             self.cancel("could not make a key to sign with: %s"
                         % made.stderr.decode(errors="replace"))
 
+    # gpg starts an agent for a home directory the first time it is used,
+    # and the agent outlives the test: avocado then removes the workdir
+    # under it and the daemon goes on running against a directory that is
+    # not there. A machine that runs this suite regularly gathered a
+    # hundred of them, the oldest eighteen days old.
     def tearDown(self):
+        if self.gnupg is not None:
+            subprocess.run(["gpgconf", "--homedir", self.gnupg, "--kill", "all"],
+                           capture_output=True)
         os.environ.pop("GNUPGHOME", None)
 
     def signer(self):

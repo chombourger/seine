@@ -719,6 +719,10 @@ class SignedRebuild(avocado.Test):
 
     def setUp(self):
         self.spaces = []
+        # As self.spaces above: tearDown runs after a cancelled setUp, so
+        # what it reads is set before anything can cancel. A home
+        # directory that was never made is one no agent was started for.
+        self.gnupg = None
         if PLAN != "full":
             self.cancel("SEINE_TEST_PLAN=full builds packages; this takes a while")
         for tool in ["podman", "gpg"]:
@@ -736,9 +740,16 @@ class SignedRebuild(avocado.Test):
             self.cancel("could not make a key to sign with: %s"
                         % made.stderr.decode(errors="replace"))
 
+    # The agent as well as the spaces: gpg starts one for a home directory
+    # the first time it is used and it outlives the test, left running
+    # against a workdir avocado has since removed. See the same teardown in
+    # tests/spec/packages.py.
     def tearDown(self):
         for space in self.spaces:
             subprocess.run(["podman", "unshare", "rm", "-rf", space], check=False)
+        if self.gnupg is not None:
+            subprocess.run(["gpgconf", "--homedir", self.gnupg, "--kill", "all"],
+                           capture_output=True)
         remove_artifacts(self.workdir)
 
     def space(self, name):
