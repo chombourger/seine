@@ -425,7 +425,11 @@ class BuildCmd(Cmd):
                     if type(package[setting].get(kind)) != type({}):
                         package[setting][kind] = newpackage[setting][kind]
                     else:
-                        package[setting][kind].update(newpackage[setting][kind])
+                        for name, value in (newpackage[setting][kind] or {}).items():
+                            if self._appends(kind, name):
+                                value = self._added(
+                                    package[setting][kind].get(name), value)
+                            package[setting][kind][name] = value
                     for name in newpackage[setting][kind] or []:
                         self._take_origin(package, newpackage,
                                           "extends.%s.%s" % (kind, name))
@@ -445,10 +449,37 @@ class BuildCmd(Cmd):
         defaults = (self.spec.pop("defaults", None) or {}).get("packages") or []
         for index, default in enumerate(defaults):
             Package(default, index)
+            self._drop_unbuilt_kernels(default)
             name = self._package_name(default)
             for package in self.spec.get("packages") or []:
                 if self._package_name(package) == name:
                     self._merge_package(package, default)
+
+    # A description may name a kernel this specification does not build,
+    # and that is not a mistake: an architecture file says "if a kernel of
+    # our own is built, put modules on it too", and it is included by every
+    # image of that architecture, most of which build no kernel. So a
+    # kernel named here that nothing builds is dropped, exactly as the
+    # description itself is when nothing asks for the package. Under
+    # 'packages' it stays an error, as it already is for 'before'.
+    #
+    # Only bare names are dropped: an 'apt://' kernel is the
+    # distribution's and is built by nobody here.
+    def _drop_unbuilt_kernels(self, default):
+        module = (default.get("extends") or {}).get("module")
+        if type(module) != type({}):
+            return
+        built = {self._package_name(package)
+                 for package in self.spec.get("packages") or []}
+        for setting, kernels in module.items():
+            if self._appends("module", setting) == False:
+                continue
+            if type(kernels) != type([]):
+                continue
+            module[setting] = [
+                kernel for kernel in kernels
+                if type(kernel) != type("") or "://" in kernel
+                or kernel in built]
 
     def _merge_package(self, package, newpackage):
         for setting in newpackage:
@@ -487,10 +518,34 @@ class BuildCmd(Cmd):
                                           "extends.%s.%s" % (kind, setting))
                 continue
             for setting in newextends[kind]:
-                if setting not in extends[kind]:
+                if self._appends(kind, setting):
+                    extends[kind][setting] = self._added(
+                        extends[kind].get(setting), newextends[kind][setting])
+                    self._take_origin(package, newpackage,
+                                      "extends.%s.%s" % (kind, setting))
+                elif setting not in extends[kind]:
                     extends[kind][setting] = newextends[kind][setting]
                     self._take_origin(package, newpackage,
                                       "extends.%s.%s" % (kind, setting))
+
+    # Settings that two files add to rather than settle between them.
+    #
+    # Which kernels a module is built against is the one of them: the file
+    # asking for the module names the kernels it knows about, and the file
+    # building a kernel of its own adds that one. Neither says the same
+    # thing twice, so "what was said first stands" would quietly drop a
+    # kernel somebody asked to have modules for.
+    def _appends(self, kind, setting):
+        from seine.packages import MODULE_KERNELS
+        return kind == "module" and MODULE_KERNELS.match(setting) is not None
+
+    # Two lists, in the order they were written, without repeating what
+    # both of them named: the same kernel added by an architecture file
+    # and by the file asking for the module is one kernel.
+    def _added(self, listed, added):
+        if type(listed) != type([]) or type(added) != type([]):
+            return added if type(added) == type([]) else listed
+        return listed + [entry for entry in added if entry not in listed]
 
     # What decides whether two entries are the same package: the name it
     # was given, or failing that the source package its 'source' URI

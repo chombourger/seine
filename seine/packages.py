@@ -2811,7 +2811,33 @@ def parse(spec):
                 "describes a package goes under 'defaults'." % package.name)
     ordered = propagate(order(parsed))
     _check_module_kernels(ordered, spec)
+    _check_module_references(ordered)
     return ordered
+
+# A kernel named without a scheme is one this specification builds, and
+# naming one it does not build is a typo rather than a constraint worth
+# ignoring -- the same answer 'before' and 'after' already give.
+#
+# A description under 'defaults' is the exception, and it never reaches
+# here: what it named that nothing builds was dropped as the defaults
+# were folded in, which is how an architecture file says "modules for our
+# kernel too, if there is one" without every image of that architecture
+# having to build one.
+def _check_module_references(packages):
+    built = {package.name for package in packages}
+    for package in packages:
+        if package.module == False:
+            continue
+        for architecture in sorted(package.module_kernels):
+            for kernel in package.module_kernels[architecture]:
+                if "://" in kernel or kernel in built:
+                    continue
+                raise package._error(
+                    "'extends: module: %s-kernels' names '%s', which no "
+                    "package in this specification builds. Name a kernel "
+                    "this specification builds, or the headers package of "
+                    "one the distribution ships, as 'apt://linux-headers-%s'."
+                    % (architecture, kernel, architecture))
 
 # Every module has to say which kernels it is built against for each
 # architecture it is built for. Answered when the specification is

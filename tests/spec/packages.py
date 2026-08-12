@@ -279,7 +279,13 @@ MODULE = """
 
 class ModuleExtension(avocado.Test):
     def test(self):
-        build = parse_for("amd64", MODULE % """
+        build = parse_for("amd64", """
+                packages:
+                    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=deadbeef
+                      name: nvidia-open
+                      version: "580.95.05"
+                      extends:
+                          module:
                               build: kernel-open
                               modules:
                                   - nvidia
@@ -289,8 +295,12 @@ class ModuleExtension(avocado.Test):
                               amd64-kernels:
                                   - apt://linux-headers-amd64
                                   - linux
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
         """)
-        package = build.image.packages[0]
+        package = [p for p in build.image.packages if p.name == "nvidia-open"][0]
         self.assertEqual(package.module, True)
         self.assertEqual(package.module_build, "kernel-open")
         self.assertEqual(package.module_modules, ["nvidia", "nvidia-drm"])
@@ -466,6 +476,18 @@ class EveryModuleMissingKernelsIsNamed(avocado.Test):
             # One message, not one build each finding the next.
             self.assertIn("driver-one", str(e))
             self.assertIn("driver-two", str(e))
+
+class ModuleNamesAKernelNothingBuilds(avocado.Test):
+    def test(self):
+        try:
+            parse_for("amd64", MODULE % """
+                              amd64-kernels: [linux]
+            """)
+            self.fail("parsing succeeded for a kernel nothing builds!")
+        except ValueError as e:
+            # It says both ways out: build that kernel, or name the
+            # distribution's headers package.
+            self.assertIn("apt://linux-headers-amd64", str(e))
 
 class ModuleKernelsAreCheckedPerArchitecture(avocado.Test):
     def test(self):

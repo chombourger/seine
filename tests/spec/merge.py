@@ -598,6 +598,124 @@ class AnEntryWithNeitherSourceNorNameIsRefused(avocado.Test):
         except ValueError:
             pass
 
+MODULE = """
+                packages:
+                    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=deadbeef
+                      name: nvidia-open
+                      version: "580.95.05"
+                      extends:
+                          module:
+                              amd64-kernels:
+                                  - apt://linux-headers-amd64
+"""
+
+class KernelsAreAddedToRatherThanSettled(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # What asks for the modules, naming the distribution's kernel.
+        build.loads(MODULE)
+        # An architecture file, adding the kernel this build makes.
+        build.loads("""
+                packages:
+                    - name: nvidia-open
+                      extends:
+                          module:
+                              amd64-kernels:
+                                  - linux
+        """)
+        kernels = build.spec["packages"][0]["extends"]["module"]["amd64-kernels"]
+        # Both, in the order they were written: neither file is
+        # describing the same thing twice, so settling between them
+        # would drop a kernel somebody asked to have modules for.
+        self.assertEqual(kernels, ["apt://linux-headers-amd64", "linux"])
+
+class TheSameKernelIsNotAddedTwice(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(MODULE)
+        build.loads("""
+                packages:
+                    - name: nvidia-open
+                      extends:
+                          module:
+                              amd64-kernels:
+                                  - apt://linux-headers-amd64
+                                  - linux
+        """)
+        kernels = build.spec["packages"][0]["extends"]["module"]["amd64-kernels"]
+        self.assertEqual(kernels, ["apt://linux-headers-amd64", "linux"])
+
+class KernelsOfDifferentArchitecturesStayApart(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(MODULE)
+        build.loads("""
+                packages:
+                    - name: nvidia-open
+                      extends:
+                          module:
+                              arm64-kernels:
+                                  - apt://linux-headers-arm64
+        """)
+        module = build.spec["packages"][0]["extends"]["module"]
+        self.assertEqual(module["amd64-kernels"], ["apt://linux-headers-amd64"])
+        self.assertEqual(module["arm64-kernels"], ["apt://linux-headers-arm64"])
+
+class DefaultsAddTheirKernelsToo(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # An architecture file: modules for the kernel we build, if one
+        # is built. Under 'defaults', so it asks for nothing itself.
+        build.loads("""
+                distribution:
+                    release: trixie
+                    architecture: amd64
+                defaults:
+                    packages:
+                        - name: nvidia-open
+                          extends:
+                              module:
+                                  amd64-kernels:
+                                      - linux
+        """ + IMAGE)
+        build.loads(MODULE)
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+        """)
+        spec = build.parse()
+        module = [p for p in spec["packages"]
+                  if p.get("name") == "nvidia-open"][0]["extends"]["module"]
+        self.assertEqual(module["amd64-kernels"],
+                         ["apt://linux-headers-amd64", "linux"])
+
+class ADefaultDropsAKernelNothingBuilds(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        # The same architecture file, in a specification that builds no
+        # kernel of its own -- which is most of them.
+        build.loads("""
+                distribution:
+                    release: trixie
+                    architecture: amd64
+                defaults:
+                    packages:
+                        - name: nvidia-open
+                          extends:
+                              module:
+                                  amd64-kernels:
+                                      - linux
+        """ + IMAGE)
+        build.loads(MODULE)
+        spec = build.parse()
+        module = spec["packages"][0]["extends"]["module"]
+        # The description described nothing, so it added nothing. The
+        # modules are still built, against the distribution's kernel.
+        self.assertEqual(module["amd64-kernels"], ["apt://linux-headers-amd64"])
+
 class DefaultsAreFoldedIntoWhatIsBuilt(avocado.Test):
     def test(self):
         build = BuildCmd()
