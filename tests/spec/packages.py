@@ -375,6 +375,46 @@ class AKernelWithModulesKeepsItsKbuild(avocado.Test):
     def test_asking_for_every_tool_is_not(self):
         self.tasks("nodoc")
 
+# A kernel records its ABI while its source is prepared, which only a
+# build that rebuilds it does. The second build of a specification reuses
+# the kernel, so the ABI has to come from what the first one left behind.
+class AnAbiSurvivesTheBuildThatMadeIt(avocado.Test):
+    def test_it_is_read_back_off_the_stamp(self):
+        from seine.packages import Builder, STAMPS
+        from seine.sbuild import BuilderImage
+        build = parse_for("amd64", """
+                packages:
+                    - source: git://example.com/driver.git;rev=deadbeef
+                      name: driver
+                      version: "1.0"
+                      extends:
+                          module:
+                              amd64-kernels: [linux]
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+        """)
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        packages = build.image.packages
+        kernel = [p for p in packages if p.kernel][0]
+        module = [p for p in packages if p.module][0]
+
+        # Nothing recorded, as on the second build of a specification.
+        self.assertEqual(builder.abinames, {})
+        stamp = builder.stamp(kernel, "amd64")
+        os.makedirs(os.path.dirname(stamp), exist_ok=True)
+        with open(stamp, "w") as f:
+            f.write("linux-headers-6.18+unreleased-amd64_1_amd64.deb\n")
+            f.write("linux-headers-6.18+unreleased-common_1_all.deb\n")
+            f.write("linux-image-6.18+unreleased-amd64_1_amd64.deb\n")
+
+        kernels = builder.resolved_kernels(module, "amd64", packages)
+        self.assertEqual([k.release for k in kernels],
+                         ["6.18+unreleased-amd64"])
+
 class UnknownModuleSetting(avocado.Test):
     def test(self):
         try:
@@ -691,6 +731,195 @@ class PackagesFromSeveralFilesAreAppended(avocado.Test):
         """ + IMAGE)
         build.parse()
         self.assertEqual([p.name for p in build.image.packages], ["one", "two"])
+
+# What a kernel reference turns into, which decides the name of every
+# binary package a module build produces.
+class ResolvedKernels(avocado.Test):
+    def builder(self, architecture="amd64"):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": architecture,
+                  "uri": "http://example.com/debian"}
+        return Builder(distro, {}, BuilderImage(distro, {}))
+
+    def test_an_explicit_headers_package_needs_nothing_asked(self):
+        build = parse_for("amd64", MODULE % """
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+        """)
+        kernels = self.builder().resolved_kernels(
+            build.image.packages[0], "amd64")
+        self.assertEqual([k.release for k in kernels],
+                         ["6.12.101+deb13-amd64"])
+        self.assertEqual([k.headers for k in kernels],
+                         ["linux-headers-6.12.101+deb13-amd64"])
+
+    def test_a_featureset_is_part_of_the_release(self):
+        build = parse_for("amd64", MODULE % """
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-rt-amd64
+        """)
+        kernels = self.builder().resolved_kernels(
+            build.image.packages[0], "amd64")
+        # 'rt-amd64' is a flavour within a featureset and not two things
+        # to be told apart: what is stripped is the prefix, nothing else.
+        self.assertEqual([k.release for k in kernels],
+                         ["6.12.101+deb13-rt-amd64"])
+
+    def test_a_grafted_kernel_is_named_for_the_abi_it_gave_itself(self):
+        build = parse_for("amd64", """
+                packages:
+                    - source: git://example.com/driver.git;rev=deadbeef
+                      name: driver
+                      version: "1.0"
+                      extends:
+                          module:
+                              amd64-kernels: [linux]
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              upstream: https://kernel.org/linux-6.18.43.tar.xz
+                              flavour: amd64
+        """)
+        packages = build.image.packages
+        module = [p for p in packages if p.name == "driver"][0]
+        builder = self.builder()
+        # What extend_kernel() records once the kernel's control file has
+        # been regenerated. Nothing predicts it: an UNRELEASED changelog
+        # is what turns a version into '6.18+unreleased'.
+        builder.abinames["linux"] = "6.18+unreleased"
+        kernels = builder.resolved_kernels(module, "amd64", packages)
+        self.assertEqual([k.release for k in kernels],
+                         ["6.18+unreleased-amd64"])
+        self.assertEqual([k.headers for k in kernels],
+                         ["linux-headers-6.18+unreleased-amd64"])
+
+    def test_a_module_is_built_after_the_kernels_it_names(self):
+        build = parse_for("amd64", """
+                packages:
+                    - source: git://example.com/driver.git;rev=deadbeef
+                      name: driver
+                      version: "1.0"
+                      extends:
+                          module:
+                              amd64-kernels: [linux]
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+        """)
+        # Written by nobody: naming a kernel is what says the module is
+        # built on it, and that is what carries the kernel's digest into
+        # the module's stamp.
+        self.assertEqual([p.name for p in build.image.packages],
+                         ["linux", "driver"])
+
+    def test_an_unprepared_kernel_says_so(self):
+        build = parse_for("amd64", """
+                packages:
+                    - source: git://example.com/driver.git;rev=deadbeef
+                      name: driver
+                      version: "1.0"
+                      extends:
+                          module:
+                              amd64-kernels: [linux]
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+        """)
+        packages = build.image.packages
+        module = [p for p in packages if p.name == "driver"][0]
+        try:
+            self.builder().resolved_kernels(module, "amd64", packages)
+            self.fail("a kernel with no ABI yet resolved to something!")
+        except ValueError:
+            pass
+
+class MetapackagesAreRecognised(avocado.Test):
+    def test(self):
+        from seine.packages import is_kernel_metapackage, is_built_kernel
+        # An ABI starts with the kernel's version, which is what tells
+        # one kernel from whichever kernel is current.
+        for reference in ["apt://linux-headers-amd64",
+                          "apt://linux-headers-rt-arm64"]:
+            self.assertEqual(is_kernel_metapackage(reference), True, reference)
+        for reference in ["apt://linux-headers-6.12.101+deb13-amd64",
+                          "apt://linux-headers-6.18+unreleased-rt-arm64"]:
+            self.assertEqual(is_kernel_metapackage(reference), False, reference)
+        self.assertEqual(is_built_kernel("linux"), True)
+        self.assertEqual(is_built_kernel("apt://linux-headers-amd64"), False)
+
+class ResolvedMetapackages(avocado.Test):
+    def test_the_headers_package_is_read_off_what_apt_said(self):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        # What 'apt-cache depends' prints, bracketing what is not in the
+        # index it was asked about, and naming the -common half beside
+        # the one wanted.
+        output = (
+            "linux-headers-arm64:arm64\n"
+            "  Depends: <linux-headers-6.12.101+deb13-common:arm64>\n"
+            "    linux-headers-6.12.101+deb13-common\n"
+            "  Depends: linux-headers-6.12.101+deb13-arm64:arm64\n")
+        self.assertEqual(
+            builder._resolved_headers("apt://linux-headers-arm64", "arm64",
+                                      output),
+            "linux-headers-6.12.101+deb13-arm64")
+
+    def test_nothing_resolved_says_so(self):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        try:
+            builder._resolved_headers("apt://linux-headers-riscv64",
+                                      "riscv64", "N: Unable to locate package")
+            self.fail("a metapackage that resolved to nothing was accepted!")
+        except ValueError:
+            pass
+
+    # Resolving happens while the graph is being made, so the step that
+    # builds the host bootstrap has not run -- and the builder image doing
+    # the asking is built FROM it. A warm cache supplies one either way,
+    # which is why the order only matters on a machine whose images were
+    # cleared, where the builder build stops at 'FROM ... did not resolve'.
+    def test_the_host_bootstrap_is_made_before_the_builder_image(self):
+        from seine.packages import Builder
+
+        order = []
+
+        class HostBootstrap:
+            name = "bootstrap/debian/trixie/all"
+
+            def create(self):
+                order.append("bootstrap")
+
+        class BuilderImage:
+            def create(self, hostBootstrap):
+                order.append("builder")
+
+            def output(self, args, **kwargs):
+                order.append("asked")
+                return ("linux-headers-amd64\n"
+                        "  Depends: linux-headers-6.12.101+deb13-amd64\n")
+
+        build = parse_for("amd64", MODULE % """
+                              amd64-kernels:
+                                  - apt://linux-headers-amd64
+        """)
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage())
+        builder.resolve_kernels(build.image.packages, HostBootstrap())
+        self.assertEqual(order, ["bootstrap", "builder", "asked"],
+                         "the builder image was made before the bootstrap it "
+                         "is built FROM")
 
 # The container that clones is given the agent's socket and nothing else,
 # so what these check is that a key never leaves the host: the volumes a

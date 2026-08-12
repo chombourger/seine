@@ -89,6 +89,43 @@ MODULE_KERNELS = re.compile(r"^([a-z][a-z0-9]*(-[a-z0-9]+)*)-kernels$")
 # thing the build never opens.
 MODULE_IMAGE_PREFIX = "linux-image-"
 
+# The headers packages a module is built against are named for the kernel
+# rather than for the architecture: linux-headers-<abi>-<flavour>, where
+# the ABI is what the packaging derived from the version it was built
+# from. Stripping this prefix leaves '<abi>-<flavour>' -- which is the
+# kernel's release, the name of its modules directory, and what a module
+# has to be built against to be loadable by it.
+MODULE_HEADERS_PREFIX = "linux-headers-"
+
+# An ABI begins with the kernel's version, so it begins with a digit:
+# that is what separates a name for one kernel from the metapackages
+# pointing at whichever kernel is current. Nothing else about the two
+# tells them apart -- a featureset and a flavour are both words.
+MODULE_ABI = re.compile(r"^[0-9]")
+
+# What a module is built against, once the name it was written as has
+# been made sense of.
+#
+# 'release' is the '<abi>-<flavour>' the kernel calls itself: it names the
+# binary package the modules are shipped in, the directory they are
+# installed into, and the kernel they refuse to load into if it is wrong.
+# 'headers' is what has to be installed to build against it.
+Kernel = collections.namedtuple("Kernel", ["reference", "headers", "release"])
+
+# Whether a kernel reference names a package this specification builds,
+# as opposed to one the distribution ships. Written without a scheme:
+# 'linux' is a package here, 'apt://linux-headers-amd64' is Debian's.
+def is_built_kernel(reference):
+    return "://" not in reference
+
+# Whether an 'apt://' reference names one kernel or whichever kernel is
+# current. Only the first can be made sense of without asking apt.
+def is_kernel_metapackage(reference):
+    name = reference.partition("://")[2]
+    if name.startswith(MODULE_HEADERS_PREFIX) == False:
+        return True
+    return MODULE_ABI.match(name[len(MODULE_HEADERS_PREFIX):]) is None
+
 # Where a kernel tree comes from when it is not the one the distribution
 # packages: 'extends: kernel: upstream:'. The distribution's debian/ is
 # kept and grafted onto that tree, so what comes out carries Debian's
@@ -688,6 +725,17 @@ class Builder:
         self.builderImage = builderImage
         self.distro = distro
         self.options = options
+        # The ABI each rebuilt kernel gave itself, by package name, read
+        # off its regenerated debian/control as it was prepared. What a
+        # module built against that kernel has to be named for, and not a
+        # thing anybody can predict: the UNRELEASED changelog a local
+        # rebuild carries changes the shape of it.
+        self.abinames = {}
+        # What each 'apt://linux-headers-<flavour>' metapackage turned out
+        # to name, by (architecture, reference). Asked of apt once and
+        # kept for the run: it is the archive's answer, so caching it
+        # between runs would be caching the thing that moves.
+        self.metapackages = {}
         # Held while unpacking a chroot and while rewriting the
         # repository, both of which are shared by every package being
         # built at the same time. Compiling is not: that is the part
@@ -1320,9 +1368,35 @@ rm -rf .pc
                          "DEBIAN_KERNEL_DISABLE_SIGNED": "1"},
             check=False)
 
+        # What this kernel ended up calling itself, kept for the modules
+        # built against it. Read here rather than worked out later: it is
+        # in the control file that was just regenerated, and the module
+        # that needs it is built after this.
+        self._record_abiname(package, sourcedir)
+
         if package.kernel_flavour is not None:
             for architecture in architectures:
                 self._check_flavour(package, sourcedir, architecture)
+
+    # The ABI the packaging gave this kernel, off the control file it just
+    # generated. Absent rather than fatal when it cannot be read: a kernel
+    # nothing builds modules against does not need one, and the module
+    # that does need it says so itself, naming the kernel.
+    def _record_abiname(self, package, sourcedir):
+        control = os.path.join(sourcedir, "debian", "control")
+        if os.path.isfile(control) == False:
+            return
+        with open(control, "r") as f:
+            stanzas = f.read().split("\n\n")
+        packages = []
+        for stanza in stanzas:
+            name = re.search(r"^Package:\s*(\S+)$", stanza, re.MULTILINE)
+            if name:
+                packages.append((name.group(1), []))
+        try:
+            self.abinames[package.name] = self._abiname(packages)
+        except ValueError:
+            pass
 
     # Restricting the build only takes effect once the rules have been
     # regenerated from the edited defines, and that regeneration reports
@@ -1671,6 +1745,155 @@ rm -rf .pc
         if self.cross(package, architecture):
             return HOST_ARCH
         return architecture
+
+    # What a module is built against for one architecture, with every
+    # reference made sense of.
+    #
+    # Three ways of naming a kernel, and two of them need nothing asked of
+    # anybody: an 'apt://' headers package carrying an ABI names one
+    # kernel and says which in its own name, and a kernel this
+    # specification builds is one seine gave an ABI to itself.
+    #
+    # The third -- a metapackage, 'apt://linux-headers-amd64' -- names
+    # whichever kernel is current, which is a question only apt can
+    # answer. Those are resolved when the build reaches them; see
+    # module_kernels().
+    def resolved_kernels(self, package, architecture, packages=None):
+        kernels = []
+        for reference in package.module_kernels.get(architecture, []):
+            if is_built_kernel(reference):
+                kernels.append(self._built_kernel(package, reference, packages))
+            else:
+                headers = self.metapackages.get((architecture, reference),
+                                                reference.partition("://")[2])
+                kernels.append(Kernel(
+                    reference, headers,
+                    headers[len(MODULE_HEADERS_PREFIX):]))
+        return kernels
+
+    # What the kernels named as metapackages actually are, asked of apt
+    # before anything is stamped.
+    #
+    # A metapackage names whichever kernel is current, so what it resolves
+    # to is part of what a module is built from -- and therefore part of
+    # what decides whether it needs building again. Debian moves the ABI
+    # in a security update; without this the modules would go on being the
+    # ones built for the ABI before it, and the image would fail to
+    # compose against a kernel that no longer exists.
+    #
+    # It costs a builder image, and only for a specification that names a
+    # metapackage: naming a moving target is what buys the query. One that
+    # writes its ABIs down, or builds its own kernels, still decides what
+    # to rebuild without creating anything.
+    def resolve_kernels(self, packages, hostBootstrap):
+        wanted = {}
+        for package in packages:
+            if package.module == False:
+                continue
+            for architecture in self.architectures(package):
+                for reference in package.module_kernels.get(architecture, []):
+                    if is_built_kernel(reference):
+                        continue
+                    if is_kernel_metapackage(reference) == False:
+                        continue
+                    if (architecture, reference) in self.metapackages:
+                        continue
+                    wanted.setdefault(architecture, set()).add(reference)
+        if len(wanted) == 0:
+            return
+
+        # The host bootstrap first: this runs while the graph is being made,
+        # so the step that would otherwise build it has not run yet, and the
+        # builder image is built FROM it. A cache holding one is what hid
+        # that; with the images cleared, the builder build stops at 'FROM
+        # bootstrap/... did not resolve'. This is what the step does, and
+        # it returns without building when the image is current.
+        hostBootstrap.create()
+        self.builderImage.create(hostBootstrap)
+        # The indexes of every architecture asked about, which for the one
+        # being built is already there and for any other is not. A module
+        # for another architecture is named in debian/control whichever
+        # architecture is building, so its kernel has to be resolved here
+        # too -- and its name only means something against its own index.
+        foreign = [a for a in sorted(wanted) if a != HOST_ARCH]
+        setup = ["dpkg --add-architecture %s" % a for a in foreign]
+        setup.append("apt-get update -qq")
+        for architecture in sorted(wanted):
+            for reference in sorted(wanted[architecture]):
+                name = reference.partition("://")[2]
+                out = self.builderImage.output(
+                    ["sh", "-c", " && ".join(
+                        setup + ["apt-cache depends %s:%s" % (name, architecture)])])
+                self.metapackages[(architecture, reference)] = \
+                    self._resolved_headers(reference, architecture, out)
+
+    # The one headers package a metapackage depends on, out of what
+    # 'apt-cache depends' printed. Recognised by carrying an ABI, which is
+    # what separates it from the metapackage that was asked about and from
+    # the '-common' half beside it.
+    def _resolved_headers(self, reference, architecture, output):
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        for found in re.findall(r"linux-headers-[0-9][^\s:]*", output):
+            if found.endswith("-common"):
+                continue
+            return found
+        raise ValueError(
+            "'%s' names no kernel headers package for %s. It was resolved "
+            "against the feeds this specification builds from, which may "
+            "not carry a kernel for that architecture; naming the headers "
+            "package and its ABI outright says which kernel is meant."
+            % (reference, architecture))
+
+    # A kernel this specification builds, whose ABI seine settled itself.
+    #
+    # The ABI is read back rather than predicted -- it is built from the
+    # upstream version, the abiname in debian/config and what the
+    # changelog's distribution earns it, and a local rebuild is
+    # UNRELEASED, which turns a 6.1.0-53 into a 6.18+unreleased. It is
+    # known once that kernel's source has been prepared, which the module
+    # is built after, so by the time this is asked for the answer is
+    # there.
+    def _built_kernel(self, package, reference, packages):
+        kernel = None
+        for other in packages or []:
+            if other.name == reference:
+                kernel = other
+        if kernel is None:
+            raise package._error(
+                "'extends: module' names the kernel '%s', which is not "
+                "among the packages being built" % reference)
+        abi = self.abinames.get(kernel.name)
+        if abi is None:
+            abi = self._abiname_built_earlier(kernel)
+        if abi is None:
+            raise package._error(
+                "the kernel '%s' has not been prepared yet, so what its "
+                "modules will have to be built against is not known. A "
+                "module is built after the kernels it names." % reference)
+        release = "%s-%s" % (abi, kernel.kernel_flavour)
+        return Kernel(reference, MODULE_HEADERS_PREFIX + release, release)
+
+
+    # The ABI of a kernel this build is not rebuilding, read off the stamp
+    # of the build that did. Only a rebuild records one as it goes, so
+    # without this a kernel that is already current -- a second build, or a
+    # machine that imported a cache -- leaves every module naming it
+    # unbuildable. The headers package every flavour shares is named for
+    # the ABI alone, which is what makes it readable here.
+    def _abiname_built_earlier(self, kernel):
+        for architecture in self.architectures(kernel):
+            stamp = self.stamp(kernel, architecture)
+            if os.path.isfile(stamp) == False:
+                continue
+            with open(stamp, "r") as f:
+                for name in f:
+                    abi = re.match(r"^%s(.+)-common_"
+                                   % MODULE_HEADERS_PREFIX, name.strip())
+                    if abi:
+                        self.abinames[kernel.name] = abi.group(1)
+                        return abi.group(1)
+        return None
 
     # The architectures a package is built for, which is what 'scope' says.
     # Collapsed to one when the image is of the machine's own architecture:
@@ -2038,7 +2261,35 @@ rm -rf .pc
                      # can move the job to another architecture, and the
                      # build that no longer has it produces different
                      # files than the stamp beside it says it did.
-                     str(architecture == self.indep_architecture(package))]:
+                     str(architecture == self.indep_architecture(package)),
+                     # Which kernels this module is built against, as the
+                     # specification named them. A kernel added to the
+                     # list, or taken out of it, changes what binary
+                     # packages come out, so it has to change the stamp.
+                     #
+                     # For a kernel this specification builds, that is
+                     # only half of it: what matters is the ABI, which is
+                     # not knowable here. The dependency on the kernel
+                     # carries it -- a module is built after the kernels
+                     # it names, so the kernel's own digest is folded in
+                     # below, and a kernel rebuilt for any reason rebuilds
+                     # the modules on it.
+                     ",".join(sorted(package.module_kernels.get(architecture, []))),
+                     # And what the ones naming a moving target turned out
+                     # to be. Debian moves a kernel's ABI in a security
+                     # update, which leaves 'linux-headers-amd64' pointing
+                     # somewhere new while the specification reads exactly
+                     # as it did. Without this the modules would still be
+                     # the ones built for the ABI before it.
+                     ",".join("%s=%s" % (reference, headers)
+                              for (a, reference), headers
+                              in sorted(self.metapackages.items())
+                              if a == architecture),
+                     str(package.module_build),
+                     ",".join(sorted(package.module_modules)),
+                     ",".join("%s=%s" % (name, package.module_make_vars[name])
+                              for name in sorted(package.module_make_vars)),
+                     str(package.upstream_version)]:
             digest.update(part.encode())
         # Patches and kernel configuration fragments count by content, not
         # by name: editing one without touching the specification has to be
@@ -2195,6 +2446,7 @@ rm -rf .pc
     # built in a chroot of the build architecture, whichever architecture
     # the image is for.
     def tasks(self, packages, hostBootstrap):
+        self.resolve_kernels(packages, hostBootstrap)
         pending = self._pending(packages)
         # Which ones were already built when the graph was made, asked now
         # rather than at the barrier: by then this build has built the rest
@@ -2372,6 +2624,7 @@ rm -rf .pc
                                             self.signer.keyring()))
 
     def run(self, packages, hostBootstrap):
+        self.resolve_kernels(packages, hostBootstrap)
         pending = self._pending(packages)
         if len(pending) == 0:
             return
@@ -2809,10 +3062,38 @@ def parse(spec):
                 "package '%s' has no 'source' to build from. An entry under "
                 "'packages' asks for a package to be built; one that only "
                 "describes a package goes under 'defaults'." % package.name)
+    # Before ordering, so that a kernel named here is reported by the
+    # message written for it rather than by 'after' finding a package it
+    # cannot name.
+    _check_module_references(parsed)
+    _depend_on_kernels(parsed)
     ordered = propagate(order(parsed))
     _check_module_kernels(ordered, spec)
-    _check_module_references(ordered)
     return ordered
+
+# A module is built after the kernels it names, without anybody writing it
+# down twice.
+#
+# Ordering is the obvious half: a module built against a kernel this
+# specification also builds needs that kernel's headers, which do not
+# exist until it has been built.
+#
+# The digest is the half that matters more. What a module has to be named
+# for is the kernel's ABI, and an ABI is not knowable until the kernel's
+# source has been prepared -- a grafted 6.18 calls itself
+# '6.18+unreleased', which nothing can predict and which changes with the
+# tree it was grafted onto. So the module's stamp does not try to carry
+# it. It carries the kernel's digest instead, which 'after' is what folds
+# in, and which changes whenever anything about that kernel does. A
+# kernel that moved rebuilds the modules on it, whatever moved.
+def _depend_on_kernels(packages):
+    for package in packages:
+        if package.module == False:
+            continue
+        for architecture in sorted(package.module_kernels):
+            for kernel in package.module_kernels[architecture]:
+                if is_built_kernel(kernel) and kernel not in package.after:
+                    package.after.append(kernel)
 
 # A kernel named without a scheme is one this specification builds, and
 # naming one it does not build is a typo rather than a constraint worth
