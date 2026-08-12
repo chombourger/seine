@@ -2,9 +2,11 @@
 
 import avocado
 import glob
+import io
 import os
 import shutil
 import subprocess
+import tarfile
 import sys
 
 path_to_self    = os.path.realpath(__file__)
@@ -68,9 +70,16 @@ class Image(avocado.Test):
     image = None
     release = None
 
-    # Whether this one grafts a kernel onto Debian's packaging, which is
-    # where the hours are: the compile dwarfs everything else these tests
-    # do, and four of them said the same thing four times.
+    # Whether this one grafts a kernel onto Debian's packaging and cuts it
+    # down with examples/slim-kernel.yml, which is the bulk of the work:
+    # the compile dwarfs everything else these tests do, and four of them
+    # said the same thing four times.
+    #
+    # The fragments are built rather than only read. seine's imager boots
+    # the appliance with the kernel the build produced, so a fragment that
+    # turned off something it needs -- virtio, 9p -- fails the build here
+    # rather than on somebody's board. That is as close to a boot as this
+    # gets, and it is why the two that graft are one of each architecture.
     #
     # Two say it now, and which two is what makes that safe -- see
     # TheGraftedKernelsCoverBothWays below. A build that takes the
@@ -95,7 +104,7 @@ class Image(avocado.Test):
             "common/%s.yaml" % self.image,
             "common/conf-accounts.yaml",
             "common/conf-locales.yaml",
-        ] + ([KERNELS[self.release]] if self.grafted else [])
+        ] + ([KERNELS[self.release], "slim-kernel.yml"] if self.grafted else [])
         specs = [os.path.join(EXAMPLES, name) for name in names]
         for spec in specs:
             self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
@@ -106,6 +115,33 @@ class Image(avocado.Test):
         with open(where, "w") as f:
             f.write("image:\n    filename: %s\n" % self.filename)
         return specs + [where]
+
+    # That the fragments reached the build rather than only being listed:
+    # what came out is asked what it was configured as, and the first
+    # symbol each fragment turns off had better be off in it.
+    #
+    # 'not enabled' rather than 'is not set': a symbol whose dependencies
+    # went with what the fragment turned off is absent from the
+    # configuration altogether, which is the fragment working rather than
+    # failing.
+    def assertSlimmed(self, debs):
+        self.assertNotEqual(debs, [], "no kernel image package to read")
+        tarball = subprocess.run(["dpkg-deb", "--fsys-tarfile", debs[0]],
+                                 stdout=subprocess.PIPE, check=True).stdout
+        with tarfile.open(fileobj=io.BytesIO(tarball)) as tar:
+            names = [n for n in tar.getnames() if "/boot/config-" in n]
+            self.assertNotEqual(names, [], "no kernel configuration in %s" % debs[0])
+            config = tar.extractfile(names[0]).read().decode()
+
+        for fragment in ["slim-common.fragment",
+                         "slim-%s.fragment" % self.architecture]:
+            with open(os.path.join(EXAMPLES, "configs", fragment)) as f:
+                symbols = [line.split()[1] for line in f
+                           if line.startswith("# CONFIG_")]
+            self.assertNotEqual(symbols, [], "%s turns nothing off" % fragment)
+            self.assertNotIn("\n%s=" % symbols[0], config,
+                             "%s was not applied: %s is still enabled"
+                             % (fragment, symbols[0]))
 
     def test(self):
         # ansible-playbook lives beside the python running the tests when
@@ -150,6 +186,7 @@ class Image(avocado.Test):
             repository, "linux-image-*unreleased*_%s.deb" % self.architecture))
         if self.grafted:
             self.assertNotEqual(debs, [], "no grafted kernel in %s" % repository)
+            self.assertSlimmed([deb for deb in debs if "-dbg" not in deb])
         else:
             self.assertEqual(debs, [],
                              "this one was to take the distribution's kernel")
