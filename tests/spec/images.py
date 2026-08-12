@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tarfile
+import time
 import sys
 
 path_to_self    = os.path.realpath(__file__)
@@ -143,7 +144,22 @@ class Image(avocado.Test):
                              "%s was not applied: %s is still enabled"
                              % (fragment, symbols[0]))
 
+    # What this build put in the repository, out of everything matching.
+    # The repository outlives a run, so a test asking "was this built" has
+    # to mean "by me" -- otherwise a build that produced nothing passes
+    # because an earlier one did.
+    # What this build put in the repository, which outlives the run that
+    # filled it. Only what should not be there is asked this way: what
+    # should be there is there on a warm cache too, without a rebuild.
+    def builtHere(self, pattern):
+        return [deb for deb in glob.glob(pattern)
+                if os.path.getmtime(deb) >= self.started]
+
     def test(self):
+        # Everything the assertions below count as this build's work is
+        # what appeared after this moment.
+        self.started = time.time()
+
         # ansible-playbook lives beside the python running the tests when
         # they are run from a virtual environment, and the build needs it.
         environment = dict(os.environ)
@@ -182,13 +198,18 @@ class Image(avocado.Test):
         # glob names this architecture: the repository is per release, and
         # the image built beside this one may have grafted one of its own.
         repository = ContainerEngine.packages(self.release)
-        debs = glob.glob(os.path.join(
-            repository, "linux-image-*unreleased*_%s.deb" % self.architecture))
+        kernels = os.path.join(
+            repository, "linux-image-*unreleased*_%s.deb" % self.architecture)
         if self.grafted:
+            # What the repository holds, rather than what this build added
+            # to it: on a warm cache the kernel is the one an earlier build
+            # published and nothing is rebuilt, which is the cache working
+            # rather than the graft having gone missing.
+            debs = glob.glob(kernels)
             self.assertNotEqual(debs, [], "no grafted kernel in %s" % repository)
             self.assertSlimmed([deb for deb in debs if "-dbg" not in deb])
         else:
-            self.assertEqual(debs, [],
+            self.assertEqual(self.builtHere(kernels), [],
                              "this one was to take the distribution's kernel")
 
         # Nothing boots it: what it was worth is that it was produced, and
@@ -205,9 +226,6 @@ class PcImageBookworm(Image):
     architecture = "amd64"
     image = "pc-image"
     release = "bookworm"
-    # Grafted, with bookworm's packaging pinned out of backports -- which
-    # is the half of it examples/linux-6.18/bookworm.yml exists for.
-    grafted = True
 
 class PcImageTrixie(Image):
     """
@@ -216,6 +234,11 @@ class PcImageTrixie(Image):
     architecture = "amd64"
     image = "pc-image"
     release = "trixie"
+    # Grafted, with the release's own packaging rather than a backport's.
+    # The newest release grafts on the machine's own architecture, so the
+    # kernel that is most likely to be built on top of is built natively
+    # rather than under emulation.
+    grafted = True
 
 # arm64 on an amd64 machine: the kernel is cross-compiled and the imager
 # appliance runs under emulation, which is the slowest of the four and the
@@ -227,6 +250,9 @@ class Rpi4ImageBookworm(Image):
     architecture = "arm64"
     image = "rpi4-image"
     release = "bookworm"
+    # Grafted, with bookworm's packaging pinned out of backports -- which
+    # is the half of it examples/linux-6.18/bookworm.yml exists for.
+    grafted = True
 
 class Rpi4ImageTrixie(Image):
     """
@@ -235,9 +261,6 @@ class Rpi4ImageTrixie(Image):
     architecture = "arm64"
     image = "rpi4-image"
     release = "trixie"
-    # Grafted, being the other architecture, with the release's own
-    # packaging rather than a backport's.
-    grafted = True
 
 # Two of the four graft a kernel, and which two is the whole of what makes
 # that safe. One of each architecture is one native build and one cross
