@@ -4,6 +4,7 @@
 import collections
 import fnmatch
 import functools
+import glob
 import hashlib
 import jinja2
 import os
@@ -117,6 +118,54 @@ FALLBACK_EPOCH = 946684800
 # for the machine doing the building, out of a kernel meant for another.
 CROSS_SUFFIX = "-cross"
 
+# Where the kernel's own headers packages are staged inside the source
+# package that unpacks them, since a source package cannot reach outside
+# itself.
+CROSS_STAGED = "debian/headers"
+
+# What a Debian architecture is called by the kernel, and what uname
+# would have called it. Two answers to one question, and a tree wants
+# whichever its own build system asks for -- the kernel's for ARCH, and
+# uname's for anything that would otherwise have run uname.
+#
+# Kept here rather than in the packaging that uses them, so that adding
+# an architecture is one edit rather than three: the make tables in both
+# rules files are rendered from these.
+KERNEL_ARCHITECTURES = {
+    "amd64":   "x86_64",
+    "arm64":   "arm64",
+    "armel":   "arm",
+    "armhf":   "arm",
+    "i386":    "i386",
+    "ppc64el": "powerpc",
+    "riscv64": "riscv",
+    "s390x":   "s390",
+}
+
+KERNEL_MACHINES = {
+    "amd64":   "x86_64",
+    "arm64":   "aarch64",
+    "armel":   "armv7l",
+    "armhf":   "armv7l",
+    "i386":    "i686",
+    "ppc64el": "ppc64le",
+    "riscv64": "riscv64",
+    "s390x":   "s390x",
+}
+
+# The kernel's name for an architecture, or nothing if seine has never
+# been told. Answered rather than guessed: an empty ARCH handed to a tree
+# that falls back to uname is the builder's architecture, and a module
+# built for the wrong one is a module that builds.
+def kernel_architecture(architecture):
+    kernel = KERNEL_ARCHITECTURES.get(architecture)
+    if kernel is None:
+        raise ValueError(
+            "seine has no kernel architecture for '%s'. Add it to "
+            "KERNEL_ARCHITECTURES and KERNEL_MACHINES in seine/packages.py."
+            % architecture)
+    return kernel
+
 def cross_headers_name(release):
     return "%s%s%s" % (MODULE_HEADERS_PREFIX, release, CROSS_SUFFIX)
 
@@ -201,14 +250,26 @@ KERNEL_RULES = os.path.join(os.path.dirname(__file__), "data", "kernel.yml")
 # enough to ask for a rebuild -- without it a module would go on being
 # the one yesterday's rules produced.
 MODULE_PACKAGING = os.path.join(os.path.dirname(__file__), "data", "module")
+CROSS_PACKAGING = os.path.join(os.path.dirname(__file__), "data", "cross")
 MODULE_FILES = ["changelog", "control", "rules"]
 
 @functools.lru_cache(maxsize=None)
 def module_packaging():
+    return _packaging(MODULE_PACKAGING)
+
+# The packaging for the headers of a kernel meant for one architecture,
+# carrying the kbuild tools of another. Kept beside the module packaging
+# and read the same way, so that both are edited as what they produce and
+# both decide by their content whether a rebuild is needed.
+@functools.lru_cache(maxsize=None)
+def cross_packaging():
+    return _packaging(CROSS_PACKAGING)
+
+def _packaging(directory):
     templates = {}
     content = b""
     for name in MODULE_FILES:
-        with open(os.path.join(MODULE_PACKAGING, name), "rb") as f:
+        with open(os.path.join(directory, name), "rb") as f:
             raw = f.read()
         content += raw
         templates[name] = raw.decode()
@@ -1404,9 +1465,9 @@ rm -rf .pc
     def source_date_epoch(self, package, sourcedir):
         if package.source_date_epoch is not None:
             return package.source_date_epoch
-        # A tree seine writes the packaging for has no changelog to read
-        # one from -- that changelog is about to be written, and dated
-        # with what this returns. What it has instead is a revision, and
+        # A module's tree has no changelog to read one from -- the one it
+        # will have is about to be written, and dated with what this
+        # returns. What it has instead is a revision, and
         # the date that revision was made is a property of the source
         # rather than of the machine or the day, which is what a date a
         # build is pinned to has to be.
@@ -1956,6 +2017,8 @@ rm -rf .pc
             "target": package.module_target,
             "build_depends": package.module_build_depends,
             "runtime_depends": package.module_runtime_depends,
+            "kernel_architectures": sorted(KERNEL_ARCHITECTURES.items()),
+            "kernel_machines": sorted(KERNEL_MACHINES.items()),
             "modules": " ".join(sorted(package.module_modules)),
             # Double quotes, not shlex.quote: the point of a value is
             # often to name one of the variables the rules set per
@@ -1982,6 +2045,69 @@ rm -rf .pc
             f.write(content)
         if mode is not None:
             os.chmod(path, mode)
+
+    # The packaging for a cross headers package, written into the kernel
+    # source tree it is built from.
+    #
+    # 'debs' is where seine staged the kernel's own headers packages: they
+    # are what the build unpacks, since Module.symvers cannot be made
+    # without building every module of that kernel, and it is what decides
+    # whether a module will load at all.
+    def extend_cross_headers(self, package, sourcedir, epoch, debs):
+        kernel = package.cross_kernel
+        debian = os.path.join(sourcedir, "debian")
+        # A kernel source package carries a debian/ of its own, and what
+        # is wanted here is not it: this builds headers and tools, not a
+        # kernel.
+        if os.path.isdir(debian):
+            shutil.rmtree(debian)
+        os.makedirs(os.path.join(debian, "source"), exist_ok=True)
+
+        self._write(os.path.join(debian, "source", "format"), "3.0 (native)\n")
+        templates, _ = cross_packaging()
+        context = {
+            "name": package.name,
+            "version": self.cross_version(kernel),
+            "release": kernel.release,
+            "architecture": HOST_ARCH,
+            "kernel_arch": kernel_architecture(self.distro["architecture"]),
+            "target_architecture": self.distro["architecture"],
+            "debs_dir": CROSS_STAGED,
+            "maintainer": GIT_NAME,
+            "email": GIT_EMAIL,
+            "date": format_datetime(datetime.fromtimestamp(epoch, timezone.utc)),
+        }
+        for name in MODULE_FILES:
+            self._write(os.path.join(debian, name),
+                        MODULE_TEMPLATE.from_string(templates[name]).render(context),
+                        mode=0o755 if name == "rules" else None)
+
+        # Inside the source tree, since a source package cannot reach
+        # outside itself: what the build unpacks has to travel with it.
+        staged = os.path.join(sourcedir, CROSS_STAGED)
+        os.makedirs(staged, exist_ok=True)
+        for name in sorted(os.listdir(debs)):
+            if name.endswith(".deb"):
+                shutil.copy(os.path.join(debs, name),
+                            os.path.join(staged, name))
+        if len(glob.glob(os.path.join(staged, "*.deb"))) == 0:
+            raise ValueError(
+                "package '%s': no kernel headers to build from. The headers "
+                "of %s are what carry its .config and Module.symvers, and "
+                "neither can be made again without building that kernel."
+                % (package.name, kernel.release))
+
+    # What the package is versioned as. The kernel's own version would be
+    # a lie about what this is -- it is not that kernel -- but it has to
+    # move when that kernel does, or a rebuilt kernel would leave headers
+    # behind describing the one before it.
+    def cross_version(self, kernel):
+        # No '-' in it: this is a native source package, and dpkg reads
+        # what follows the last '-' as a Debian revision, which a native
+        # package may not have. A release is full of them --
+        # '6.12.101+deb13-arm64' -- so they become dots, which say the
+        # same thing to a reader and nothing to dpkg.
+        return "%s+cross1" % kernel.release.replace("+", ".").replace("-", ".")
 
     # The headers packages a cross build needs, one per kernel.
     #

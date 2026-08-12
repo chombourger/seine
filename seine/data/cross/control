@@ -1,0 +1,33 @@
+Source: [[ name ]]
+Section: kernel
+Priority: optional
+Maintainer: [[ maintainer ]] <[[ email ]]>
+Build-Depends: debhelper-compat (= 13),
+               bc,
+               bison,
+               dpkg-dev,
+               dwarves,
+               flex,
+               libelf-dev,
+               libssl-dev,
+               libzstd-dev,
+               pkg-config,
+               python3,
+               zlib1g-dev,
+               crossbuild-essential-[[ target_architecture ]]
+Rules-Requires-Root: no
+
+Package: [[ name ]]
+Architecture: [[ architecture ]]
+Depends: ${misc:Depends}
+Description: Linux [[ release ]] headers, with tools this machine can run
+ The kernel headers of [[ release ]], which is built for [[ kernel_arch ]],
+ together with the kbuild tools compiled for [[ architecture ]] from that
+ kernel's own source.
+ .
+ Debian's own headers reach for linux-kbuild-<abi>, whose fixdep and
+ modpost are compiled for the kernel's architecture and cannot run on a
+ machine of another. This package is what lets a module for
+ [[ release ]] be compiled here rather than under emulation, and for a
+ kernel built by this specification there is no other package that could:
+ that kernel exists nowhere else.

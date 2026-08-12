@@ -1,0 +1,113 @@
+#!/usr/bin/make -f
+# Written by seine from seine/data/cross/rules.
+#
+# What this builds is not a kernel. It is the headers of one that was
+# built elsewhere, with the kbuild tools rebuilt for the machine doing
+# the building -- fixdep, modpost, and whatever else the tree keeps under
+# scripts/ and tools/. Those tools are host programs: the kernel compiles
+# them with HOSTCC and they run wherever the build runs, which is the
+# whole point of making them here.
+#
+# The headers themselves are not regenerated. They come from the .debs
+# the kernel's own build produced, which seine staged into this source
+# package, because Module.symvers cannot be made without building every
+# module of that kernel -- and it is what decides whether a module will
+# load.
+
+PACKAGE  = [[ name ]]
+RELEASE  = [[ release ]]
+ARCH     = [[ kernel_arch ]]
+DEBS     = [[ debs_dir ]]
+STAGE    = $(CURDIR)/debian/$(PACKAGE)
+
+# Configuring a kernel compiles for it as well as for here: 'scripts/mod'
+# has an object built with CC rather than HOSTCC, and the native
+# compiler meets '-mlittle-endian' and says it has never heard of it. So
+# the target's compiler is named, and dpkg is asked what it is called --
+# it is the thing that knows arm64 means aarch64-linux-gnu.
+TARGET  = [[ target_architecture ]]
+# -f: dpkg-buildpackage has already put DEB_HOST_GNU_TYPE in the
+# environment, describing the machine this build runs on, and
+# dpkg-architecture treats what is already set as an override -- so
+# without it the answer to "what is arm64 called" is the builder's own
+# triplet, and the kernel is configured with the wrong compiler under a
+# convincing name.
+CROSS   = $(shell dpkg-architecture -f -a$(TARGET) -qDEB_HOST_GNU_TYPE 2>/dev/null)-
+
+%:
+	CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= dh $@
+
+# The kernel's own source tree is what this package is built from, so
+# there is nothing to configure and nothing dh should go looking for.
+override_dh_auto_configure:
+
+# A kernel tree answers 'make test' by trying to configure itself, which
+# at this point it has no configuration for. There is nothing here to
+# test in any case: what this package holds was compiled by the kernel
+# that made the headers, and what it adds is checked where it is made.
+override_dh_auto_test:
+
+# Nothing at build time. Everything this package holds is assembled
+# straight into debian/<package>, and dh_prep -- which runs at the start
+# of the binary sequence, after build -- empties that directory. A
+# package staged during build is a package with a changelog in it and
+# nothing else, which is what happened.
+override_dh_auto_build:
+
+override_dh_auto_install:
+	# The headers as the kernel's build left them, at the paths their
+	# own makefiles expect: the flavour package's makefile includes the
+	# -common one by absolute path, so a tree assembled anywhere else
+	# does not work.
+	set -e; for deb in $(DEBS)/*.deb; do \
+	  dpkg-deb -x $$deb $(STAGE); \
+	done
+	# Where the tools have to end up is read from the headers that were
+	# just unpacked: their scripts/ is a symlink naming the kbuild
+	# directory, which is the one thing that says what the kernel calls
+	# its ABI -- a release cannot be split into an ABI and a flavour
+	# reliably, so it is asked rather than worked out.
+	#
+	# In the shell rather than with $(shell): make expands a whole
+	# recipe before running any of it, so a path resolved there is
+	# resolved before the dpkg-deb above has put anything at it.
+	set -e; \
+	HEADERS=$(CURDIR)/debian/$(PACKAGE)/usr/src/linux-headers-$(RELEASE); \
+	KBUILD=`dirname \`readlink -m $$HEADERS/scripts\``; \
+	test -f $$HEADERS/.config; \
+	test -f $$HEADERS/Module.symvers; \
+	cp $$HEADERS/.config .config; \
+	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) olddefconfig; \
+	$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS) modules_prepare; \
+	install -d $$KBUILD; \
+	cp -a scripts $$KBUILD/scripts; \
+	if [ -d tools ]; then \
+	  install -d $$KBUILD/tools; \
+	  for t in objtool bpf; do \
+	    [ -d tools/$$t ] && cp -a tools/$$t $$KBUILD/tools/$$t || true; \
+	  done; \
+	fi; \
+	if $$KBUILD/scripts/basic/fixdep >/dev/null 2>&1; then :; else \
+	  status=$$?; \
+	  case $$status in 126|127) \
+	    echo "fixdep cannot be run here: the tools were built for the" >&2; \
+	    echo "kernel's architecture rather than this one, which is the" >&2; \
+	    echo "whole of what this package is for." >&2; \
+	    exit 1;; \
+	  esac; \
+	fi
+
+
+# Not 'make mrproper', which is what a kernel tree offers and which
+# deletes debian/ along with everything else it did not come with --
+# including the packaging seine just wrote. dpkg-buildpackage runs clean
+# before it builds anything, so that removes the rules being run.
+override_dh_auto_clean:
+	rm -rf debian/$(PACKAGE)
+
+# Nothing here is a program of this machine's that anybody links against,
+# and the tools are deliberately not stripped: modpost is compared
+# against itself between builds.
+override_dh_strip:
+override_dh_shlibdeps:
+override_dh_dwz:

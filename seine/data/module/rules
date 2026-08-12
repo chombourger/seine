@@ -24,14 +24,9 @@ JOBS    = $(if $(NUMJOBS),-j$(NUMJOBS))
 # doing the building: a tree left to ask uname is a tree that compiles
 # for the builder when it is cross-compiling, and that is right only by
 # luck when it is not.
-KERNEL_ARCH_amd64   = x86_64
-KERNEL_ARCH_arm64   = arm64
-KERNEL_ARCH_armel   = arm
-KERNEL_ARCH_armhf   = arm
-KERNEL_ARCH_i386    = i386
-KERNEL_ARCH_ppc64el = powerpc
-KERNEL_ARCH_riscv64 = riscv
-KERNEL_ARCH_s390x   = s390
+[% for architecture, kernel in kernel_architectures %]
+KERNEL_ARCH_[[ architecture ]] = [[ kernel ]]
+[% endfor %]
 export KERNEL_ARCH = $(KERNEL_ARCH_$(DEB_HOST_ARCH))
 
 # And what uname would have called it, which is a third spelling again:
@@ -40,14 +35,9 @@ export KERNEL_ARCH = $(KERNEL_ARCH_$(DEB_HOST_ARCH))
 # and wants it from here, for the same reason. The two agree on amd64,
 # which is exactly how a specification gets this wrong and does not find
 # out until it builds for something else.
-KERNEL_MACHINE_amd64   = x86_64
-KERNEL_MACHINE_arm64   = aarch64
-KERNEL_MACHINE_armel   = armv7l
-KERNEL_MACHINE_armhf   = armv7l
-KERNEL_MACHINE_i386    = i686
-KERNEL_MACHINE_ppc64el = ppc64le
-KERNEL_MACHINE_riscv64 = riscv64
-KERNEL_MACHINE_s390x   = s390x
+[% for architecture, machine in kernel_machines %]
+KERNEL_MACHINE_[[ architecture ]] = [[ machine ]]
+[% endfor %]
 export KERNEL_MACHINE = $(KERNEL_MACHINE_$(DEB_HOST_ARCH))
 
 # Debian keeps a kernel's headers in two packages: the generic sources in
@@ -61,7 +51,7 @@ export KERNEL_MACHINE = $(KERNEL_MACHINE_$(DEB_HOST_ARCH))
 define kernel_env
 KERNEL_RELEASE=$(1); \
 KERNEL_OBJ=$(HEADERS)-$(1); \
-KERNEL_SRC=`sed -n 's|^include \(.*\)/Makefile$$|\1|p' $(HEADERS)-$(1)/Makefile`; \
+KERNEL_SRC=`sed -n 's|^include \(.*\)/Makefile$$|\1|p' $(HEADERS)-$(1)/Makefile 2>/dev/null || true`; \
 if [ -z "$$KERNEL_SRC" ]; then KERNEL_SRC=$$KERNEL_OBJ; fi; \
 KBUILD_OUTPUT=$$KERNEL_OBJ; \
 export KERNEL_RELEASE KERNEL_OBJ KERNEL_SRC KBUILD_OUTPUT
@@ -82,6 +72,12 @@ endef
 	CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS= dh $@
 
 override_dh_auto_configure:
+
+# dh would otherwise ask the tree for a 'test' target, which for a
+# module tree means whatever its makefile makes of the word -- and for
+# one that hands over to kbuild means asking a kernel to configure
+# itself with no configuration to hand.
+override_dh_auto_test:
 
 # Built through the tree's own makefile, with the kernel named by a
 # variable. Driving kbuild directly instead -- 'make -C <headers> M=<dir>'

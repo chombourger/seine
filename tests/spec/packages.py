@@ -1025,15 +1025,15 @@ class GeneratedPackaging(avocado.Test):
                 "linux-headers-6.12.101+deb13-arm64"})["rules"]
         # A tree left to ask uname compiles for the builder when it is
         # cross-compiling, and is right only by luck when it is not.
-        self.assertIn("KERNEL_ARCH_amd64   = x86_64", rules)
-        self.assertIn("KERNEL_ARCH_arm64   = arm64", rules)
+        self.assertIn("KERNEL_ARCH_amd64 = x86_64", rules)
+        self.assertIn("KERNEL_ARCH_arm64 = arm64", rules)
         self.assertIn("$(KERNEL_ARCH_$(DEB_HOST_ARCH))", rules)
         # And uname's spelling beside the kernel's, which are the same
         # word on amd64 and different ones on arm64 -- so a value that
         # wants the second and is given the first is right until the day
         # it is built for something else.
-        self.assertIn("KERNEL_MACHINE_amd64   = x86_64", rules)
-        self.assertIn("KERNEL_MACHINE_arm64   = aarch64", rules)
+        self.assertIn("KERNEL_MACHINE_amd64 = x86_64", rules)
+        self.assertIn("KERNEL_MACHINE_arm64 = aarch64", rules)
         self.assertIn("$(KERNEL_MACHINE_$(DEB_HOST_ARCH))", rules)
 
     def test_the_distributions_build_flags_are_kept_out(self):
@@ -1222,6 +1222,84 @@ class CrossHeadersAreBuiltOncePerKernel(avocado.Test):
         # Built on the architecture it is built for -- emulated or
         # otherwise -- the tools it needs are the ones it has.
         self.assertEqual(self.builder().cross_headers(build.image.packages), [])
+
+# The packaging seine writes for a cross headers package: a kernel's
+# headers as its own build left them, with kbuild tools rebuilt for the
+# machine that will use them.
+class GeneratedCrossPackaging(avocado.Test):
+    def packaging(self, release="6.18+unreleased-arm64", target="arm64",
+                  debs=("linux-headers-6.18+unreleased-arm64_1_arm64.deb",
+                        "linux-headers-6.18+unreleased-common_1_all.deb")):
+        from seine.packages import Builder, Kernel
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": target, "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        kernel = Kernel("linux", "linux-headers-%s" % release, release, None)
+        package = builder._cross_package(kernel, 1)
+
+        source = os.path.join(self.workdir, "linux")
+        staged = os.path.join(self.workdir, "debs")
+        for path in [source, staged]:
+            os.makedirs(path, exist_ok=True)
+        for name in debs:
+            with open(os.path.join(staged, name), "w") as f:
+                f.write("not really a deb")
+        builder.extend_cross_headers(package, source, 1700000000, staged)
+
+        written = {}
+        for name in ["changelog", "control", "rules"]:
+            with open(os.path.join(source, "debian", name)) as f:
+                written[name] = f.read()
+        written["staged"] = sorted(os.listdir(
+            os.path.join(source, "debian", "headers")))
+        return written
+
+    def test_it_is_built_for_the_machine_that_will_use_it(self):
+        written = self.packaging()
+        # Architecture: the builder's, since what is new about it is
+        # tools that have to run here. ARCH: the kernel's, since what it
+        # carries is headers for another machine entirely.
+        self.assertIn("Architecture: amd64", written["control"])
+        self.assertIn("ARCH     = arm64", written["rules"])
+
+    def test_the_headers_travel_with_the_source(self):
+        written = self.packaging()
+        # A source package cannot reach outside itself, and what these
+        # carry -- .config and Module.symvers -- cannot be made again
+        # without building that kernel.
+        self.assertEqual(len(written["staged"]), 2)
+        self.assertIn("DEBS     = debian/headers", written["rules"])
+
+    def test_the_tools_are_checked_for_being_runnable_here(self):
+        written = self.packaging()
+        # A build that quietly made them for the target would produce a
+        # package whose whole purpose is undone.
+        self.assertIn("fixdep cannot be run here", written["rules"])
+        self.assertIn("Module.symvers", written["rules"])
+
+    def test_a_kernel_with_no_headers_is_refused(self):
+        try:
+            self.packaging(debs=())
+            self.fail("packaging was written for a kernel with no headers!")
+        except ValueError:
+            pass
+
+    def test_the_version_is_one_a_native_package_may_have(self):
+        changelog = self.packaging()["changelog"]
+        version = changelog.split("(")[1].split(")")[0]
+        # dpkg reads what follows the last '-' as a Debian revision, and
+        # refuses one on a native package -- which a kernel's release is
+        # full of.
+        self.assertNotIn("-", version)
+        self.assertIn("cross", version)
+
+    def test_the_version_moves_with_the_kernel(self):
+        first = self.packaging()["changelog"]
+        second = self.packaging(release="6.18+unreleased2-arm64")["changelog"]
+        # Or a rebuilt kernel would leave headers behind describing the
+        # one before it.
+        self.assertNotEqual(first.split("\n")[0], second.split("\n")[0])
 
 class MetapackagesAreRecognised(avocado.Test):
     def test(self):

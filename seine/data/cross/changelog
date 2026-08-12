@@ -1,0 +1,6 @@
+[[ name ]] ([[ version ]]) unstable; urgency=low
+
+  * Kernel headers for [[ release ]] with kbuild tools for [[ architecture ]],
+    packaged by seine.
+
+ -- [[ maintainer ]] <[[ email ]]>  [[ date ]]
