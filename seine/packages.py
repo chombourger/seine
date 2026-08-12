@@ -444,13 +444,6 @@ class Package:
         self.source_date_epoch = self._parse_epoch(spec)
         self.upstream_version = self._parse_version(spec)
 
-        # Modules are built natively for now, which off the image's own
-        # architecture means emulated. The headers a module builds against
-        # pull in linux-kbuild, whose fixdep and modpost are compiled for
-        # the kernel's architecture, so a cross chroot has nothing it can
-        # run.
-        if self.module and self.cross is None:
-            self.cross = False
 
     def _error(self, message):
         return ValueError("package #%d ('%s'): %s" % (self.index, self.source, message))

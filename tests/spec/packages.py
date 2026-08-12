@@ -321,14 +321,42 @@ class ModuleDefaults(avocado.Test):
         self.assertEqual(package.module_modules, [])
         self.assertEqual(package.module_make_vars, {})
 
-class ModulesAreBuiltNativelyForNow(avocado.Test):
-    def test(self):
+class ModulesCrossCompileLikeAnythingElse(avocado.Test):
+    def builder(self, architecture):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": architecture,
+                  "uri": "http://example.com/debian"}
+        return Builder(distro, {}, BuilderImage(distro, {}))
+
+    def test_a_module_says_nothing_about_crossing(self):
         build = parse_for("amd64", MODULE % """
                               amd64-kernels: [apt://linux-headers-amd64]
         """)
-        # Until a module has kbuild tools it can run, which is a later
-        # commit. Not the default anything else gets.
-        self.assertEqual(build.image.packages[0].cross, False)
+        # No opinion of its own, so it gets seine's: cross-compile for
+        # an architecture that is not the builder's.
+        self.assertEqual(build.image.packages[0].cross, None)
+
+    def test_another_architecture_is_crossed_to(self):
+        from seine.packages import HOST_ARCH
+        other = "arm64" if HOST_ARCH != "arm64" else "amd64"
+        build = parse_for(other, MODULE % ("""
+                              %s-kernels: [apt://linux-headers-%s]
+        """ % (other, other)))
+        self.assertEqual(
+            self.builder(other).cross(build.image.packages[0], other), True)
+
+    def test_the_builders_own_architecture_is_not(self):
+        from seine.packages import HOST_ARCH
+        build = parse_for(HOST_ARCH, MODULE % ("""
+                              %s-kernels: [apt://linux-headers-%s]
+        """ % (HOST_ARCH, HOST_ARCH)))
+        # Nothing to cross to, so nothing is built to cross with.
+        builder = self.builder(HOST_ARCH)
+        self.assertEqual(builder.cross(build.image.packages[0], HOST_ARCH),
+                         False)
+        self.assertEqual(builder.cross_headers(build.image.packages), [])
 
 # A module is built against its kernel's headers, which depend on the
 # linux-kbuild of the same ABI -- and 'pkg.linux.notools' is the one
