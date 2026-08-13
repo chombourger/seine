@@ -27,6 +27,18 @@ from seine.utils                import ContainerEngine
 # hooks, for the same reason.
 DOWNLOADS = "/var/cache/seine/downloads"
 
+# What a running system keeps in memory rather than on the disk. This
+# container's file-system is exported as the image, so what a maintainer
+# script writes to either of these would otherwise ship: podman's own
+# /run/.containerenv did, saying in every image that it was made in a
+# container. A tmpfs is not part of the export, and it is what the target
+# mounts there anyway -- /run always, /tmp from trixie on.
+#
+# podman's defaults are what a system would use: /tmp keeps its 1777, both
+# are nosuid and nodev, and neither is noexec, which a maintainer script
+# running something out of /tmp would need.
+TMPFS = ["--tmpfs", "/run", "--tmpfs", "/tmp"]
+
 # apt's own, inside the container and nobody else's.
 ARCHIVES = "/var/cache/apt/archives"
 
@@ -48,6 +60,12 @@ class AnsibleContainerRunner:
 
     def _exec(self, args, check=True):
         return ContainerEngine.run(["container", "exec", self.cid] + args, check=check)
+
+    # The container the playbooks run against, which is also what is
+    # exported as the image.
+    def container_command(self, image):
+        return (["container", "run", "-d"] + self._volumes() + TMPFS
+                + [image, "sleep", "infinity"])
 
     def _volumes(self):
         volumes = ["-v", "%s:%s" % (
@@ -95,10 +113,8 @@ class AnsibleContainerRunner:
         transport = TransportBootstrap(self.baseline, self.distro, self.options)
         transport.create()
 
-        cmd = ["container", "run", "-d"] + self._volumes()
-        cmd += [transport.name, "sleep", "infinity"]
-
-        self.cid = ContainerEngine.check_output(cmd).strip()
+        self.cid = ContainerEngine.check_output(
+            self.container_command(transport.name)).strip()
         try:
             if packages.has_packages(self.distro):
                 self._exec(["sh", "-c", packages.apt_configuration(

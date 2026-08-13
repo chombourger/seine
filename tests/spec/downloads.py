@@ -90,3 +90,27 @@ class TheCacheIsNotAptsOwnDirectory(avocado.Test):
 
 if __name__ == "__main__":
     avocado.main()
+
+# What a running system keeps in memory rather than on disk. This
+# container's file-system becomes the image, and podman leaves a tmpfs out
+# of what it exports -- so what a maintainer script writes to /run or /tmp
+# stops shipping, podman's own /run/.containerenv included.
+class RuntimeDirectoriesAreNotPartOfTheImage(avocado.Test):
+    def command(self):
+        runner = AnsibleContainerRunner(None, DISTRO, {})
+        return runner.container_command("rootfs/debian/trixie/amd64")
+
+    def test_both_are_mounted_as_tmpfs(self):
+        command = self.command()
+        for where in ["/run", "/tmp"]:
+            self.assertIn(where, command)
+            self.assertEqual(command[command.index(where) - 1], "--tmpfs",
+                             "%s is not asked for as a tmpfs" % where)
+
+    def test_the_image_is_still_what_is_run(self):
+        # The mounts go in front of the image, where podman takes its
+        # options: behind it they would be arguments to 'sleep'.
+        command = self.command()
+        image = command.index("rootfs/debian/trixie/amd64")
+        self.assertLess(command.index("--tmpfs"), image)
+        self.assertEqual(command[image + 1:], ["sleep", "infinity"])
