@@ -536,7 +536,7 @@ class BuildCmd(Cmd):
     # thing twice, so "what was said first stands" would quietly drop a
     # kernel somebody asked to have modules for.
     def _appends(self, kind, setting):
-        from seine.packages import MODULE_KERNELS
+        from seine.module import MODULE_KERNELS
         return kind == "module" and MODULE_KERNELS.match(setting) is not None
 
     # Two lists, in the order they were written, without repeating what
