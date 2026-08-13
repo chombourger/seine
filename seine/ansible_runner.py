@@ -129,7 +129,7 @@ class AnsibleContainerRunner:
             self._save_downloads()
             self._finalize()
         except:
-            ContainerEngine.run(["container", "rm", "-f", self.cid], check=False)
+            ContainerEngine.discard(self.cid, force=True, failed=True)
             self.cid = None
             raise
         return self.cid

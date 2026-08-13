@@ -176,6 +176,7 @@ class Image:
             % tarball)
 
     def build_tarball(self):
+        failed = True
         try:
             self._tarball = None
             # In the scratch space rather than the working directory: a
@@ -187,6 +188,7 @@ class Image:
                 prefix="root-", suffix=".tar")
             ContainerEngine.run(["container", "export", "-o", image.name, self._cid], check=True)
             self._tarball = self._exported(image.name)
+            failed = False
         except subprocess.CalledProcessError:
             os.unlink(image.name)
             raise
@@ -195,7 +197,7 @@ class Image:
                 # The container is still running ('sleep infinity', kept
                 # alive for ansible to connect into) at this point, so it
                 # needs a forceful removal rather than a plain 'rm'.
-                ContainerEngine.run(["container", "rm", "-f", self._cid], check=False)
+                ContainerEngine.discard(self._cid, force=True, failed=failed)
                 self._cid = None
             # No prune here. It is machine-wide -- the appliance being
             # prepared beside this is made of images it would consider

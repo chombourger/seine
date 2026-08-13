@@ -43,6 +43,7 @@ may require disks/partitions to be created.
 * [Building](#building)
   * [What a build would do](#what-a-build-would-do)
   * [While a build runs](#while-a-build-runs)
+  * [Keeping a failed build's containers](#keeping-a-failed-builds-containers)
   * [Building in parallel](#building-in-parallel)
   * [Where the time went](#where-the-time-went)
   * [Cross-compiling](#cross-compiling)
@@ -1703,6 +1704,27 @@ build is going wrong, that is what is wanted and no summary replaces it.
 Output that is not a terminal -- a pipe, a file, a CI log -- gets one
 line per step instead of a redrawn area, and a terminal that cannot print
 the characters above gets plain ones.
+
+### Keeping a failed build's containers
+
+A step that fails removes the container it was working in, and that
+container is where podman kept what it recorded about the commands run
+inside it. `SEINE_KEEP_DEAD_CONTAINERS` leaves them alone instead, and
+seine names the ones it kept when it exits:
+
+```
+kept 1 container(s) SEINE_KEEP_DEAD_CONTAINERS asked for:
+  414410d4702b7a188ae587257da0a1da35cdf1eca92815997ae252028b210a58
+  remove them with: podman --root ~/.local/share/seine rm -f 414410d...
+```
+
+The removal command names seine's own storage, since a plain `podman rm`
+looks in the default one and reports no such container.
+
+Only containers a *failed* step left behind: one a step is simply
+finished with is evidence of nothing, and keeping those would fill the
+disk. Nothing reaps what this keeps -- it is for reading a failure that
+has just happened, not something to leave set.
 
 ### Building in parallel
 

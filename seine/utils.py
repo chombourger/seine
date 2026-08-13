@@ -1,6 +1,7 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
+import atexit
 import contextlib
 import fcntl
 import os
@@ -181,6 +182,7 @@ class ContainerEngine:
     @staticmethod
     def extractImage(image, output_dir, member_filter=None):
         cid = ContainerEngine._scratch_name(image)
+        failed = True
         try:
             ContainerEngine.run(["container", "create", "--name", cid, image], check=True)
             proc = ContainerEngine.Popen(["container", "export", cid], stdout=subprocess.PIPE)
@@ -189,8 +191,9 @@ class ContainerEngine:
                     if member_filter is None or member_filter(member.name):
                         tar.extract(member, path=output_dir)
             proc.wait()
+            failed = False
         finally:
-            ContainerEngine.run(["container", "rm", cid], check=False)
+            ContainerEngine.discard(cid, failed=failed)
     # What a build makes for itself, as opposed to what it keeps: the
     # container images, in podman storage of seine's own, and the scratch
     # space sources and images are assembled in. Both are gigabytes, and a
@@ -304,6 +307,49 @@ class ContainerEngine:
     @staticmethod
     def storage_lock():
         return os.path.join(ContainerEngine.root(), "images")
+
+    # Containers a build would have removed on its way out, kept instead
+    # when SEINE_KEEP_DEAD_CONTAINERS is set. What podman recorded about an
+    # exec -- the exit file conmon writes among it -- lives under the
+    # container and goes when the container does, so a teardown running
+    # while someone is still reading the failure takes the evidence with
+    # it. Off by default: these are gigabytes each and nothing reaps them.
+    _kept = []
+
+    @staticmethod
+    def keep_dead_containers():
+        value = os.environ.get("SEINE_KEEP_DEAD_CONTAINERS")
+        return value is not None and value not in ["", "0", "no"]
+
+    # Removes a container, or keeps it and says so at the end. 'failed'
+    # tells the two apart: a container a successful step is finished with
+    # is not evidence of anything, and keeping those would fill a disk.
+    @staticmethod
+    def discard(cid, force=False, failed=False):
+        if failed and ContainerEngine.keep_dead_containers():
+            if len(ContainerEngine._kept) == 0:
+                atexit.register(ContainerEngine._report_kept)
+            ContainerEngine._kept.append(
+                cid.decode() if isinstance(cid, bytes) else cid)
+            return
+        ContainerEngine.run(
+            ["container", "rm"] + (["-f"] if force else []) + [cid],
+            check=False)
+
+    # Said once, when everything else has been said: a build prints its
+    # failure first, and this is a footnote to it. With the storage named,
+    # since it is not podman's default and 'podman rm' would not find them.
+    @staticmethod
+    def _report_kept():
+        if len(ContainerEngine._kept) == 0:
+            return
+        print("kept %d container(s) SEINE_KEEP_DEAD_CONTAINERS asked for:"
+              % len(ContainerEngine._kept))
+        for cid in ContainerEngine._kept:
+            print("  %s" % cid)
+        print("  remove them with: %s rm -f %s"
+              % (" ".join(ContainerEngine._podman_cmd([])),
+                 " ".join(ContainerEngine._kept)))
 
     @staticmethod
     def _podman_env():
