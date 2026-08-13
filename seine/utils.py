@@ -21,6 +21,23 @@ HOST_MACHINE_TO_ARCH = {
 }
 HOST_ARCH = HOST_MACHINE_TO_ARCH.get(platform.machine(), platform.machine())
 
+# Where the source of a package is fetched and, later, built. Everything
+# happens inside the builder container: the tools involved (apt-get source,
+# dget, git) are installed there rather than on the machine seine runs on,
+# and the working directory is a host-side directory bind-mounted into it so
+# the fetched source outlives the container that fetched it.
+#
+# Here rather than in seine/packages.py because what a kernel or a module
+# does to a source happens in the same directory, and neither of those
+# modules may import the one that drives them.
+WORKDIR = "/src"
+
+# Identity the patch commits are made under. Fixed, like their date: a
+# commit made by whoever happens to be running the build is a commit whose
+# hash cannot be reproduced by anyone else.
+GIT_NAME  = "seine"
+GIT_EMAIL = "seine@localhost"
+
 # The apt feeds a system is built from. A specification lists them
 # explicitly rather than having suites guessed for it: which of -updates
 # and -security a release has, and where they are served from, differs

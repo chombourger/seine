@@ -14,6 +14,8 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
+import seine.kernel
+
 from seine.build import BuildCmd
 
 # Nothing under here may write into the machine's own cache. These build
@@ -1873,7 +1875,7 @@ class SeriesCutDownToWhatIsKept(UpstreamKernel):
         with open(os.path.join(root, "series"), "w") as f:
             f.write("# a comment\n\n%s\n" % "\n".join(patches))
 
-        self.builder()._filter_series(package, self.workdir)
+        seine.kernel._filter_series(package, self.workdir)
         with open(os.path.join(root, "series"), "r") as f:
             return [line.strip() for line in f if len(line.strip()) > 0]
 
@@ -1996,7 +1998,7 @@ class RestrictsFlavoursInToml(UpstreamKernel):
         # first time rather than add another, which is a duplicate key and
         # so a file that no longer parses at all.
         for _ in range(2):
-            self.builder()._restrict_flavour_toml(package, path, "amd64", ["flavour", "featureset"])
+            seine.kernel._restrict_flavour_toml(package, path, "amd64", ["flavour", "featureset"])
             self.assertEqual(self.enabled(path),
                              {"flavour": ["amd64"], "featureset": ["none"]})
 
@@ -2004,7 +2006,7 @@ class RestrictsToAFlavourThatExists(RestrictsFlavoursInToml):
     def test(self):
         package = self.kernel("                              flavour: nosuch")
         try:
-            self.builder()._restrict_flavour_toml(package, self.defines(), "amd64", ["flavour", "featureset"])
+            seine.kernel._restrict_flavour_toml(package, self.defines(), "amd64", ["flavour", "featureset"])
             self.fail("restricted the kernel to a flavour it does not have!")
         except ValueError:
             pass
@@ -2055,7 +2057,7 @@ class PatchListsCountAsSetsInTheDigest(UpstreamKernel):
 
 class GraftedKernelsAreRebuiltWhenTheRulesChange(UpstreamKernel):
     def test(self):
-        from seine.packages import kernel_rules
+        from seine.kernel import kernel_rules
         builder = self.builder()
         grafted = self.kernel(
             "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
@@ -2067,12 +2069,12 @@ class GraftedKernelsAreRebuiltWhenTheRulesChange(UpstreamKernel):
         rules = kernel_rules()
         kernel_rules.cache_clear()
         try:
-            import seine.packages
-            seine.packages.kernel_rules = lambda: rules._replace(
+            import seine.kernel
+            seine.kernel.kernel_rules = lambda: rules._replace(
                 content=rules.content + b"\n# moved\n")
             after = (builder.stamp(grafted), builder.stamp(ordinary))
         finally:
-            seine.packages.kernel_rules = kernel_rules
+            seine.kernel.kernel_rules = kernel_rules
             kernel_rules.cache_clear()
 
         self.assertNotEqual(before[0], after[0],
@@ -2125,7 +2127,7 @@ class TheGraftWritesTheModuleLdsPatch(UpstreamKernel):
 
     def written(self, sourcedir):
         import os
-        from seine.packages import MODULE_LDS_PATCH
+        from seine.kernel import MODULE_LDS_PATCH
         path = os.path.join(sourcedir, "debian", "patches", MODULE_LDS_PATCH)
         if os.path.isfile(path) == False:
             return None
@@ -2135,11 +2137,11 @@ class TheGraftWritesTheModuleLdsPatch(UpstreamKernel):
     def test_the_patch_applies_and_names_both_places(self):
         import os
         import subprocess
-        from seine.packages import MODULE_LDS_PATCH
+        from seine.kernel import MODULE_LDS_PATCH
         sourcedir = self.sourcedir()
         package = self.kernel(
             "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
-        self.builder()._module_lds_patch(package, sourcedir)
+        seine.kernel.module_lds_patch(package, sourcedir)
 
         patch = self.written(sourcedir)
         self.assertNotEqual(patch, None, "no patch was written")
@@ -2165,7 +2167,7 @@ class TheGraftWritesTheModuleLdsPatch(UpstreamKernel):
         written = []
         for _ in range(2):
             sourcedir = self.sourcedir()
-            self.builder()._module_lds_patch(package, sourcedir)
+            seine.kernel.module_lds_patch(package, sourcedir)
             written.append(self.written(sourcedir))
         # A timestamp in the header would make every build a new source
         # package, and every source package a rebuilt kernel.
@@ -2178,7 +2180,7 @@ class TheGraftWritesTheModuleLdsPatch(UpstreamKernel):
             ("debian/kbuild-look-for-module.lds-under-arch-directory-too.patch",
              "--- a/scripts/Makefile.modfinal\n"
              "+++ b/scripts/Makefile.modfinal\n")])
-        self.builder()._module_lds_patch(package, sourcedir)
+        seine.kernel.module_lds_patch(package, sourcedir)
         # Debian's own, kept because it applied -- or one the specification
         # rebased. Either answers for the file, and two patches changing
         # the same rule is one that does not apply.
@@ -2193,7 +2195,7 @@ class TheGraftWritesTheModuleLdsPatch(UpstreamKernel):
         with open(os.path.join(sourcedir, "scripts", "Makefile.modfinal"),
                   "w") as f:
             f.write("# nothing here names module.lds\n")
-        self.builder()._module_lds_patch(package, sourcedir)
+        seine.kernel.module_lds_patch(package, sourcedir)
         self.assertEqual(self.written(sourcedir), None)
 
 # What the graft does to a tree is code, and code is in no digest -- so
@@ -2207,12 +2209,12 @@ class GraftedKernelsAreRebuiltWhenTheGraftChanges(UpstreamKernel):
         ordinary = self.kernel("                              flavour: amd64")
         before = (builder.stamp(grafted), builder.stamp(ordinary))
 
-        version = seine.packages.GRAFT_VERSION
+        version = seine.kernel.GRAFT_VERSION
         try:
-            seine.packages.GRAFT_VERSION = version + 1
+            seine.kernel.GRAFT_VERSION = version + 1
             after = (builder.stamp(grafted), builder.stamp(ordinary))
         finally:
-            seine.packages.GRAFT_VERSION = version
+            seine.kernel.GRAFT_VERSION = version
 
         self.assertNotEqual(before[0], after[0],
                             "bumping the graft version did not ask for a rebuild")
@@ -2253,15 +2255,15 @@ class KernelsAreCountedByTheirAbiName(UpstreamKernel):
     def test(self):
         builder = self.builder()
         path = self.control()
-        self.assertEqual(builder._abiname([("linux-headers-6.18+unreleased-common", [])]),
+        self.assertEqual(seine.kernel._abiname([("linux-headers-6.18+unreleased-common", [])]),
                          "6.18+unreleased")
 
         # One kernel where the flavours were restricted, and the debug
         # package and the metapackage beside it counted as neither.
-        self.assertEqual(builder._kernel_packages(path, "amd64"),
+        self.assertEqual(seine.kernel._kernel_packages(path, "amd64"),
                          ["linux-image-6.18+unreleased-amd64"])
         # An architecture nothing was restricted on still has all of its.
-        self.assertEqual(builder._kernel_packages(path, "arm64"),
+        self.assertEqual(seine.kernel._kernel_packages(path, "arm64"),
                          ["linux-image-6.18+unreleased-arm64",
                           "linux-image-6.18+unreleased-cloud-arm64"])
 
@@ -2292,7 +2294,7 @@ class RestrictsFeaturesetsWhereTheyAreShared(UpstreamKernel):
         # second pass has to overwrite it rather than add a second one,
         # which is a duplicate key and a file that no longer parses.
         for _ in range(2):
-            self.builder()._restrict_flavour_toml(package, path, "amd64",
+            seine.kernel._restrict_flavour_toml(package, path, "amd64",
                                                   ["featureset"])
             with open(path, "rb") as f:
                 defines = tomllib.load(f)
@@ -2313,7 +2315,7 @@ class SignedCodeIsDisabledForAGraftedKernel(UpstreamKernel):
         # kernel_file and kernel_stem live there too, and losing them
         # would leave the packaging not knowing what it builds.
         for _ in range(2):
-            self.builder()._toml_set(path, "build", "enable_signed", "false")
+            seine.kernel._toml_set(path, "build", "enable_signed", "false")
             with open(path, "rb") as f:
                 defines = tomllib.load(f)
             self.assertEqual(defines["build"],

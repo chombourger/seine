@@ -2,27 +2,33 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import collections
-import fnmatch
 import functools
 import glob
 import hashlib
 import jinja2
 import os
-import difflib
 import re
 import shlex
 import shutil
 import tempfile
 import threading
 import time
-import tomllib
-import yaml
 
 from datetime import datetime
 from datetime import timezone
 from email.utils import format_datetime
 
+from seine        import kernel
 from seine        import signing
+# By name as well as by module: a few of these are used where a local
+# variable is already called 'kernel', and the module is reached through
+# for what the tests replace -- kernel_rules() is one of them.
+from seine.kernel import DEFAULT_FEATURESET
+from seine.kernel import KERNEL_ARCHITECTURES
+from seine.kernel import KERNEL_MACHINES
+from seine.kernel import MIN_TOOLS
+from seine.kernel import NO_TOOLS
+from seine.kernel import kernel_architecture
 from seine.cache_index import PACKAGE, Index, say, since
 from seine.sbuild import BuilderImage
 from seine.tasks  import Task
@@ -32,7 +38,10 @@ from seine.sbuild import SbuildChroot
 from seine.utils  import apt_sources
 from seine.utils  import locked
 from seine.utils  import ContainerEngine
+from seine.utils  import GIT_EMAIL
+from seine.utils  import GIT_NAME
 from seine.utils  import HOST_ARCH
+from seine.utils  import WORKDIR
 
 # A source package to rebuild, as described by one entry of the spec's
 # 'packages' section. Where the source comes from is given as a URI:
@@ -64,13 +73,17 @@ DEFAULT_SCOPE = ["target"]
 ANY_RELEASE = None
 
 # Build types 'extends' knows about, and the settings each of them takes.
-# A kernel is configured rather than patched: Debian builds its kernels
-# from a stack of kconfig files under debian/, so a fragment appended to
-# the right one is both easier to write and less likely to conflict with
-# the next point release than a patch would be.
+# Each build type is a module of its own -- seine/kernel.py and the rest --
+# holding the settings it takes, what it does to a source, and the checks
+# that go with it. What is left here is what a source package is regardless
+# of what is built from it.
+#
+# A dictionary rather than a registry the build types register into: they
+# are not peers -- a module is built against a kernel -- and an order
+# written out in the code that calls them is easier to follow than one
+# falling out of a loop over plugins.
 EXTENSIONS = {
-    "kernel": ["build-files", "config", "drop-patches", "featureset",
-               "flavour", "keep-patches", "upstream", "upstream-sha256"],
+    "kernel": kernel.SETTINGS,
     "module": ["build", "build-depends", "make-vars", "modules",
                "runtime-depends", "target"],
 }
@@ -119,27 +132,7 @@ FALLBACK_EPOCH = 946684800
 # for the machine doing the building, out of a kernel meant for another.
 CROSS_SUFFIX = "-cross"
 
-# What the graft makes of a tree, beyond the packaging it copies across.
-# The rules seine writes are hashed by content; what seine *does* to a tree
-# is code, and code is in no digest -- so bump this when that changes, or a
-# kernel grafted before it stays as it was.
-GRAFT_VERSION = 1
 
-# Debian generates module.lds during the kernel build, installs it under
-# arch/<arch>/, and carries a kbuild patch to look for it there. A tree
-# that has moved that rule leaves the patch inapplicable, so the graft
-# drops it -- and then nothing links a module at all: the '%.ko' rule wants
-# a file no package installs, and make says it has no rule to make it.
-#
-# The patch is written again for the tree in hand rather than shipped as
-# one to rebase. It touches scripts/ alone, which is what seine already
-# counts as packaging.
-MODFINAL = "scripts/Makefile.modfinal"
-MODULE_LDS = re.compile(r"\$\(objtree\)/scripts/module\.lds")
-MODULE_LDS_PATCH = "debian/module-lds-under-arch-directory.patch"
-MODULE_LDS_FALLBACK = (
-    "ARCH_MODULE_LDS := $(word 1,$(wildcard $(objtree)/scripts/module.lds "
-    "$(objtree)/arch/$(SRCARCH)/module.lds))")
 
 # Where the kernel's own headers packages are staged inside the source
 # package that unpacks them, since a source package cannot reach outside
@@ -157,48 +150,6 @@ CROSS_FETCHED = ".headers"
 # kernel's worth of .debs each time.
 INDEX_CACHE = ".packages.db"
 
-# What a Debian architecture is called by the kernel, and what uname
-# would have called it. Two answers to one question, and a tree wants
-# whichever its own build system asks for -- the kernel's for ARCH, and
-# uname's for anything that would otherwise have run uname.
-#
-# Kept here rather than in the packaging that uses them, so that adding
-# an architecture is one edit rather than three: the make tables in both
-# rules files are rendered from these.
-KERNEL_ARCHITECTURES = {
-    "amd64":   "x86_64",
-    "arm64":   "arm64",
-    "armel":   "arm",
-    "armhf":   "arm",
-    "i386":    "i386",
-    "ppc64el": "powerpc",
-    "riscv64": "riscv",
-    "s390x":   "s390",
-}
-
-KERNEL_MACHINES = {
-    "amd64":   "x86_64",
-    "arm64":   "aarch64",
-    "armel":   "armv7l",
-    "armhf":   "armv7l",
-    "i386":    "i686",
-    "ppc64el": "ppc64le",
-    "riscv64": "riscv64",
-    "s390x":   "s390x",
-}
-
-# The kernel's name for an architecture, or nothing if seine has never
-# been told. Answered rather than guessed: an empty ARCH handed to a tree
-# that falls back to uname is the builder's architecture, and a module
-# built for the wrong one is a module that builds.
-def kernel_architecture(architecture):
-    kernel = KERNEL_ARCHITECTURES.get(architecture)
-    if kernel is None:
-        raise ValueError(
-            "seine has no kernel architecture for '%s'. Add it to "
-            "KERNEL_ARCHITECTURES and KERNEL_MACHINES in seine/packages.py."
-            % architecture)
-    return kernel
 
 def cross_headers_name(release):
     return "%s%s%s" % (MODULE_HEADERS_PREFIX, release, CROSS_SUFFIX)
@@ -255,30 +206,6 @@ def supersede_grafted(kernels):
             if is_built_kernel(kernel.reference)
             or kernel.flavour not in grafted]
 
-# Where a kernel tree comes from when it is not the one the distribution
-# packages: 'extends: kernel: upstream:'. The distribution's debian/ is
-# kept and grafted onto that tree, so what comes out carries Debian's
-# package names, maintainer scripts and headers layout -- a replacement
-# for the distribution's kernel rather than a parallel one beside it.
-#
-# The same notation a package's 'source' uses, minus apt://, which names
-# a source package rather than a tree:
-#
-#   https://cdn.kernel.org/.../linux-<version>.tar.xz  a release tarball
-#   git://host/bsp.git;rev=<commit>                    a tree, BSP or not
-UPSTREAM_SCHEMES = ["git", "https"]
-TARBALL_SUFFIXES = [".tar.xz", ".tar.gz", ".tar.bz2"]
-
-# What seine knows about Debian's kernel patches -- which of them are
-# packaging, and which are never kept -- lives beside the code in a data
-# file, so that moving with the distribution is an edit rather than a
-# patch. What each setting means is written down there.
-#
-# Everything outside debian/ is dropped rather than fought with, which
-# needs no data to say: bugfix/* against a newer tree is a backport it
-# already has, and features/* is keyed to config symbols that oldconfig
-# drops along with the patch.
-KERNEL_RULES = os.path.join(os.path.dirname(__file__), "data", "kernel.yml")
 
 # The packaging seine writes for an out-of-tree module, kept beside the
 # code rather than in it, as the kernel rules above are: what a
@@ -331,95 +258,14 @@ MODULE_TEMPLATE = jinja2.Environment(
     trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True,
     undefined=jinja2.StrictUndefined)
 
-KernelRules = collections.namedtuple("KernelRules",
-                                     ["build_files", "drop_patches", "content"])
 
-# Read once, and kept with the bytes it was read from: those bytes are
-# part of what decides whether a grafted kernel needs rebuilding, so a
-# change to the rules is a change to the kernel they produce.
-@functools.lru_cache(maxsize=None)
-def kernel_rules():
-    with open(KERNEL_RULES, "rb") as f:
-        content = f.read()
-    rules = yaml.safe_load(content) or {}
-    for setting in ["build-files", "drop-patches"]:
-        if type(rules.get(setting)) != type([]):
-            raise ValueError("%s: '%s' shall be a list"
-                             % (KERNEL_RULES, setting))
-    return KernelRules(rules["build-files"], rules["drop-patches"], content)
-
-# The rules' patterns and whatever the specification added to them, as one
-# expression. Added rather than replacing: what makes a kernel build is
-# the same wherever the tree came from, and a packaging reaching
-# somewhere else reaches there as well as here, not instead of it.
-#
-# 'extra' is a tuple so that this can be cached: the expression is the
-# same for every patch in the series.
-@functools.lru_cache(maxsize=None)
-def build_files(extra=()):
-    return re.compile("|".join(list(kernel_rules().build_files) + list(extra)))
-
-# Debian identifies a kernel by architecture, featureset and flavour, and
-# a flavour name only means something within its featureset -- amd64's
-# realtime kernel and its ordinary one are both the 'amd64' flavour, of
-# the 'rt' and 'none' featuresets. So both have to be named to pick one,
-# and 'none' is the one nearly everything wants.
-DEFAULT_FEATURESET = "none"
 
 # Appended to the version of every package rebuilt here, so it sorts above
 # the distribution's own and says plainly that it is not it. 'revision'
 # overrides it per package.
 DEFAULT_REVISION = "mod1"
 
-# Debian's build profiles for a kernel's tools. The first drops
-# linux-kbuild with them, which a module built against that kernel needs;
-# the second drops the same tools and keeps it.
-NO_TOOLS = "pkg.linux.notools"
-MIN_TOOLS = "pkg.linux.mintools"
 
-# The tree named by 'extends: kernel: upstream:'. It carries the same
-# fields a Package does -- scheme, name, parameters -- so the code that
-# fetches one fetches the other.
-class Upstream:
-    def __init__(self, uri, error):
-        if type(uri) != type(""):
-            raise error("'extends: kernel: upstream' shall be a string")
-        if "://" not in uri:
-            raise error(
-                "'extends: kernel: upstream' has no URI scheme: expected one "
-                "of %s" % ", ".join("%s://" % s for s in UPSTREAM_SCHEMES))
-
-        self.uri = uri
-        self.scheme, rest = uri.split("://", 1)
-        self.parameters = {}
-        if self.scheme not in UPSTREAM_SCHEMES:
-            raise error(
-                "'extends: kernel: upstream' has unsupported URI scheme "
-                "'%s://', expected one of %s"
-                % (self.scheme, ", ".join("%s://" % s for s in UPSTREAM_SCHEMES)))
-
-        if self.scheme == "https":
-            if not any(rest.endswith(s) for s in TARBALL_SUFFIXES):
-                raise error(
-                    "'extends: kernel: upstream' over https shall point at a "
-                    "source tarball ending in %s" % ", ".join(TARBALL_SUFFIXES))
-            self.name = os.path.basename(rest)
-        else:
-            location, *parameters = rest.split(";")
-            for parameter in parameters:
-                key, _, value = parameter.partition("=")
-                self.parameters[key] = value
-            # Same reason a git 'source' is pinned: a branch name moves,
-            # and a kernel rebuild is not a thing to repeat by accident,
-            # or to skip when it should not have been.
-            if len(self.parameters.get("rev", "")) == 0:
-                raise error(
-                    "'extends: kernel: upstream' git trees shall be pinned "
-                    "with ';rev=<commit>'")
-            self.name = os.path.basename(location).removesuffix(".git")
-
-    def __str__(self):
-        return self.uri
 
 class Package:
     def __init__(self, spec, index):
@@ -596,49 +442,7 @@ class Package:
                     "'extends: %s' has no '%s' setting, expected one of %s"
                     % (kind, setting, expected))
 
-        kernel = extends.get("kernel", {})
-        self.kernel_config = self._parse_list(kernel, "config")
-        self.kernel_flavour = kernel.get("flavour")
-        self.kernel_featureset = kernel.get("featureset", DEFAULT_FEATURESET)
-        self.kernel_upstream = None
-        if "upstream" in kernel:
-            if self.scheme != "apt":
-                raise self._error(
-                    "'extends: kernel: upstream' grafts the distribution's "
-                    "debian/ onto another tree, so the package it is set on "
-                    "has to be the distribution's own kernel source")
-            self.kernel_upstream = Upstream(kernel["upstream"], self._error)
-        self.kernel_upstream_sha256 = self._parse_digest(kernel, "upstream-sha256")
-        # None, not a list of globs: with nothing said, which patches are
-        # the packaging is decided by what they touch rather than by their
-        # names. An explicit empty list is a different answer -- "keep none
-        # of them" -- so presence decides, not emptiness.
-        self.kernel_keep_patches = None
-        if "keep-patches" in kernel:
-            self.kernel_keep_patches = self._parse_list(kernel, "keep-patches")
-        # Subtracted from what 'keep-patches' selected, since that only
-        # adds: taking one patch out of 'debian/*' would otherwise mean
-        # writing out the thirty-odd being kept.
-        self.kernel_drop_patches = self._parse_list(kernel, "drop-patches")
-        # Added to the patterns seine ships, for a packaging that builds
-        # through files Debian's does not touch. Checked here rather than
-        # where the series is read: a bad expression should be reported by
-        # the specification that wrote it, not by the patch it first fails
-        # to match.
-        self.kernel_build_files = self._parse_list(kernel, "build-files")
-        for pattern in self.kernel_build_files:
-            try:
-                re.compile(pattern)
-            except re.error as e:
-                raise self._error(
-                    "'extends: kernel: build-files' has '%s', which is not a "
-                    "regular expression: %s" % (pattern, e))
-        for setting, value in [("flavour", self.kernel_flavour),
-                               ("featureset", self.kernel_featureset)]:
-            if value is not None and type(value) != type(""):
-                raise self._error(
-                    "'extends: kernel: %s' shall be a string" % setting)
-        self.kernel = "kernel" in extends
+        kernel.parse(self, extends)
 
         module = extends.get("module", {})
         self.module = "module" in extends
@@ -915,12 +719,6 @@ class Package:
     def _files(self, names):
         return [os.path.normpath(n) for n in names]
 
-# Where the source of a package is fetched and, later, built. Everything
-# happens inside the builder container: the tools involved (apt-get source,
-# dget, git) are installed there rather than on the machine seine runs on,
-# and the working directory is a host-side directory bind-mounted into it so
-# the fetched source outlives the container that fetched it.
-WORKDIR = "/src"
 
 # Where the "this has been built" markers live, inside the repository so
 # they are thrown away with it. Hidden, and not .debs, so neither apt nor
@@ -1066,14 +864,6 @@ class Builder:
         print("  add '%s: %s'%s" % (
             setting, found, " to %s" % where if where else ""))
 
-    # The tarball a kernel is grafted onto, which is fetched on its own and
-    # has a hash of its own to be checked against.
-    def _verify_upstream(self, package, staging):
-        upstream = package.kernel_upstream
-        if upstream is None or upstream.scheme != "https":
-            return
-        self._verify(package, staging, os.path.basename(upstream.uri),
-                     package.kernel_upstream_sha256, "upstream-sha256")
 
     # The clone runs in the container, so what authenticates it goes in too:
     # the agent's socket and the hosts already known. The keys stay outside
@@ -1262,360 +1052,21 @@ class Builder:
                 volumes=[(os.path.dirname(sourcedir), WORKDIR)],
                 workdir=source, environment=environment)
 
-    # Where the tree named by 'upstream' is unpacked. Hidden, so the
-    # unpacked distribution source stays the only thing _source_dir()
-    # can find while both are on disk.
-    UPSTREAM = ".upstream"
-
-    # The tree a kernel is grafted onto, fetched with the source it will be
-    # grafted into rather than when the graft happens: it is the largest
-    # download seine makes, and there is no reason for it to wait for a
-    # build slot.
-    def fetch_upstream(self, package, workdir):
-        upstream = package.kernel_upstream
-        if upstream is None:
-            return
-        staging = os.path.join(workdir, Builder.UPSTREAM)
-        os.makedirs(staging, exist_ok=True)
-        print("fetching '%s'" % upstream)
-        self.builderImage.exec(
-            self._upstream_args(upstream), volumes=[(staging, WORKDIR)],
-            workdir=WORKDIR)
-        self._verify_upstream(package, staging)
-
-    # Puts the distribution's packaging on a kernel tree it was not written
-    # for, and returns the grafted tree.
-    #
-    # Everything that makes the resulting .debs true replacements lives in
-    # debian/ -- package names, ABI naming, headers split, maintainer
-    # scripts -- and none of it is in the tree. So debian/ moves across
-    # whole, the series is cut to the patches that touch the build system,
-    # and the changelog is given the version of the tree being built.
-    #
-    # The tree is repackaged as the orig tarball rather than Debian's,
-    # which is what makes this a "3.0 (quilt)" source at all: tree and
-    # orig are identical outside debian/, so nothing has to be expressed
-    # as a patch that is not already one.
-    def graft(self, package, workdir, sourcedir, epoch):
-        upstream = package.kernel_upstream
-        staging = os.path.join(workdir, Builder.UPSTREAM)
-        if os.path.isdir(staging) == False:
-            self.fetch_upstream(package, workdir)
-
-        print("grafting '%s' onto '%s'" % (package.source, upstream))
-        tree = self._source_dir(str(upstream), staging)
-
-        source = self._source_name(sourcedir)
-        version = self._kernel_version(tree)
-        grafted = os.path.join(workdir, "%s-%s" % (source, version))
-
-        shutil.move(os.path.join(sourcedir, "debian"),
-                    os.path.join(tree, "debian"))
-        shutil.rmtree(sourcedir)
-        shutil.move(tree, grafted)
-        shutil.rmtree(staging, ignore_errors=True)
-
-        self._filter_series(package, grafted)
-        self._check_series(package, grafted)
-        self._graft_release(package, grafted, source, version, epoch)
-
-        # What the distribution's own source left behind describes a
-        # version that is no longer being built. dpkg-source would pick
-        # the wrong orig tarball out of it, when it did not simply refuse
-        # to choose.
-        for name in sorted(os.listdir(workdir)):
-            path = os.path.join(workdir, name)
-            if os.path.isfile(path):
-                os.unlink(path)
-
-        # gzip, not the xz Debian ships: this tarball is written once, read
-        # once by dpkg-source and thrown away, so xz buys nothing that is
-        # ever stored. .git goes too -- dpkg-source ignores it in the tree,
-        # so keeping it in the orig would only make the two differ. Packed
-        # from the parent, so the tarball holds the one top-level directory
-        # an orig tarball is expected to have.
-        tarball = "%s_%s.orig.tar.gz" % (source, version)
-        tree = os.path.basename(grafted)
-        self.builderImage.exec(
-            ["sh", "-c", "tar --exclude=%s/debian --exclude=%s/.git "
-                         "--sort=name --mtime=@%d --owner=0 --group=0 "
-                         "--numeric-owner -czf %s %s"
-                         % (tree, tree, epoch, tarball, tree)],
-            volumes=[(workdir, WORKDIR)], workdir=WORKDIR)
-        return grafted
-
-    def _upstream_args(self, upstream):
-        if upstream.scheme == "https":
-            return ["sh", "-c", "curl -sSfL -O %s && tar -xf %s"
-                    % (shlex.quote(upstream.uri), shlex.quote(upstream.name))]
-
-        protocol = upstream.parameters.get("protocol", "https")
-        location = upstream.uri.split("://", 1)[1].split(";")[0]
-        args = ["git", "clone"]
-        if "branch" in upstream.parameters:
-            args += ["--branch", upstream.parameters["branch"]]
-        args += ["%s://%s" % (protocol, location), upstream.name]
-        return ["sh", "-c", "%s && cd %s && git checkout --detach %s" % (
-            " ".join(args), upstream.name, upstream.parameters["rev"])]
-
-    # The source package name, which is not the tree's: Debian's kernel
-    # tree unpacks as linux-<version> but the source is 'linux', and the
-    # orig tarball and directory both have to be named for the source.
-    def _source_name(self, sourcedir):
-        with open(os.path.join(sourcedir, "debian", "changelog"), "r") as f:
-            heading = re.match(r"^(\S+) ", f.readline())
-        if heading is None:
-            raise ValueError("debian/changelog does not start with a source name")
-        return heading.group(1)
-
-    # The version of a kernel tree, read from its Makefile. EXTRAVERSION is
-    # deliberately left out: a BSP commonly puts its own name there, and a
-    # Debian upstream version has nowhere to put a '-rc1' that would not be
-    # read back as the Debian revision.
-    def _kernel_version(self, tree):
-        fields = {}
-        with open(os.path.join(tree, "Makefile"), "r") as f:
-            for line in f:
-                field = re.match(r"^(VERSION|PATCHLEVEL|SUBLEVEL)\s*=\s*(\d+)",
-                                 line)
-                if field:
-                    fields[field.group(1)] = field.group(2)
-                if len(fields) == 3:
-                    break
-        if len(fields) != 3:
-            raise ValueError(
-                "'%s' has no VERSION/PATCHLEVEL/SUBLEVEL in its Makefile, so "
-                "it is not a kernel tree" % tree)
-        return "%s.%s.%s" % (fields["VERSION"], fields["PATCHLEVEL"],
-                             fields["SUBLEVEL"])
-
-    # Cuts the distribution's patch series down to what is being kept.
-    #
-    # A glob that matches nothing is an error rather than a no-op: the
-    # series is restructured from one release to the next, and a
-    # specification naming a directory since renamed would otherwise
-    # silently build a kernel without the patches it meant to keep.
-    def _filter_series(self, package, sourcedir):
-        path = os.path.join(sourcedir, "debian", "patches", "series")
-        if os.path.isfile(path) == False:
-            return
-
-        with open(path, "r") as f:
-            names = [line.strip() for line in f]
-
-        patches = os.path.join(sourcedir, "debian", "patches")
-        dropped = kernel_rules().drop_patches + package.kernel_drop_patches
-        selected = [n for n in names if len(n) > 0 and not n.startswith("#")]
-
-        kept = []
-        for name in selected:
-            if self._matches(name, dropped):
-                continue
-            if package.kernel_keep_patches is None:
-                if self._packaging_patch(package, name,
-                                         os.path.join(patches, name)):
-                    kept.append(name)
-            elif self._matches(name, package.kernel_keep_patches):
-                kept.append(name)
-
-        # Only the globs the specification wrote are checked. The rules'
-        # own 'drop-patches' is not one of them: a source that carries no
-        # DFSG exclusions is an ordinary thing, not a specification that
-        # has gone stale.
-        for setting, globs, against in [
-                ("keep-patches", package.kernel_keep_patches or [], kept),
-                ("drop-patches", package.kernel_drop_patches, selected)]:
-            for glob in globs:
-                if not any(fnmatch.fnmatch(n, glob) for n in against):
-                    raise ValueError(
-                        "package '%s': 'extends: kernel: %s' has '%s', which "
-                        "matches none of the %d patches '%s' carries"
-                        % (package.source, setting, glob, len(selected),
-                           package.source))
-
-        print("keeping %d of %d patches" % (len(kept), len(names)))
-        with open(path, "w") as f:
-            for name in kept:
-                f.write("%s\n" % name)
-
-    # Whether the patches being kept apply to this tree, asked before
-    # dpkg-source is asked. dpkg-source stops at the first patch that does
-    # not, so left to it the question is answered one patch per build.
-    #
-    # quilt rather than plain patch: a series is cumulative, a patch may
-    # depend on the one before it, and quilt is what can put the tree back
-    # afterwards. Fuzz is zero because that is what dpkg-source allows, so
-    # what is found here is what it would find.
-    SERIES_CHECK = """
-export QUILT_PATCHES=debian/patches QUILT_PATCH_OPTS='-F 0'
-while [ -n "$(quilt next 2>/dev/null)" ]; do
-    patch="$(quilt next)"
-    quilt push -q >/dev/null 2>&1 && continue
-    echo "$patch"
-    quilt delete -n >/dev/null 2>&1 || break
-done
-quilt pop -a -q >/dev/null 2>&1
-rm -rf .pc
-"""
-
-    def _check_series(self, package, sourcedir):
-        workdir = os.path.dirname(sourcedir)
-        output = self.builderImage.output(
-            ["sh", "-c", Builder.SERIES_CHECK], volumes=[(workdir, WORKDIR)],
-            workdir="%s/%s" % (WORKDIR, os.path.basename(sourcedir)))
-        # quilt names a patch by its path from the source tree, and the
-        # series names it from debian/patches. Reported as the series
-        # writes it, since that is what 'drop-patches' is matched against.
-        failed = [n.strip().removeprefix("debian/patches/")
-                  for n in output.decode().split("\n") if len(n.strip()) > 0]
-        if len(failed) == 0:
-            return
-
-        # Each one is named with what it was trying to change, since that
-        # is what says whether the tree has since got it from upstream --
-        # which is the common reason a packaging patch stops applying.
-        patches = os.path.join(sourcedir, "debian", "patches")
-        report = []
-        for name in failed:
-            report.append("  %s" % name)
-            for touched in sorted(self._touches(os.path.join(patches, name))):
-                report.append("      %s" % touched)
-        raise ValueError(
-            "package '%s': %d packaging patches do not apply to '%s':\n%s\n"
-            "Add them to 'extends: kernel: drop-patches' if the tree already "
-            "has what they fix."
-            % (package.source, len(failed), package.kernel_upstream,
-               "\n".join(report)))
-
-    # Whether a patch is part of the packaging, decided by what it changes:
-    # a patch touching only build files is what the packaging needs to
-    # build at all, and one reaching into C source is changing the kernel
-    # itself. A patch touching both counts as the second, since taking it
-    # means taking the kernel change too. Only debian/ is looked at:
-    # bugfix/ and features/ are backports, and one touching only a
-    # makefile is still something a newer tree is expected to have.
-    def _packaging_patch(self, package, name, path):
-        if name.startswith("debian/") == False:
-            return False
-        touched = self._touches(path)
-        matches = build_files(tuple(package.kernel_build_files))
-        return len(touched) > 0 and all(matches.search(f) for f in touched)
-
-    # The files a patch changes, as it names them on its '+++' lines. The
-    # leading component goes: these apply with -p1, and what is in front of
-    # the path is 'a/', 'b/' or the name of a tree, depending on how the
-    # patch was made.
-    def _touches(self, path):
-        touched = set()
-        with open(path, "r", errors="replace") as f:
-            for line in f:
-                if not line.startswith("+++ "):
-                    continue
-                name = line[4:].split("\t")[0].strip()
-                if name == "/dev/null":
-                    continue
-                touched.add(name.split("/", 1)[1] if "/" in name else name)
-        return touched
-
-    def _matches(self, name, globs):
-        return any(fnmatch.fnmatch(name, glob) for glob in globs)
-
-    # Says in the changelog which tree was built, and gives the package the
-    # version of that tree rather than of the packaging it borrowed. Without
-    # it the .debs would claim to be the distribution's kernel at the
-    # distribution's version while holding another one entirely.
-    # local_release() runs after this and adds the local revision on top.
-    def _graft_release(self, package, sourcedir, source, version, epoch):
-        path = os.path.join(sourcedir, "debian", "changelog")
-        with open(path, "r") as f:
-            changelog = f.read()
-
-        date = format_datetime(datetime.fromtimestamp(epoch, timezone.utc))
-        entry = ("%s (%s-1) UNRELEASED; urgency=medium\n\n"
-                 "  * Upstream %s, built with the packaging of %s.\n\n"
-                 " -- %s <%s>  %s\n\n"
-                 % (source, version, package.kernel_upstream, package.source,
-                    GIT_NAME, GIT_EMAIL, date))
-        with open(path, "w") as f:
-            f.write(entry + changelog)
 
 
-    # Whether anything in the series already looks for module.lds where
-    # Debian puts it. Asked of the patches rather than of the tree, since
-    # the tree is unpatched here and stays that way: dpkg-source applies
-    # them. Debian's own patch answers when it was kept, and so does one a
-    # specification rebased and listed under 'patches' -- which is why this
-    # runs after both are in the series rather than during the graft.
-    def _modfinal_is_patched(self, sourcedir):
-        patches = os.path.join(sourcedir, "debian", "patches")
-        series = os.path.join(patches, "series")
-        if os.path.isfile(series) == False:
-            return False
-        with open(series, "r") as f:
-            names = [line.strip() for line in f
-                     if len(line.strip()) > 0 and line.strip().startswith("#") == False]
-        for name in names:
-            path = os.path.join(patches, name)
-            if os.path.isfile(path) and MODFINAL in self._touches(path):
-                return True
-        return False
 
-    # The patch Debian carries, written for the tree that was grafted.
-    #
-    # Only when nothing else answers for it, and only for a tree that asks
-    # for module.lds somewhere no package installs it. What comes out is
-    # the same idea as Debian's: a name that is whichever of the two
-    # places has the file, used everywhere the rule named one.
-    def _module_lds_patch(self, package, sourcedir):
-        path = os.path.join(sourcedir, MODFINAL)
-        if os.path.isfile(path) == False:
-            return
-        if self._modfinal_is_patched(sourcedir):
-            return
 
-        with open(path, "r") as f:
-            before = f.read()
-        if MODULE_LDS.search(before) is None:
-            return
 
-        after = MODULE_LDS.sub("$(ARCH_MODULE_LDS)", before)
-        # In front of the first rule that reads it, which is where Debian
-        # puts it too.
-        anchor = "quiet_cmd_ld_ko_o"
-        if anchor not in after:
-            raise package._error(
-                "'%s' asks for module.lds but has no '%s' to define it "
-                "beside: the tree's kbuild is not shaped the way this "
-                "knows how to patch." % (MODFINAL, anchor))
-        after = after.replace(anchor, "%s\n\n%s" % (MODULE_LDS_FALLBACK, anchor), 1)
 
-        # Written with no dates in it, so the same tree makes the same
-        # source package twice running.
-        diff = difflib.unified_diff(
-            before.splitlines(keepends=True), after.splitlines(keepends=True),
-            fromfile="a/" + MODFINAL, tofile="b/" + MODFINAL, n=3)
-        patches = os.path.join(sourcedir, "debian", "patches")
-        os.makedirs(os.path.join(patches, os.path.dirname(MODULE_LDS_PATCH)),
-                    exist_ok=True)
-        with open(os.path.join(patches, MODULE_LDS_PATCH), "w") as f:
-            f.write("Subject: look for module.lds under the arch directory too\n"
-                    "\n"
-                    "Debian's packaging installs the module.lds its build\n"
-                    "generated under arch/<arch>/, and this tree looks for it\n"
-                    "under scripts/ alone -- so an out-of-tree module has no\n"
-                    "rule to link. Written by seine for this tree.\n"
-                    "---\n")
-            f.writelines(diff)
-        series = os.path.join(patches, "series")
-        existing = ""
-        if os.path.isfile(series):
-            with open(series, "r") as f:
-                existing = f.read()
-        if len(existing) > 0 and existing.endswith("\n") == False:
-            existing += "\n"
-        with open(series, "w") as f:
-            f.write("%s%s\n" % (existing, MODULE_LDS_PATCH))
-        print("wrote '%s' for %s" % (MODULE_LDS_PATCH, MODFINAL))
+
+
+
+
+
+
+
+
+
 
     # The date the build is pinned to. dpkg-buildpackage derives one from
     # the changelog on its own, and sbuild passes it down, but a patch
@@ -1655,194 +1106,10 @@ rm -rf .pc
         except Exception:
             return FALLBACK_EPOCH
 
-    # Applies the 'extends: kernel:' settings to a fetched kernel source.
-    #
-    # Debian assembles each kernel's configuration from a stack of kconfig
-    # files, the last of which is the architecture's own -- appending to it
-    # puts the specification's fragments last, where they win. The kernel's
-    # own 'oldconfig' then turns off whatever the disabled options were
-    # holding up, so a fragment says what it means rather than having to
-    # list every symbol underneath it.
-    #
-    # None of this needs a patch: the configuration lives in debian/, which
-    # a "3.0 (quilt)" package lets us edit directly.
-    #
-    # Per architecture the package is built for, which for a kernel is
-    # exactly one: the parser refuses 'scope: both' on a kernel, since a
-    # flavour is a name within an architecture and one cannot be right for
-    # two of them. The loop is over what the package says it is built for
-    # rather than over the image's architecture, so the two cannot drift.
-    def extend_kernel(self, package, sourcedir, architectures):
-        if package.kernel == False:
-            return
 
-        fragments = package.kernel_config_files()
-        for fragment in fragments:
-            if os.path.isfile(fragment) == False:
-                raise ValueError("package '%s': no such kernel configuration "
-                                 "fragment: %s" % (package.source, fragment))
 
-        for architecture in architectures:
-            config = os.path.join(sourcedir, "debian", "config", architecture,
-                                  "config")
-            if os.path.isfile(config) == False:
-                raise ValueError(
-                    "package '%s' is built as a kernel, but its source has no "
-                    "debian/config/%s/config to configure"
-                    % (package.source, architecture))
 
-            if len(fragments) > 0:
-                with open(config, "a") as f:
-                    for fragment in fragments:
-                        f.write("\n# %s, added by seine\n"
-                                % os.path.basename(fragment))
-                        with open(fragment, "r") as contents:
-                            f.write(contents.read())
 
-            if package.kernel_flavour is not None:
-                self._restrict_flavour(package, sourcedir, architecture)
-            if package.kernel_upstream is not None:
-                self._disable_signed(package, sourcedir, architecture)
-
-        # debian/control lists a binary package per flavour and is generated
-        # from the files edited above, so it has to be rebuilt before the
-        # source package is; sbuild would otherwise build every flavour the
-        # unmodified control file still mentions.
-        #
-        # DEBIAN_KERNEL_DISABLE_SIGNED is what makes the rebuild reachable
-        # at all. On the architectures that ship a signed kernel, 'linux'
-        # builds linux-image-<abi>-<flavour>-unsigned, and the package the
-        # linux-image-<flavour> metapackage actually depends on --
-        # linux-image-<abi>-<flavour> -- is built by a *different* source
-        # package, linux-signed-<arch>, which takes the unsigned one and
-        # signs it with a key we do not have. Rebuilding 'linux' alone
-        # therefore produces a kernel nothing installs: apt keeps taking
-        # the distribution's signed one, and the image looks fine while
-        # containing none of the configuration asked for.
-        #
-        # Turning signing off makes 'linux' build that name itself, which
-        # the pin then prefers. A locally rebuilt kernel could not have
-        # carried Debian's signature in any case; Secure Boot with one
-        # needs a key of your own.
-        #
-        # PYTHONDONTWRITEBYTECODE: the generator is written in python and
-        # leaves __pycache__ behind in debian/, which dpkg-source then
-        # refuses to put in a source package ("unwanted binary file").
-        self.builderImage.exec(
-            ["debian/rules", "debian/control"],
-            volumes=[(os.path.dirname(sourcedir), WORKDIR)],
-            workdir="%s/%s" % (WORKDIR, os.path.basename(sourcedir)),
-            environment={"PYTHONDONTWRITEBYTECODE": "1",
-                         "DEBIAN_KERNEL_DISABLE_SIGNED": "1"},
-            check=False)
-
-        # What this kernel ended up calling itself, kept for the modules
-        # built against it. Read here rather than worked out later: it is
-        # in the control file that was just regenerated, and the module
-        # that needs it is built after this.
-        self._record_abiname(package, sourcedir)
-
-        if package.kernel_flavour is not None:
-            for architecture in architectures:
-                self._check_flavour(package, sourcedir, architecture)
-
-    # The ABI the packaging gave this kernel, off the control file it just
-    # generated. Absent rather than fatal when it cannot be read: a kernel
-    # nothing builds modules against does not need one, and the module
-    # that does need it says so itself, naming the kernel.
-    def _record_abiname(self, package, sourcedir):
-        control = os.path.join(sourcedir, "debian", "control")
-        if os.path.isfile(control) == False:
-            return
-        with open(control, "r") as f:
-            stanzas = f.read().split("\n\n")
-        packages = []
-        for stanza in stanzas:
-            name = re.search(r"^Package:\s*(\S+)$", stanza, re.MULTILINE)
-            if name:
-                packages.append((name.group(1), []))
-        try:
-            self.abinames[package.name] = self._abiname(packages)
-        except ValueError:
-            pass
-
-    # Restricting the build only takes effect once the rules have been
-    # regenerated from the edited defines, and that regeneration reports
-    # success by failing -- its own message says so. Rather than read
-    # anything into its exit status, check what it produced: the generated
-    # rules carry one setup target per kernel, named by featureset and
-    # flavour, and exactly the one asked for should be left.
-    #
-    # Asking what is left, rather than confirming that particular kernels
-    # are gone, is deliberate. A flavour name is not unique on its own --
-    # amd64's realtime and ordinary kernels are both the 'amd64' flavour --
-    # so a check phrased as "these should have disappeared" has nothing to
-    # look for in exactly the case that matters.
-    def _check_flavour(self, package, sourcedir, architecture):
-        control = os.path.join(sourcedir, "debian", "control")
-        if os.path.isfile(control) == False:
-            raise ValueError(
-                "package '%s': restricting the kernel left no debian/control "
-                "behind" % package.source)
-
-        kernels = self._kernel_packages(control, architecture)
-        if len(kernels) != 1:
-            raise ValueError(
-                "package '%s': restricting the kernel to %s/%s did not take "
-                "effect, %d kernels are still built for '%s': %s. The "
-                "generator that rewrites debian/control is allowed to fail, "
-                "so look above for what it said."
-                % (package.source, package.kernel_featureset,
-                   package.kernel_flavour, len(kernels), architecture,
-                   ", ".join(kernels)))
-
-    # The kernel image packages debian/control builds for an architecture.
-    # It is read as the deb822 it is rather than pattern-matched, and the
-    # binary packages are asked about rather than the generated makefiles:
-    # those write a target and its dependencies on one line, name families
-    # that are not kernels at all, and are altogether the wrong thing to
-    # be parsing to answer "what will this build".
-    def _kernel_packages(self, control, architecture):
-        packages = []
-        with open(control, "r") as f:
-            stanzas = f.read().split("\n\n")
-
-        for stanza in stanzas:
-            fields = {}
-            for line in stanza.split("\n"):
-                field = re.match(r"^([A-Za-z-]+):\s*(.*)$", line)
-                if field:
-                    fields[field.group(1)] = field.group(2)
-            packages.append((fields.get("Package", ""),
-                             fields.get("Architecture", "").split()))
-
-        # linux-image-<abi>-<flavour>, the versioned image packages, one
-        # per kernel -- as opposed to the metapackage linux-image-<flavour>
-        # pointing at one of them, and the debug packages beside them.
-        prefix = "linux-image-%s-" % self._abiname(packages)
-        return sorted(set(
-            name for name, architectures in packages
-            if architecture in architectures
-            and name.startswith(prefix) and name.endswith("-dbg") == False))
-
-    # The ABI name the packaging gave this kernel, which is the only thing
-    # separating a versioned image package from the metapackage pointing
-    # at it. It is read back rather than predicted: it is built from the
-    # upstream version, the abiname in debian/config and what the
-    # changelog's distribution earns it, and the UNRELEASED entry a local
-    # rebuild has to carry changes its shape. A pattern written for one
-    # shape finds no kernels at all and calls that a failed restriction.
-    #
-    # Debian builds one headers package shared by every flavour of a
-    # kernel and names it for the ABI alone, which is what is read here.
-    def _abiname(self, packages):
-        for name, _ in packages:
-            abi = re.match(r"^linux-headers-(.+)-common$", name)
-            if abi:
-                return abi.group(1)
-        raise ValueError(
-            "debian/control has no 'linux-headers-<abi>-common' package to "
-            "read the kernel's ABI name from")
 
     # Gives the rebuild a version of its own, above the distribution's, and
     # says in the changelog that it is not the distribution's package. What
@@ -1876,221 +1143,7 @@ rm -rf .pc
         with open(path, "w") as f:
             f.write(entry + changelog)
 
-    # Cuts the build down to the one kernel asked for. Debian builds every
-    # featureset and flavour an architecture has, and for the kernel each
-    # of those is a full build -- on amd64, a cloud flavour and a realtime
-    # kernel besides the one an appliance wants.
-    # Says in the source that this kernel is not a signed one, which a
-    # grafted kernel cannot be. Debian's Secure Boot support is not in its
-    # packaging: CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT comes from the
-    # features/all/lockdown patches, which change C source and so are not
-    # among the patches kept, and the build stops in a check that is right
-    # to stop it. DEBIAN_KERNEL_DISABLE_SIGNED does not reach that check
-    # -- it is read when debian/control is generated, here, and the check
-    # runs later inside the chroot -- so it is said in debian/config,
-    # where everything downstream of it agrees.
-    #
-    # Nothing is lost that was there to lose: the kernel Debian signs is
-    # built from a source package of its own, from a key we do not have.
-    # An image wanting the lockdown behaviour needs those patches kept
-    # and rebased.
-    def _disable_signed(self, package, sourcedir, architecture):
-        defines = os.path.join(sourcedir, "debian", "config", architecture,
-                               "defines.toml")
-        if os.path.isfile(defines):
-            self._toml_set(defines, "build", "enable_signed", "false")
 
-    # Debian described its kernels in an ini-like debian/config/*/defines
-    # and moved to a defines.toml. Both are still in the archive at once,
-    # so which one the source carries decides, not the release built for.
-    def _restrict_flavour(self, package, sourcedir, architecture):
-        config = os.path.join(sourcedir, "debian", "config")
-        defines = os.path.join(config, architecture, "defines.toml")
-        if os.path.isfile(defines) == False:
-            return self._restrict_flavour_ini(package, sourcedir, architecture)
-
-        self._restrict_flavour_toml(package, defines, architecture,
-                                    ["flavour", "featureset"])
-        # The featuresets again, where they are declared for every
-        # architecture at once. Disabling one for amd64 alone leaves the
-        # packages that do not depend on an architecture -- the headers
-        # every flavour of a kernel shares -- still being built for it,
-        # and a featureset whose patches the graft dropped cannot be.
-        self._restrict_flavour_toml(package, os.path.join(config, "defines.toml"),
-                                    architecture, ["featureset"])
-
-    # The toml describes flavours and featuresets as arrays of tables, each
-    # taking an 'enable' that defaults to true, and a kernel is built only
-    # when every level of the hierarchy says so. So the entries not wanted
-    # are said false rather than removed: deleting table blocks means
-    # getting the boundaries of a nested one right or building something
-    # else silently.
-    def _restrict_flavour_toml(self, package, path, architecture, kinds):
-        with open(path, "rb") as f:
-            defines = tomllib.load(f)
-
-        wanted = {kind: name for kind, name in
-                  [("flavour", package.kernel_flavour),
-                   ("featureset", package.kernel_featureset)] if kind in kinds}
-        for kind, name in wanted.items():
-            names = [entry["name"] for entry in defines.get(kind, [])]
-            if name not in names:
-                raise ValueError(
-                    "package '%s': architecture '%s' has no '%s' kernel %s, "
-                    "expected one of %s"
-                    % (package.source, architecture, name, kind,
-                       ", ".join(sorted(names))))
-
-        with open(path, "r") as f:
-            lines = f.readlines()
-        blocks = self._toml_blocks(lines)
-
-        # Back to front, so the edits do not move the blocks still to come.
-        for position in reversed(range(len(blocks) - 1)):
-            kind, start = blocks[position]
-            end = blocks[position + 1][1]
-            if kind not in wanted:
-                continue
-            name = self._toml_value(lines, start, end, "name")
-            if name is None or name == wanted[kind]:
-                continue
-            enabled = self._toml_line(lines, start, end, "enable")
-            if enabled is not None:
-                lines[enabled] = "enable = false\n"
-            else:
-                lines.insert(start + 1, "enable = false\n")
-
-        with open(path, "w") as f:
-            f.writelines(lines)
-
-    # Every table header, with the block it opens. A dotted name --
-    # [flavour.defs] under [[flavour]] -- is a table within the block
-    # rather than one of its own; an undotted one always starts a block,
-    # including the [[flavour]] that follows another [[flavour]]. The last
-    # entry has no name and marks where the file ends.
-    def _toml_blocks(self, lines):
-        blocks = []
-        for index, line in enumerate(lines):
-            header = re.match(r"^\s*\[\[?([A-Za-z0-9_.-]+)\]?\]\s*$", line)
-            if header is None or "." in header.group(1):
-                continue
-            blocks.append((header.group(1), index))
-        blocks.append((None, len(lines)))
-        return blocks
-
-    # Sets a key at the top level of a named block, adding the block if the
-    # file has none.
-    def _toml_set(self, path, block, key, value):
-        with open(path, "r") as f:
-            lines = f.readlines()
-
-        blocks = self._toml_blocks(lines)
-        for position in range(len(blocks) - 1):
-            kind, start = blocks[position]
-            if kind != block:
-                continue
-            end = blocks[position + 1][1]
-            existing = self._toml_line(lines, start, end, key)
-            if existing is not None:
-                lines[existing] = "%s = %s\n" % (key, value)
-            else:
-                lines.insert(start + 1, "%s = %s\n" % (key, value))
-            break
-        else:
-            lines += ["\n[%s]\n" % block, "%s = %s\n" % (key, value)]
-
-        with open(path, "w") as f:
-            f.writelines(lines)
-
-    # A key at the top level of a toml block, i.e. before its first nested
-    # table. Only the string and boolean scalars this needs are understood.
-    def _toml_line(self, lines, start, end, key):
-        for index in range(start + 1, end):
-            if re.match(r"^\s*\[", lines[index]):
-                break
-            if re.match(r"^\s*%s\s*=" % key, lines[index]):
-                return index
-        return None
-
-    def _toml_value(self, lines, start, end, key):
-        index = self._toml_line(lines, start, end, key)
-        if index is None:
-            return None
-        value = re.match(r"^\s*%s\s*=\s*['\"](.*)['\"]" % key, lines[index])
-        return value.group(1) if value else None
-
-    def _restrict_flavour_ini(self, package, sourcedir, architecture):
-        root = os.path.join(sourcedir, "debian", "config", architecture)
-        featuresets = self._defines_list(os.path.join(root, "defines"),
-                                         "featuresets")
-        if package.kernel_featureset not in featuresets:
-            raise ValueError(
-                "package '%s': architecture '%s' has no '%s' kernel "
-                "featureset, expected one of %s"
-                % (package.source, architecture, package.kernel_featureset,
-                   ", ".join(sorted(featuresets))))
-
-        defines = os.path.join(root, package.kernel_featureset, "defines")
-        flavours = self._defines_list(defines, "flavours")
-        if package.kernel_flavour not in flavours:
-            raise ValueError(
-                "package '%s': the '%s' featureset of architecture '%s' has "
-                "no '%s' kernel flavour, expected one of %s"
-                % (package.source, package.kernel_featureset, architecture,
-                   package.kernel_flavour, ", ".join(sorted(flavours))))
-
-        self._defines_replace(os.path.join(root, "defines"), "featuresets",
-                              [package.kernel_featureset])
-        self._defines_replace(defines, "flavours", [package.kernel_flavour])
-        # Both may name a flavour that has just been removed.
-        self._defines_set(defines, "default-flavour", package.kernel_flavour)
-        self._defines_set(defines, "quick-flavour", package.kernel_flavour)
-
-    # debian/config/*/defines are ini-like, with list values written one
-    # per line and indented under their key.
-    def _defines_list(self, path, key):
-        values = []
-        collecting = False
-        with open(path, "r") as f:
-            for line in f:
-                if line.strip() == "%s:" % key:
-                    collecting = True
-                elif collecting:
-                    if line.startswith(" ") and len(line.strip()) > 0:
-                        values.append(line.strip())
-                    else:
-                        break
-        return values
-
-    def _defines_replace(self, path, key, values):
-        with open(path, "r") as f:
-            lines = f.readlines()
-
-        out = []
-        skipping = False
-        for line in lines:
-            if line.strip() == "%s:" % key:
-                out.append(line)
-                out += [" %s\n" % v for v in values]
-                skipping = True
-            elif skipping:
-                if line.startswith(" ") and len(line.strip()) > 0:
-                    continue
-                skipping = False
-                out.append(line)
-            else:
-                out.append(line)
-
-        with open(path, "w") as f:
-            f.writelines(out)
-
-    def _defines_set(self, path, key, value):
-        with open(path, "r") as f:
-            lines = f.readlines()
-        out = ["%s: %s\n" % (key, value) if line.startswith("%s:" % key) else line
-               for line in lines]
-        with open(path, "w") as f:
-            f.writelines(out)
 
     # Cross-compiling is the default whenever the target is not the machine
     # seine runs on: emulating a foreign architecture for a whole package
@@ -2959,8 +2012,8 @@ rm -rf .pc
         # kernel goes on being the one yesterday's rules produced. Only
         # for a graft -- an ordinary rebuild never consults them.
         if package.kernel_upstream is not None:
-            digest.update(kernel_rules().content)
-            digest.update(str(GRAFT_VERSION).encode())
+            digest.update(kernel.kernel_rules().content)
+            digest.update(str(kernel.GRAFT_VERSION).encode())
 
         # And a module is built by the packaging seine writes for it, so
         # that packaging decides what comes out as surely as a patch
@@ -3347,7 +2400,7 @@ rm -rf .pc
             # 'fetching None' is how a log stops being read.
             print("fetching '%s'" % (package.source or package.name))
             sourcedir = self.fetch(package, workdir)
-            self.fetch_upstream(package, workdir)
+            kernel.fetch_upstream(self, package, workdir)
             dsc, epoch = self._prepared(package, workdir, sourcedir)
         except:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -3382,7 +2435,7 @@ rm -rf .pc
             return dsc, epoch
 
         if package.kernel_upstream is not None:
-            sourcedir = self.graft(package, workdir, sourcedir, epoch)
+            sourcedir = kernel.graft(self, package, workdir, sourcedir, epoch)
         # Before the patches and before the local changelog entry: both
         # read a debian/ directory, and for a module this is what puts
         # one there.
@@ -3391,9 +2444,9 @@ rm -rf .pc
         # After them: what the series already answers for is not written
         # again, and a specification's own patches are in it by now.
         if package.kernel_upstream is not None:
-            self._module_lds_patch(package, sourcedir)
+            kernel.module_lds_patch(package, sourcedir)
         self.local_release(package, sourcedir, epoch)
-        self.extend_kernel(package, sourcedir, self.architectures(package))
+        kernel.extend(self, package, sourcedir, self.architectures(package))
         dsc = self.source_package(package, sourcedir)
         # Signed before it is staged or built from: a .dsc carries its
         # signature inside itself, so signing it here is what makes the
@@ -3581,11 +2634,6 @@ rm -rf .pc
             self._release(package)
 
 
-# Identity the patch commits are made under. Fixed, like their date: a
-# commit made by whoever happens to be running the build is a commit whose
-# hash cannot be reproduced by anyone else.
-GIT_NAME  = "seine"
-GIT_EMAIL = "seine@localhost"
 
 # Making the rebuilt packages visible to apt, wherever apt is being run:
 # the chroot packages are built in, the container the root file-system is
