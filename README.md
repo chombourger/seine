@@ -1636,11 +1636,22 @@ runs is another. These apply whatever is being built.
 
 ### What a build would do
 
-`seine plan` prints the steps a build would run, in the order it would run
-them and with what each waits for, and the packages it would leave alone:
+`seine plan` prints the specification the files merge into, and then the
+steps a build of it would run, in the order it would run them and with what
+each waits for, and the packages it would leave alone:
 
 ```
 $ seine plan spec.yaml
+ distribution:
+   architecture: amd64
+   release: trixie
+ image:
+   filename: pc-image.img
+-  size: 2048MiB
++  size: 3072MiB
+   table: gpt
+ ...
+
 would build 'pc-image.img' for trixie/amd64
 
 already built, and not built again:
@@ -1654,9 +1665,48 @@ steps:
   ...
 ```
 
-It takes no options: a plan is the same whoever asks for it. For the plan of
-a build with particular options -- `--jobs`, `--rebuild`, `--packages-only`
--- `seine build --dry-run` is the same thing and takes them all:
+The specification is the whole of it, not the part that changed, since that
+is what would be built. What changed is marked against the specification
+these same files last built: on a terminal, added lines sit on a green bar
+and removed lines on a red one; anywhere else they carry a `+` or a `-`, so
+a plan saved to a file or piped into something reads the same. Only a build
+records one, so files that have never built here have nothing to compare
+against: their specification is printed as it is, with a line on stderr
+saying why nothing in it is marked.
+
+The comparison is setting by setting rather than line by line, and list
+items are matched by the name they go by -- a partition's `label`, a
+playbook's `name`, a feed's `suite`. A partition inserted at the top of the
+list is one partition added, not every partition below it rewritten, and a
+size that changed is that one line. What is marked is what changed.
+
+Once something has changed, what did not is folded away: the lines around a
+change stay, and so do the keys it sits under, so that what is printed can
+still be read as a place in the specification.
+
+```
+ image:
+   partitions:
+     ... (13 lines unchanged)
+     - label: system
+       size: 3040870400
+-  size: 2048MiB
++  size: 3072MiB
+   table: gpt
+ ... (56 lines unchanged)
+```
+
+A plan with nothing to point at -- files that have never built here, or
+files that would build what they last built -- folds nothing and prints the
+specification whole. `seine build --dump` prints it whole in any case,
+without comparing it to anything.
+
+Its options say how the plan is printed rather than what is in it:
+`--spec-only` and `--tasks-only` for one half of it, `--no-color` (or
+`NO_COLOR` in the environment) for a specification without the bars. For the
+plan of a build with particular options -- `--jobs`, `--rebuild`,
+`--packages-only` -- `seine build --dry-run` is the same thing and takes
+them all:
 
 ```
 $ seine build --dry-run --jobs 4 spec.yaml
