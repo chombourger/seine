@@ -2081,6 +2081,144 @@ class GraftedKernelsAreRebuiltWhenTheRulesChange(UpstreamKernel):
         self.assertEqual(before[1], after[1],
                          "a package that is not a graft was rebuilt for nothing")
 
+# What kbuild does with module.lds, cut down to the two places that name
+# it: the rule that links a module and the prerequisite that has to exist
+# for that rule to fire.
+MODFINAL = """# SPDX-License-Identifier: GPL-2.0-only
+PHONY := __modfinal
+
+quiet_cmd_ld_ko_o = LD [M]  $@
+      cmd_ld_ko_o =\t\t\t\t\t\t\t\\
+\t$(LD) -r $(KBUILD_LDFLAGS)\t\t\t\t\t\\
+\t\t-T $(objtree)/scripts/module.lds\t\t\t\\
+\t\t-o $@ $(filter %.o, $^)
+
+$(modules): %.ko: %.o %.mod.o $(objtree)/scripts/module.lds FORCE
+\t+$(call if_changed,ld_ko_o)
+"""
+
+# Debian generates module.lds during the kernel build and installs it
+# under arch/<arch>/, so a tree looking for it under scripts/ alone links
+# no out-of-tree module at all -- make has no rule to make the .ko. Debian
+# patches kbuild to look in both places; a tree that has moved that rule
+# leaves the patch inapplicable, and the graft drops it. These check the
+# one written in its place.
+class TheGraftWritesTheModuleLdsPatch(UpstreamKernel):
+    def sourcedir(self, series=None):
+        import os
+        sourcedir = os.path.join(self.workdir, "linux-6.18")
+        os.makedirs(os.path.join(sourcedir, "scripts"), exist_ok=True)
+        with open(os.path.join(sourcedir, "scripts", "Makefile.modfinal"),
+                  "w") as f:
+            f.write(MODFINAL)
+        patches = os.path.join(sourcedir, "debian", "patches")
+        os.makedirs(patches, exist_ok=True)
+        if series is not None:
+            for name, content in series:
+                os.makedirs(os.path.join(patches, os.path.dirname(name)),
+                            exist_ok=True)
+                with open(os.path.join(patches, name), "w") as f:
+                    f.write(content)
+            with open(os.path.join(patches, "series"), "w") as f:
+                f.writelines("%s\n" % name for name, _ in series)
+        return sourcedir
+
+    def written(self, sourcedir):
+        import os
+        from seine.packages import MODULE_LDS_PATCH
+        path = os.path.join(sourcedir, "debian", "patches", MODULE_LDS_PATCH)
+        if os.path.isfile(path) == False:
+            return None
+        with open(path, "r") as f:
+            return f.read()
+
+    def test_the_patch_applies_and_names_both_places(self):
+        import os
+        import subprocess
+        from seine.packages import MODULE_LDS_PATCH
+        sourcedir = self.sourcedir()
+        package = self.kernel(
+            "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
+        self.builder()._module_lds_patch(package, sourcedir)
+
+        patch = self.written(sourcedir)
+        self.assertNotEqual(patch, None, "no patch was written")
+        # quilt reads the series, so a patch not in it is not applied.
+        with open(os.path.join(sourcedir, "debian", "patches", "series")) as f:
+            self.assertIn(MODULE_LDS_PATCH, f.read().split())
+
+        subprocess.run(["patch", "-p1", "--batch"], cwd=sourcedir,
+                       input=patch.encode(), check=True,
+                       stdout=subprocess.DEVNULL)
+        with open(os.path.join(sourcedir, "scripts", "Makefile.modfinal")) as f:
+            patched = f.read()
+        self.assertNotIn("$(objtree)/scripts/module.lds -o", patched)
+        self.assertIn("arch/$(SRCARCH)/module.lds", patched,
+                      "the patched rule does not look where Debian installs it")
+        # Both the rule and the prerequisite, or make still has no rule to
+        # make the .ko.
+        self.assertEqual(patched.count("$(ARCH_MODULE_LDS)"), 2)
+
+    def test_the_same_tree_writes_the_same_bytes(self):
+        package = self.kernel(
+            "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
+        written = []
+        for _ in range(2):
+            sourcedir = self.sourcedir()
+            self.builder()._module_lds_patch(package, sourcedir)
+            written.append(self.written(sourcedir))
+        # A timestamp in the header would make every build a new source
+        # package, and every source package a rebuilt kernel.
+        self.assertEqual(written[0], written[1])
+
+    def test_a_patch_already_in_the_series_wins(self):
+        package = self.kernel(
+            "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
+        sourcedir = self.sourcedir(series=[
+            ("debian/kbuild-look-for-module.lds-under-arch-directory-too.patch",
+             "--- a/scripts/Makefile.modfinal\n"
+             "+++ b/scripts/Makefile.modfinal\n")])
+        self.builder()._module_lds_patch(package, sourcedir)
+        # Debian's own, kept because it applied -- or one the specification
+        # rebased. Either answers for the file, and two patches changing
+        # the same rule is one that does not apply.
+        self.assertEqual(self.written(sourcedir), None,
+                         "a second patch was written for a file already patched")
+
+    def test_a_tree_that_does_not_ask_for_it_is_left_alone(self):
+        import os
+        package = self.kernel(
+            "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
+        sourcedir = self.sourcedir()
+        with open(os.path.join(sourcedir, "scripts", "Makefile.modfinal"),
+                  "w") as f:
+            f.write("# nothing here names module.lds\n")
+        self.builder()._module_lds_patch(package, sourcedir)
+        self.assertEqual(self.written(sourcedir), None)
+
+# What the graft does to a tree is code, and code is in no digest -- so
+# the version stands in for it.
+class GraftedKernelsAreRebuiltWhenTheGraftChanges(UpstreamKernel):
+    def test(self):
+        import seine.packages
+        builder = self.builder()
+        grafted = self.kernel(
+            "                              upstream: https://cdn.kernel.org/linux-6.18.43.tar.xz")
+        ordinary = self.kernel("                              flavour: amd64")
+        before = (builder.stamp(grafted), builder.stamp(ordinary))
+
+        version = seine.packages.GRAFT_VERSION
+        try:
+            seine.packages.GRAFT_VERSION = version + 1
+            after = (builder.stamp(grafted), builder.stamp(ordinary))
+        finally:
+            seine.packages.GRAFT_VERSION = version
+
+        self.assertNotEqual(before[0], after[0],
+                            "bumping the graft version did not ask for a rebuild")
+        self.assertEqual(before[1], after[1],
+                         "a package that is not a graft was rebuilt for nothing")
+
 # What Debian's generated debian/control holds for a rebuild whose
 # changelog says UNRELEASED, which a local rebuild's has to: the ABI name
 # is '6.18+unreleased' rather than the '6.1.0-53' a released kernel gets.

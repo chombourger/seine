@@ -8,6 +8,7 @@ import glob
 import hashlib
 import jinja2
 import os
+import difflib
 import re
 import shlex
 import shutil
@@ -117,6 +118,28 @@ FALLBACK_EPOCH = 946684800
 # architecture can run. Not a name any archive uses: it is built here,
 # for the machine doing the building, out of a kernel meant for another.
 CROSS_SUFFIX = "-cross"
+
+# What the graft makes of a tree, beyond the packaging it copies across.
+# The rules seine writes are hashed by content; what seine *does* to a tree
+# is code, and code is in no digest -- so bump this when that changes, or a
+# kernel grafted before it stays as it was.
+GRAFT_VERSION = 1
+
+# Debian generates module.lds during the kernel build, installs it under
+# arch/<arch>/, and carries a kbuild patch to look for it there. A tree
+# that has moved that rule leaves the patch inapplicable, so the graft
+# drops it -- and then nothing links a module at all: the '%.ko' rule wants
+# a file no package installs, and make says it has no rule to make it.
+#
+# The patch is written again for the tree in hand rather than shipped as
+# one to rebase. It touches scripts/ alone, which is what seine already
+# counts as packaging.
+MODFINAL = "scripts/Makefile.modfinal"
+MODULE_LDS = re.compile(r"\$\(objtree\)/scripts/module\.lds")
+MODULE_LDS_PATCH = "debian/module-lds-under-arch-directory.patch"
+MODULE_LDS_FALLBACK = (
+    "ARCH_MODULE_LDS := $(word 1,$(wildcard $(objtree)/scripts/module.lds "
+    "$(objtree)/arch/$(SRCARCH)/module.lds))")
 
 # Where the kernel's own headers packages are staged inside the source
 # package that unpacks them, since a source package cannot reach outside
@@ -1516,6 +1539,84 @@ rm -rf .pc
         with open(path, "w") as f:
             f.write(entry + changelog)
 
+
+    # Whether anything in the series already looks for module.lds where
+    # Debian puts it. Asked of the patches rather than of the tree, since
+    # the tree is unpatched here and stays that way: dpkg-source applies
+    # them. Debian's own patch answers when it was kept, and so does one a
+    # specification rebased and listed under 'patches' -- which is why this
+    # runs after both are in the series rather than during the graft.
+    def _modfinal_is_patched(self, sourcedir):
+        patches = os.path.join(sourcedir, "debian", "patches")
+        series = os.path.join(patches, "series")
+        if os.path.isfile(series) == False:
+            return False
+        with open(series, "r") as f:
+            names = [line.strip() for line in f
+                     if len(line.strip()) > 0 and line.strip().startswith("#") == False]
+        for name in names:
+            path = os.path.join(patches, name)
+            if os.path.isfile(path) and MODFINAL in self._touches(path):
+                return True
+        return False
+
+    # The patch Debian carries, written for the tree that was grafted.
+    #
+    # Only when nothing else answers for it, and only for a tree that asks
+    # for module.lds somewhere no package installs it. What comes out is
+    # the same idea as Debian's: a name that is whichever of the two
+    # places has the file, used everywhere the rule named one.
+    def _module_lds_patch(self, package, sourcedir):
+        path = os.path.join(sourcedir, MODFINAL)
+        if os.path.isfile(path) == False:
+            return
+        if self._modfinal_is_patched(sourcedir):
+            return
+
+        with open(path, "r") as f:
+            before = f.read()
+        if MODULE_LDS.search(before) is None:
+            return
+
+        after = MODULE_LDS.sub("$(ARCH_MODULE_LDS)", before)
+        # In front of the first rule that reads it, which is where Debian
+        # puts it too.
+        anchor = "quiet_cmd_ld_ko_o"
+        if anchor not in after:
+            raise package._error(
+                "'%s' asks for module.lds but has no '%s' to define it "
+                "beside: the tree's kbuild is not shaped the way this "
+                "knows how to patch." % (MODFINAL, anchor))
+        after = after.replace(anchor, "%s\n\n%s" % (MODULE_LDS_FALLBACK, anchor), 1)
+
+        # Written with no dates in it, so the same tree makes the same
+        # source package twice running.
+        diff = difflib.unified_diff(
+            before.splitlines(keepends=True), after.splitlines(keepends=True),
+            fromfile="a/" + MODFINAL, tofile="b/" + MODFINAL, n=3)
+        patches = os.path.join(sourcedir, "debian", "patches")
+        os.makedirs(os.path.join(patches, os.path.dirname(MODULE_LDS_PATCH)),
+                    exist_ok=True)
+        with open(os.path.join(patches, MODULE_LDS_PATCH), "w") as f:
+            f.write("Subject: look for module.lds under the arch directory too\n"
+                    "\n"
+                    "Debian's packaging installs the module.lds its build\n"
+                    "generated under arch/<arch>/, and this tree looks for it\n"
+                    "under scripts/ alone -- so an out-of-tree module has no\n"
+                    "rule to link. Written by seine for this tree.\n"
+                    "---\n")
+            f.writelines(diff)
+        series = os.path.join(patches, "series")
+        existing = ""
+        if os.path.isfile(series):
+            with open(series, "r") as f:
+                existing = f.read()
+        if len(existing) > 0 and existing.endswith("\n") == False:
+            existing += "\n"
+        with open(series, "w") as f:
+            f.write("%s%s\n" % (existing, MODULE_LDS_PATCH))
+        print("wrote '%s' for %s" % (MODULE_LDS_PATCH, MODFINAL))
+
     # The date the build is pinned to. dpkg-buildpackage derives one from
     # the changelog on its own, and sbuild passes it down, but a patch
     # committed to a git tree is dated before any of that runs -- so the
@@ -2859,6 +2960,7 @@ rm -rf .pc
         # for a graft -- an ordinary rebuild never consults them.
         if package.kernel_upstream is not None:
             digest.update(kernel_rules().content)
+            digest.update(str(GRAFT_VERSION).encode())
 
         # And a module is built by the packaging seine writes for it, so
         # that packaging decides what comes out as surely as a patch
@@ -3286,6 +3388,10 @@ rm -rf .pc
         # one there.
         self.extend_module(package, sourcedir, epoch)
         self.patch(package, sourcedir, epoch)
+        # After them: what the series already answers for is not written
+        # again, and a specification's own patches are in it by now.
+        if package.kernel_upstream is not None:
+            self._module_lds_patch(package, sourcedir)
         self.local_release(package, sourcedir, epoch)
         self.extend_kernel(package, sourcedir, self.architectures(package))
         dsc = self.source_package(package, sourcedir)
