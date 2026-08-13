@@ -66,7 +66,10 @@ class Display:
         self.failed = 0
         self.lines = 0
         self.frame = 0
-        self.lock = threading.Lock()
+        # Reentrant: say() is reached from the SIGINT handler, which runs
+        # on the main thread wherever it happened to be -- including
+        # inside started() or finished(), holding this.
+        self.lock = threading.RLock()
         self.ticker = None
         self.stop = threading.Event()
 
@@ -91,6 +94,16 @@ class Display:
                 (FAILED if failed else DONE)[self.fancy], name,
                 "" if started is None
                 else elapsed(self.clock() - started)))
+            self.lines = 0
+            self._redraw()
+
+    # Something worth saying while steps are running. Erase and redraw the
+    # live block around it, as a finished step does: printing past the block
+    # instead leaves the message inside what the next redraw clears.
+    def say(self, text):
+        with self.lock:
+            self._erase()
+            self._line(text)
             self.lines = 0
             self._redraw()
 

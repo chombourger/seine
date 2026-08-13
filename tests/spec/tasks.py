@@ -3,6 +3,7 @@
 import atexit
 import avocado
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -41,6 +42,18 @@ image:
         - label: rootfs
           where: /
 """
+
+# What a terminal is left showing: the display takes lines back with
+# 'move up N, clear', so what survived is not what was written.
+def screen(written):
+    lines = []
+    for chunk in re.split(r"(\x1b\[\d+A\x1b\[J)", written):
+        erased = re.fullmatch(r"\x1b\[(\d+)A\x1b\[J", chunk)
+        if erased is None:
+            lines.extend(chunk.splitlines())
+            continue
+        del lines[len(lines) - int(erased.group(1)):]
+    return lines
 
 def task(name, needs=None, ran=None):
     ran = [] if ran is None else ran
@@ -201,6 +214,100 @@ class AFailureStartsNothingNew(avocado.Test):
             # What was already running was left alone rather than killed:
             # a step interrupted halfway leaves half-written caches.
             self.assertIn("slow", ran)
+
+class AnInterruptStartsNothingNew(avocado.Test):
+    def test(self):
+        import time
+        from seine.tasks import Interrupted, interrupt, run
+
+        ran = []
+        def asks():
+            ran.append("asks")
+            interrupt()
+
+        def slow():
+            time.sleep(0.3)
+            ran.append("slow")
+
+        tasks = [Task("asks", asks),
+                 Task("slow", slow),
+                 task("after", ["asks"], ran),
+                 task("unrelated", ["slow"], ran)]
+        try:
+            run(tasks, jobs=2)
+            self.fail("an interrupted build said it had finished!")
+        except Interrupted as e:
+            self.assertNotIn("after", ran)
+            self.assertNotIn("unrelated", ran)
+            self.assertEqual(sorted(e.cancelled), ["after", "unrelated"])
+            # As a failure does: what was running finishes, so what it was
+            # writing is not left half-done.
+            self.assertIn("slow", ran)
+
+# The display erases the lines it wrote every tenth of a second, so a
+# message written past it does not stay said.
+class AnInterruptSaysSoWhereItCanBeRead(avocado.Test):
+    def test(self):
+        import io
+        from seine.progress import Display
+        from seine.tasks import Interrupted, interrupt, run
+
+        class Terminal(io.StringIO):
+            encoding = "utf-8"
+            def isatty(self):
+                return True
+
+        stream = Terminal()
+        shown = Display(stream=stream, total=2, environment={"TERM": "xterm"})
+
+        def asks():
+            interrupt()
+
+        tasks = [Task("asks", asks), task("after", ["asks"], [])]
+        try:
+            with shown:
+                run(tasks, display=shown)
+            self.fail("an interrupted build said it had finished!")
+        except Interrupted:
+            pass
+        # On the screen at the end, not merely written to it once.
+        self.assertIn("interrupted: waiting for",
+                      "\n".join(screen(stream.getvalue())))
+
+    # Without a display -- a verbose build, or a caller that has none --
+    # nothing redraws the terminal, and stderr is where the key was pressed.
+    def test_with_no_display(self):
+        import io
+        from seine.tasks import Interrupted, interrupt, run
+
+        stderr, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            tasks = [Task("asks", interrupt), task("after", ["asks"], [])]
+            try:
+                run(tasks)
+                self.fail("an interrupted build said it had finished!")
+            except Interrupted:
+                pass
+            self.assertIn("interrupted: waiting for", sys.stderr.getvalue())
+        finally:
+            sys.stderr = stderr
+
+class AnInterruptStopsABuildRunningOneStepAtATime(avocado.Test):
+    def test(self):
+        from seine.tasks import Interrupted, interrupt, run
+
+        ran = []
+        def asks():
+            ran.append("asks")
+            interrupt()
+
+        tasks = [Task("asks", asks), task("after", ["asks"], ran)]
+        try:
+            run(tasks)
+            self.fail("an interrupted build said it had finished!")
+        except Interrupted as e:
+            self.assertEqual(ran, ["asks"])
+            self.assertEqual(e.cancelled, ["after"])
 
 class AFailingTaskSaysWhatItWrote(avocado.Test):
     def test(self):

@@ -13,6 +13,7 @@ import yaml
 from seine.image     import Image
 from seine.cmd       import Cmd
 from seine.partition import PartitionHandler
+from seine.tasks     import Interrupted
 from seine.utils     import ContainerEngine, locked
 
 # Specifications are rendered before they are parsed, so that one file can
@@ -800,6 +801,11 @@ class BuildCmd(Cmd):
         except subprocess.CalledProcessError as e:
             sys.stderr.write("error: build failed: {0}\n".format(e))
             sys.exit(4)
+        # 128 plus SIGINT, as a shell reports it. A second Ctrl-C arrives as
+        # a KeyboardInterrupt: the same answer, without the traceback.
+        except (Interrupted, KeyboardInterrupt) as e:
+            sys.stderr.write("error: build was %s\n" % (str(e) or "interrupted"))
+            sys.exit(130)
 
 # Everything 'build' does up to the point of doing it. The same command with
 # one option decided for it, rather than a second implementation of it: what

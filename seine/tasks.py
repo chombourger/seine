@@ -3,6 +3,7 @@
 
 import concurrent.futures
 import os
+import signal
 import sys
 import threading
 import time
@@ -165,6 +166,67 @@ class Failed(Exception):
             said = said.decode("utf-8", "replace")
         return str(said).splitlines() if said else []
 
+# Ctrl-C answered the way a failure is: nothing new is started, what is
+# running is left to finish, and the build ends non-zero saying what never
+# ran. A second one is the default KeyboardInterrupt, for whoever would
+# rather not wait.
+#
+# The default raises in the middle of a step, skipping the house-keeping it
+# does on its way out -- the same reason a failure lets the steps beside it
+# finish, above.
+class Interrupted(Exception):
+    def __init__(self, cancelled):
+        self.cancelled = cancelled
+        message = "interrupted"
+        if len(cancelled) > 0:
+            message += " (%s did not run)" % ", ".join(sorted(cancelled))
+        super().__init__(message)
+
+_interrupted = threading.Event()
+_running = set()
+_running_lock = threading.Lock()
+# What is drawing the steps while they run, for interrupt() to say into.
+# Set by run(), the only thing that has one.
+_display = None
+
+class _interruptible:
+    def __enter__(self):
+        _interrupted.clear()
+        try:
+            self.previous = signal.signal(signal.SIGINT, self._asked)
+        except ValueError:
+            # Not the main thread, so there is no handler to install.
+            # seine's own build always is; a caller embedding this may not.
+            self.previous = None
+        return self
+
+    def __exit__(self, *args):
+        if self.previous is not None:
+            signal.signal(signal.SIGINT, self.previous)
+        return False
+
+    def _asked(self, signum, frame):
+        signal.signal(signal.SIGINT, self.previous or signal.SIG_DFL)
+        interrupt()
+
+# The same without the key, for a caller stopping a build from code -- and
+# for the tests, which run off the main thread, where SIGINT is not
+# delivered.
+def interrupt():
+    _interrupted.set()
+    with _running_lock:
+        waiting = len(_running)
+    said = ("interrupted: waiting for %d task(s) to finish, "
+            "starting no more" % waiting)
+    # Through the display when there is one: it erases and redraws its own
+    # lines every tenth of a second, taking a message past them with it.
+    if _display is not None:
+        _display.say(said)
+        return
+    # To stderr rather than through print(): a task's output goes to a
+    # file of its own, and this is for whoever pressed the key.
+    sys.stderr.write("\n%s\n" % said)
+
 # What a build would do, without doing any of it: every step in the order
 # they would run, and what each waits for. The order is the same one run()
 # would take, so a plan is not a description of the build but the build
@@ -181,20 +243,30 @@ def describe(tasks):
 # what each step cost, which is what tells a user where the time goes --
 # and so what is worth running beside what.
 def run(tasks, jobs=1, verbose=False, logs=None, display=None):
+    global _display
     tasks = ordered(tasks)
     if logs is not None:
         install()
-    if jobs <= 1:
-        _sequential(tasks, verbose, logs, display)
-        return
+    _display = display
+    try:
+        with _interruptible():
+            if jobs <= 1:
+                _sequential(tasks, verbose, logs, display)
+                return
 
-    install()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        _parallel(tasks, pool, jobs, verbose, logs, display)
+            install()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+                _parallel(tasks, pool, jobs, verbose, logs, display)
+    finally:
+        _display = None
 
 def _sequential(tasks, verbose, logs, display):
-    for task in tasks:
+    for index, task in enumerate(tasks):
+        if _interrupted.is_set():
+            raise Interrupted([t.name for t in tasks[index:]])
         _run_one(task, verbose, logs, display)
+    if _interrupted.is_set():
+        raise Interrupted([])
 
 def _parallel(tasks, pool, jobs, verbose, logs, display):
     done = set()
@@ -205,7 +277,7 @@ def _parallel(tasks, pool, jobs, verbose, logs, display):
     while len(waiting) > 0 or len(running) > 0:
         # Nothing new once something has failed. What is running stays
         # running: see above.
-        if len(failures) == 0:
+        if len(failures) == 0 and _interrupted.is_set() == False:
             ready = [t for t in waiting if all(n in done for n in t.needs)]
             for task in ready[:jobs - len(running)]:
                 waiting.remove(task)
@@ -226,12 +298,16 @@ def _parallel(tasks, pool, jobs, verbose, logs, display):
 
     if len(failures) > 0:
         raise Failed(failures, [t.name for t in waiting])
+    if _interrupted.is_set():
+        raise Interrupted([t.name for t in waiting])
 
 def _run_one(task, verbose, logs, display=None):
     started = time.time()
     task.started = started
     if display is not None:
         display.started(task.name)
+    with _running_lock:
+        _running.add(task.name)
     failed = True
     try:
         if logs is None:
@@ -244,6 +320,8 @@ def _run_one(task, verbose, logs, display=None):
     finally:
         task.ended = time.time()
         task.failed = failed
+        with _running_lock:
+            _running.discard(task.name)
         if display is not None:
             display.finished(task.name, failed=failed)
     if verbose:

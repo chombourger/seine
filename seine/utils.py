@@ -414,12 +414,16 @@ class ContainerEngine:
         said = tail.splitlines()[-ContainerEngine.SAID_LINES:]
         return "\n".join(line.rstrip() for line in said).strip() or None
 
+    # A session of its own for everything the engine runs: Ctrl-C goes to
+    # the terminal's process group, so the key asking seine to start no
+    # more steps would otherwise kill the ones it waits for.
     @staticmethod
     def run(cmd, check=False):
         cmd = ContainerEngine._podman_cmd(cmd)
         output = tasks.output()
         run = subprocess.run(cmd, check=False, stdout=output,
                              stderr=subprocess.STDOUT if output else None,
+                             start_new_session=True,
                              env=ContainerEngine._podman_env())
         if check and run.returncode != 0:
             raise subprocess.CalledProcessError(
@@ -428,9 +432,11 @@ class ContainerEngine:
     @staticmethod
     def check_output(cmd):
         cmd = ContainerEngine._podman_cmd(cmd)
-        return subprocess.check_output(cmd, env=ContainerEngine._podman_env())
+        return subprocess.check_output(cmd, start_new_session=True,
+                                       env=ContainerEngine._podman_env())
     @staticmethod
     def Popen(cmd, stdin=None, stdout=None, stderr=None):
         cmd = ContainerEngine._podman_cmd(cmd)
         return subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr,
+                                start_new_session=True,
                                 env=ContainerEngine._podman_env())

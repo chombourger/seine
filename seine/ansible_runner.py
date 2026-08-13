@@ -166,7 +166,11 @@ class AnsibleContainerRunner:
             # To the task's file when one is capturing, so a playbook's
             # output stays with the rest of what that step did.
             output = tasks.output()
+            # In a session of its own, as the container engine is run: a
+            # playbook killed half-way leaves a half-customized root
+            # file-system.
             subprocess.run(cmd, check=True, stdout=output,
+                           start_new_session=True,
                            stderr=subprocess.STDOUT if output else None)
         finally:
             os.unlink(ansiblefile.name)
