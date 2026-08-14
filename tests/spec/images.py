@@ -75,6 +75,13 @@ def kernel_of(test):
 def builds_nvidia(test):
     return test.release == NVIDIA_RELEASE and kernel_of(test) >= MINIMUM_KERNEL
 
+# bcachefs left the kernel at 6.18 and needs one no older than 6.16, so a
+# configuration qualifies by grafting rather than by its release -- which
+# is one of each architecture, the amd64 one native and the arm64 one
+# cross-compiled.
+def builds_bcachefs(test):
+    return test.grafted
+
 # An image built from the examples as they are shipped, for one release
 # and one board. Nothing is copied here: the specification is the files
 # under examples/, composed on the command line the way a user composes
@@ -129,7 +136,8 @@ class Image(avocado.Test):
             "common/conf-accounts.yaml",
             "common/conf-locales.yaml",
         ] + ([KERNELS[self.release], "slim-kernel.yml"] if self.grafted else []) \
-          + (["nvidia-open.yml"] if builds_nvidia(self) else [])
+          + (["nvidia-open.yml"] if builds_nvidia(self) else []) \
+          + (["bcachefs/bcachefs.yml"] if builds_bcachefs(self) else [])
         specs = [os.path.join(EXAMPLES, name) for name in names]
         for spec in specs:
             self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
@@ -316,16 +324,18 @@ class Image(avocado.Test):
         # for the kernel they were built against rather than for the
         # package, so what this asks is that a module was built for a
         # kernel of this architecture -- not merely that the build ran.
-        built = os.path.join(
-            repository, "nvidia-open-modules-*_%s.deb" % self.architecture)
-        if builds_nvidia(self):
-            modules = glob.glob(built)
-            self.assertNotEqual(modules, [],
-                                "no NVIDIA modules in %s" % repository)
-            self.assertModulesMatchTheirKernel(modules)
-        else:
-            self.assertEqual(self.builtHere(built), [],
-                             "this one was to build no out-of-tree modules")
+        for name, wanted in [("nvidia-open", builds_nvidia(self)),
+                             ("bcachefs", builds_bcachefs(self))]:
+            built = os.path.join(
+                repository, "%s-modules-*_%s.deb" % (name, self.architecture))
+            if wanted:
+                modules = glob.glob(built)
+                self.assertNotEqual(modules, [],
+                                    "no %s modules in %s" % (name, repository))
+                self.assertModulesMatchTheirKernel(modules)
+            else:
+                self.assertEqual(self.builtHere(built), [],
+                                 "this one was to build no %s modules" % name)
 
         # Nothing boots it: what it was worth is that it was produced, and
         # that has been asked. Left behind, four of these are gigabytes a
