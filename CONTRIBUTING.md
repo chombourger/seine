@@ -53,6 +53,8 @@ whole project. The ones in use are:
 | `examples`     | The specifications under `examples/`                  |
 | `image`        | Assembling the root file-system and the disk image    |
 | `imager`       | The libguestfs appliance that writes the disk image   |
+| `kernel`       | What `extends: kernel` means: grafts, patches, ABIs   |
+| `module`       | What `extends: module` means: out-of-tree modules     |
 | `packages`     | The `packages` section and the rebuilds it asks for   |
 | `readme`       | The README                                            |
 | `sbom`         | Software Bill of Materials generation                 |
