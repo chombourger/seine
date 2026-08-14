@@ -4,6 +4,7 @@
 import atexit
 import contextlib
 import fcntl
+import hashlib
 import os
 import platform
 import subprocess
@@ -131,6 +132,13 @@ def locked(path, shared=False, blocking=True):
             yield
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
+
+# What names a set of specification files, for whatever is filed per
+# specification: its last plan, its logs. The names rather than the contents,
+# which change with every edit -- the very thing those are compared across.
+def digest(files, length=None):
+    named = "\0".join(os.path.abspath(f) for f in files)
+    return hashlib.sha256(named.encode()).hexdigest()[:length]
 
 # Label carrying the digest of what an image was built from.
 INPUTS_LABEL = "seine.inputs"

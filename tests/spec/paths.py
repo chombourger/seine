@@ -8,6 +8,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
+from seine.image import Image
 from seine.utils import ContainerEngine
 
 # Nothing is set, so seine's caches and its storage are where they have
@@ -117,5 +118,42 @@ class ScratchContainersDoNotShareAName(avocado.Test):
         self.assertTrue(name.startswith("imager-kernel-debian-bookworm-amd64-"),
                         name)
         self.assertNotIn("/", name)
+
+# One directory per specification, a run of it per build: what a build wrote
+# sits beside what the builds before it wrote.
+class WhereAStepsOutputGoes(avocado.Test):
+    def setUp(self):
+        os.environ["SEINE_BUILD_DIR"] = self.workdir
+        self.image = Image(None, {"files": ["demo.yml"], "keep": False,
+                                  "verbose": False})
+
+    def tearDown(self):
+        os.environ.pop("SEINE_BUILD_DIR", None)
+
+    def test_runs_of_one_specification_share_a_directory(self):
+        first = self.image._logs()
+        second = self.image._logs()
+        self.assertNotEqual(first, second)
+        self.assertEqual(os.path.dirname(first), os.path.dirname(second))
+        self.assertTrue(os.path.basename(os.path.dirname(first)).startswith("logs-"))
+
+    def test_another_specification_is_another_directory(self):
+        other = Image(None, {"files": ["other.yml"], "keep": False,
+                             "verbose": False})
+        self.assertNotEqual(os.path.dirname(self.image._logs()),
+                            os.path.dirname(other._logs()))
+
+    # The digest is of the names, so an edit does not scatter a
+    # specification's logs across directories.
+    def test_the_same_files_name_the_same_directory(self):
+        again = Image(None, {"files": ["demo.yml"], "keep": False,
+                             "verbose": False})
+        self.assertEqual(os.path.dirname(self.image._logs()),
+                         os.path.dirname(again._logs()))
+
+    def test_without_files_it_still_has_somewhere_to_write(self):
+        logs = Image(None, {"keep": False, "verbose": False})._logs()
+        self.assertTrue(os.path.isdir(logs))
+
 if __name__ == "__main__":
     avocado.main()

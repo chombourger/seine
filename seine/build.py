@@ -4,7 +4,6 @@
 import copy
 import difflib
 import getopt
-import hashlib
 import jinja2
 import jinja2.meta
 import os
@@ -18,7 +17,7 @@ from seine.image     import Image
 from seine.cmd       import Cmd
 from seine.partition import PartitionHandler
 from seine.tasks     import Interrupted
-from seine.utils     import ContainerEngine, locked
+from seine.utils     import ContainerEngine, digest, locked
 
 # Specifications are rendered before they are parsed, so that one file can
 # say what is true of several architectures or releases instead of being
@@ -54,13 +53,10 @@ ADDED   = "\x1b[48;5;22m\x1b[97m"
 REMOVED = "\x1b[48;5;52m\x1b[97m"
 RESET   = "\x1b[0m"
 
-# Where the last build's specification is kept. Keyed by the files it was
-# asked for rather than by the specification's own digest, which changes
-# with every edit -- the very thing being compared.
+# Where the last build's specification is kept.
 def _baseline(files):
-    named = "\0".join(os.path.abspath(f) for f in files)
     return os.path.join(ContainerEngine.cache("plans"),
-                        "%s.yml" % hashlib.sha256(named.encode()).hexdigest())
+                        "%s.yml" % digest(files))
 
 # What these files last built, or None. Unreadable counts as never built: a
 # plan is still worth printing without a baseline.
@@ -1048,6 +1044,8 @@ class BuildCmd(Cmd):
         if len(args) == 0:
             sys.stderr.write("error: %s command expects a YAML file\n" % self.NAME)
             sys.exit(1)
+
+        self.options["files"] = args
 
         try:
             self.load_all(args)

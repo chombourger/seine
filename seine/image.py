@@ -6,6 +6,7 @@ import os
 import subprocess
 import tarfile
 import tempfile
+import time
 
 from seine               import analyze
 from seine               import cache_index
@@ -335,6 +336,23 @@ class Image:
         tasks.describe(self.tasks())
         return 0
 
+    # One directory per specification, a run of it per build: what it wrote
+    # sits beside the runs before it, not under a name no one can place.
+    def _logs(self):
+        files = self.options.get("files")
+        if not files:
+            return tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="logs-")
+        run = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        spec = os.path.join(ContainerEngine.scratch(),
+                            "logs-%s" % utils.digest(files, 8))
+        try:
+            path = os.path.join(spec, run)
+            os.makedirs(path)
+            return path
+        except FileExistsError:
+            # Two builds of one specification in the same second.
+            return tempfile.mkdtemp(dir=spec, prefix="%s-" % run)
+
     def build(self):
         if self.options.get("dry_run"):
             return self.plan()
@@ -355,8 +373,7 @@ class Image:
             # knowing in what is not.
             logs = None
             if verbose == False or jobs > 1:
-                logs = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
-                                        prefix="logs-")
+                logs = self._logs()
                 print("output under %s" % logs)
 
             steps = self.tasks()
