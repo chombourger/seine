@@ -982,6 +982,21 @@ class GeneratedPackaging(avocado.Test):
         self.assertFalse(os.path.exists(os.path.join(
             self.source, "debian", "bcachefs-kernel-dkms.dkms")))
 
+    def test_one_kernel_under_two_architectures_is_refused(self):
+        # A kernel built here is built for one architecture, so naming
+        # it under both is the same kernel twice. dh would say so only
+        # after that kernel had been built.
+        with self.assertRaises(ValueError) as refused:
+            self.packaging(spec=MODULE % """
+                              modules: [nvidia]
+                              amd64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+                              arm64-kernels:
+                                  - apt://linux-headers-6.12.101+deb13-amd64
+            """)
+        self.assertIn("6.12.101+deb13-amd64", str(refused.exception))
+        self.assertIn("arm64-kernels", str(refused.exception))
+
     def test_every_architecture_is_described(self):
         control = self.packaging(resolved={
             ("arm64", "apt://linux-headers-arm64"):

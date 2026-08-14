@@ -469,9 +469,11 @@ def extend(builder, package, sourcedir, epoch):
     # Which of them a build makes is decided by the Architecture
     # field, and the build-dependencies are qualified the same way.
     builds = []
+    described = {}
     for architecture in sorted(package.module_kernels):
         kernels = resolved_kernels(builder, package, architecture,
                                    builder.packages)
+        _describe_once(package, described, architecture, kernels)
         builds.append({
             "architecture": architecture,
             # Written here rather than in the template: '[[[ x ]]]'
@@ -534,6 +536,21 @@ def extend(builder, package, sourcedir, epoch):
         _write(os.path.join(debian, name),
                MODULE_TEMPLATE.from_string(templates[name]).render(context),
                mode=0o755 if name == "rules" else None)
+
+# A kernel is described once, however many architectures name it: two
+# resolving to one means a kernel built here was named under both, and it
+# is built for one architecture only.
+def _describe_once(package, described, architecture, kernels):
+    for kernel in kernels:
+        seen = described.get(kernel.release)
+        if seen is not None:
+            raise package._error(
+                "'extends: module: %s-kernels' and '%s-kernels' both name "
+                "'%s', which is one kernel: %s. A kernel built by this "
+                "specification is built for one architecture. Name that "
+                "architecture's own kernel, or take the other list off."
+                % (architecture, seen[0], seen[1], kernel.release))
+        described[kernel.release] = (architecture, kernel.reference)
 
 def _write(path, content, mode=None):
     with open(path, "w") as f:
