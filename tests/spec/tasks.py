@@ -461,6 +461,38 @@ class PackagesOnlyStopsAtThePackages(avocado.Test):
                               "%s waits for %s, which is not in the graph"
                               % (step.name, needed))
 
+# Somebody who wants to look inside a build has no use for the disk it
+# would be written to, or the appliance that writes it.
+class RootfsOnlyStopsAtTheTarball(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.options["rootfs_only"] = True
+        build.loads(PACKAGES)
+        build.parse()
+        names = [t.name for t in build.image.tasks()]
+
+        self.assertIn("bootstrap-host", names)
+        self.assertIn("bootstrap-target", names)
+        self.assertIn("package:seine-test-library", names)
+        self.assertIn("rootfs", names)
+        self.assertIn("tarball", names)
+        for step in ["disk", "appliance", "image"]:
+            self.assertNotIn(step, names)
+
+    # Every step still waits for something that is in the graph.
+    def test_the_graph_is_whole(self):
+        build = BuildCmd()
+        build.options["rootfs_only"] = True
+        build.loads(PACKAGES)
+        build.parse()
+        steps = build.image.tasks()
+        names = set(t.name for t in steps)
+        for step in steps:
+            for needed in step.needs:
+                self.assertIn(needed, names,
+                              "%s waits for %s, which is not in the graph"
+                              % (step.name, needed))
+
 class ADryRunSaysWhatItWouldDo(avocado.Test):
     def spec(self):
         return """
@@ -500,6 +532,22 @@ class ADryRunSaysWhatItWouldDo(avocado.Test):
             self.assertIn(step, said)
         self.assertIn("after bootstrap-host", said)
         self.assertIn("4 steps at a time", said)
+
+    def test_rootfs_only_says_so(self):
+        import contextlib
+        import io
+
+        build = self.build(dry_run=True, rootfs_only=True)
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            self.assertEqual(build.build(), 0)
+        said = said.getvalue()
+
+        self.assertIn("would build the root file-system for", said)
+        for step in ["rootfs", "tarball"]:
+            self.assertIn(step, said)
+        for step in ["disk", "appliance", "image"]:
+            self.assertNotIn(step, said)
 
 class ADryRunSaysWhatItWouldNotRedo(avocado.Test):
     def test(self):

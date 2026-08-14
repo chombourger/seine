@@ -261,13 +261,22 @@ class Image:
         # a step needs is written where someone changing that step will
         # see it. What is left here is the handful of steps this class
         # implements itself, and the order they make between them.
-        return [
+        common = [
             self.hostBootstrap.task(),
             self.targetBootstrap.task(self.hostBootstrap),
         ] + builder.tasks(self.packages, self.hostBootstrap) + [
             Task("rootfs", self.rootfs, needs=["bootstrap-target", "packages"]),
             Task("tarball", self.build_tarball, needs=["rootfs"]),
             SBOM(distro, self.options).task(self),
+        ]
+
+        # '--rootfs-only' stops here: a tarball is what somebody wants to
+        # look inside, and the disk it would be written to, and the
+        # appliance that writes it, are both for booting it.
+        if self.options.get("rootfs_only"):
+            return common
+
+        return common + [
             Task("disk", self._prepare_disk, needs=["tarball"]),
         ] + Imager(self).tasks()
 
@@ -312,8 +321,12 @@ class Image:
     # walk, printed instead of walked.
     def plan(self):
         distro = self.spec["distribution"]
-        what = "the packages" if self.options.get("packages_only") \
-               else "'%s'" % self._output
+        if self.options.get("packages_only"):
+            what = "the packages"
+        elif self.options.get("rootfs_only"):
+            what = "the root file-system"
+        else:
+            what = "'%s'" % self._output
         # How many at a time only when it is more than one: a build that runs
         # its steps in a row is what a plan describes by default, and saying
         # '1 step at a time' says nothing.

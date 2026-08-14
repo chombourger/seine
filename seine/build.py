@@ -306,6 +306,7 @@ class BuildCmd(Cmd):
         "parallel=",
         "rebuild",
         "require-hashes",
+        "rootfs-only",
         "sbom",
         "sign-key=",
         "spec-only",
@@ -319,6 +320,7 @@ class BuildCmd(Cmd):
                          "jobs": 1, "keep": False,
                          "packages_only": False, "parallel": None,
                          "rebuild": False, "require_hashes": False,
+                         "rootfs_only": False,
                          "sbom": False, "sign_key": None, "spec": True,
                          "tasks": True, "verbose": False }
         self.partitionHandler = PartitionHandler()
@@ -1072,6 +1074,8 @@ class BuildCmd(Cmd):
                 self.options["spec"] = False
             elif o in ("--packages-only"):
                 self.options["packages_only"] = True
+            elif o in ("--rootfs-only"):
+                self.options["rootfs_only"] = True
             elif o in ("--dry-run"):
                 self.options["dry_run"] = True
             elif o in ("-D", "--dump"):
@@ -1226,6 +1230,9 @@ Flags:
   --require-hashes      refuse to build when a source is fetched over http with
                         no sha256 to check it against. Reported when the
                         specification is parsed, before anything is downloaded
+  --rootfs-only         build the root file-system as a tarball and stop,
+                        without writing a disk image. What looking inside a
+                        build rather than booting it wants
   --sbom                produce a Software Bill of Materials (SBOM) using
                         debsbom
   --spec-only           with '--dry-run', print the specification and not the

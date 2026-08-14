@@ -1757,8 +1757,8 @@ Its options say how the plan is printed rather than what is in it:
 `--spec-only` and `--tasks-only` for one half of it, `--no-color` (or
 `NO_COLOR` in the environment) for a specification without the bars. For the
 plan of a build with particular options -- `--jobs`, `--rebuild`,
-`--packages-only` -- `seine build --dry-run` is the same thing and takes
-them all:
+`--packages-only`, `--rootfs-only` -- `seine build --dry-run` is the same
+thing and takes them all:
 
 ```
 $ seine build --dry-run --jobs 4 spec.yaml
@@ -2237,6 +2237,10 @@ writing an image:
 seine build --packages-only pc-image.yml
 seine cache export caches.tar
 ```
+
+`--rootfs-only` stops a step later, at the tarball: a root file-system to
+look inside rather than a disk to boot, without the appliance libguestfs
+would otherwise prepare to write one.
 
 An import extends what is already here rather than replacing it, and a
 second import of the same tar changes nothing. Where the two machines built
