@@ -336,6 +336,45 @@ specification carries ansible tasks, and ansible templates those itself, on
 the target, when the playbook runs. `{{ ansible_facts.hostname }}` in a task
 is passed through untouched.
 
+### Redacting what should not be printed
+
+`seine plan` and `seine build --dump` print the specification these files
+merge into, and a specification holds passwords, tokens and keys. A file
+that carries one says so, in a `redact` section of its own:
+
+```
+redact:
+    - \$6\$\S+
+
+playbook:
+    - name: configure user accounts
+      tasks:
+        - name: set root password
+          user: name=root password=$6$X1SbKPWJ2tkpDFZb$khtcnptnTxWEYA4...
+```
+
+which is printed as:
+
+```
+    user: name=root password=<redacted:45db4289>
+```
+
+Each entry is a regular expression, and every string in the specification is
+matched against all of them. What matches is replaced, not the value holding
+it, so a pattern can name the secret inside a larger string -- the password
+of an ansible task whose other arguments are worth reading.
+
+The digest is of the value that was taken out. A plan compares one
+specification against another, and both are printed this way, so a constant
+would have a changed password read as no change at all. It says nothing
+about the secret beyond whether it is the one that was there before.
+
+The section is merged from every file the way the rest of a specification
+is, so the fragment holding a secret is the fragment that declares it, and
+declaring it there covers every image built from that fragment. It only
+governs what is printed: the build itself still sees the value, and so does
+the target.
+
 ### distribution
 
 The `distribution` section will be used to specify the primary source of the

@@ -4,6 +4,7 @@
 import copy
 import difflib
 import getopt
+import hashlib
 import jinja2
 import jinja2.meta
 import os
@@ -878,7 +879,18 @@ class BuildCmd(Cmd):
         elif "image" not in self.spec:
             self.spec["image"] = spec["image"]
 
+    # What a fragment asked not to print, gathered from every file rather
+    # than taken from the last one to say it: the fragment that holds a
+    # secret is the fragment that knows it is one, and it is rarely the
+    # file a build is started from.
+    def _merge_redact(self, spec):
+        for pattern in spec.get("redact") or []:
+            patterns = self.spec.setdefault("redact", [])
+            if pattern not in patterns:
+                patterns.append(pattern)
+
     def merge(self, spec):
+        self._merge_redact(spec)
         self._merge_distro(spec)
         self._merge_imager(spec)
         self._merge_defaults(spec)
@@ -956,8 +968,57 @@ class BuildCmd(Cmd):
         # together and we now have a consolidated specification
         spec.pop("requires", None)
 
+        # take out what the specification asked not to print, everywhere it
+        # appears. The section itself is left as it is: its patterns say
+        # what a reader is not being shown, and one of them matching itself
+        # would hide that too.
+        patterns = self.redactions(spec)
+        for section in spec:
+            if section != "redact":
+                spec[section] = self._redact(spec[section], patterns)
+
         # return the spec in YAML format
         return yaml.dump(spec)
+
+    # What is printed in place of a secret, with a digest of what it stands
+    # for. A constant would have a plan call a changed password no change
+    # at all: the baseline it compares against is a dump too, so both sides
+    # would read the same. The digest changes with the secret and says
+    # nothing about it.
+    REDACTED = "<redacted:%s>"
+
+    @staticmethod
+    def _redacted(match):
+        return BuildCmd.REDACTED % hashlib.sha256(
+            match.group(0).encode()).hexdigest()[:8]
+
+    # The 'redact' section as expressions to match with. Compiled here so
+    # that a pattern that is not one is reported against the section that
+    # holds it, rather than as a traceback out of the middle of a dump.
+    @staticmethod
+    def redactions(spec):
+        patterns = []
+        for pattern in (spec or {}).get("redact") or []:
+            try:
+                patterns.append(re.compile(pattern))
+            except re.error as e:
+                raise ValueError("redact: '%s' is not a pattern: %s"
+                                 % (pattern, e)) from e
+        return patterns
+
+    # A value with every match of those patterns replaced. What matches is
+    # replaced and not the string holding it, so a pattern can name the
+    # secret inside a larger value -- the password of an ansible task whose
+    # other arguments are worth reading.
+    def _redact(self, value, patterns):
+        if type(value) == type({}):
+            return {k: self._redact(v, patterns) for k, v in value.items()}
+        if type(value) == type([]):
+            return [self._redact(v, patterns) for v in value]
+        if type(value) == type(""):
+            for pattern in patterns:
+                value = pattern.sub(BuildCmd._redacted, value)
+        return value
 
     # The same, marked with what changed since these files last built. With
     # no baseline nothing is marked, and stderr says why -- stdout carries

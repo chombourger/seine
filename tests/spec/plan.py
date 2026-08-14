@@ -271,5 +271,76 @@ class ABuildRecordsWhatTheNextPlanReadsAgainst(avocado.Test):
         self.ran(PlanCmd, ["--spec-only", self.spec])
         self.assertIsNone(recall([self.spec]))
 
+# A specification holds passwords and keys, and printing it is showing them
+# to whoever is looking at the terminal. What a fragment says to redact is
+# taken out of what is printed, and out of that only.
+class WhatAFragmentSaysNotToPrint(avocado.Test):
+    SECRET = "$6$X1SbKPWJ2tkpDFZb$khtcnptnTxWEYA4"
+    SPEC = ("redact:\n  - \\$6\\$\\S+\n"
+            "playbook:\n  - name: accounts\n    tasks:\n"
+            "      - name: set root password\n"
+            "        user: name=root update_password=always password=%s\n") % SECRET
+
+    def dumped(self, text=None):
+        build = BuildCmd()
+        build.loads(text or self.SPEC)
+        return build, build.dump(build.spec)
+
+    def test_a_secret_is_not_printed(self):
+        build, said = self.dumped()
+        self.assertNotIn(self.SECRET, said)
+        self.assertIn("password=<redacted:", said)
+        # and the build still has it: what is hidden is what is printed.
+        self.assertIn(self.SECRET, yaml.dump(build.spec))
+
+    # The rest of the value is worth reading, so only the match goes.
+    def test_the_value_around_it_stays(self):
+        self.assertIn("name=root update_password=always", self.dumped()[1])
+
+    # A plan compares one dump against another, so a constant would have a
+    # changed password read as no change at all.
+    def test_a_changed_secret_is_a_changed_line(self):
+        said = self.dumped()[1]
+        other = self.dumped(self.SPEC.replace("X1Sb", "X2Sb"))[1]
+        marked = marks(diff(said, other, color=False))
+        self.assertEqual(len(marked), 2)
+        # what the line changed to is still not the secret.
+        self.assertNotIn("X2Sb", "\n".join(marked))
+
+    # And the same secret twice is the same line: the digest is of the
+    # value, not of where it sits.
+    def test_the_same_secret_is_the_same_line(self):
+        self.assertEqual(self.dumped()[1], self.dumped()[1])
+
+    # The patterns say what a reader is not being shown, and one of them
+    # matching itself would hide that too.
+    def test_the_section_itself_is_printed(self):
+        self.assertIn("\\$6\\$\\S+", self.dumped()[1])
+
+    # The fragment holding a secret is rarely the file a build names, so
+    # what it says to redact is gathered from every file rather than taken
+    # from the last one to say it.
+    def test_it_is_merged_from_every_file(self):
+        build = BuildCmd()
+        build.loads("distribution:\n  release: trixie\n")
+        build.loads(self.SPEC)
+        build.loads("redact:\n  - AKIA[0-9A-Z]+\n"
+                    "image:\n  filename: AKIA0123456789.img\n")
+        said = build.dump(build.spec)
+        self.assertNotIn(self.SECRET, said)
+        self.assertIn("filename: <redacted:", said)
+        self.assertNotIn("AKIA0123456789", said)
+
+    # An expression that is not one is reported against the section that
+    # holds it rather than as a traceback out of the middle of a dump.
+    def test_a_pattern_that_is_not_one(self):
+        with self.assertRaises(ValueError) as raised:
+            self.dumped("redact:\n  - '['\nimage:\n  filename: demo.img\n")
+        self.assertIn("redact:", str(raised.exception))
+
+    # Nothing said, nothing hidden.
+    def test_a_specification_without_the_section(self):
+        self.assertIn("filename: demo.img", self.dumped(SPEC)[1])
+
 if __name__ == "__main__":
     avocado.main()

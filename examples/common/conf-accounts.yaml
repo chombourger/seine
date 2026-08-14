@@ -1,6 +1,11 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
+# the hash below is a password, published or not, and a plan or a dump is
+# read over someone's shoulder. It is printed as '<redacted>'.
+redact:
+    - \$6\$\S+
+
 playbook:
     - name: configure user accounts
       priority: 900
