@@ -1574,6 +1574,12 @@ it -- a compiler and a kernel's headers on the device, and a build at
 first boot. `extends: module:` asks for the other thing, so it writes
 its own packaging over the tree's.
 
+Two examples are shipped. `examples/nvidia-open.yml` builds NVIDIA's
+open GPU modules for whichever kernel a flavour is at, and
+`examples/bcachefs/` builds bcachefs -- which left the kernel at 6.18
+and is maintained beside it -- against the kernel the specification
+builds, since the filesystem needs one newer than trixie ships.
+
 | Setting          | Required | Description                                  |
 | ---------------- |:--------:| -------------------------------------------- |
 | `<arch>-kernels` | yes      | Kernels to build against, per architecture   |

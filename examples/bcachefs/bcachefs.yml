@@ -1,0 +1,71 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# bcachefs, out of tree against the kernel this specification builds:
+# it needs 6.16+, past what trixie ships, so the kernel fragment below
+# is not optional. Built here rather than left to dkms since an image
+# is not administered to compile at first boot.
+#
+#   ./seine.py build examples/common/trixie.yaml     \
+#              examples/common/amd64.yaml           \
+#              examples/common/pc-image.yaml        \
+#              examples/linux-6.18/kernel.yml       \
+#              examples/bcachefs/bcachefs.yml
+
+packages:
+    # Kent's own tree is at evilpiepirate.org; this mirrors it commit for
+    # commit, and holds up better under a clone per build.
+    - source: git://github.com/koverstreet/bcachefs-tools.git;rev=9dc9769fe3d4909cc86eb346514c60eb5d471411
+      # The source package seine builds: the repository is named for the
+      # userspace tools, which the archive packages already.
+      name: bcachefs
+      # What the revision is tagged as -- a tree has no changelog to read
+      # one from. Quoted, because a version is not a number.
+      version: "1.39.1"
+      patches:
+          # dkms/Makefile expects sources 'make install_dkms' staged.
+          # This tree is built as fetched, so it stages them itself.
+          - patches/0001-build-the-module-from-a-checkout.patch
+      extends:
+          module:
+              # The makefile that hands the module to kbuild. The one
+              # at the top of the tree builds the userspace tools, which
+              # want a rust toolchain and a dozen libraries.
+              build: dkms
+              # What that makefile calls the target that builds
+              # modules; seine's default is kbuild's 'modules'.
+              target: default
+              modules:
+                  - bcachefs
+              make-vars:
+                  # Which kernel to build against, under the name this
+                  # tree reads it as -- left alone it asks uname.
+                  KDIR: $KERNEL_OBJ
+                  # What the kernel calls the architecture being built
+                  # for. Left out, kbuild takes the builder's own and a
+                  # cross build hands an aarch64 compiler x86 flags.
+                  ARCH: $KERNEL_ARCH
+                  # The rust half, which the tree otherwise probes for:
+                  # what is built should not depend on what happened to
+                  # be in the chroot.
+                  BCACHEFS_RUST: 0
+              # Which kernel the modules are built against is said by
+              # the architecture file, which names 'linux' under
+              # '<its architecture>-kernels' -- this fragment names no
+              # architecture. A specification composing it without a
+              # kernel to build against is refused when it is parsed.
+
+playbook:
+    - name: install the bcachefs modules
+      priority: 250
+      tasks:
+          # The metapackage: the package it points at is renamed by
+          # every kernel update, and this is not. The modules only --
+          # mounting also wants mount.bcachefs from bcachefs-tools,
+          # left to the image that wants it, since that recommends the
+          # dkms package these modules replace.
+          - name: bcachefs modules
+            apt:
+                state: present
+                name:
+                    - bcachefs-modules-[[ distribution.architecture ]]

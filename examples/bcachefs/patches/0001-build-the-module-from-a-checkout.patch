@@ -1,0 +1,46 @@
+Description: build the module from a checkout, not only from a dkms tree
+ dkms/Makefile hands the module to kbuild as 'src/fs/bcachefs/', a
+ directory that only exists after 'make install_dkms' has staged fs/ into
+ it on its way to installing a dkms source package. A tree built as it is
+ fetched has no such directory, and kbuild is handed nothing to compile.
+ .
+ So the target that needs the sources stages them, from the fs/ beside it,
+ and a modules_install target is added for the packaging that installs
+ what was built -- dkms needs none, since it installs what it built
+ itself.
+Author: seine
+Forwarded: not-needed
+
+--- a/dkms/Makefile
++++ b/dkms/Makefile
+@@ -20,9 +20,29 @@ obj-m += src/fs/bcachefs/
+ else
+ KDIR ?= /lib/modules/`uname -r`/build
+ 
+-default:
++# Where the module's sources have to be for the obj-m above to find
++# them. 'make install_dkms' at the top of the tree is what puts them
++# there, on its way to installing a dkms source package; a tree built
++# straight from a checkout has to stage them itself.
++#
++# Copied rather than symlinked: kbuild writes its objects beside the
++# sources it compiles, and a link would have them land in fs/, which is
++# also what the userspace build compiles into. Objects of one build
++# picked up by the other is how bcachefs.ko ends up linked against libc.
++src/fs/bcachefs:
++	mkdir -p $@
++	tar -C ../fs --exclude='*.o' --exclude='*.d' --exclude='.*.cmd' -cf - . | \
++		tar -C $@ -xf -
++
++default: src/fs/bcachefs
+ 	$(MAKE) -C $(KDIR) M=$$PWD modules
+ 
++# What packaging asks for once the modules are built. The dkms package
++# this makefile was written for never needs it -- dkms installs what it
++# built itself -- but anything packaging the modules does.
++modules_install: src/fs/bcachefs
++	$(MAKE) -C $(KDIR) M=$$PWD modules_install
++
+ clean:
+ 	$(MAKE) -C $(KDIR) M=$$PWD clean
+ endif

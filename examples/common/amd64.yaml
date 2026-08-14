@@ -24,6 +24,14 @@ defaults:
               module:
                   amd64-kernels:
                       - linux
+        # bcachefs needs a kernel newer than the distribution ships, so
+        # unlike the modules above, this is where it names one: composing
+        # examples/bcachefs/ without it is refused when parsed.
+        - name: bcachefs
+          extends:
+              module:
+                  amd64-kernels:
+                      - linux
 
 imager:
     kernel: linux-image-amd64
