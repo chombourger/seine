@@ -931,7 +931,8 @@ class ResolvedKernels(avocado.Test):
 
 # The packaging seine writes for a tree that carries none.
 class GeneratedPackaging(avocado.Test):
-    def packaging(self, architecture="amd64", spec=None, resolved=None):
+    def packaging(self, architecture="amd64", spec=None, resolved=None,
+                  carrying=None):
         from seine.packages import Builder
         from seine.sbuild import BuilderImage
         build = parse_for(architecture, spec or MODULE % """
@@ -952,12 +953,34 @@ class GeneratedPackaging(avocado.Test):
         package = [p for p in build.image.packages if p.module][0]
         source = os.path.join(self.workdir, package.name)
         os.makedirs(source, exist_ok=True)
+        # Packaging the tree came with, as the fetch would leave it.
+        for name, content in (carrying or {}).items():
+            path = os.path.join(source, "debian", name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(content)
         seine.module.extend(builder, package, source, 1700000000)
+        self.source = source
         written = {}
         for name in ["changelog", "control", "rules", "source/format"]:
             with open(os.path.join(source, "debian", name), "r") as f:
                 written[name] = f.read()
         return written
+
+    def test_packaging_the_tree_came_with_is_replaced(self):
+        # A tree that packages itself usually packages the module for
+        # dkms. seine's packaging is what is built instead, with none of
+        # the tree's left behind beside it.
+        written = self.packaging(
+            resolved={("arm64", "apt://linux-headers-arm64"):
+                      "linux-headers-6.12.101+deb13-arm64"},
+            carrying={"control": "Source: bcachefs-tools\n",
+                      "rules": "#!/usr/bin/make -f\n",
+                      "bcachefs-kernel-dkms.dkms": "PACKAGE_NAME=bcachefs\n"})
+        self.assertIn("Source: nvidia-open", written["control"])
+        self.assertNotIn("bcachefs", written["control"])
+        self.assertFalse(os.path.exists(os.path.join(
+            self.source, "debian", "bcachefs-kernel-dkms.dkms")))
 
     def test_every_architecture_is_described(self):
         control = self.packaging(resolved={

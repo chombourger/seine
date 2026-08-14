@@ -1561,11 +1561,18 @@ packages:
                   - apt://linux-headers-amd64
 ```
 
-Such a tree carries a makefile and no `debian/` directory, so seine
-writes the packaging. That is what `name` and `version` are for: the
-repository a clone came from is not what the driver is called, and a
+Such a tree carries a makefile and, usually, no `debian/` directory, so
+seine writes the packaging. That is what `name` and `version` are for:
+the repository a clone came from is not what the driver is called, and a
 tree with no changelog cannot say what version is being built. A
 version is a string -- yaml reads an unquoted `1.10` as `1.1`.
+
+A tree that does carry packaging has it replaced rather than refused.
+What upstream packaging exists for an out-of-tree module tends to ship
+the module as *source*, for dkms to build on whichever machine installs
+it -- a compiler and a kernel's headers on the device, and a build at
+first boot. `extends: module:` asks for the other thing, so it writes
+its own packaging over the tree's.
 
 | Setting          | Required | Description                                  |
 | ---------------- |:--------:| -------------------------------------------- |

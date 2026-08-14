@@ -442,8 +442,11 @@ def _fetch_cross_args(builder, package, architecture):
             "apt-get source $source=$version"
             % {"headers": headers, "architecture": architecture}]
 
-# The packaging for an out-of-tree module, written into the tree that
-# carries none.
+# The packaging for an out-of-tree module, written into the tree.
+#
+# Packaging the tree came with is replaced rather than refused: upstream
+# usually ships dkms, which builds on the machine that installs it -- the
+# opposite of what 'extends: module' asks for.
 #
 # Everything here is generated from what the specification said, so
 # the source package is a function of the specification and the tree,
@@ -456,11 +459,7 @@ def extend(builder, package, sourcedir, epoch):
 
     debian = os.path.join(sourcedir, "debian")
     if os.path.isdir(debian):
-        raise ValueError(
-            "package '%s' carries a debian/ directory of its own. seine "
-            "writes the packaging for an out-of-tree module, so a tree "
-            "that has packaging already is built as an ordinary package "
-            "-- take 'extends: module' off it." % package.name)
+        shutil.rmtree(debian)
     os.makedirs(os.path.join(debian, "source"), exist_ok=True)
 
     # Every architecture's kernels, not only the one being built for.
