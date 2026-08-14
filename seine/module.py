@@ -28,6 +28,7 @@ from seine.kernel import KERNEL_MACHINES
 from seine.kernel import MIN_TOOLS
 from seine.kernel import NO_TOOLS
 from seine.kernel import kernel_architecture
+from seine.sbuild import REPOSITORY
 from seine.utils  import GIT_EMAIL
 from seine.utils  import GIT_NAME
 from seine.utils  import HOST_ARCH
@@ -425,6 +426,14 @@ def _fetch_cross_args(builder, package, architecture):
     headers = package.cross_kernel.headers
     return ["sh", "-c",
             "set -e; "
+            # The repository this build fills, which is where a kernel
+            # built here is and nowhere else. The builder image carries
+            # the distribution's feeds only: what sbuild is handed
+            # separately never reaches a fetch running outside a chroot.
+            "echo 'deb [trusted=yes] file:%(repository)s ./' "
+            "  > /etc/apt/sources.list.d/seine-packages.list; "
+            "echo 'deb-src [trusted=yes] file:%(repository)s ./' "
+            "  >> /etc/apt/sources.list.d/seine-packages.list; "
             "dpkg --add-architecture %(architecture)s; "
             "apt-get update -qq; "
             "mkdir -p .headers; "
@@ -440,7 +449,8 @@ def _fetch_cross_args(builder, package, architecture):
             "  | sed -n 's/^Version: //p' | head -1); "
             "test -n \"$source\" || source=linux; "
             "apt-get source $source=$version"
-            % {"headers": headers, "architecture": architecture}]
+            % {"headers": headers, "architecture": architecture,
+               "repository": REPOSITORY}]
 
 # The packaging for an out-of-tree module, written into the tree.
 #

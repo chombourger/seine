@@ -1501,6 +1501,18 @@ class CrossHeadersAreFetchedAndStamped(avocado.Test):
         # this package is built for.
         self.assertIn("dpkg --add-architecture arm64", command)
 
+    def test_the_repository_this_build_fills_is_asked_too(self):
+        builder, package = self.parts()
+        command = " ".join(seine.module._fetch_cross_args(builder, package, "arm64")[2].split())
+        # A kernel built here is in that repository and in no archive.
+        # Both indexes: the headers are downloaded, the source they name
+        # is fetched.
+        self.assertIn("deb [trusted=yes] file:/packages ./", command)
+        self.assertIn("deb-src [trusted=yes] file:/packages ./", command)
+        # Before apt is asked anything.
+        self.assertLess(command.index("sources.list.d"),
+                        command.index("apt-get update"))
+
     def test_a_kernel_that_moved_is_a_different_package(self):
         first, package = self.parts()
         second, other = self.parts(release="6.18+unreleased2-arm64")
