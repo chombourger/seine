@@ -3,6 +3,8 @@
 
 distribution:
     architecture: arm64
+    architectures:
+        - arm64
 
 # As amd64.yaml beside this: which kernel of this architecture is meant,
 # for a specification that rebuilds one, without asking for a build.

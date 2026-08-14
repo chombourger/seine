@@ -3,6 +3,8 @@
 
 distribution:
     architecture: amd64
+    architectures:
+        - amd64
 
 # Which kernel of this architecture is meant, for a specification that
 # rebuilds one. Under 'defaults' rather than 'packages': naming a package
