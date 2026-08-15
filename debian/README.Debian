@@ -1,0 +1,11 @@
+seine for Debian
+-----------------
+
+seine talks to the target container via the containers.podman Ansible
+connection plugin. That collection is not packaged for Debian, so it
+is not pulled in by this package's dependencies and has to be
+installed once, separately:
+
+    ansible-galaxy collection install containers.podman
+
+ -- Cedric Hombourger <chombourger@gmail.com>

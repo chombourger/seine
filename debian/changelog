@@ -1,3 +1,11 @@
+seine (0.1-2) unstable; urgency=medium
+
+  * Refresh packaging for trixie: debhelper-compat 13, add
+    debian/copyright, drop stale build-dep bits, sync Depends with
+    README.
+
+ -- Cedric Hombourger <chombourger@gmail.com>  Sat, 15 Aug 2026 07:27:22 +0200
+
 seine (0.1-1) stable; urgency=low
 
   * Initial release.

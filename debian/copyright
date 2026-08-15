@@ -1,0 +1,11 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: seine
+Source: https://github.com/chombourger/seine
+
+Files: *
+Copyright: 2019-2026 Cedric Hombourger <chombourger@gmail.com>
+License: Apache-2.0
+
+License: Apache-2.0
+ On Debian systems, the complete text of the Apache License, Version 2.0
+ can be found in "/usr/share/common-licenses/Apache-2.0".
