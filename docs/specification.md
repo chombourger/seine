@@ -227,9 +227,9 @@ stamped with, so the packages are rebuilt against the new snapshot rather
 than kept from the old one.
 
 A second build of the same snapshot fetches nothing: what the first one
-downloaded is in the cache under `~/.cache/seine/downloads`, and a snapshot
-serves the same bytes for a timestamp for ever, so nothing there can go
-stale.
+downloaded is in the cache under `./build/downloads` (see
+[Environment variables](environment.md)), and a snapshot serves the same
+bytes for a timestamp for ever, so nothing there can go stale.
 
 When multiple YAML files are parsed, the last parsed value will be used.
 
@@ -437,7 +437,7 @@ else has them applied to the tree, and committed if that tree came from
 git, so that packaging which records its own revision keeps working.
 
 Rebuilt packages are made available to the rest of the build through a
-local apt repository under `~/.cache/seine/packages/`: the playbooks
+local apt repository under `./build/cache/packages/` (see [Environment variables](environment.md)): the playbooks
 install them with an ordinary `apt` task, later packages build against
 them, and the imager can boot a kernel from them. They are preferred over
 the distribution's own copies, and carry a local revision that sorts above

@@ -134,7 +134,7 @@ seine names the ones it kept when it exits:
 ```
 kept 1 container(s) SEINE_KEEP_DEAD_CONTAINERS asked for:
   414410d4702b7a188ae587257da0a1da35cdf1eca92815997ae252028b210a58
-  remove them with: podman --root ~/.local/share/seine rm -f 414410d...
+  remove them with: podman --root ./build/containers rm -f 414410d...
 ```
 
 The removal command names seine's own storage, since a plain `podman rm`
@@ -333,13 +333,13 @@ holding:
 
 ```
 $ seine cache info
-downloads   253.7 MiB  /home/user/.cache/seine/downloads
-packages      1.1 GiB  /home/user/.cache/seine/packages
-chroots     278.4 MiB  /home/user/.cache/seine/chroots
-bootstraps  485.3 MiB  /home/user/.cache/seine/bootstraps
-images        9.3 GiB  /home/user/.local/share/seine
-analyze      24.0 KiB  /home/user/.cache/seine/analyze
-scratch     365.5 KiB  /var/tmp/seine
+downloads   253.7 MiB  /home/user/project/build/downloads
+packages      1.1 GiB  /home/user/project/build/cache/packages
+chroots     278.4 MiB  /home/user/project/build/cache/chroots
+bootstraps  485.3 MiB  /home/user/project/build/cache/bootstraps
+images        9.3 GiB  /home/user/project/build/containers
+analyze      24.0 KiB  /home/user/project/build/cache/analyze
+scratch     365.5 KiB  /home/user/project/build/tmp
 total        11.4 GiB
 ```
 
@@ -374,8 +374,8 @@ remove:
 
 ```
 $ seine cache info --entries chroots packages
-chroots     278.4 MiB  /home/user/.cache/seine/chroots
-packages      1.1 GiB  /home/user/.cache/seine/packages
+chroots     278.4 MiB  /home/user/project/build/cache/chroots
+packages      1.1 GiB  /home/user/project/build/cache/packages
 total         1.4 GiB
 
 cache      entry                              last used    made
@@ -591,33 +591,12 @@ does not fails the import rather than being quietly skipped.
 
 ### Putting seine's directories on another drive
 
-seine keeps two kinds of large thing outside the working directory: the
-caches that spare the next build the work this one did, and what a build
-makes for itself -- the container images, in podman storage of its own,
-and the scratch space sources and images are assembled in. A home
-directory is commonly the smallest filesystem on a build machine, and a
-couple of kernels fill it. Two optional environment variables move them
-elsewhere; unset, everything stays where it has always been.
-
-| Variable          | Default                  | What it moves |
-|-------------------|--------------------------|---------------|
-| `SEINE_CACHE_DIR` | `~/.cache/seine`         | The caches kept between builds: downloaded packages, rebuilt packages, buildd chroots |
-| `SEINE_BUILD_DIR` | see below                | What a build makes for itself: podman storage (`storage/`) and the scratch space (`tmp/`) |
-
-```
-export SEINE_CACHE_DIR=/drive/seine/cache
-export SEINE_BUILD_DIR=/drive/seine/build
-```
-
-`XDG_CACHE_HOME` is honoured for the caches when `SEINE_CACHE_DIR` is not
-set, so a machine that has already moved every cache does not leave this
-one behind. Without `SEINE_BUILD_DIR`, the images stay in
-`~/.local/share/seine` and the scratch space follows `TMPDIR`, or
-`/var/tmp/seine` when that is unset -- never `/tmp`, which is usually a
-tmpfs, and unpacking a kernel tree into memory takes the machine with it.
-
-The two are separate on purpose: caches are worth keeping, while what a
-build makes for itself is not. Setting one does not move the other.
+A home directory is commonly the smallest filesystem on a build machine,
+and a couple of kernels fill it. `SEINE_BUILD_DIR` moves everything seine
+creates -- container storage, caches, downloads, logs, scratch space -- to
+another drive at once; a variable of its own moves any one of them
+elsewhere instead. See [Environment variables](environment.md) for the
+full layout and every variable that touches it.
 
 ## Software Bill of Materials
 

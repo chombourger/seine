@@ -247,7 +247,9 @@ are installed.
 
 See [docs/building.md](docs/building.md) for what a build actually does,
 watching one run, caching (including moving a cache to another machine),
-cross-compiling, and reproducibility.
+cross-compiling, and reproducibility, and
+[docs/environment.md](docs/environment.md) for every environment variable
+seine reads, including where its directories go.
 
 ## Software Bill of Materials
 
