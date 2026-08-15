@@ -588,7 +588,7 @@ class CarriedCache(avocado.Test):
 
     def images_in(self, space):
         listed = subprocess.check_output(
-            ["podman", "--root", os.path.join(space["SEINE_BUILD_DIR"], "storage"),
+            ["podman", "--root", os.path.join(space["SEINE_BUILD_DIR"], "containers"),
              "images", "--format", "{{.Repository}} {{.Id}}"]).decode()
         return dict(line.split() for line in listed.splitlines()
                     if len(line.split()) == 2 and "<none>" not in line)
@@ -1150,7 +1150,7 @@ class SignedRebuild(avocado.Test):
             "dpkg-query -W -f '\\${Version}' busybox-syslogd"
             % (keyring[0], keyring[0], keyring[0]))
         installed = subprocess.run(
-            ["podman", "--root", os.path.join(space["SEINE_BUILD_DIR"], "storage"),
+            ["podman", "--root", os.path.join(space["SEINE_BUILD_DIR"], "containers"),
              "run", "--rm", "-v", "%s:/packages:ro" % repository,
              "builder/debian/bookworm", "sh", "-c", script],
             capture_output=True)

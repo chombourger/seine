@@ -73,7 +73,17 @@ class Image:
         image = spec["image"]
         if "filename" not in image:
             raise ValueError("output 'filename' not specified in 'image' section!")
-        self._output = image["filename"]
+        filename = image["filename"]
+        # A relative filename follows SEINE_DEPLOY_DIR/SEINE_BUILD_DIR the
+        # way seine's other output does, scoped per release like the
+        # caches are, so two releases built from one checkout don't
+        # overwrite each other's image; an absolute one says where it goes
+        # and is never redirected.
+        if os.path.isabs(filename) == False:
+            deploy = os.path.join(ContainerEngine.deploy_root(), distro["release"])
+            os.makedirs(deploy, exist_ok=True)
+            filename = os.path.join(deploy, filename)
+        self._output = filename
 
         # Validated here so a bad 'packages' section is reported when the
         # specification is parsed rather than once the build reaches it.
@@ -353,11 +363,12 @@ class Image:
     # sits beside the runs before it, not under a name no one can place.
     def _logs(self):
         files = self.options.get("files")
+        base = ContainerEngine.logs_root()
+        os.makedirs(base, exist_ok=True)
         if not files:
-            return tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="logs-")
+            return tempfile.mkdtemp(dir=base)
         run = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-        spec = os.path.join(ContainerEngine.scratch(),
-                            "logs-%s" % utils.digest(files, 8))
+        spec = os.path.join(base, utils.digest(files, 8))
         try:
             path = os.path.join(spec, run)
             os.makedirs(path)

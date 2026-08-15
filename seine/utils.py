@@ -219,15 +219,16 @@ class ContainerEngine:
             failed = False
         finally:
             ContainerEngine.discard(cid, failed=failed)
-    # What a build makes for itself, as opposed to what it keeps: the
-    # container images, in podman storage of seine's own, and the scratch
-    # space sources and images are assembled in. Both are gigabytes, and a
-    # home directory is commonly the smallest filesystem on a build
-    # machine, so SEINE_BUILD_DIR moves them to another drive together.
-    # Unset, each stays where it was.
+    # Everything seine creates while building, as opposed to a spec's own
+    # deliverable, which this never moves. One variable relocates it all;
+    # each SEINE_*_DIR below still overrides its own piece and wins when
+    # both are set. Unset, it defaults to ./build under the working
+    # directory rather than scattering things under the home directory --
+    # made absolute so a step that changes its own working directory
+    # (podman, ansible) still resolves it to the same place.
     @staticmethod
     def build_dir():
-        return os.environ.get("SEINE_BUILD_DIR") or None
+        return os.path.abspath(os.environ.get("SEINE_BUILD_DIR") or "./build")
     # Rootless podman's default graph-root is shared with every other user of
     # podman on the machine; seine relocates it under its own directory so
     # concurrent builds/tests don't collide with (or get confused by) images
@@ -236,47 +237,44 @@ class ContainerEngine:
     # this same path, hence it being its own method rather than inlined.
     @staticmethod
     def root():
-        build = ContainerEngine.build_dir()
-        if build is not None:
-            return os.path.join(build, "storage")
-        home = os.path.expanduser("~")
-        return os.path.join(home, ".local", "share", "seine")
+        return os.path.join(ContainerEngine.build_dir(), "containers")
     # Where large, short-lived files go while a build is running. Not
     # /tmp, which is commonly a tmpfs and so memory -- a kernel source
     # tree is several gigabytes and unpacking one there has been known to
     # take the machine down with it. Not the working directory either,
-    # which is someone's checkout. TMPDIR wins if it is set, as it should,
-    # and SEINE_BUILD_DIR over both: someone who has said where seine's
-    # large files go has said it for this one too.
+    # which is someone's checkout. SEINE_TMP_DIR overrides SEINE_BUILD_DIR.
     @staticmethod
     def scratch():
-        build = ContainerEngine.build_dir()
-        path = os.path.join(build, "tmp") if build is not None \
-               else os.path.join(os.environ.get("TMPDIR") or "/var/tmp", "seine")
+        path = os.environ.get("SEINE_TMP_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "tmp")
         os.makedirs(path, exist_ok=True)
         return path
     # Everything seine keeps between builds because making it again costs
     # time rather than because a build needs it kept. One place for it, so
     # 'seine cache' has one place to look and to empty.
     #
-    # SEINE_CACHE_DIR names that place outright; XDG_CACHE_HOME is honoured
-    # as the standard it is, for someone who has already moved every cache
-    # on the machine and did not mean to leave this one behind.
+    # SEINE_CACHE_DIR names that place outright; unset, it is under
+    # SEINE_BUILD_DIR, on the same reasoning as everything else it moves.
     @staticmethod
     def cache(*names):
-        root = os.environ.get("SEINE_CACHE_DIR")
-        if not root:
-            root = os.path.join(
-                os.environ.get("XDG_CACHE_HOME")
-                or os.path.join(os.path.expanduser("~"), ".cache"), "seine")
+        root = os.environ.get("SEINE_CACHE_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "cache")
         return os.path.join(root, *names)
     # Host-side apt archives cache, bind-mounted into ansible's target
     # container so package downloads survive across builds/releases.
     # Scoped per release: package filenames already carry the architecture,
     # so arm64/amd64 fetches for the same release safely share one dir.
+    #
+    # A root of its own, not a cache subdirectory: SEINE_DL_DIR moves it
+    # the way SEINE_CACHE_DIR moves the rest. Unset, it is under
+    # SEINE_BUILD_DIR.
+    @staticmethod
+    def downloads_root():
+        return os.environ.get("SEINE_DL_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "downloads")
     @staticmethod
     def downloads(release):
-        path = ContainerEngine.cache("downloads", release)
+        path = os.path.join(ContainerEngine.downloads_root(), release)
         os.makedirs(path, exist_ok=True)
         return path
     # Host-side apt repository holding the packages rebuilt from the spec's
@@ -307,18 +305,25 @@ class ContainerEngine:
     # Where podman keeps the state of what is running, as opposed to the
     # images it has stored. The two belong together: podman's default is one
     # runroot per user, so two storages sharing it are two builds sharing
-    # podman's idea of what is mounted.
-    #
-    # Only for a storage seine was told to put elsewhere, which is a storage
-    # being made now. The default one keeps podman's default runroot because
-    # it already has it: podman records the runroot a storage was created
-    # with and refuses to open it with another, so pairing them there would
-    # ask everyone with a storage to throw it away first.
+    # podman's idea of what is mounted. seine's storage is always its own
+    # (under build_dir()'s root()), so it always pairs its own runroot too.
     @staticmethod
     def runroot():
-        if ContainerEngine.build_dir() is None:
-            return None
-        return "%s-run" % ContainerEngine.root()
+        return os.path.join(ContainerEngine.root(), "run")
+    # Where a spec's bare filename lands -- a path of its own is never
+    # touched. SEINE_DEPLOY_DIR says outright; unset, it is under
+    # SEINE_BUILD_DIR.
+    @staticmethod
+    def deploy_root():
+        return os.environ.get("SEINE_DEPLOY_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "deploy")
+    # Kept apart from the scratch space, so a log survives what
+    # 'seine cache clear scratch' or a stray 'rm -rf tmp' takes with it.
+    # SEINE_LOG_DIR names it outright; unset, it is under SEINE_BUILD_DIR.
+    @staticmethod
+    def logs_root():
+        return os.environ.get("SEINE_LOG_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "logs")
     # The image builds cache the packages they fetch, through whatever the
     # engine offers for it -- '--mount=type=cache' today, kept under
     # TMPDIR. Unset, that is /var/tmp, so the archives end up somewhere
@@ -384,10 +389,8 @@ class ContainerEngine:
 
     @staticmethod
     def _podman_cmd(cmd):
-        runroot = ContainerEngine.runroot()
-        if runroot is not None:
-            cmd.insert(0, runroot)
-            cmd.insert(0, "--runroot")
+        cmd.insert(0, ContainerEngine.runroot())
+        cmd.insert(0, "--runroot")
         cmd.insert(0, ContainerEngine.root())
         cmd.insert(0, "--root")
         cmd.insert(0, "podman")

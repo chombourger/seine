@@ -38,7 +38,7 @@ from seine.utils import TOOLING_KIND
 IMAGES = "images"
 
 CACHES = {
-    "downloads": lambda: ContainerEngine.cache("downloads"),
+    "downloads": ContainerEngine.downloads_root,
     "packages":  lambda: ContainerEngine.cache("packages"),
     "chroots":   lambda: ContainerEngine.cache("chroots"),
     # Packages the image builds fetched, which the engine keeps for them.
@@ -913,10 +913,10 @@ Description:
   needed for a build to succeed, so any of it can be removed to get the
   disk space back.
 
-  Where they live can be said with SEINE_CACHE_DIR, and where a build's own
-  container storage and scratch space live with SEINE_BUILD_DIR. Unset, the
-  caches are under ~/.cache/seine (or XDG_CACHE_HOME) and the scratch space
-  follows TMPDIR.
+  SEINE_BUILD_DIR moves all of it -- container storage, downloads, caches
+  and scratch space alike -- to one drive, defaulting to ./build under the
+  working directory; SEINE_CACHE_DIR and SEINE_DL_DIR move the caches or
+  the downloads on their own, and win when both are set.
 
   'export' writes the caches to a tar and 'import' reads one back, so a
   machine that has never built anything can start with the caches of one
