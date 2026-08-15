@@ -89,7 +89,7 @@ the right to submit it under the project's licence -- see the
 ## Tests
 
 The tests live under `tests/spec/` and are run with avocado -- see
-"Running the tests" in the [README](README.md) for how to install it.
+"Running the tests" in [docs/getting-started.md](docs/getting-started.md) for how to install it.
 Run them before opening a pull request:
 
 ```
