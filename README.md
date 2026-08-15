@@ -1532,7 +1532,13 @@ Worth being plain about, since the aim here is a true replacement:
  * **A distinct ABI name.** The rebuild is marked `UNRELEASED`, so a
    6.18.43 tree comes out as `6.18+unreleased-amd64` rather than
    borrowing an ABI number the distribution assigns. Nothing mistakes it
-   for the distribution's kernel, which is the intent.
+   for the distribution's kernel, which is the intent. `abi-suffix`
+   replaces `+unreleased` with a suffix of your own:
+
+   ```
+          kernel:
+              abi-suffix: "+acme1"
+   ```
  * **`linux-libc-dev` from the new tree.** It is built and it is in the
    local repository, above the distribution's, so packages built after
    the kernel and the image itself get its headers. Usually what you

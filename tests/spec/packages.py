@@ -2384,6 +2384,87 @@ class SignedCodeIsLeftAloneWithoutAGraft(UpstreamKernel):
         package = self.kernel("                              flavour: amd64")
         self.assertEqual(package.kernel_upstream, None)
 
+class AbiSuffixOnlyMeansSomethingForAGraft(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel("                              abi-suffix: '+acme1'\n"
+                        "                              flavour: amd64")
+            self.fail("'abi-suffix' was accepted without a graft!")
+        except ValueError:
+            pass
+
+class AbiSuffixNotAString(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel(
+                "                              upstream: git://example.com/bsp.git;rev=deadbeef\n"
+                "                              abi-suffix:\n"
+                "                                  - acme1")
+            self.fail("parsing succeeded for a non-string 'abi-suffix'!")
+        except ValueError:
+            pass
+
+class AbiSuffixRejectsASingleQuote(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel(
+                "                              upstream: git://example.com/bsp.git;rev=deadbeef\n"
+                "                              abi-suffix: \"+ac'me1\"")
+            self.fail("'abi-suffix' with a single quote in it was accepted!")
+        except ValueError:
+            pass
+
+# The '[[debianrelease]]' UNRELEASED sits in, with another beside it that
+# 'abi-suffix' has no business touching.
+DEBIANRELEASE_DEFINES_TOML = """[[debianrelease]]
+name_regex = 'UNRELEASED'
+abi_version_full = false
+abi_suffix = '+unreleased'
+
+[[debianrelease]]
+name_regex = 'unstable'
+abi_suffix = '+deb13'
+"""
+
+class AbiSuffixRewritesTheUnreleasedEntry(UpstreamKernel):
+    def defines(self, contents=DEBIANRELEASE_DEFINES_TOML):
+        path = os.path.join(self.workdir, "debian", "config", "defines.toml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(contents)
+        return path
+
+    def test(self):
+        import tomllib
+        package = self.kernel(
+            "                              upstream: git://example.com/bsp.git;rev=deadbeef\n"
+            "                              abi-suffix: '+acme1'")
+        path = self.defines()
+
+        # Twice, so the second pass overwrites the value it wrote rather
+        # than inserting a second 'abi_suffix', which is a duplicate key
+        # and a file that no longer parses.
+        for _ in range(2):
+            seine.kernel._set_abi_suffix(package, self.workdir)
+            with open(path, "rb") as f:
+                defines = tomllib.load(f)
+            releases = {r["name_regex"]: r["abi_suffix"]
+                       for r in defines["debianrelease"]}
+            self.assertEqual(releases, {"UNRELEASED": "+acme1", "unstable": "+deb13"})
+
+class AbiSuffixNeedsAnUnreleasedEntry(AbiSuffixRewritesTheUnreleasedEntry):
+    def test(self):
+        package = self.kernel(
+            "                              upstream: git://example.com/bsp.git;rev=deadbeef\n"
+            "                              abi-suffix: '+acme1'")
+        self.defines("[[debianrelease]]\nname_regex = 'unstable'\n"
+                     "abi_suffix = '+deb13'\n")
+        try:
+            seine.kernel._set_abi_suffix(package, self.workdir)
+            self.fail("'abi-suffix' was rewritten with no UNRELEASED entry to find!")
+        except ValueError:
+            pass
+
 class NothingVouchesForIt(DeclaredHashes):
     def test(self):
         import hashlib

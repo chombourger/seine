@@ -33,8 +33,9 @@ from seine.utils import WORKDIR
 # debian/, so a fragment appended to the right one is both easier to write
 # and less likely to conflict with the next point release than a patch
 # would be.
-SETTINGS = ["build-files", "config", "drop-patches", "featureset",
-            "flavour", "keep-patches", "upstream", "upstream-sha256"]
+SETTINGS = ["abi-suffix", "build-files", "config", "drop-patches",
+            "featureset", "flavour", "keep-patches", "upstream",
+            "upstream-sha256"]
 
 # What the graft makes of a tree, beyond the packaging it copies across.
 # The rules seine writes are hashed by content; what seine *does* to a tree
@@ -232,6 +233,22 @@ def parse(package, extends):
         package.kernel_upstream = Upstream(settings["upstream"], package._error)
     package.kernel_upstream_sha256 = package._parse_digest(settings,
                                                            "upstream-sha256")
+    # What a graft's ABI carries instead of Debian's own '+unreleased'.
+    # None leaves it alone.
+    package.kernel_abi_suffix = settings.get("abi-suffix")
+    if package.kernel_abi_suffix is not None:
+        if type(package.kernel_abi_suffix) != type(""):
+            raise package._error("'extends: kernel: abi-suffix' shall be a string")
+        if "'" in package.kernel_abi_suffix:
+            raise package._error(
+                "'extends: kernel: abi-suffix' cannot hold a single quote: "
+                "it is written into a TOML string wrapped in one")
+        if package.kernel_upstream is None:
+            raise package._error(
+                "'extends: kernel: abi-suffix' only means something for a "
+                "graft: it is what a grafted kernel's ABI carries in "
+                "place of '+unreleased', and there is no such ABI to "
+                "rename without 'upstream'")
     # None, not a list of globs: with nothing said, which patches are
     # the packaging is decided by what they touch rather than by their
     # names. An explicit empty list is a different answer -- "keep none
@@ -675,6 +692,11 @@ def extend(builder, package, sourcedir, architectures):
         if package.kernel_upstream is not None:
             _disable_signed(package, sourcedir, architecture)
 
+    # One setting in the top-level defines.toml, unlike the edits above:
+    # no per-architecture loop needed.
+    if package.kernel_abi_suffix is not None:
+        _set_abi_suffix(package, sourcedir)
+
     # debian/control lists a binary package per flavour and is generated
     # from the files edited above, so it has to be rebuilt before the
     # source package is; sbuild would otherwise build every flavour the
@@ -834,6 +856,40 @@ def _disable_signed(package, sourcedir, architecture):
                            "defines.toml")
     if os.path.isfile(defines):
         _toml_set(defines, "build", "enable_signed", "false")
+
+# gencontrol.py picks the '[[debianrelease]]' whose 'name_regex' matches
+# the changelog distribution (which stays UNRELEASED) and takes its
+# 'abi_suffix' as the kernel's ABI. Rewriting that value, not the match,
+# is enough: debian/control, the maintainer scripts and the ABINAME the
+# build compiles modules under all read it back from the same place.
+def _set_abi_suffix(package, sourcedir):
+    path = os.path.join(sourcedir, "debian", "config", "defines.toml")
+    with open(path, "r") as f:
+        lines = f.readlines()
+
+    blocks = _toml_blocks(lines)
+    for position in range(len(blocks) - 1):
+        kind, start = blocks[position]
+        if kind != "debianrelease":
+            continue
+        end = blocks[position + 1][1]
+        if _toml_value(lines, start, end, "name_regex") == "UNRELEASED":
+            break
+    else:
+        raise ValueError(
+            "package '%s': debian/config/defines.toml has no "
+            "[[debianrelease]] for 'UNRELEASED' to give 'abi-suffix' to"
+            % package.source)
+
+    value = "'%s'" % package.kernel_abi_suffix
+    existing = _toml_line(lines, start, end, "abi_suffix")
+    if existing is not None:
+        lines[existing] = "abi_suffix = %s\n" % value
+    else:
+        lines.insert(start + 1, "abi_suffix = %s\n" % value)
+
+    with open(path, "w") as f:
+        f.writelines(lines)
 
 # Cuts the build down to the one kernel asked for. Debian builds every
 # featureset and flavour an architecture has, and for the kernel each
