@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 
 path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
@@ -650,11 +651,128 @@ class KernelsAreCountedByTheirAbiName(UpstreamKernel):
         # One kernel where the flavours were restricted, and the debug
         # package and the metapackage beside it counted as neither.
         self.assertEqual(seine.kernel._kernel_packages(path, "amd64"),
-                         ["linux-image-6.18+unreleased-amd64"])
+                         ("6.18+unreleased", ["linux-image-6.18+unreleased-amd64"]))
         # An architecture nothing was restricted on still has all of its.
         self.assertEqual(seine.kernel._kernel_packages(path, "arm64"),
-                         ["linux-image-6.18+unreleased-arm64",
-                          "linux-image-6.18+unreleased-cloud-arm64"])
+                         ("6.18+unreleased",
+                          ["linux-image-6.18+unreleased-arm64",
+                           "linux-image-6.18+unreleased-cloud-arm64"]))
+
+class CheckFlavour(UpstreamKernel):
+    def control(self, contents):
+        path = os.path.join(self.workdir, "debian", "control")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(contents)
+        return path
+
+class CheckFlavourPassesWhenTheRightKernelIsBuilt(CheckFlavour):
+    def test(self):
+        self.control(CONTROL)
+        package = types.SimpleNamespace(
+            source="linux", kernel_featureset="none", kernel_flavour="amd64",
+            kernel_derived_flavours=None)
+        seine.kernel._check_flavour(package, self.workdir, "amd64")
+
+# A count-only check would miss this: one kernel is left, as asked, and
+# it is the wrong one -- 'cloud-arm64', as if 'amd64' had been
+# restricted onto this arm64 fixture by mistake.
+ONE_WRONG_ARM64_KERNEL = """Source: linux
+
+Package: linux-headers-6.18+unreleased-common
+Architecture: all
+
+Package: linux-image-6.18+unreleased-cloud-arm64
+Architecture: arm64
+"""
+
+class CheckFlavourCatchesTheWrongFlavourAtTheRightCount(CheckFlavour):
+    def test(self):
+        self.control(ONE_WRONG_ARM64_KERNEL)
+        package = types.SimpleNamespace(
+            source="linux", kernel_featureset="none", kernel_flavour="arm64",
+            kernel_derived_flavours=None)
+        try:
+            seine.kernel._check_flavour(package, self.workdir, "arm64")
+            self.fail("the wrong flavour passed because the count matched!")
+        except ValueError:
+            pass
+
+# Two kernels, matching 'derived-flavours' asking for two -- but under
+# names it never gave, as if a third file's edit had landed instead of
+# one of these two's.
+TWO_WRONG_DERIVED_KERNELS = """Source: linux
+
+Package: linux-headers-6.18+unreleased-common
+Architecture: all
+
+Package: linux-image-6.18+unreleased-rpi4
+Architecture: arm64
+
+Package: linux-image-6.18+unreleased-rpi6
+Architecture: arm64
+"""
+
+class CheckFlavourCatchesAWrongDerivedName(CheckFlavour):
+    def test(self):
+        self.control(TWO_WRONG_DERIVED_KERNELS)
+        package = types.SimpleNamespace(
+            source="linux", kernel_featureset="none",
+            kernel_derived_flavours={"arm64": {"rpi4": [], "rpi5": []}},
+            kernel_derived_flavours_built={"rpi4", "rpi5"})
+        try:
+            seine.kernel._check_flavour(package, self.workdir, "arm64")
+            self.fail("'rpi5' was never built, and the count alone hid it!")
+        except ValueError:
+            pass
+
+TWO_RIGHT_DERIVED_KERNELS = """Source: linux
+
+Package: linux-headers-6.18+unreleased-common
+Architecture: all
+
+Package: linux-image-6.18+unreleased-rpi4
+Architecture: arm64
+
+Package: linux-image-6.18+unreleased-rpi5
+Architecture: arm64
+"""
+
+class CheckFlavourPassesWhenEveryDerivedNameIsThere(CheckFlavour):
+    def test(self):
+        self.control(TWO_RIGHT_DERIVED_KERNELS)
+        package = types.SimpleNamespace(
+            source="linux", kernel_featureset="none",
+            kernel_derived_flavours={"arm64": {"rpi4": [], "rpi5": []}},
+            kernel_derived_flavours_built={"rpi4", "rpi5"})
+        seine.kernel._check_flavour(package, self.workdir, "arm64")
+
+class CheckFlavourPassesWhenARenamedKernelIsBuilt(CheckFlavour):
+    def test(self):
+        # A single-entry 'derived-flavours' is what a plain rename
+        # looks like now: one base, one name.
+        self.control(ONE_WRONG_ARM64_KERNEL.replace("cloud-arm64", "rpi4"))
+        package = types.SimpleNamespace(
+            source="linux", kernel_featureset="none",
+            kernel_derived_flavours={"arm64": {"rpi4": []}},
+            kernel_derived_flavours_built={"rpi4"})
+        seine.kernel._check_flavour(package, self.workdir, "arm64")
+
+class CheckFlavourCatchesARenameThatDidNotTakeEffect(CheckFlavour):
+    def test(self):
+        # 'derived-flavours' asked for 'rpi4'; this control still has
+        # Debian's own 'arm64', as if '_add_derived_flavours' had never
+        # run.
+        self.control(ONE_WRONG_ARM64_KERNEL.replace("cloud-arm64", "arm64"))
+        package = types.SimpleNamespace(
+            source="linux", kernel_featureset="none",
+            kernel_derived_flavours={"arm64": {"rpi4": []}},
+            kernel_derived_flavours_built={"rpi4"})
+        try:
+            seine.kernel._check_flavour(package, self.workdir, "arm64")
+            self.fail("a rename that never happened passed the check!")
+        except ValueError:
+            pass
 
 # The root debian/config/defines.toml, where featuresets are declared for
 # every architecture at once and one of them already carries an 'enable'.
@@ -798,3 +916,459 @@ class AbiSuffixNeedsAnUnreleasedEntry(AbiSuffixRewritesTheUnreleasedEntry):
             self.fail("'abi-suffix' was rewritten with no UNRELEASED entry to find!")
         except ValueError:
             pass
+
+class DerivedFlavoursNotADict(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel(
+                "                              derived-flavours:\n"
+                "                                  - pc")
+            self.fail("parsing succeeded for a non-dict 'derived-flavours'!")
+        except ValueError:
+            pass
+
+# Both are accepted together rather than one rejecting the other: an
+# architecture file's 'defaults' commonly gives every kernel a plain
+# 'flavour' of its own, for a module built against it, which a package
+# also carrying 'derived-flavours' inherits whether it means to use it
+# or not.
+class DerivedFlavoursIsAcceptedBesideFlavour(UpstreamKernel):
+    def test(self):
+        package = self.kernel(
+            "                              flavour: amd64\n"
+            "                              derived-flavours:\n"
+            "                                  amd64:\n"
+            "                                      pc: []")
+        self.assertEqual(package.kernel_flavour, "amd64")
+        self.assertEqual(package.kernel_derived_flavours, {"amd64": {"pc": []}})
+
+class DerivedFlavoursTakePrecedenceOverFlavour(UpstreamKernel):
+    def test(self):
+        import tomllib
+        path = os.path.join(self.workdir, "debian", "config", "amd64",
+                            "defines.toml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(DEFINES_TOML)
+
+        package = types.SimpleNamespace(
+            source="linux", kernel_flavour="amd64",
+            kernel_derived_flavours={"amd64": {"pc": []}})
+
+        # What 'extend()' itself decides between the two -- restricting
+        # to plain 'amd64' would leave nothing for '_add_derived_flavours'
+        # to find, since the block it looks for is the one this call
+        # renames rather than one 'flavour' alone would keep.
+        if package.kernel_derived_flavours:
+            seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+        else:
+            seine.kernel._restrict_flavour(package, self.workdir, "amd64")
+
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        flavours = {e["name"]: e for e in defines["flavour"]}
+        self.assertEqual(flavours["amd64"].get("enable"), False)
+        self.assertNotEqual(flavours["pc"].get("enable"), False)
+
+class DerivedFlavoursBaseNameRejectsASingleQuote(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel(
+                "                              derived-flavours:\n"
+                "                                  \"amd6'4\":\n"
+                "                                      pc: []")
+            self.fail("a base flavour name with a single quote was accepted!")
+        except ValueError:
+            pass
+
+class DerivedFlavoursInnerNotADict(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel(
+                "                              derived-flavours:\n"
+                "                                  amd64:\n"
+                "                                      - pc")
+            self.fail("a non-dict of derived names was accepted!")
+        except ValueError:
+            pass
+
+class DerivedFlavoursNameRejectsASingleQuote(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel(
+                "                              derived-flavours:\n"
+                "                                  amd64:\n"
+                "                                      \"p'c\": []")
+            self.fail("a derived flavour name with a single quote was accepted!")
+        except ValueError:
+            pass
+
+class DerivedFlavoursFragmentsNotAList(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel(
+                "                              derived-flavours:\n"
+                "                                  amd64:\n"
+                "                                      pc: configs/pc.fragment")
+            self.fail("a non-list of fragments was accepted!")
+        except ValueError:
+            pass
+
+class DerivedFlavoursFragmentsMayBeEmpty(UpstreamKernel):
+    def test(self):
+        package = self.kernel(
+            "                              derived-flavours:\n"
+            "                                  amd64:\n"
+            "                                      pc:")
+        self.assertEqual(package.kernel_derived_flavours, {"amd64": {"pc": []}})
+
+class DerivedFlavoursBaseNeedsAtLeastOneName(UpstreamKernel):
+    def test(self):
+        try:
+            self.kernel(
+                "                              derived-flavours:\n"
+                "                                  amd64: {}")
+            self.fail("a base naming no derived flavour was accepted!")
+        except ValueError:
+            pass
+
+class DerivedFlavoursWorksWithoutAGraft(UpstreamKernel):
+    def test(self):
+        package = self.kernel(
+            "                              derived-flavours:\n"
+            "                                  amd64:\n"
+            "                                      pc: []")
+        self.assertEqual(package.kernel_derived_flavours, {"amd64": {"pc": []}})
+        self.assertEqual(package.kernel_upstream, None)
+
+# A fragment for '_add_derived_flavours' to read the content of -- unlike
+# the parse-level tests above, these are applied to a real defines.toml.
+class DerivedFlavourFragment(UpstreamKernel):
+    def fragment(self, name, content):
+        path = os.path.join(self.workdir, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def defines(self, contents=DEFINES_TOML):
+        path = os.path.join(self.workdir, "debian", "config", "amd64",
+                            "defines.toml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(contents)
+        return path
+
+class DerivedFlavoursAddsABlockPerName(DerivedFlavourFragment):
+    def test(self):
+        import tomllib
+        pc = self.fragment("pc.fragment", "CONFIG_PC=y\n")
+        nas = self.fragment("nas.fragment", "CONFIG_NAS=y\n")
+        package = types.SimpleNamespace(
+            source="linux",
+            kernel_derived_flavours={"amd64": {"pc": [pc], "nas": [nas]}})
+        path = self.defines()
+
+        seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        flavours = {e["name"]: e for e in defines["flavour"]}
+        self.assertEqual(flavours["amd64"].get("enable"), False,
+                         "the base 'amd64' flavour was not disabled")
+        self.assertEqual(flavours["pc"]["build"]["config"], ["amd64/pc.config"])
+        self.assertEqual(flavours["nas"]["build"]["config"], ["amd64/nas.config"])
+        # What each derived flavour's own fragment carried, concatenated
+        # into the file '[flavour.build] config' points at.
+        with open(os.path.join(self.workdir, "debian", "config", "amd64",
+                               "pc.config")) as f:
+            self.assertIn("CONFIG_PC=y", f.read())
+
+class DerivedFlavoursAppendToAnExistingBuildTable(DerivedFlavourFragment):
+    def test(self):
+        import tomllib
+        edge = self.fragment("edge.fragment", "CONFIG_EDGE=y\n")
+        package = types.SimpleNamespace(
+            source="linux",
+            kernel_derived_flavours={"cloud-amd64": {"cloud-edge": [edge]}})
+        path = self.defines()
+
+        seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        flavours = {e["name"]: e for e in defines["flavour"]}
+        # 'cloud-amd64' already had a '[flavour.build] config', so the
+        # derived one's own fragment is appended to it rather than
+        # opening a second table -- which duplicate-key TOML would
+        # refuse to parse at all.
+        self.assertEqual(flavours["cloud-edge"]["build"]["config"],
+                         ["config.cloud", "amd64/cloud-edge.config"])
+
+class DerivedFlavoursFromTwoBasesAtOnce(DerivedFlavourFragment):
+    def test(self):
+        import tomllib
+        pc = self.fragment("pc.fragment", "CONFIG_PC=y\n")
+        hyper = self.fragment("hyper.fragment", "CONFIG_HYPER=y\n")
+        package = types.SimpleNamespace(
+            source="linux",
+            kernel_derived_flavours={"amd64": {"pc": [pc]},
+                                     "cloud-amd64": {"hyper": [hyper]}})
+        path = self.defines()
+
+        seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        flavours = {e["name"]: e for e in defines["flavour"]}
+        self.assertEqual(flavours["amd64"].get("enable"), False)
+        self.assertEqual(flavours["cloud-amd64"].get("enable"), False)
+        self.assertEqual(flavours["pc"]["build"]["config"], ["amd64/pc.config"])
+        self.assertEqual(flavours["hyper"]["build"]["config"],
+                         ["config.cloud", "amd64/hyper.config"])
+
+# One dictionary naming bases from two architectures at once, the way
+# examples/slim-flavours.yml does -- 'arm64' means nothing to an amd64
+# defines.toml, and has to be silently passed over rather than reported
+# as a flavour that does not exist.
+class DerivedFlavoursIgnoreAnotherArchitecturesEntries(DerivedFlavourFragment):
+    def test(self):
+        import tomllib
+        pc = self.fragment("pc.fragment", "CONFIG_PC=y\n")
+        package = types.SimpleNamespace(
+            source="linux",
+            kernel_derived_flavours={"amd64": {"pc": [pc]},
+                                     "arm64": {"rpi4": []}})
+        path = self.defines()
+
+        seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+
+        self.assertEqual(package.kernel_derived_flavours_built, {"pc"})
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        flavours = {e["name"]: e for e in defines["flavour"]}
+        self.assertEqual(flavours["amd64"].get("enable"), False)
+        self.assertEqual(flavours["pc"]["build"]["config"], ["amd64/pc.config"])
+        self.assertNotIn("rpi4", flavours)
+
+# 'pc-lite' derives from 'pc', which is not an original Debian flavour
+# at all -- only something this same setting is itself deriving from
+# 'amd64' -- so materializing it has to happen in the right order.
+class DerivedFlavoursChainFromAnotherDerivedFlavour(DerivedFlavourFragment):
+    def test(self):
+        import tomllib
+        pc = self.fragment("pc.fragment", "CONFIG_PC=y\n")
+        lite = self.fragment("lite.fragment", "CONFIG_LITE=y\n")
+        package = types.SimpleNamespace(
+            source="linux",
+            kernel_derived_flavours={"amd64": {"pc": [pc]},
+                                     "pc": {"pc-lite": [lite]}})
+        path = self.defines()
+
+        seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        flavours = {e["name"]: e for e in defines["flavour"]}
+        self.assertEqual(flavours["amd64"].get("enable"), False,
+                         "the original base was not disabled")
+        # 'pc' ships too: naming it as someone else's base does not take
+        # it away, only 'amd64' -- what it was itself derived from --
+        # loses to it.
+        self.assertNotEqual(flavours["pc"].get("enable"), False,
+                            "an intermediate derived flavour was disabled")
+        self.assertEqual(flavours["pc"]["build"]["config"], ["amd64/pc.config"])
+        # 'pc-lite' carries both fragments, in the order they were
+        # derived: 'pc's own config array, inherited by the copy, with
+        # 'pc-lite's own appended after it.
+        self.assertEqual(flavours["pc-lite"]["build"]["config"],
+                         ["amd64/pc.config", "amd64/pc-lite.config"])
+
+# The same chain, with the entries written in the opposite order --
+# 'pc-lite' before the 'amd64' base it needs -- to prove sequencing is
+# genuinely topological rather than an accident of dict order. Python
+# dicts preserve insertion order, so a loop that only followed that
+# order would materialize 'pc-lite' before 'pc' existed to copy.
+class DerivedFlavoursSequencingDoesNotDependOnDictOrder(DerivedFlavourFragment):
+    def test(self):
+        import tomllib
+        package = types.SimpleNamespace(
+            source="linux",
+            kernel_derived_flavours={"pc": {"pc-lite": []},
+                                     "amd64": {"pc": []}})
+        path = self.defines()
+
+        seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        names = {e["name"] for e in defines["flavour"] if e.get("enable", True)}
+        self.assertEqual(names, {"pc", "pc-lite"})
+
+# Neither end of 'a -> b -> a' resolves to anything real, so the cycle
+# materializes nothing; '_check_flavour' catches it the same way it
+# would a base naming no architecture at all.
+class DerivedFlavoursCatchACycle(DerivedFlavourFragment):
+    def test(self):
+        import tomllib
+        package = types.SimpleNamespace(
+            source="linux",
+            kernel_derived_flavours={"a": {"b": []}, "b": {"a": []}})
+        path = self.defines()
+
+        seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+
+        self.assertEqual(package.kernel_derived_flavours_built, set())
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        # Nothing was touched: 'amd64' and 'cloud-amd64' are exactly as
+        # DEFINES_TOML wrote them, still enabled.
+        self.assertEqual(
+            [e.get("enable", True) for e in defines["flavour"]], [True, True])
+
+# A base naming an architecture this call is not for -- or a typo, which
+# looks the same from here -- materializes nothing rather than failing:
+# only '_check_flavour', comparing what this left built against
+# debian/control, can tell a genuine mismatch from a board file composed
+# without the one that derives the base it names.
+class DerivedFlavoursNeedsThatFlavourToExist(DerivedFlavourFragment):
+    def test(self):
+        import tomllib
+        package = types.SimpleNamespace(
+            source="linux", kernel_derived_flavours={"nosuch": {"pc": []}})
+        path = self.defines()
+
+        seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+
+        self.assertEqual(package.kernel_derived_flavours_built, set())
+        with open(path, "rb") as f:
+            defines = tomllib.load(f)
+        self.assertEqual(
+            [e.get("enable", True) for e in defines["flavour"]], [True, True])
+
+class DerivedFlavoursNeedTheTomlFormat(avocado.Test):
+    def test(self):
+        package = types.SimpleNamespace(
+            source="linux", kernel_derived_flavours={"amd64": {"pc": []}})
+        try:
+            seine.kernel._add_derived_flavours(package, self.workdir, "amd64")
+            self.fail("'derived-flavours' ran with no defines.toml to edit!")
+        except ValueError:
+            pass
+
+class DerivedFlavoursCountInTheDigest(UpstreamKernel):
+    def test(self):
+        builder = self.builder()
+        stamps = []
+        # The revision held fixed: what has to move the digest is the
+        # derived flavour's name, not a side effect of some other
+        # setting moving with it.
+        for entries in ["amd64:\n                                      pc: []",
+                        "amd64:\n                                      pc: []\n"
+                        "                                  cloud-amd64:\n"
+                        "                                      hyper: []"]:
+            build = parse("""
+                packages:
+                    - source: apt://linux
+                      revision: fixed1
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  %s
+        """ % entries)
+            stamps.append(builder.stamp(build.image.packages[0]))
+        self.assertNotEqual(stamps[0], stamps[1],
+                            "adding a derived flavour did not ask for a rebuild")
+
+class DerivedFlavoursCountTheBaseInTheDigest(UpstreamKernel):
+    def test(self):
+        # 'pc' derived from 'amd64' and 'pc' derived from 'cloud-amd64'
+        # are different kernels -- the name alone is not enough to tell
+        # a rebuild is needed.
+        builder = self.builder()
+        stamps = []
+        for base in ["amd64", "cloud-amd64"]:
+            build = parse("""
+                packages:
+                    - source: apt://linux
+                      revision: fixed1
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  %s:
+                                      pc: []
+        """ % base)
+            stamps.append(builder.stamp(build.image.packages[0]))
+        self.assertNotEqual(stamps[0], stamps[1],
+                            "changing what 'pc' derives from did not ask for a rebuild")
+
+class DerivedFlavoursDefaultTheirOwnRevision(avocado.Test):
+    def revision(self, base, names):
+        entries = "\n".join("                                      %s: []" % n
+                            for n in names)
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  %s:
+%s
+        """ % (base, entries))
+        return build.image.packages[0].revision
+
+    def test(self):
+        # Two files rebuilding 'linux' under derived flavours of their
+        # own -- one per architecture, so each is its own build -- would
+        # otherwise both default to 'mod1' and publish the same
+        # '<source>_<version>+mod1.dsc' from two different debian/ trees.
+        self.assertEqual(self.revision("arm64", ["rpi4", "rpi5"]), "rpi4.rpi5")
+        self.assertNotEqual(self.revision("arm64", ["rpi4", "rpi5"]),
+                            self.revision("amd64", ["pc", "nas"]))
+
+class DerivedFlavoursRevisionIsStillOverridable(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      revision: acme3
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  arm64:
+                                      rpi4: []
+                                      rpi5: []
+        """)
+        self.assertEqual(build.image.packages[0].revision, "acme3")
+
+class DerivedFlavoursRevisionRejectsAHyphen(avocado.Test):
+    def test(self):
+        # One name with a hyphen is enough on its own -- the joined
+        # result of several would be too, but there is no need for two
+        # names to prove a '-' cannot survive into a Debian revision.
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  arm64:
+                                      cloud-edge: []
+                                      rpi5: []
+            """)
+            self.fail("a derived flavour name with a hyphen defaulted a revision anyway!")
+        except ValueError:
+            pass
+
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      revision: edge1
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  arm64:
+                                      cloud-edge: []
+                                      rpi5: []
+        """)
+        self.assertEqual(build.image.packages[0].revision, "edge1")

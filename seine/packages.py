@@ -105,6 +105,13 @@ INDEX_CACHE = ".packages.db"
 # overrides it per package.
 DEFAULT_REVISION = "mod1"
 
+# What a Debian version's revision may hold -- letters, digits, '+', '.'
+# and '~', never '-': a hyphen ends the revision and starts a second one,
+# which 'dpkg-parsechangelog' reads as "not a version" rather than as two
+# fields. A flavour name is free to be friendlier than that; whether it
+# is used as a revision is what has to check.
+DEBIAN_REVISION = re.compile(r"^[A-Za-z0-9+.~]+$")
+
 
 
 class Package:
@@ -137,7 +144,28 @@ class Package:
         self.patches = self._parse_list(spec, "patches")
         self.profiles = self._parse_list(spec, "profiles")
         self.sha256 = self._parse_digest(spec, "sha256")
-        self.revision = spec.get("revision", DEFAULT_REVISION)
+        # A kernel with 'derived-flavours' defaults its revision to the
+        # name(s) it derives, not 'mod1': two files rebuilding 'linux'
+        # under different flavours would otherwise publish the same
+        # '<source>_<version>+mod1.dsc'. 'revision' still overrides it.
+        default_revision = DEFAULT_REVISION
+        if self.kernel_derived_flavours:
+            names = sorted(set(name for derived in self.kernel_derived_flavours.values()
+                               for name in derived))
+            # '.', not '-': a derived flavour is free to be named
+            # 'cloud-edge', and joining two such names with '-' would be
+            # indistinguishable from the hyphen 'dpkg-parsechangelog'
+            # itself reads as ending the revision.
+            default_revision = ".".join(names)
+        if ("revision" not in spec and default_revision != DEFAULT_REVISION
+                and DEBIAN_REVISION.match(default_revision) is None):
+            raise self._error(
+                "'%s' cannot be a Debian revision on its own -- only "
+                "letters, digits, '+', '.' and '~' may appear there, "
+                "never '-' -- so this needs 'revision' written down "
+                "instead of taken from the flavour name(s)"
+                % default_revision)
+        self.revision = spec.get("revision", default_revision)
         if type(self.revision) != type(""):
             raise self._error("'revision' shall be a string")
         self.scope = self._parse_scope(spec)
@@ -433,6 +461,13 @@ class Package:
 
     def kernel_config_files(self):
         return self._files(self.kernel_config)
+
+    def kernel_derived_flavour_files(self):
+        files = []
+        for derived in (self.kernel_derived_flavours or {}).values():
+            for fragments in derived.values():
+                files += fragments
+        return self._files(files)
 
     def _files(self, names):
         return [os.path.normpath(n) for n in names]
@@ -1233,6 +1268,15 @@ class Builder:
                      package.revision,
                      str(package.kernel_featureset),
                      str(package.kernel_flavour),
+                     # Every base/name pair, so renaming one or moving it
+                     # to derive from a different base is a rebuild even
+                     # when every fragment's content stays the same; the
+                     # fragments' own content is folded in below, with
+                     # the ones 'kernel_config' names.
+                     ",".join(sorted("%s/%s" % (base, name)
+                             for base, derived in (package.kernel_derived_flavours or {}).items()
+                             for name in derived)),
+                     str(package.kernel_abi_suffix),
                      str(package.kernel_upstream),
                      str(package.kernel_upstream_sha256),
                      str(package.sha256),
@@ -1315,7 +1359,8 @@ class Builder:
         # enough to ask for a rebuild, all the more for a kernel, where the
         # alternative is silently keeping one built from the fragment as it
         # used to read.
-        for path in package.patch_files() + package.kernel_config_files():
+        for path in (package.patch_files() + package.kernel_config_files()
+                    + package.kernel_derived_flavour_files()):
             with open(path, "rb") as f:
                 digest.update(f.read())
 

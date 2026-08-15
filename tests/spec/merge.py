@@ -661,6 +661,58 @@ class KernelsOfDifferentArchitecturesStayApart(avocado.Test):
         self.assertEqual(module["amd64-kernels"], ["apt://linux-headers-amd64"])
         self.assertEqual(module["arm64-kernels"], ["apt://linux-headers-arm64"])
 
+# An architecture file deriving a generic flavour of its own, the way
+# 'slim-amd64' is meant to be built on by a board file.
+DERIVED = """
+                packages:
+                    - source: apt://linux
+                      revision: fixed1
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  amd64:
+                                      slim-amd64: []
+"""
+
+class DerivedFlavoursAreAddedToRatherThanSettled(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(DERIVED)
+        # A board file, deriving its own flavour from the one above --
+        # not an original Debian flavour, so it only exists once both
+        # files' 'derived-flavours' are on the same package.
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  slim-amd64:
+                                      pc: []
+        """)
+        derived = build.spec["packages"][0]["extends"]["kernel"]["derived-flavours"]
+        self.assertEqual(derived, {"amd64": {"slim-amd64": []},
+                                   "slim-amd64": {"pc": []}})
+
+class DerivedFlavoursOfTheSameBaseAreMerged(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(DERIVED)
+        # Another board deriving from the same base as the first file --
+        # both flavours are wanted, so the second file's base is added to
+        # rather than replacing what the first already said about it.
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              derived-flavours:
+                                  amd64:
+                                      cloud-pc: []
+        """)
+        derived = build.spec["packages"][0]["extends"]["kernel"]["derived-flavours"]
+        self.assertEqual(derived, {"amd64": {"slim-amd64": [], "cloud-pc": []}})
+
 class DefaultsAddTheirKernelsToo(avocado.Test):
     def test(self):
         build = BuildCmd()

@@ -33,9 +33,9 @@ from seine.utils import WORKDIR
 # debian/, so a fragment appended to the right one is both easier to write
 # and less likely to conflict with the next point release than a patch
 # would be.
-SETTINGS = ["abi-suffix", "build-files", "config", "drop-patches",
-            "featureset", "flavour", "keep-patches", "upstream",
-            "upstream-sha256"]
+SETTINGS = ["abi-suffix", "build-files", "config", "derived-flavours",
+            "drop-patches", "featureset", "flavour", "keep-patches",
+            "upstream", "upstream-sha256"]
 
 # What the graft makes of a tree, beyond the packaging it copies across.
 # The rules seine writes are hashed by content; what seine *does* to a tree
@@ -249,6 +249,59 @@ def parse(package, extends):
                 "graft: it is what a grafted kernel's ABI carries in "
                 "place of '+unreleased', and there is no such ABI to "
                 "rename without 'upstream'")
+    # One or several flavours of seine's own, derived from an existing
+    # Debian one, keyed by the flavour derived from rather than the
+    # architecture ('armhf' builds 'armmp'). Takes precedence over a bare
+    # 'flavour' rather than erroring when both are set: 'defaults'
+    # commonly gives every kernel one, for a module built against it.
+    package.kernel_derived_flavours = settings.get("derived-flavours")
+    if package.kernel_derived_flavours is not None:
+        if type(package.kernel_derived_flavours) != type({}):
+            raise package._error(
+                "'extends: kernel: derived-flavours' shall be a "
+                "dictionary of Debian flavour names to a dictionary of "
+                "flavours derived from each, with a list of config "
+                "fragments apiece")
+        normalized = {}
+        for base, derived in package.kernel_derived_flavours.items():
+            if type(base) != type("") or "'" in base:
+                raise package._error(
+                    "'extends: kernel: derived-flavours' has a Debian "
+                    "flavour name that is not a string, or holds a "
+                    "single quote -- it is written into a TOML string "
+                    "wrapped in one")
+            if type(derived) != type({}):
+                raise package._error(
+                    "'extends: kernel: derived-flavours: %s' shall be a "
+                    "dictionary of flavour names to a list of config "
+                    "fragments each" % base)
+            names = {}
+            for name, fragments in derived.items():
+                if type(name) != type("") or "'" in name:
+                    raise package._error(
+                        "'extends: kernel: derived-flavours: %s' has a "
+                        "flavour name that is not a string, or holds a "
+                        "single quote -- it is written into a TOML "
+                        "string wrapped in one" % base)
+                if fragments is None:
+                    fragments = []
+                if (type(fragments) != type([])
+                        or any(type(f) != type("") for f in fragments)):
+                    raise package._error(
+                        "'extends: kernel: derived-flavours: %s: %s' "
+                        "shall be a list of config fragments, or left "
+                        "empty" % (base, name))
+                names[name] = fragments
+            if len(names) == 0:
+                raise package._error(
+                    "'extends: kernel: derived-flavours: %s' names no "
+                    "flavour to derive from it" % base)
+            normalized[base] = names
+        package.kernel_derived_flavours = normalized
+    # Filled in by '_add_derived_flavours' with what it actually built
+    # for this architecture, which '_check_flavour' reads back rather
+    # than working it out itself. None until then.
+    package.kernel_derived_flavours_built = None
     # None, not a list of globs: with nothing said, which patches are
     # the packaging is decided by what they touch rather than by their
     # names. An explicit empty list is a different answer -- "keep none
@@ -687,7 +740,14 @@ def extend(builder, package, sourcedir, architectures):
                     with open(fragment, "r") as contents:
                         f.write(contents.read())
 
-        if package.kernel_flavour is not None:
+        # 'derived-flavours' first: a package carrying both is far more
+        # likely to have inherited a plain 'flavour' from an
+        # architecture file's 'defaults' than to mean both at once, and
+        # naming a base already says which Debian flavour 'flavour'
+        # would have.
+        if package.kernel_derived_flavours:
+            _add_derived_flavours(package, sourcedir, architecture)
+        elif package.kernel_flavour is not None:
             _restrict_flavour(package, sourcedir, architecture)
         if package.kernel_upstream is not None:
             _disable_signed(package, sourcedir, architecture)
@@ -735,7 +795,7 @@ def extend(builder, package, sourcedir, architectures):
     # that needs it is built after this.
     _record_abiname(builder, package, sourcedir)
 
-    if package.kernel_flavour is not None:
+    if package.kernel_flavour is not None or package.kernel_derived_flavours:
         for architecture in architectures:
             _check_flavour(package, sourcedir, architecture)
 
@@ -766,11 +826,10 @@ def _record_abiname(builder, package, sourcedir):
 # rules carry one setup target per kernel, named by featureset and
 # flavour, and exactly the one asked for should be left.
 #
-# Asking what is left, rather than confirming that particular kernels
-# are gone, is deliberate. A flavour name is not unique on its own --
-# amd64's realtime and ordinary kernels are both the 'amd64' flavour --
-# so a check phrased as "these should have disappeared" has nothing to
-# look for in exactly the case that matters.
+# Checks what the built names actually are, not only how many: a count
+# that happens to match hides a generator that built the wrong flavour.
+# 'derived-flavours' expects one image per name derived, rather than
+# one for 'flavour' -- the same check, widened.
 def _check_flavour(package, sourcedir, architecture):
     control = os.path.join(sourcedir, "debian", "control")
     if os.path.isfile(control) == False:
@@ -778,23 +837,31 @@ def _check_flavour(package, sourcedir, architecture):
             "package '%s': restricting the kernel left no debian/control "
             "behind" % package.source)
 
-    kernels = _kernel_packages(control, architecture)
-    if len(kernels) != 1:
+    abi, kernels = _kernel_packages(control, architecture)
+    if package.kernel_derived_flavours:
+        # Not the dictionary flattened again: it may name bases from
+        # more than one architecture, and only '_add_derived_flavours'
+        # knows which names it actually made for this one.
+        names = sorted(package.kernel_derived_flavours_built)
+    else:
+        names = [package.kernel_flavour]
+    expected = set("linux-image-%s-%s" % (abi, name) for name in names)
+    if set(kernels) != expected:
         raise ValueError(
-            "package '%s': restricting the kernel to %s/%s did not take "
-            "effect, %d kernels are still built for '%s': %s. The "
-            "generator that rewrites debian/control is allowed to fail, "
-            "so look above for what it said."
+            "package '%s': restricting the kernel for '%s'/'%s' did not "
+            "take effect for architecture '%s' -- expected %s, "
+            "debian/control built %s instead. The generator that "
+            "rewrites it is allowed to fail, so look above for what it "
+            "said."
             % (package.source, package.kernel_featureset,
-               package.kernel_flavour, len(kernels), architecture,
-               ", ".join(kernels)))
+               ", ".join(names) or "none", architecture,
+               ", ".join(sorted(expected)) or "none",
+               ", ".join(sorted(kernels)) or "none"))
 
-# The kernel image packages debian/control builds for an architecture.
-# It is read as the deb822 it is rather than pattern-matched, and the
-# binary packages are asked about rather than the generated makefiles:
-# those write a target and its dependencies on one line, name families
-# that are not kernels at all, and are altogether the wrong thing to
-# be parsing to answer "what will this build".
+# The kernel image packages debian/control builds for an architecture,
+# and the ABI name they share. Read as the deb822 it is, from the binary
+# packages -- the generated makefiles write targets on one line, name
+# non-kernel families too, and are the wrong thing to parse for this.
 def _kernel_packages(control, architecture):
     packages = []
     with open(control, "r") as f:
@@ -812,8 +879,9 @@ def _kernel_packages(control, architecture):
     # linux-image-<abi>-<flavour>, the versioned image packages, one
     # per kernel -- as opposed to the metapackage linux-image-<flavour>
     # pointing at one of them, and the debug packages beside them.
-    prefix = "linux-image-%s-" % _abiname(packages)
-    return sorted(set(
+    abi = _abiname(packages)
+    prefix = "linux-image-%s-" % abi
+    return abi, sorted(set(
         name for name, architectures in packages
         if architecture in architectures
         and name.startswith(prefix) and name.endswith("-dbg") == False))
@@ -958,6 +1026,164 @@ def _restrict_flavour_toml(package, path, architecture, kinds):
 
     with open(path, "w") as f:
         f.writelines(lines)
+
+# For every base named in 'derived-flavours' that is this architecture's,
+# copies its flavour block once per name derived, each pointed at a
+# kconfig fragment of its own; every original block is then disabled,
+# base or not. What belongs to this architecture is worked out from its
+# own defines.toml, since one dictionary may name bases from several.
+def _add_derived_flavours(package, sourcedir, architecture):
+    path = os.path.join(sourcedir, "debian", "config", architecture,
+                        "defines.toml")
+    if os.path.isfile(path) == False:
+        # The ini format's flavour list is just names, with nowhere to
+        # hang a fragment of its own the way '[flavour.build]' does.
+        raise ValueError(
+            "package '%s': 'derived-flavours' needs the toml defines "
+            "format, which architecture '%s' does not have"
+            % (package.source, architecture))
+    with open(path, "r") as f:
+        lines = f.readlines()
+    blocks = _toml_blocks(lines)
+
+    # Every '[[flavour]]' block's position and content, keyed by name.
+    positions = []
+    originals = {}
+    for position in range(len(blocks) - 1):
+        kind, start = blocks[position]
+        if kind != "flavour":
+            continue
+        end = blocks[position + 1][1]
+        positions.append((start, end))
+        originals[_toml_value(lines, start, end, "name")] = list(lines[start:end])
+
+    # 'derived-flavours' flattened to one name-to-(base, fragments) map.
+    # A base is not always an original Debian flavour: it may be another
+    # name in this map, one flavour derived from one already derived.
+    flat = {}
+    for base, derived in package.kernel_derived_flavours.items():
+        for name, fragments in derived.items():
+            flat[name] = (base, fragments)
+
+    # A name is for this architecture only if its base -- directly, or
+    # through a chain of other derived names -- eventually resolves to
+    # one of this architecture's own originals. 'seen' guards a cycle:
+    # neither end of one resolves to anything, so a cycle is simply not
+    # for this architecture rather than an infinite recursion.
+    def resolves_here(base, seen=()):
+        if base in originals:
+            return True
+        if base not in flat or base in seen:
+            return False
+        return resolves_here(flat[base][0], seen + (base,))
+    scope = set(name for name in flat if resolves_here(flat[name][0]))
+
+    # Nothing here is this architecture's: leave every original as
+    # Debian shipped it. '_check_flavour' catches the mismatch -- a
+    # cycle, a missing base, and this all look the same from here.
+    if len(scope) == 0:
+        package.kernel_derived_flavours_built = set()
+        return
+
+    # Depth-first over the names in scope, so a base is always
+    # materialized before what derives from it copies it.
+    order = []
+    def visit(name):
+        if name in order or name not in scope:
+            return
+        visit(flat[name][0])
+        order.append(name)
+    for name in scope:
+        visit(name)
+
+    config_dir = os.path.dirname(path)
+    made = dict(originals)
+    for name in order:
+        base, fragments = flat[name]
+        fragment_name = "%s.config" % name
+        with open(os.path.join(config_dir, fragment_name), "w") as f:
+            for fragment in fragments:
+                f.write("# %s, added by seine\n" % os.path.basename(fragment))
+                with open(fragment, "r") as contents:
+                    f.write(contents.read())
+                f.write("\n")
+        made[name] = _derive_flavour_block(
+            made[base], 0, len(made[base]), name,
+            "%s/%s" % (architecture, fragment_name))
+
+    # Every original is disabled, base or not: it is replaced, not kept
+    # beside its derived flavours. Back to front, so editing one block
+    # never moves the line numbers of one still to come.
+    new_lines = list(lines)
+    shift = 0
+    for start, end in reversed(positions):
+        block = new_lines[start:end]
+        enabled = _toml_line(block, 0, len(block), "enable")
+        if enabled is None:
+            block.insert(1, "enable = false\n")
+            shift += 1
+        else:
+            block[enabled] = "enable = false\n"
+        new_lines[start:end] = block
+
+    insert_at = positions[-1][1] + shift if positions else len(new_lines)
+    derived_lines = []
+    for name in order:
+        derived_lines += made[name]
+    new_lines[insert_at:insert_at] = derived_lines
+
+    with open(path, "w") as f:
+        f.writelines(new_lines)
+
+    # What was actually derived for this architecture, for
+    # '_check_flavour' to compare debian/control against -- it cannot
+    # work this out itself: by the time it runs, the edits above are
+    # already made, and the dictionary alone does not say which
+    # architecture a name was for.
+    package.kernel_derived_flavours_built = set(order)
+
+# One copy of a '[[flavour]]' block, renamed and pointed at a config
+# fragment of its own through '[flavour.build] config'. Appended to an
+# existing 'config' list rather than opening a second '[flavour.build]'
+# when the base already has one -- a base flavour that is itself derived
+# from another, like 'cloud-amd64', already carries one.
+def _derive_flavour_block(lines, start, end, name, config_path):
+    block = list(lines[start:end])
+    idx = _toml_line(block, 0, len(block), "name")
+    block[idx] = "name = '%s'\n" % name
+
+    build = _toml_subtable(block, 0, len(block), "flavour.build")
+    if build is None:
+        insert_at = len(block)
+        for i, line in enumerate(block):
+            if line.strip().startswith("[flavour."):
+                insert_at = i
+                break
+        block[insert_at:insert_at] = [
+            "[flavour.build]\n", "config = ['%s']\n" % config_path]
+        return block
+
+    build_start, build_end = build
+    existing = _toml_line(block, build_start, build_end, "config")
+    if existing is None:
+        block.insert(build_start + 1, "config = ['%s']\n" % config_path)
+    else:
+        block[existing] = re.sub(
+            r"\]\s*\n?$", ", '%s']\n" % config_path, block[existing])
+    return block
+
+# A '[flavour.<name>]' sub-table within a '[[flavour]]' block's own line
+# range -- '_toml_blocks' does not return these, a dotted header being a
+# table nested within the block rather than one of its own.
+def _toml_subtable(lines, start, end, name):
+    header = "[%s]" % name
+    for i in range(start, end):
+        if lines[i].strip() == header:
+            for j in range(i + 1, end):
+                if lines[j].strip().startswith("["):
+                    return i, j
+            return i, end
+    return None
 
 # Every table header, with the block it opens. A dotted name --
 # [flavour.defs] under [[flavour]] -- is a table within the block

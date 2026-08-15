@@ -1,0 +1,48 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# A Raspberry Pi 4 kernel, named for the board rather than the generic
+# trim it builds on. Needs examples/slim-flavours.yml beside it:
+#
+#   ./seine.py build examples/rpi4-image/main.yaml \
+#              examples/slim-flavours.yml         \
+#              examples/rpi4-kernel.yml
+#
+# 'rpi4' derives from 'slim-arm64' (not 'arm64' directly), adding
+# examples/configs/rpi4.fragment on top. 'revision' is written down
+# since 'slim-arm64' cannot be a Debian revision on its own ('-' in
+# it); 'profiles' is not repeated, as in examples/pc-kernel.yml.
+#
+# The fragment turns off every *other* multiplatform board arm64
+# carries, and turns this board's own storage, network and wireless
+# back on where the generic trim took them out.
+
+packages:
+    - source: apt://linux
+      revision: rpi41
+      extends:
+          kernel:
+              derived-flavours:
+                  slim-arm64:
+                      rpi4:
+                          - configs/rpi4.fragment
+
+# examples/common/rpi4-image.yaml already installed the stock kernel by
+# the time this runs -- playbooks only ever add tasks, never edit one
+# another's -- so this both installs the rebuild and removes what it
+# replaces, rather than asking that file to know a flavour of this name
+# might come along later.
+playbook:
+    - name: boot the rpi4 kernel instead of the distribution's
+      priority: 850
+      tasks:
+          - name: install the rpi4 kernel
+            apt:
+                state: present
+                name:
+                    - linux-image-rpi4
+          - name: remove the distribution's arm64 kernel
+            apt:
+                state: absent
+                name:
+                    - linux-image-arm64

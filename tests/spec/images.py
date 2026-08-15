@@ -881,6 +881,141 @@ class ScopedRebuild(avocado.Test):
             self.assertIn("busybox:%s" % architecture, planned)
         self.assertIn("already built, and not built again", planned)
 
+# 'derived-flavours' against a real sbuild rather than a scripted control
+# regeneration: what a spike proved by reading debian/control is checked
+# here by reading the repository a real build actually published.
+class AllDerivedFlavoursAreBuilt(avocado.Test):
+    """
+    :avocado: tags=full,container
+    """
+    timeout = 7200
+
+    def setUp(self):
+        self.spaces = []
+        if PLAN != "full":
+            self.cancel("SEINE_TEST_PLAN=full builds packages; this takes a while")
+        if shutil.which("podman") is None:
+            self.cancel("podman is needed to rebuild a package")
+
+    def tearDown(self):
+        for space in self.spaces:
+            subprocess.run(["podman", "unshare", "rm", "-rf", space],
+                           check=False)
+        remove_artifacts(self.workdir)
+
+    def space(self, name):
+        path = os.path.join(self.workdir, name)
+        environment = dict(os.environ)
+        environment["PATH"] = "%s:%s" % (os.path.dirname(sys.executable),
+                                         environment.get("PATH", ""))
+        environment["SEINE_CACHE_DIR"] = os.path.join(path, "cache")
+        environment["SEINE_BUILD_DIR"] = os.path.join(path, "build")
+        self.spaces.append(path)
+        return environment
+
+    def seine(self, space, args, log):
+        where = os.path.join(self.outputdir, "%s.log" % log)
+        with open(where, "w") as f:
+            run = subprocess.run(
+                [sys.executable, "-u", "./seine.py"] + args,
+                cwd=path_to_sources, env=space, stdout=f,
+                stderr=subprocess.STDOUT)
+        with open(where, "r", errors="replace") as f:
+            said = f.read()
+        self.assertEqual(run.returncode, 0,
+                         "'%s' failed, see %s" % (" ".join(args), where))
+        return said
+
+    # Three derived names, none given a fragment of its own: what is
+    # under test is the packaging 'derived-flavours' produces. 'alphalite'
+    # chains off 'alpha' so the real sbuild -- not a scripted control
+    # regeneration -- checks a chained flavour actually compiles.
+    def specification(self):
+        names = ["common/trixie.yaml", "common/%s.yaml" % HOST_ARCH]
+        specs = [os.path.join(EXAMPLES, name) for name in names]
+        for spec in specs:
+            self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
+
+        where = os.path.join(self.workdir, "derived.yml")
+        with open(where, "w") as f:
+            f.write(
+                "packages:\n"
+                "    - source: apt://linux\n"
+                "      extends:\n"
+                "          kernel:\n"
+                "              config:\n"
+                "                  - %(common)s\n"
+                "                  - %(arch_fragment)s\n"
+                "              derived-flavours:\n"
+                "                  %(arch)s:\n"
+                "                      alpha: []\n"
+                "                      beta: []\n"
+                "                  alpha:\n"
+                "                      alphalite: []\n"
+                "      profiles:\n"
+                "          - pkg.linux.nokerneldbginfo\n"
+                "          - pkg.linux.notools\n"
+                "          - pkg.linux.nosource\n"
+                "          - nodoc\n"
+                "          - noudeb\n"
+                "image:\n"
+                "    filename: derived.img\n"
+                "    partitions:\n"
+                "        - label: rootfs\n"
+                "          where: /\n"
+                % {"arch": HOST_ARCH,
+                   "common": os.path.join(EXAMPLES, "configs", "slim-common.fragment"),
+                   "arch_fragment": os.path.join(
+                       EXAMPLES, "configs", "slim-%s.fragment" % HOST_ARCH)})
+        return specs + [where]
+
+    def repository(self, space):
+        return os.path.join(space["SEINE_CACHE_DIR"], "packages", "trixie")
+
+    def debs(self, space, pattern):
+        return sorted(os.path.basename(path) for path in
+                      glob.glob(os.path.join(self.repository(space), pattern)))
+
+    def test(self):
+        space = self.space("derived")
+        self.seine(space, ["build", "-v", "--packages-only"]
+                   + self.specification(), "build")
+
+        # One image per derived name -- 'alphalite' included, even
+        # though what it derives from is itself a name and not an
+        # original Debian flavour.
+        for name in ["alpha", "beta", "alphalite"]:
+            self.assertNotEqual(
+                self.debs(space, "linux-image-*-%s_*_%s.deb" % (name, HOST_ARCH)),
+                [], "no image was built for derived flavour '%s'" % name)
+            self.assertNotEqual(
+                self.debs(space, "linux-image-%s_*_%s.deb" % (name, HOST_ARCH)),
+                [], "no 'linux-image-%s' metapackage was built" % name)
+
+        # The base flavour is not among them; it is checked by being
+        # built, above, since 'alphalite' derives from it and nothing
+        # else could produce it.
+        self.assertEqual(
+            self.debs(space, "linux-image-*-%s_*_%s.deb" % (HOST_ARCH, HOST_ARCH)),
+            [], "the base flavour '%s' was still built beside its "
+                "derived ones" % HOST_ARCH)
+
+        # One '-common' headers package, shared rather than built once
+        # per derived flavour.
+        self.assertEqual(
+            len(self.debs(space, "linux-headers-*-common_*_all.deb")), 1,
+            "the shared headers package was not built exactly once")
+
+        # One source package: 'derived-flavours' is several images out
+        # of one debian/ tree, not one rebuild per name.
+        self.assertEqual(len(self.debs(space, "linux_*.dsc")), 1,
+                         "more than one 'linux' source package was published")
+
+        # And a rebuild asks for it again for neither reason.
+        planned = self.seine(space, ["build", "--dry-run", "--packages-only"]
+                                    + self.specification(), "plan")
+        self.assertIn("already built, and not built again", planned)
+
 # Signing, against a real archive, a real sbuild and a real apt.
 #
 # A key made for the test in a GNUPGHOME of its own, so nothing here

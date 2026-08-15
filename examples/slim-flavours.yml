@@ -1,0 +1,36 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# The generic trim examples/slim-kernel.yml applies in place, given
+# names of their own -- 'slim-amd64' and 'slim-arm64'. Meant to be
+# built on, not installed by itself; examples/rpi4-kernel.yml and
+# examples/pc-kernel.yml each add a board flavour under one of these
+# bases rather than repeating examples/configs/slim-*.fragment:
+#
+#   ./seine.py build examples/pc-image/main.yaml \
+#              examples/slim-flavours.yml       \
+#              examples/pc-kernel.yml
+#
+# Carries no 'revision' of its own -- these names can't default one
+# ('-' in them) and this file can't know which board's should win. The
+# board file supplies it.
+
+packages:
+    - source: apt://linux
+      extends:
+          kernel:
+              derived-flavours:
+                  amd64:
+                      slim-amd64:
+                          - configs/slim-common.fragment
+                          - configs/slim-amd64.fragment
+                  arm64:
+                      slim-arm64:
+                          - configs/slim-common.fragment
+                          - configs/slim-arm64.fragment
+      profiles:
+          - pkg.linux.nokerneldbginfo
+          - pkg.linux.notools
+          - pkg.linux.nosource
+          - nodoc
+          - noudeb

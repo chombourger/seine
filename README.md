@@ -866,7 +866,11 @@ is a couple of megabytes and for a kernel is a couple of hundred.
 Every rebuilt package is given a version of its own: a changelog entry is
 added marking the source `UNRELEASED` and appending `revision` to the
 version, `mod1` unless the specification says otherwise. So a rebuilt
-`busybox 1:1.37.0-6` is installed as `1:1.37.0-6+mod1`.
+`busybox 1:1.37.0-6` is installed as `1:1.37.0-6+mod1`. A kernel using
+[`derived-flavours`](#rebuilding-the-kernel) is the one exception: its
+default is the name(s) actually derived instead, since two files naming
+`derived-flavours` are usually two architectures rebuilding the same
+`linux` under names of their own.
 
 It is there so that what a machine is running can be read off `dpkg -l`
 rather than guessed at, and so that apt prefers the rebuild on version
@@ -1381,6 +1385,118 @@ changes flavour or featureset changes that name too.
 
 Naming a featureset or flavour the architecture does not have is an error
 listing the ones it does.
+
+One `linux` source package builds three kinds of kernel this way, all
+from the same one-sbuild-run-per-architecture rebuild. Debian's own
+flavour covers every machine of that architecture, at the cost of
+carrying every machine's drivers. A flavour derived from it with nothing
+board-specific yet -- `slim-arm64`, in the examples below -- narrows
+that once, to "any appliance of this architecture", and is what every
+board sharing that architecture derives from rather than each repeating
+the same trim. A flavour derived from *that* -- `rpi4` -- narrows it
+again, to one board, built in what only that board needs and stripped
+of what only some other board would have wanted. Three flavours, three
+things known about the machine running each, and still the one rebuild.
+
+`derived-flavours` gives a Debian flavour a name of its own, with
+configuration of its own, rather than building it as Debian's own name
+and packaging:
+
+```
+          kernel:
+              derived-flavours:
+                  arm64:
+                      rpi4:
+                          - configs/rpi4.fragment
+```
+
+`linux-image-arm64` comes out `linux-image-rpi4` instead, with the
+headers and `-dbg` packages beside it following -- everything but the
+ABI, which is still read off the kernel version. The key is the Debian
+flavour being derived from, not the architecture: they usually read the
+same (`amd64`, `arm64`), but not always -- `armhf` builds `armmp` -- and
+which architecture is being built is already answered by the
+specification's own `architecture`, so naming it again here would only
+be able to disagree. `flavour` names a bare rebuild of one of Debian's
+own flavours, unrenamed; `derived-flavours` is a replacement for it
+rather than something written beside it, and takes precedence if both
+somehow end up set -- an architecture file's `defaults` commonly gives
+every kernel a plain `flavour`, for a module built against it, which a
+package also deriving inherits whether it means to use it or not.
+
+A single name under one base, as above, is a plain rename. Several are
+several flavours out of the one source package this builds, sharing one
+sbuild run rather than costing one apiece:
+
+```
+          kernel:
+              derived-flavours:
+                  arm64:
+                      rpi4:
+                          - configs/rpi4.fragment
+                      rpi5:
+                          - configs/rpi5.fragment
+```
+
+Each name's fragment list is appended to `config`'s on top of the base
+flavour's own -- Debian's own mechanism for telling `cloud-amd64` apart
+from `amd64`, not something seine adds beside it, so a name already in
+use by the architecture (`cloud-arm64`, say) works the same way a fresh
+one does. A name's list may be left empty or out entirely: a derived
+flavour with nothing beyond the common `config` is still a flavour of
+its own -- which is all a plain rename is.
+
+A base does not have to be one of Debian's own flavours -- it may be
+another name derived here, one flavour built on one already derived:
+
+```
+          kernel:
+              derived-flavours:
+                  arm64:
+                      slim-arm64:
+                          - configs/slim-common.fragment
+                          - configs/slim-arm64.fragment
+                  slim-arm64:
+                      rpi4:
+                          - configs/rpi4.fragment
+```
+
+`rpi4` comes out with both fragment lists, `slim-arm64`'s and its own,
+in that order -- and `slim-arm64` is still built too, under its own
+name: naming it as another flavour's base does not take it away, only
+`arm64` -- what it was itself derived from -- loses to it. Names may be
+given across several files this way, each adding to what an earlier one
+started rather than replacing it -- one file deriving the generic
+flavour, a board file naming it as the base for one of its own, which is
+what `examples/slim-flavours.yml`, `examples/pc-kernel.yml` and
+`examples/rpi4-kernel.yml` do.
+
+The whole dictionary may name bases from more than one architecture at
+once -- `examples/slim-flavours.yml` derives `slim-amd64` from `amd64`
+and `slim-arm64` from `arm64` in the one entry, since a shared fragment
+covering every architecture is more useful than one file per
+architecture repeating the same shape. Only the entries for the
+architecture actually being built are ever reached; the rest are
+silently not this build's problem, the same as a base naming nothing at
+all or a cycle of two names deriving from each other -- none of them is
+an error on their own, since seine cannot tell a genuine mistake from a
+board file composed without the one that derives the base it names.
+What catches a real mistake is that nothing gets built under the name
+asked for: a working image containing the wrong kernel is exactly the
+failure that must not pass quietly, so debian/control is still checked
+against what was actually derived for this architecture.
+
+It needs the newer `defines.toml` an architecture carries, not the ini
+format: the ini flavour list is names only, with nowhere to point a
+fragment of its own.
+
+Its default revision follows the reasoning [above](#local-versions) for
+an ordinary rebuild, widened the same way as the check that everything
+asked for came out: every name actually derived for this build, joined
+with `.` (not `-`, which a Debian revision cannot hold), so `rpi4` and
+`rpi5` together default to `rpi4.rpi5` rather than `mod1`. A name that
+cannot be a Debian revision on its own -- `cloud-edge`, say, or the
+joined result of several -- needs `revision` written down instead.
 
 Build profiles matter more here than elsewhere. `noudeb` is effectively
 required once a fragment removes drivers: the debian-installer udebs are

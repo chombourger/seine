@@ -1,0 +1,45 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# A PC kernel, named for the board rather than the generic trim it is.
+# Needs examples/slim-flavours.yml beside it, which is what derives
+# from Debian's own 'amd64'; 'pc' just renames its 'slim-amd64', with
+# no fragment of its own:
+#
+#   ./seine.py build examples/pc-image/main.yaml \
+#              examples/slim-flavours.yml       \
+#              examples/pc-kernel.yml
+#
+# 'revision' is written down since 'slim-amd64' -- one of the names
+# this build derives -- cannot be a Debian revision on its own ('-' in
+# it). 'profiles' is not repeated: examples/slim-flavours.yml already
+# gave this package the list, on the command line before this file.
+
+packages:
+    - source: apt://linux
+      revision: pc1
+      extends:
+          kernel:
+              derived-flavours:
+                  slim-amd64:
+                      pc: []
+
+# The base bootstrap already installed the distribution's own kernel by
+# the time any playbook runs -- this both installs the rebuild and
+# removes what it replaces, the same swap examples/rpi4-kernel.yml makes
+# for arm64. grub itself runs after every playbook, so it sees the
+# result of this rather than what came before it.
+playbook:
+    - name: boot the pc kernel instead of the distribution's
+      priority: 850
+      tasks:
+          - name: install the pc kernel
+            apt:
+                state: present
+                name:
+                    - linux-image-pc
+          - name: remove the distribution's amd64 kernel
+            apt:
+                state: absent
+                name:
+                    - linux-image-amd64

@@ -563,6 +563,23 @@ class BuildCmd(Cmd):
                 os.path.normpath(os.path.join(dirname, name))
                 if type(name) == type("") else name for name in names]
 
+        # 'derived-flavours' nests fragments two levels deeper than
+        # FILE_LISTS reaches; resolved here for the same reason: relative
+        # to the file that named it, not to the build's own directory.
+        extends = package.get("extends")
+        kernel = extends.get("kernel") if type(extends) == type({}) else None
+        derived = kernel.get("derived-flavours") if type(kernel) == type({}) else None
+        if type(derived) == type({}):
+            for base, names in derived.items():
+                if type(names) != type({}):
+                    continue
+                for name, fragments in names.items():
+                    if type(fragments) != type([]):
+                        continue
+                    names[name] = [
+                        os.path.normpath(os.path.join(dirname, f))
+                        if type(f) == type("") else f for f in fragments]
+
     def _merge_distro(self, spec):
         if "distribution" in spec:
             if "distribution" in self.spec:
@@ -783,19 +800,35 @@ class BuildCmd(Cmd):
 
     # Settings that two files add to rather than settle between them.
     #
-    # Which kernels a module is built against is the one of them: the file
+    # Which kernels a module is built against is one of them: the file
     # asking for the module names the kernels it knows about, and the file
     # building a kernel of its own adds that one. Neither says the same
     # thing twice, so "what was said first stands" would quietly drop a
     # kernel somebody asked to have modules for.
+    #
+    # 'derived-flavours' is the other: a board file builds on a base an
+    # architecture file already derives, and "what was said first
+    # stands" would drop the second file's base entirely.
     def _appends(self, kind, setting):
         from seine.module import MODULE_KERNELS
-        return kind == "module" and MODULE_KERNELS.match(setting) is not None
+        if kind == "module" and MODULE_KERNELS.match(setting) is not None:
+            return True
+        return kind == "kernel" and setting == "derived-flavours"
 
     # Two lists, in the order they were written, without repeating what
-    # both of them named: the same kernel added by an architecture file
-    # and by the file asking for the module is one kernel.
+    # both of them named -- the same kernel added by an architecture file
+    # and by the file asking for the module is one kernel -- or two
+    # 'derived-flavours' dictionaries, merged one base at a time so a
+    # second file naming a flavour under a base the first already used
+    # adds to it rather than replacing it.
     def _added(self, listed, added):
+        if type(listed) == type({}) or type(added) == type({}):
+            if type(listed) != type({}) or type(added) != type({}):
+                return added if type(added) == type({}) else listed
+            merged = {base: dict(names) for base, names in listed.items()}
+            for base, names in added.items():
+                merged.setdefault(base, {}).update(names)
+            return merged
         if type(listed) != type([]) or type(added) != type([]):
             return added if type(added) == type([]) else listed
         return listed + [entry for entry in added if entry not in listed]
