@@ -8,6 +8,7 @@ requires:
     - ../common/conf-locales
     - ../common/conf-sysctl
     - ../common/conf-timezone
+    - ../common/sshd
     - ../common/pc-image
     - french
     - selinux

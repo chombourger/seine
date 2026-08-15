@@ -316,7 +316,8 @@ class BuildCmd(Cmd):
 
     def __init__(self):
         self.image = None
-        self.options = { "build": True, "color": None, "debug": False, "dry_run": False,
+        self.options = { "ansible_library": [], "build": True, "color": None,
+                         "debug": False, "dry_run": False,
                          "jobs": 1, "keep": False,
                          "packages_only": False, "parallel": None,
                          "rebuild": False, "require_hashes": False,
@@ -485,6 +486,16 @@ class BuildCmd(Cmd):
         for package in self._package_entries(spec):
             self._resolve_files(package, os.path.dirname(yaml_filename))
             self._record_origins(package, yaml_filename)
+
+        # A fragment ships its own Ansible modules the way it ships kconfig
+        # fragments: 'library/' beside it, found by convention rather than a
+        # setting naming it.
+        if yaml_filename != "<string>":
+            libdir = os.path.join(os.path.dirname(yaml_filename), "library")
+            if os.path.isdir(libdir):
+                libdir = os.path.realpath(libdir)
+                if libdir not in self.options["ansible_library"]:
+                    self.options["ansible_library"].append(libdir)
 
         if self.spec is None:
             self.spec = spec

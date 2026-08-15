@@ -9,6 +9,7 @@ requires:
     - ../common/conf-locales
     - ../common/conf-sysctl
     - ../common/conf-timezone
+    - ../common/sshd
 
 playbook:
     - name: some great packages

@@ -162,6 +162,15 @@ class AnsibleContainerRunner:
         cmd = ["ansible-playbook", "-i", inventoryfile.name, ansiblefile.name]
         if self.verbose:
             cmd.insert(1, "-v")
+
+        # A fragment's own 'library/' directories, collected while the
+        # specification loaded -- see build.py. ANSIBLE_LIBRARY is a search
+        # path, colon-joined, same as PATH.
+        env = os.environ.copy()
+        library = self.options.get("ansible_library")
+        if library:
+            env["ANSIBLE_LIBRARY"] = ":".join(library)
+
         try:
             # To the task's file when one is capturing, so a playbook's
             # output stays with the rest of what that step did.
@@ -169,7 +178,7 @@ class AnsibleContainerRunner:
             # In a session of its own, as the container engine is run: a
             # playbook killed half-way leaves a half-customized root
             # file-system.
-            subprocess.run(cmd, check=True, stdout=output,
+            subprocess.run(cmd, check=True, stdout=output, env=env,
                            start_new_session=True,
                            stderr=subprocess.STDOUT if output else None)
         finally:

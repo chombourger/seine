@@ -843,6 +843,60 @@ playbook:
                     - vim
 ```
 
+#### Writing your own module
+
+A `library/` directory beside a specification file is found automatically
+and handed to `ansible-playbook`, the same way a kconfig fragment is found
+relative to the file that lists it -- no setting names it. A task that
+needs no third-party collection, no explicit format knowledge, just a
+clean interface, can be a module of its own instead of a handful of
+`lineinfile` tasks a reader has to reverse-engineer the intent of:
+
+```
+playbook:
+    - name: harden ssh
+      tasks:
+          - name: disable root login over ssh
+            sshd_config:
+                name: PermitRootLogin
+                value: "no"
+```
+
+`examples/common/library/sshd_config.py` is a complete, working example: a
+module that sets, updates or removes a single `sshd_config` directive,
+first-active-line-wins the same way `sshd` itself resolves a duplicate. It
+writes to a drop-in under `sshd_config.d` rather than the file Debian's own
+package shipped, refusing to run if the shipped file was ever rewritten to
+drop the `Include` that reads drop-ins in the first place -- silently doing
+nothing is worse than failing loudly for a setting like this one.
+
+A comma-list directive -- `Ciphers`, `MACs`, `KexAlgorithms` and the rest
+sshd itself negotiates a default for -- takes `algorithm` instead of
+`value`, to turn one entry on or off without a task having to spell out
+everything else sshd would otherwise have picked:
+
+```
+playbook:
+    - name: only turn off one cipher
+      tasks:
+          - name: drop a weak cipher
+            sshd_config:
+                name: Ciphers
+                algorithm: 3des-cbc
+                state: absent
+```
+
+Several such tasks, from several playbook fragments, can each turn one
+algorithm on or off without overwriting each other's change -- each starts
+from `sshd -T`'s own resolved default rather than from the previous task's
+raw `value`.
+
+Ansible ships a custom module's code to wherever it runs, same as any
+other module -- nothing beyond the module file itself is needed. It is
+exercised the same way as the collections above: see
+`examples/common/sshd.yaml`, and the module's own
+`examples/common/library/test_sshd_config.py` self-check.
+
 and here is how the `locales` package may be configured:
 
 ```

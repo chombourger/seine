@@ -1,0 +1,37 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# demonstrates a spec's own Ansible module: 'library/' beside this file is
+# found by seine automatically -- see docs/specification.md#playbook.
+
+playbook:
+    - name: install and harden sshd
+      priority: 300
+      tasks:
+        - name: install the ssh server
+          apt:
+              state: present
+              name:
+                  - openssh-server
+
+        - name: disable root login over ssh
+          sshd_config:
+              name: PermitRootLogin
+              value: "no"
+
+        - name: disable password authentication
+          sshd_config:
+              name: PasswordAuthentication
+              value: "no"
+
+        - name: drop a cipher, keep the rest of sshd's default
+          sshd_config:
+              name: Ciphers
+              algorithm: aes128-ctr
+              state: absent
+
+        - name: allow a legacy cipher some old hardware still needs
+          sshd_config:
+              name: Ciphers
+              algorithm: aes128-cbc
+              state: present
