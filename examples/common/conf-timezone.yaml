@@ -1,0 +1,12 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+playbook:
+    - name: set the system timezone
+      priority: 900
+      tasks:
+        - name: use UTC
+          community.general.timezone:
+              # Debian normalizes this to its Etc/UTC symlink; naming that
+              # directly keeps the module idempotent
+              name: Etc/UTC

@@ -1,0 +1,15 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+playbook:
+    - name: tune kernel parameters
+      priority: 900
+      tasks:
+        # the build container has no write access to /proc/sys, so this
+        # only writes the config file for the booted target to apply
+        - name: lower swappiness for an appliance workload
+          ansible.posix.sysctl:
+              name: vm.swappiness
+              value: "10"
+              sysctl_set: false
+              reload: false

@@ -7,6 +7,8 @@ requires:
     - ../common/rpi4-image
     - ../common/conf-accounts
     - ../common/conf-locales
+    - ../common/conf-sysctl
+    - ../common/conf-timezone
 
 playbook:
     - name: some great packages

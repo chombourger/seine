@@ -785,6 +785,50 @@ Frequently used tasks include:
  * `apt`
  * `debconf`
 
+#### Ansible Galaxy collections
+
+`ansible-core` alone covers `apt`, `debconf`, `user` and the rest of the
+tasks above. Two Galaxy collections are worth installing alongside
+`containers.podman` (the one seine itself needs, to connect into the
+container -- see [Installation](getting-started.md#installation)) because
+they cover ground `ansible-core` does not and fit how an image is
+assembled:
+
+ * [`ansible.posix`](https://galaxy.ansible.com/ui/repo/published/ansible/posix/)
+   -- `sysctl` for a kernel parameter an appliance wants tuned,
+   `seboolean` alongside the SELinux policy example above, `mount` for
+   an `fstab` entry a playbook needs to add.
+ * [`community.general`](https://galaxy.ansible.com/ui/repo/published/community/general/)
+   -- the long tail of system-configuration modules `ansible-core` no
+   longer carries, `timezone` among them.
+
+```
+ansible-galaxy collection install ansible.posix community.general
+```
+
+`sysctl` writing into the image is not the same as it taking effect on
+the machine assembling the image -- the build container has no write
+access to the host's `/proc/sys`, so `sysctl_set: false` and
+`reload: false` keep the task to writing the config file the booted
+target will apply:
+
+```
+playbook:
+    - name: tune kernel parameters
+      tasks:
+        - name: lower swappiness for an appliance workload
+          ansible.posix.sysctl:
+              name: vm.swappiness
+              value: "10"
+              sysctl_set: false
+              reload: false
+```
+
+Both collections are exercised for real, not just documented: see
+`examples/common/conf-sysctl.yaml` and `examples/common/conf-timezone.yaml`,
+built by every image in
+[the full plan](getting-started.md#the-full-plan).
+
 Additional packages may be installed as follows:
 
 ```

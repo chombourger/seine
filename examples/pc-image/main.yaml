@@ -6,6 +6,8 @@ requires:
     - ../common/bookworm
     - ../common/conf-accounts
     - ../common/conf-locales
+    - ../common/conf-sysctl
+    - ../common/conf-timezone
     - ../common/pc-image
     - french
     - selinux

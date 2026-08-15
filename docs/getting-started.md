@@ -51,7 +51,7 @@ environment instead of system-wide:
 python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-ansible-galaxy collection install containers.podman
+ansible-galaxy collection install containers.podman ansible.posix community.general
 ```
 
 `--system-site-packages` is needed for `python3-guestfs`, which pip cannot
