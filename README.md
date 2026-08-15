@@ -2,23 +2,148 @@
 
 ## Introduction
 
-seine is a command-line tool to build images for embedded systems based on the
-Debian operating system. The system is specified in YAML (either as a single
-file or several) and may include Ansible playbooks to install packages or
-configure them.
+seine is a command-line tool that builds images for embedded systems by
+composing a Debian-based system from a YAML specification: Debian packages,
+configuration, a kernel, and a storage/image layout go in; a bootable disk
+image comes out. The specification may be split across several files and
+may include Ansible playbooks for installing and configuring packages.
 
-The tool was designed to not require elevated privileges after its installation
-(sudo isn't used or required, no bind mounts, etc.). The root file-system is
-first assembled in a container (seine uses podman because it is daemon-less and
-very similar to docker). It is then exported as a tarball and a throwaway
-[libguestfs](https://libguestfs.org/) appliance (running under qemu/kvm) is
-used to create the disk images including partitions and logical volumes that
-were specified. Installation of the boot-loader also happens there since it
-may require disks/partitions to be created.
+The mental model is deliberately small:
+
+```
+Debian + composition = target system
+```
+
+seine does not invent a new distribution, a new package format, or a new
+build-time scripting language. It starts from Debian, because Debian already
+answers the questions an embedded image has to answer -- what packages exist,
+how they depend on each other, how they are updated -- and composes a target
+system from what Debian already provides, adding only what a specific board
+or image genuinely needs on top.
+
+### Composition, not a bespoke package universe
+
+Debian is fundamentally a *binary* distribution: a `.deb` is built once,
+independently of any particular system that will install it, and can then be
+installed on any system whose dependencies it satisfies. seine preserves that
+property wherever practical. It composes systems primarily at *image* build
+time -- taking existing Debian binary packages and arranging them, through
+configuration, into a target system -- rather than treating every image
+configuration as a reason to rebuild an otherwise identical package. The
+common case is not "one custom binary universe per board"; it is packages,
+selected and configured, becoming a system:
+
+```
+packages + configuration + kernel + storage layout -> target system
+```
+
+This is a different concern from *producing* a package in the first place:
+
+```
+source -> Debian binary package
+```
+
+seine keeps the two apart on purpose. Package production is Debian's job,
+done by Debian's own tools; system composition is seine's job. When an
+existing package is genuinely not enough -- a patch the distribution does not
+carry, a kernel built from a tree Debian does not package -- seine can graft
+Debian's own packaging onto a modified source and rebuild it, but this is an
+explicit, visible exception, not the normal way packages end up in an image.
+The result of a graft is an ordinary Debian package fed back into the same
+composition step as everything else, so grafting a handful of packages does
+not change how the rest of the system is built. See
+[Rebuilding the kernel](#rebuilding-the-kernel) and
+[packages](#packages) for how grafting actually works.
+
+Keeping the two concerns separate also makes an image easier to reason about
+after the fact: which binary packages it contains, which source packages
+they came from, and which of them were modified rather than taken as
+Debian shipped them are three different, individually inspectable questions
+-- because system configuration lives in the specification and playbooks,
+while package modifications live in a small, explicit set of grafted
+packages. seine does not claim bit-for-bit reproducible images; what it
+does provide -- pinned feeds, snapshot builds, a fixed `SOURCE_DATE_EPOCH`
+for rebuilds -- is described in [Reproducibility](#reproducibility).
+
+### Existing concepts, not a new one
+
+Describing a target system means learning a handful of things seine adds,
+not a build language of its own:
+
+ * **Debian packages and APT** decide most of what ends up in the image.
+ * **Debian source packages** are what a [graft](#packages) starts from,
+   when a package has to be modified.
+ * **Ansible** describes system configuration -- see
+   [Why Ansible](#why-ansible) below.
+ * **Kernel configuration and Debian's kernel packaging** are what
+   [rebuilding or replacing a kernel](#kernels) is built on.
+ * **Partitions, filesystems and LVM** describe the
+   [storage layout](#image) of the resulting image.
+
+None of these are seine inventions. The specification format ties them
+together and adds the settings particular to composing an image -- what feeds
+to build from, what to graft, what the disk should look like -- but
+deliberately does not grow into a general-purpose build system: a small
+number of understandable concepts, applied consistently, is the point.
+
+### Why Ansible
+
+Ansible plays the same role a specification-only DSL would, but is already
+familiar to anyone who configures Linux systems, and it stays a build-time
+tool: seine drives `ansible-playbook` from the host against the container
+being assembled, so Ansible itself is never installed into the target
+system. Using an existing, well-understood configuration language was
+preferred over inventing a seine-specific one that would only ever be used
+here. See [playbook](#playbook) for how playbooks fit into a specification.
+
+### The kernel
+
+seine's kernel handling stays inside Debian's kernel packaging model rather
+than replacing it: a rebuilt kernel is still built by Debian's packaging,
+still produces `linux-image`, `linux-headers` and the rest under Debian's
+naming, and still installs the way a Debian kernel does. Reconfiguring or
+grafting a kernel are extensions to that packaging, applied for cases where
+the distribution's own kernel is not what an image needs -- not a separate
+kernel build system living beside it.
+
+That packaging distinguishes **architecture**, **featureset** and
+**flavour**, and seine keeps that distinction rather than collapsing it: a
+flavour identifies a real, meaningful configuration (`amd64`'s ordinary
+kernel is not the same flavour as its realtime one), and a kernel grafted
+from a tree Debian does not package is given a distinct ABI name rather than
+allowed to masquerade as one of Debian's own flavours. See
+[Kernels](#kernels) for the details, and
+[What you do not get](#what-you-do-not-get) for what a graft deliberately
+does not carry over.
+
+### How a build actually runs
+
+Mechanically: seine requires no elevated privileges after installation (no
+`sudo`, no bind mounts). The root file-system is first assembled in a
+container -- seine uses podman, which is daemon-less -- then exported as a
+tarball. A throwaway [libguestfs](https://libguestfs.org/) appliance, run
+under qemu/kvm, partitions and formats the disk image and installs the boot
+loader, since that step needs to create the disks/partitions themselves.
+
+### The trade-off
+
+seine intentionally does not try to expose every build-time mechanism a
+package or an image might conceivably need. It favours a small,
+understandable system-composition model, backed by ordinary Debian
+packaging, over arbitrary build-time flexibility. That is a real
+constraint -- some things are out of scope, or have to go through the
+graft escape hatch rather than a setting of their own -- traded for a
+model where what an image is built from, and why, stays legible.
 
 ## Contents
 
 * [Introduction](#introduction)
+  * [Composition, not a bespoke package universe](#composition-not-a-bespoke-package-universe)
+  * [Existing concepts, not a new one](#existing-concepts-not-a-new-one)
+  * [Why Ansible](#why-ansible)
+  * [The kernel](#the-kernel)
+  * [How a build actually runs](#how-a-build-actually-runs)
+  * [The trade-off](#the-trade-off)
 * [Getting started](#getting-started)
   * [Installation](#installation)
   * [Using an HTTP proxy](#using-an-http-proxy)
@@ -622,8 +747,8 @@ Three kinds of `source` are understood:
    elsewhere. It has to be a `.dsc`: an upstream tarball on its own has no
    `debian/` directory to build from.
  * `git://<host>/<path>[;branch=<branch>][;rev=<commit>][;protocol=<proto>]`
-   takes a packaging tree that carries its own `debian/` directory, in the
-   same notation bitbake uses. The remote is reached over https unless
+   takes a packaging tree that carries its own `debian/` directory. The
+   remote is reached over https unless
    `protocol` says otherwise, and `rev` is required: a branch name moves,
    and a build that cannot be repeated is not worth calling reproducible.
 
