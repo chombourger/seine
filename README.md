@@ -245,9 +245,17 @@ and a fixed `SOURCE_DATE_EPOCH`, cross-compile by naming a different
 no bind mounts) after the packages in [Getting started](#getting-started)
 are installed.
 
+`--` builds several images together under one scheduler, sharing what
+their specifications agree on -- one host bootstrap, one build of a
+package two boards both ask for:
+
+```
+seine build pc-image.yaml -- rpi4-image.yaml
+```
+
 See [docs/building.md](docs/building.md) for what a build actually does,
-watching one run, caching (including moving a cache to another machine),
-cross-compiling, and reproducibility, and
+watching one run, building several together, caching (including moving
+a cache to another machine), cross-compiling, and reproducibility, and
 [docs/environment.md](docs/environment.md) for every environment variable
 seine reads, including where its directories go.
 

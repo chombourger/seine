@@ -1243,11 +1243,17 @@ Description:
   customize the image.
 
 Usage:
-  seine build [options] SPEC... 
+  seine build [options] SPEC... [-- SPEC...]...
+
+  '--' separates groups of specification files, each the same thing a
+  single 'seine build' already takes -- one image per group, several
+  built together under one scheduler, sharing what their specifications
+  agree on: see 'Building several images together' in docs/building.md.
 
 Examples:
   seine build demo-image.yml
   seine build -v demo-image.yml
+  seine build pc-image.yml -- rpi4-image.yml
 
 Flags:
   -d, --debug           print debug messages
@@ -1319,11 +1325,15 @@ Description:
   thing.
 
 Usage:
-  seine plan [options] SPEC...
+  seine plan [options] SPEC... [-- SPEC...]...
+
+  '--' groups specification files the same way 'seine build' takes them;
+  see there for what running several together means.
 
 Examples:
   seine plan demo-image.yml
   seine plan --spec-only demo-image.yml
+  seine plan pc-image.yml -- rpi4-image.yml
 
 Flags:
   -h, --help            print this message

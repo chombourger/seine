@@ -199,6 +199,54 @@ partial disk image is removed. Killing a task skips all of that to save
 minutes of a build that has already failed, and leaves the mess for the
 next one. The failure is reported with the steps that never ran.
 
+### Building several images together
+
+`--` separates groups of specification files, each the same thing `seine
+build` already takes one of, and runs them together under one scheduler
+instead of one `seine build` per image:
+
+```
+seine build --jobs 4 \
+    common/trixie.yaml common/amd64.yaml common/pc-image.yaml pc-image/main.yaml \
+    -- \
+    common/trixie.yaml common/arm64.yaml common/rpi4-image.yaml rpi4-image/main.yaml
+```
+
+What is shared between groups is worked out from what their
+specifications say, not declared. Two groups agreeing on a release and
+an architecture share one build of the packages they both ask for; two
+groups merely agreeing on a release still share the host bootstrap,
+which does not vary by architecture. Naming the same package
+differently between two groups is refused rather than built once and
+handed to both -- give one of them a different `name`. Everything else
+-- the target bootstrap onward -- is built once per image, though two
+images that happen to bootstrap the same root file-system still share
+that work through the cache, the same as two separate `seine build`s
+would.
+
+`seine plan`/`--dry-run` shows the sharing in the step names themselves:
+a step shared between groups is unprefixed or named for what it is
+shared by, a step that is not is prefixed with the image that owns it
+-- `pc-image:rootfs`, not `rootfs`, once there is more than one image to
+tell apart:
+
+```
+$ seine plan --tasks-only spec-a.yaml -- spec-b.yaml
+steps:
+  bootstrap-host
+  trixie-amd64:packages    after bootstrap-host
+  trixie-arm64:packages    after bootstrap-host
+  pc-image:bootstrap-target after bootstrap-host
+  rpi4-image:bootstrap-target after bootstrap-host
+  pc-image:rootfs          after pc-image:bootstrap-target, trixie-amd64:packages
+  rpi4-image:rootfs        after rpi4-image:bootstrap-target, trixie-arm64:packages
+  ...
+```
+
+A single group -- no `--` anywhere -- builds exactly as it always has,
+with none of these names: the sharing only shows up once there is
+something to share.
+
 ### Where the time went
 
 Every build records what each of its steps cost, and `seine analyze`
