@@ -155,14 +155,21 @@ class AnsibleContainerRunner:
         return self.cid
 
     def _run_playbooks(self, playbooks):
+        # On copies, not 'playbooks' itself: it is 'spec["playbook"]', and
+        # a step that changed it after 'seine analyze' recorded a digest
+        # of the specification would leave nothing later reloading those
+        # same files could ever match again.
+        run = []
         for playbook in playbooks:
+            playbook = dict(playbook)
             # INITRD=No mirrors the old in-container 'RUN INITRD=No
             # ansible-playbook ...' -- individual package installs skip
             # their own initramfs regen, _finalize() does one pass instead.
             playbook["environment"] = {"INITRD": "No"}
+            run.append(playbook)
 
         ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        yaml.dump(playbooks, ansiblefile)
+        yaml.dump(run, ansiblefile)
         ansiblefile.close()
 
         inventoryfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
