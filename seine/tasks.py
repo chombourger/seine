@@ -138,6 +138,31 @@ def namespaced(tasks, prefix):
                         for need in task.needs])
             for task in tasks]
 
+# Every task in 'tasks' that 'names' need, directly or by way of
+# another -- what a group's own tasks stood on, for a caller wanting
+# one group's own slice of a merged run rather than all of it. Includes
+# 'names' themselves; a name naming nothing in 'tasks' is skipped, not
+# an error, since 'names' commonly comes from a filter over 'tasks'
+# itself.
+def ancestors(tasks, names):
+    by_name = {task.name: task for task in tasks}
+    seen, pending = set(), list(names)
+    while len(pending) > 0:
+        name = pending.pop()
+        if name in seen or name not in by_name:
+            continue
+        seen.add(name)
+        pending += by_name[name].needs
+    return [task for task in tasks if task.name in seen]
+
+# Whether every one of 'tasks' ran and none of them failed -- what a
+# caller checking a subset of a merged run (see ancestors()) asks,
+# rather than the whole run's own outcome, which may have failed
+# elsewhere without this subset being touched at all.
+def succeeded(tasks):
+    return all(task.started is not None and task.failed == False
+              for task in tasks)
+
 # What a build does when a step fails, which parallel builds have to
 # answer and a sequential one never had to.
 #

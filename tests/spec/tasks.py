@@ -138,6 +138,65 @@ class NamespacedTasksAreRenamedAndReordered(avocado.Test):
         except ValueError:
             pass
 
+class AncestorsWalksNeedsBackwards(avocado.Test):
+    def test(self):
+        from seine.tasks import ancestors
+        tasks = [task("root"), task("middle", ["root"]),
+                 task("leaf", ["middle"]), task("unrelated")]
+        got = ancestors(tasks, ["leaf"])
+        self.assertEqual(sorted(t.name for t in got), ["leaf", "middle", "root"])
+
+    def test_the_names_asked_for_are_included(self):
+        from seine.tasks import ancestors
+        tasks = [task("root"), task("alone")]
+        got = ancestors(tasks, ["root", "alone"])
+        self.assertEqual(sorted(t.name for t in got), ["alone", "root"])
+
+    def test_a_name_naming_nothing_is_skipped(self):
+        from seine.tasks import ancestors
+        tasks = [task("root")]
+        got = ancestors(tasks, ["root", "does-not-exist"])
+        self.assertEqual([t.name for t in got], ["root"])
+
+class SucceededIsFalseForAnythingThatDidNotRunOrDid(avocado.Test):
+    def test_true_when_everything_ran(self):
+        from seine.tasks import run, succeeded
+        tasks = [task("root"), task("leaf", ["root"])]
+        run(tasks)
+        self.assertTrue(succeeded(tasks))
+
+    def test_false_for_a_task_that_failed(self):
+        # jobs=2: a single sequential task's own exception propagates
+        # unwrapped, wrapping in Failed is what jobs>1 does.
+        from seine.tasks import Failed, run, succeeded
+
+        def fails():
+            raise ValueError("no")
+
+        tasks = [Task("fails", fails)]
+        try:
+            run(tasks, jobs=2)
+        except Failed:
+            pass
+        self.assertFalse(succeeded(tasks))
+
+    def test_false_for_a_task_that_never_ran(self):
+        # A task cancelled by a failure elsewhere: never started, never
+        # marked failed either -- succeeded() has to ask both.
+        from seine.tasks import Failed, run, succeeded
+
+        def fails():
+            raise ValueError("no")
+
+        tasks = [Task("fails", fails), task("unrelated", ["fails"])]
+        try:
+            run(tasks, jobs=2)
+        except Failed:
+            pass
+        cancelled = [t for t in tasks if t.name == "unrelated"][0]
+        self.assertIsNone(cancelled.started)
+        self.assertFalse(succeeded([cancelled]))
+
 class ABuildRunsInTheOrderItsStepsRequire(avocado.Test):
     def test(self):
         build = BuildCmd()
