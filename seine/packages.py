@@ -548,6 +548,16 @@ class Builder:
         self._source_packages = {}
         self._holding = {}
         self._workdirs = threading.Lock()
+        # A fetch shared by every package wanting the same bytes -- see
+        # _shared(). One lock per key so unrelated fetches still run beside
+        # each other under --jobs. Freed by count ('_shared_taken' catching
+        # up with '_shared_wanted'), not by a package's build finishing,
+        # which can run long after every consumer already took its copy.
+        self._shared_fetches = {}
+        self._shared_locks = {}
+        self._shared_wanted = {}
+        self._shared_taken = {}
+        self._shared_lock = threading.Lock()
         self._built = {}
         self._repository = threading.Lock()
         # The key this build signs with, if it was given one. Asked for
@@ -1577,6 +1587,13 @@ class Builder:
             grouped.setdefault(package.name, (package, []))[1].append(
                 (architecture, stamp))
 
+        # How many of these will ask _shared() for each fetch, known now
+        # from the whole group rather than guessed at as each one fetches.
+        for name, (package, _builds) in grouped.items():
+            for key in (self._fetch_key(package), self._upstream_key(package)):
+                if key is not None:
+                    self._shared_wanted[key] = self._shared_wanted.get(key, 0) + 1
+
         for name, (package, builds) in grouped.items():
             # Fetching waits on a server and building waits on the
             # machine, so they are separate: a large download no longer
@@ -1741,6 +1758,81 @@ class Builder:
                 self._rebuild(package, architecture, stamp)
             self._deploy(package, [a for a, _ in builds])
 
+    # What fetch() would run, as a key two packages asking for the same
+    # bytes can share -- see _shared(). None for a cross-headers package:
+    # it has no source of its own to name, and fetch() already takes a
+    # different path for it.
+    def _fetch_key(self, package):
+        if module.is_cross_package(package):
+            return None
+        return tuple(self._fetch_args(package))
+
+    # As _fetch_key(), for kernel.fetch_upstream()'s own download: the
+    # tree a grafted kernel is built from, the largest download seine
+    # makes and fetched apart from the packaging it is grafted onto.
+    def _upstream_key(self, package):
+        if package.kernel_upstream is None:
+            return None
+        return tuple(kernel._upstream_args(package.kernel_upstream))
+
+    def _fetch_into(self, package):
+        fresh = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="fetched-")
+        self.fetch(package, fresh)
+        return fresh
+
+    def _upstream_into(self, package):
+        fresh = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="fetched-")
+        kernel.fetch_upstream(self, package, fresh)
+        return os.path.join(fresh, kernel.UPSTREAM)
+
+    # 'source's contents copied into 'dest' (which already exists);
+    # 'source' itself is left for the caller to remove. Symlinks are
+    # copied as symlinks, never followed -- a kernel tree is full of
+    # them, and dereferencing one into a plain file is a change
+    # dpkg-source refuses to represent as a patch.
+    def _copy_into(self, source, dest):
+        os.makedirs(dest, exist_ok=True)
+        for name in os.listdir(source):
+            item = os.path.join(source, name)
+            target = os.path.join(dest, name)
+            if os.path.islink(item):
+                os.symlink(os.readlink(item), target)
+            elif os.path.isdir(item):
+                shutil.copytree(item, target, symlinks=True)
+            else:
+                shutil.copy2(item, target)
+
+    # What 'real()' fetched for 'key', copied into 'dest'. 'real()' runs
+    # once per key; every caller, including the one that triggered the
+    # fetch, copies out -- the canonical copy is never mutated directly.
+    def _shared(self, key, real, dest):
+        with self._shared_lock:
+            self._shared_wanted.setdefault(key, 1)
+            lock = self._shared_locks.setdefault(key, threading.Lock())
+        with lock:
+            with self._shared_lock:
+                canonical = self._shared_fetches.get(key)
+            if canonical is None:
+                canonical = real()
+                with self._shared_lock:
+                    canonical = self._shared_fetches.setdefault(key, canonical)
+
+        self._copy_into(canonical, dest)
+
+        with self._shared_lock:
+            self._shared_taken[key] = self._shared_taken.get(key, 0) + 1
+            done = self._shared_taken[key] >= self._shared_wanted[key]
+            if done:
+                del self._shared_fetches[key]
+                del self._shared_wanted[key]
+                del self._shared_taken[key]
+                del self._shared_locks[key]
+        if done:
+            if self.options.get("keep"):
+                print("keeping '%s' (a shared fetch) as requested" % canonical)
+            else:
+                shutil.rmtree(canonical, ignore_errors=True)
+
     # Fetching a source and building it are two different jobs: one waits
     # on a server, the other on the machine. Kept together, a package with
     # a large source holds a build slot while it uses nothing but the
@@ -1763,8 +1855,27 @@ class Builder:
             # A package seine made up has no source to name, and saying
             # 'fetching None' is how a log stops being read.
             print("fetching '%s'" % (package.source or package.name))
-            sourcedir = self.fetch(package, workdir)
-            kernel.fetch_upstream(self, package, workdir)
+            # Only worth sharing when '_shared_wanted' says another
+            # package wants this too; unset (called outside tasks())
+            # reads as 0, so this fetches directly, as it always did.
+            fetch_key = self._fetch_key(package)
+            if fetch_key is not None and self._shared_wanted.get(fetch_key, 0) > 1:
+                self._shared(fetch_key,
+                             functools.partial(self._fetch_into, package),
+                             workdir)
+                sourcedir = self._source_dir(package.source, workdir)
+            else:
+                sourcedir = self.fetch(package, workdir)
+
+            upstream_key = self._upstream_key(package)
+            if upstream_key is not None:
+                if self._shared_wanted.get(upstream_key, 0) > 1:
+                    self._shared(upstream_key,
+                                 functools.partial(self._upstream_into, package),
+                                 os.path.join(workdir, kernel.UPSTREAM))
+                else:
+                    kernel.fetch_upstream(self, package, workdir)
+
             dsc, epoch = self._prepared(package, workdir, sourcedir)
         except:
             shutil.rmtree(workdir, ignore_errors=True)

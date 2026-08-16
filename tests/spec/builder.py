@@ -444,6 +444,145 @@ class FetchedSourcesOutliveTheirStep(avocado.Test):
                          "%s was left behind" % made[0])
         self.assertEqual(builder._sources, {})
 
+# Two packages naming the same source share the one fetch it costs,
+# instead of each paying for it -- the case a multi-group build's union
+# does not itself collapse, since the two are genuinely different
+# packages (different names, possibly different config) that merely
+# happen to start from the same bytes.
+class TwoPackagesSharingASourceFetchItOnce(avocado.Test):
+    def builder(self, image):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian",
+                  "feeds": [{"suite": "trixie"}]}
+        return Builder(distro, {"keep": False}, image)
+
+    def package(self, name):
+        return parse("""
+                packages:
+                    - source: apt://busybox
+                      name: %s
+        """ % name).image.packages[0]
+
+    def test_the_keys_match(self):
+        builder = self.builder(FakeFetch())
+        self.assertEqual(builder._fetch_key(self.package("one")),
+                         builder._fetch_key(self.package("two")))
+
+    # A kernel tree is full of symlinks; dereferencing one into a plain
+    # file is a change dpkg-source refuses to represent as a patch. Caught
+    # for real building two kernels this way, see the 'full' test in
+    # tests/spec/multiconfig.py.
+    def test_symlinks_are_copied_as_symlinks(self):
+        builder = self.builder(FakeFetch())
+        source = os.path.join(self.workdir, "source")
+        os.makedirs(os.path.join(source, "sub"))
+        with open(os.path.join(source, "sub", "real.h"), "w") as f:
+            f.write("real\n")
+        os.symlink("sub/real.h", os.path.join(source, "top-level-link.h"))
+        os.symlink("real.h", os.path.join(source, "sub", "nested-link.h"))
+
+        dest = os.path.join(self.workdir, "dest")
+        builder._copy_into(source, dest)
+
+        top = os.path.join(dest, "top-level-link.h")
+        nested = os.path.join(dest, "sub", "nested-link.h")
+        self.assertTrue(os.path.islink(top), "a top-level symlink was dereferenced")
+        self.assertEqual(os.readlink(top), "sub/real.h")
+        self.assertTrue(os.path.islink(nested),
+                        "a symlink inside a copied directory was dereferenced")
+        self.assertEqual(os.readlink(nested), "real.h")
+
+    def test_a_different_source_is_a_different_key(self):
+        builder = self.builder(FakeFetch())
+        one = self.package("one")
+        two = parse("""
+                packages:
+                    - source: apt://vim
+        """).image.packages[0]
+        self.assertNotEqual(builder._fetch_key(one), builder._fetch_key(two))
+
+    def test(self):
+        image = FakeFetch()
+        builder = self.builder(image)
+        one, two = self.package("one"), self.package("two")
+        key = builder._fetch_key(one)
+        # What tasks() would have counted from the whole pending list,
+        # set by hand here since this goes straight to _fetched().
+        builder._shared_wanted[key] = 2
+
+        one_dir, one_dsc, _ = builder._fetched(one)
+        two_dir, two_dsc, _ = builder._fetched(two)
+        try:
+            # One fetch for the two of them.
+            self.assertEqual(image.fetches, 1)
+            # And each still has its own, independent copy to mutate --
+            # not the same directory handed out twice.
+            self.assertNotEqual(one_dir, two_dir)
+            self.assertTrue(os.path.isfile(os.path.join(one_dir, one_dsc)))
+            self.assertTrue(os.path.isfile(os.path.join(two_dir, two_dsc)))
+            # And nothing left claiming to still be needed.
+            self.assertEqual(builder._shared_fetches, {})
+            self.assertNotIn(key, builder._shared_wanted)
+        finally:
+            shutil.rmtree(one_dir, ignore_errors=True)
+            shutil.rmtree(two_dir, ignore_errors=True)
+
+    def test_asked_for_alone_is_not_shared(self):
+        # _shared_wanted has nothing for this key -- as when _fetched()
+        # is called on its own, outside tasks() -- so this takes the
+        # plain path exactly as it did before sharing existed: no extra
+        # copy, no dependency on _shared_wanted having been set at all.
+        image = FakeFetch()
+        builder = self.builder(image)
+        workdir, dsc, _ = builder._fetched(self.package("one"))
+        try:
+            self.assertEqual(image.fetches, 1)
+            self.assertEqual(builder._shared_fetches, {})
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+# _upstream_key() is the graft-tree counterpart of _fetch_key() above,
+# sharing the same _shared() mechanism already proven there -- what is
+# its own is only the key, so that is what this checks.
+class UpstreamKeyMatchesTheGraftedTree(avocado.Test):
+    def builder(self):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        return Builder(distro, {}, BuilderImage(distro, {}))
+
+    def package(self, upstream=None):
+        extra = ""
+        if upstream:
+            extra = ("                      extends:\n"
+                     "                          kernel:\n"
+                     "                              upstream: %s\n" % upstream)
+        return parse("""
+                packages:
+                    - source: apt://linux
+%s
+        """ % extra).image.packages[0]
+
+    def test_none_without_an_upstream(self):
+        self.assertIsNone(self.builder()._upstream_key(self.package()))
+
+    def test_matches_the_same_upstream(self):
+        uri = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz"
+        builder = self.builder()
+        one, two = self.package(uri), self.package(uri)
+        self.assertIsNotNone(builder._upstream_key(one))
+        self.assertEqual(builder._upstream_key(one), builder._upstream_key(two))
+
+    def test_a_different_upstream_is_a_different_key(self):
+        builder = self.builder()
+        one = self.package(
+            "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz")
+        two = self.package(
+            "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.13.tar.xz")
+        self.assertNotEqual(builder._upstream_key(one), builder._upstream_key(two))
+
 class AKernelsTreeIsFetchedWithItsSource(avocado.Test):
     def test(self):
         from seine.packages import Builder, WORKDIR
