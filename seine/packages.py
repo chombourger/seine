@@ -190,6 +190,21 @@ class Package:
     def _error(self, message):
         return ValueError("package #%d ('%s'): %s" % (self.index, self.source, message))
 
+    # Whether two entries describe the same build, for a caller merging
+    # several specifications' package lists -- building only one of two
+    # differently-configured packages sharing a name would ship the wrong
+    # one. Compares raw settings, ignoring '_origins' (which file wrote it)
+    # and 'priority' (where it sorts in one list) -- neither is part of
+    # what gets built.
+    IGNORED_SETTINGS = ("_origins", "priority")
+
+    def same_as(self, other):
+        mine = {k: v for k, v in self.spec.items()
+                if k not in Package.IGNORED_SETTINGS}
+        theirs = {k: v for k, v in other.spec.items()
+                 if k not in Package.IGNORED_SETTINGS}
+        return mine == theirs
+
     def _parse_source(self, source):
         self.source = source
         # Defaults for the fields only some of the schemes carry, so callers
@@ -503,7 +518,14 @@ class Builder:
         # Every package this build was asked for, so that a module can be
         # told what the kernel it names resolved to. A module is described
         # by its own entry and by the kernel's, which is a different one.
+        # Set once, by tasks() -- see '_tasked' below.
         self.packages = []
+        # tasks() fills this and 'metapackages' in once; a shared Builder
+        # needs that call to use the union of every image's packages, not
+        # one per image, or a module would resolve against only the last
+        # list. Enforced in tasks() itself -- asking again with the same
+        # list still answers.
+        self._tasked = None
         # Which kernels' cross headers this run has already seen to, so
         # that several modules against one kernel do not each decide to
         # make it.
@@ -1507,6 +1529,13 @@ class Builder:
     # built in a chroot of the build architecture, whichever architecture
     # the image is for.
     def tasks(self, packages, hostBootstrap):
+        if self._tasked is not None and packages != self._tasked:
+            raise RuntimeError(
+                "Builder.tasks() was called twice on one Builder with two "
+                "different package lists -- a shared Builder wants the "
+                "union of every image's packages in one call, not one "
+                "call per image")
+        self._tasked = packages
         module.resolve_kernels(self, packages, hostBootstrap)
         pending = self._pending(packages)
         # Which ones were already built when the graph was made, asked now

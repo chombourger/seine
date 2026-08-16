@@ -400,3 +400,103 @@ class DumpHidesInternalAttributes(avocado.Test):
         self.assertIn("apt://busybox", dumped)
         self.assertNotIn("_dirname", dumped)
         self.assertNotIn("priority", dumped)
+
+# same_as() is what a caller merging several images' package lists asks
+# before deciding two entries naming the same package may share one task.
+class TwoPackagesTheSameSettingsAreTheSamePackage(avocado.Test):
+    def test(self):
+        one = parse("""
+                packages:
+                    - source: apt://busybox
+                      patches: []
+        """).image.packages[0]
+        two = parse("""
+                packages:
+                    - source: apt://busybox
+                      patches: []
+        """).image.packages[0]
+        self.assertTrue(one.same_as(two))
+
+    def test_a_different_setting_is_a_different_package(self):
+        one = parse("""
+                packages:
+                    - source: apt://busybox
+                      cross: false
+        """).image.packages[0]
+        two = parse("""
+                packages:
+                    - source: apt://busybox
+                      cross: true
+        """).image.packages[0]
+        self.assertFalse(one.same_as(two))
+
+    def test_origins_do_not_count(self):
+        # Two files can describe the same package and still be two files,
+        # which is all '_origins' says -- comparing it would make the same
+        # package different for having been merged in a different file.
+        one = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        two = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        one.spec["_origins"] = {"source": "board-a.yml"}
+        two.spec["_origins"] = {"source": "board-b.yml"}
+        self.assertTrue(one.same_as(two))
+
+    def test_priority_does_not_count(self):
+        # Where a package sorts in one specification's own list, not
+        # something the package it describes has two versions of.
+        one = parse("""
+                packages:
+                    - source: apt://busybox
+                      priority: 100
+        """).image.packages[0]
+        two = parse("""
+                packages:
+                    - source: apt://busybox
+                      priority: 900
+        """).image.packages[0]
+        self.assertTrue(one.same_as(two))
+
+class ASharedBuilderRejectsBeingTaskedTwice(avocado.Test):
+    def builder(self):
+        from seine.packages import Builder
+        from seine.sbuild   import BuilderImage
+        spec = {"source": "debian", "release": "trixie", "architecture": "amd64",
+               "uri": "http://example.com/debian"}
+        return Builder(spec, {}, BuilderImage(spec, {}))
+
+    def test_a_different_list_is_rejected(self):
+        # The hazard this exists for: two images of one release, each
+        # calling tasks() with only its own packages instead of the
+        # union -- the second call would silently leave a module
+        # resolving against only its own list.
+        one = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages
+        two = parse("""
+                packages:
+                    - source: apt://vim
+        """).image.packages
+        builder = self.builder()
+        builder.tasks(one, object())
+        try:
+            builder.tasks(two, object())
+            self.fail("a second tasks() call with a different list was accepted!")
+        except RuntimeError:
+            pass
+
+    def test_the_same_list_again_still_answers(self):
+        # A caller only reading the graph, not running it, may ask twice.
+        packages = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages
+        builder = self.builder()
+        first = [t.name for t in builder.tasks(packages, object())]
+        second = [t.name for t in builder.tasks(packages, object())]
+        self.assertEqual(first, second)
