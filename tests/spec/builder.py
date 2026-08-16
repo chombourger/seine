@@ -503,21 +503,24 @@ class TwoPackagesSharingASourceFetchItOnce(avocado.Test):
         self.assertNotEqual(builder._fetch_key(one), builder._fetch_key(two))
 
     def test(self):
+        # As tasks() would: _fetch() once (the graph only ever builds one
+        # fetch task per key), then a prepare:<name> task per package.
         image = FakeFetch()
         builder = self.builder(image)
         one, two = self.package("one"), self.package("two")
         key = builder._fetch_key(one)
-        # What tasks() would have counted from the whole pending list,
-        # set by hand here since this goes straight to _fetched().
         builder._shared_wanted[key] = 2
 
-        one_dir, one_dsc, _ = builder._fetched(one)
-        two_dir, two_dsc, _ = builder._fetched(two)
+        builder._fetch(one)
+        self.assertEqual(image.fetches, 1)
+
+        one_dir, one_dsc, _ = builder._prepare_source(one, key, None)
+        two_dir, two_dsc, _ = builder._prepare_source(two, key, None)
         try:
-            # One fetch for the two of them.
+            # Still one fetch for the two of them.
             self.assertEqual(image.fetches, 1)
-            # And each still has its own, independent copy to mutate --
-            # not the same directory handed out twice.
+            # And each has its own, independent copy to mutate -- not
+            # the same directory handed out twice.
             self.assertNotEqual(one_dir, two_dir)
             self.assertTrue(os.path.isfile(os.path.join(one_dir, one_dsc)))
             self.assertTrue(os.path.isfile(os.path.join(two_dir, two_dsc)))
@@ -528,22 +531,57 @@ class TwoPackagesSharingASourceFetchItOnce(avocado.Test):
             shutil.rmtree(one_dir, ignore_errors=True)
             shutil.rmtree(two_dir, ignore_errors=True)
 
-    def test_asked_for_alone_is_not_shared(self):
-        # _shared_wanted has nothing for this key -- as when _fetched()
-        # is called on its own, outside tasks() -- so this takes the
-        # plain path exactly as it did before sharing existed: no extra
-        # copy, no dependency on _shared_wanted having been set at all.
+    def test_works_for_a_single_consumer_too(self):
+        # The degenerate case, and the common one: nothing else asks for
+        # this key, but the split still works the same way -- one fetch
+        # task, one prepare task, cleaned up once it has taken its copy.
         image = FakeFetch()
         builder = self.builder(image)
-        workdir, dsc, _ = builder._fetched(self.package("one"))
+        one = self.package("one")
+        key = builder._fetch_key(one)
+        builder._shared_wanted[key] = 1
+
+        builder._fetch(one)
+        workdir, dsc, _ = builder._prepare_source(one, key, None)
         try:
             self.assertEqual(image.fetches, 1)
+            self.assertTrue(os.path.isfile(os.path.join(workdir, dsc)))
             self.assertEqual(builder._shared_fetches, {})
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
+    # _taken_shared() sits in _prepare_source()'s finally -- checked here
+    # that it actually fires and frees the canonical copy even when
+    # _prepared() itself is what fails, not the fetch.
+    def test_a_failed_prepare_still_frees_a_fetch_nothing_else_needs(self):
+        class FailingPrepare(FakeFetch):
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                if args[0] == "dpkg-source":
+                    raise RuntimeError("dpkg-source blew up")
+                return super().exec(args, architecture, volumes, workdir,
+                                    environment, check)
+
+        builder = self.builder(FailingPrepare())
+        one = self.package("one")
+        key = builder._fetch_key(one)
+        builder._shared_wanted[key] = 1
+
+        builder._fetch(one)
+        canonical = builder._shared_fetches[key]
+        try:
+            builder._prepare_source(one, key, None)
+            self.fail("a failing prepare was reported as done!")
+        except RuntimeError:
+            pass
+
+        # Freed even though nothing built successfully -- nothing else
+        # was ever going to ask for it.
+        self.assertNotIn(key, builder._shared_fetches)
+        self.assertFalse(os.path.isdir(canonical), "%s was left behind" % canonical)
+
 # _upstream_key() is the graft-tree counterpart of _fetch_key() above,
-# sharing the same _shared() mechanism already proven there -- what is
+# sharing the same fetch/prepare split already proven there -- what is
 # its own is only the key, so that is what this checks.
 class UpstreamKeyMatchesTheGraftedTree(avocado.Test):
     def builder(self):
@@ -582,6 +620,42 @@ class UpstreamKeyMatchesTheGraftedTree(avocado.Test):
         two = self.package(
             "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.13.tar.xz")
         self.assertNotEqual(builder._upstream_key(one), builder._upstream_key(two))
+
+# _prepare_source() looks for what _fetch_upstream() left under
+# kernel.UPSTREAM inside whatever _shared_fetches[upstream_key] names --
+# a layout only a real, expensive grafted-kernel build would otherwise
+# exercise. Checked directly, with a fake standing in for the tar/git
+# clone kernel._upstream_args() would actually run.
+class FetchUpstreamPopulatesTheSharedEntry(avocado.Test):
+    def test(self):
+        from seine.packages import Builder
+        from seine.kernel import UPSTREAM
+
+        class FakeUpstream:
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True):
+                os.makedirs(os.path.join(volumes[0][0], "linux-6.12"),
+                           exist_ok=True)
+                return 0
+
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        builder = Builder(distro, {}, FakeUpstream())
+        package = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              upstream: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz
+        """).image.packages[0]
+
+        builder._fetch_upstream(package)
+
+        key = builder._upstream_key(package)
+        canonical = builder._shared_fetches[key]
+        self.assertTrue(
+            os.path.isdir(os.path.join(canonical, UPSTREAM, "linux-6.12")),
+            "the fetched tree was not where _prepare_source() looks for it")
 
 class AKernelsTreeIsFetchedWithItsSource(avocado.Test):
     def test(self):

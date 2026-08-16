@@ -548,13 +548,13 @@ class Builder:
         self._source_packages = {}
         self._holding = {}
         self._workdirs = threading.Lock()
-        # A fetch shared by every package wanting the same bytes -- see
-        # _shared(). One lock per key so unrelated fetches still run beside
-        # each other under --jobs. Freed by count ('_shared_taken' catching
-        # up with '_shared_wanted'), not by a package's build finishing,
-        # which can run long after every consumer already took its copy.
+        # A fetch shared by every prepare:<name> task naming it -- see
+        # _fetch()/_fetch_upstream()/_prepare_source(). One fetch task per
+        # key, so nothing here needs a lock to write; freed by count
+        # ('_shared_taken' catching up with '_shared_wanted') once read,
+        # since a package's build can run long after every prepare task
+        # sharing its fetch has already taken a copy.
         self._shared_fetches = {}
-        self._shared_locks = {}
         self._shared_wanted = {}
         self._shared_taken = {}
         self._shared_lock = threading.Lock()
@@ -1580,50 +1580,68 @@ class Builder:
                  for package, _, _ in pending}
 
         # A package's builds, gathered so its steps are declared together:
-        # one fetch, a build per architecture, and one step publishing
+        # one prepare, a build per architecture, and one step publishing
         # them.
         grouped = collections.OrderedDict()
         for package, architecture, stamp in pending:
             grouped.setdefault(package.name, (package, []))[1].append(
                 (architecture, stamp))
 
-        # How many of these will ask _shared() for each fetch, known now
-        # from the whole group rather than guessed at as each one fetches.
-        for name, (package, _builds) in grouped.items():
+        # One fetch task per source these packages actually name, shared by
+        # every package naming the same one -- see _fetch()/_fetch_upstream().
+        # Named for the source ('fetch:linux'), digest-suffixed only where
+        # two keys would otherwise share a name; 'used' is shared with the
+        # fetch-upstream pass below so the two never collide either.
+        fetch_tasks, upstream_tasks, used = {}, {}, {}
+        for pname, (package, _builds) in grouped.items():
+            fetch_key = self._fetch_key(package)
+            if fetch_key is not None and fetch_key not in fetch_tasks:
+                name = self._task_name("fetch", package.source_name,
+                                       fetch_key, used)
+                fetch_tasks[fetch_key] = Task(
+                    name, functools.partial(self._fetch, package),
+                    needs=["packages-prepare"])
+
+            upstream_key = self._upstream_key(package)
+            if upstream_key is not None and upstream_key not in upstream_tasks:
+                name = self._task_name("fetch-upstream",
+                                       package.kernel_upstream.name,
+                                       upstream_key, used)
+                upstream_tasks[upstream_key] = Task(
+                    name, functools.partial(self._fetch_upstream, package),
+                    needs=["packages-prepare"])
+        tasks += list(fetch_tasks.values()) + list(upstream_tasks.values())
+
+        # How many prepare:<name> tasks will copy from each fetch, known
+        # now from the whole group rather than guessed at as each one
+        # copies -- see _taken_shared().
+        for pname, (package, _builds) in grouped.items():
             for key in (self._fetch_key(package), self._upstream_key(package)):
                 if key is not None:
                     self._shared_wanted[key] = self._shared_wanted.get(key, 0) + 1
 
         for name, (package, builds) in grouped.items():
-            # Fetching waits on a server and building waits on the
-            # machine, so they are separate: a large download no longer
-            # holds a slot that could be compiling something else, and a
-            # source that cannot be fetched says so early rather than
-            # after everything before it has been built.
-            #
-            # One fetch for a package built for two architectures. The
-            # same source package is what both builds are handed, so two
-            # roles are two builds of one source rather than two sources
-            # that ought to be the same.
-            fetch = "fetch:%s" % name
             depends = [names[d.name] for d in getattr(package, "depends", [])
                        if d.name in names]
-            # A module is the exception to fetching early. Its packaging
-            # is written as its source is prepared, and what that
-            # packaging says -- which binary packages there are, what
-            # they are named -- is decided by the ABI of the kernels it
-            # is built against. A kernel this specification builds has no
-            # ABI until it has been built, so preparing the module before
-            # then is asking a question that has no answer yet.
-            #
-            # Only for the kernels it waits on anyway: a module built
-            # against the distribution's kernels alone fetches as early
+            fetch_key = self._fetch_key(package)
+            upstream_key = self._upstream_key(package)
+            needs = [fetch_tasks[fetch_key].name]
+            if upstream_key is not None:
+                needs.append(upstream_tasks[upstream_key].name)
+            # A module is the exception to preparing early: its packaging
+            # is written as the source is prepared, decided by the ABI of
+            # the kernel it names, which does not exist until built here.
+            # Only for the kernels it waits on -- one built against the
+            # distribution's kernels alone prepares (and fetches) as early
             # as anything else.
-            tasks.append(Task(fetch,
-                              functools.partial(self._fetched, package),
-                              needs=["packages-prepare"]
-                                    + (depends if package.module else [])))
-            waits = [fetch] + depends
+            if package.module:
+                needs += depends
+            prepare = "prepare:%s" % name
+            tasks.append(Task(prepare,
+                              functools.partial(self._prepare_source, package,
+                                                fetch_key, upstream_key),
+                              needs=needs))
+            waits = [prepare] + depends
             built = []
             for architecture, stamp in builds:
                 step = "package:%s" % self.label(package, architecture)
@@ -1759,7 +1777,7 @@ class Builder:
             self._deploy(package, [a for a, _ in builds])
 
     # What fetch() would run, as a key two packages asking for the same
-    # bytes can share -- see _shared(). None for a cross-headers package:
+    # bytes can share -- see _fetch(). None for a cross-headers package:
     # it has no source of its own to name, and fetch() already takes a
     # different path for it.
     def _fetch_key(self, package):
@@ -1775,15 +1793,39 @@ class Builder:
             return None
         return tuple(kernel._upstream_args(package.kernel_upstream))
 
-    def _fetch_into(self, package):
-        fresh = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="fetched-")
-        self.fetch(package, fresh)
-        return fresh
+    # One task name per key, 'prefix:label' in the common case -- 'used'
+    # is shared across every call so different prefixes never collide
+    # either. A label already claimed by a different key gets a digest
+    # suffix; claimed by the same key again just answers with the name
+    # already given out.
+    def _task_name(self, prefix, label, key, used):
+        name = "%s:%s" % (prefix, label)
+        claimed = used.get(name)
+        if claimed is None:
+            used[name] = key
+            return name
+        if claimed == key:
+            return name
+        return "%s-%s" % (name, hashlib.sha256(repr(key).encode()).hexdigest()[:6])
 
-    def _upstream_into(self, package):
-        fresh = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="fetched-")
-        kernel.fetch_upstream(self, package, fresh)
-        return os.path.join(fresh, kernel.UPSTREAM)
+    # Task body for a shared source fetch -- the network half of what
+    # _fetched() (still used for a cross-headers package -- see
+    # _fetch_key()) used to do in one step. Populates the canonical copy
+    # every prepare:<name> task naming this fetch's key will copy from;
+    # tasks() builds exactly one such task per key, so nothing here
+    # needs a lock.
+    def _fetch(self, package):
+        print("fetching '%s'" % package.source)
+        canonical = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="fetched-")
+        self.fetch(package, canonical)
+        self._shared_fetches[self._fetch_key(package)] = canonical
+
+    # As _fetch(), for kernel.fetch_upstream()'s own download.
+    def _fetch_upstream(self, package):
+        print("fetching '%s'" % package.kernel_upstream)
+        canonical = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="fetched-")
+        kernel.fetch_upstream(self, package, canonical)
+        self._shared_fetches[self._upstream_key(package)] = canonical
 
     # 'source's contents copied into 'dest' (which already exists);
     # 'source' itself is left for the caller to remove. Symlinks are
@@ -1802,80 +1844,38 @@ class Builder:
             else:
                 shutil.copy2(item, target)
 
-    # What 'real()' fetched for 'key', copied into 'dest'. 'real()' runs
-    # once per key; every caller, including the one that triggered the
-    # fetch, copies out -- the canonical copy is never mutated directly.
-    def _shared(self, key, real, dest):
-        with self._shared_lock:
-            self._shared_wanted.setdefault(key, 1)
-            lock = self._shared_locks.setdefault(key, threading.Lock())
-        with lock:
-            with self._shared_lock:
-                canonical = self._shared_fetches.get(key)
-            if canonical is None:
-                canonical = real()
-                with self._shared_lock:
-                    canonical = self._shared_fetches.setdefault(key, canonical)
-
-        self._copy_into(canonical, dest)
-
+    # 'key''s claim on its canonical fetch, given up -- the counterpart to
+    # _fetch()/_fetch_upstream() writing it, called by every prepare:<name>
+    # task that copied from it. The canonical copy goes once
+    # '_shared_taken' catches up with '_shared_wanted'.
+    def _taken_shared(self, key):
+        if key is None:
+            return
         with self._shared_lock:
             self._shared_taken[key] = self._shared_taken.get(key, 0) + 1
             done = self._shared_taken[key] >= self._shared_wanted[key]
             if done:
-                del self._shared_fetches[key]
+                canonical = self._shared_fetches.pop(key)
                 del self._shared_wanted[key]
                 del self._shared_taken[key]
-                del self._shared_locks[key]
         if done:
             if self.options.get("keep"):
                 print("keeping '%s' (a shared fetch) as requested" % canonical)
             else:
                 shutil.rmtree(canonical, ignore_errors=True)
 
-    # Fetching a source and building it are two different jobs: one waits
-    # on a server, the other on the machine. Kept together, a package with
-    # a large source holds a build slot while it uses nothing but the
-    # network.
-    #
-    # So what a fetch leaves behind outlives it: the directory belongs to
-    # the package rather than to the step, and the build that follows
-    # finds it there.
-    #
-    # Preparing the source is part of it -- grafting, patching, the local
-    # changelog entry, the kernel's configuration, and dpkg-source over
-    # the result. All of that describes a source package rather than a
-    # build of one, and doing it here is what lets a package built for two
-    # architectures be built from one .dsc: the two are then demonstrably
-    # the same source rather than two trees prepared the same way.
+    # Fetch and prepare in one step, both from here on used only for a
+    # cross-headers package (_fetch_key() names no key for one, so it
+    # never reaches tasks()'s own fetch:/prepare: split -- see
+    # _cross_headers_built()'s direct call into _rebuild(), which is
+    # what calls this when nothing has fetched it yet).
     def _fetched(self, package):
         workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
                                    prefix="source-")
         try:
-            # A package seine made up has no source to name, and saying
-            # 'fetching None' is how a log stops being read.
             print("fetching '%s'" % (package.source or package.name))
-            # Only worth sharing when '_shared_wanted' says another
-            # package wants this too; unset (called outside tasks())
-            # reads as 0, so this fetches directly, as it always did.
-            fetch_key = self._fetch_key(package)
-            if fetch_key is not None and self._shared_wanted.get(fetch_key, 0) > 1:
-                self._shared(fetch_key,
-                             functools.partial(self._fetch_into, package),
-                             workdir)
-                sourcedir = self._source_dir(package.source, workdir)
-            else:
-                sourcedir = self.fetch(package, workdir)
-
-            upstream_key = self._upstream_key(package)
-            if upstream_key is not None:
-                if self._shared_wanted.get(upstream_key, 0) > 1:
-                    self._shared(upstream_key,
-                                 functools.partial(self._upstream_into, package),
-                                 os.path.join(workdir, kernel.UPSTREAM))
-                else:
-                    kernel.fetch_upstream(self, package, workdir)
-
+            sourcedir = self.fetch(package, workdir)
+            kernel.fetch_upstream(self, package, workdir)
             dsc, epoch = self._prepared(package, workdir, sourcedir)
         except:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -1884,8 +1884,37 @@ class Builder:
         source = (workdir, dsc, epoch)
         with self._workdirs:
             self._sources[package.name] = source
+            self._holding[package.name] = len(self.architectures(package))
+        return source
+
+    # What tasks()'s prepare:<name> task runs, for every real (non
+    # cross-headers) package: its own copy of whichever fetch(es)
+    # 'fetch_key'/'upstream_key' name, turned into a source package the
+    # same way _fetched() used to. Sets what _rebuild() reads exactly as
+    # _fetched() did.
+    def _prepare_source(self, package, fetch_key, upstream_key):
+        workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
+                                   prefix="source-")
+        try:
+            self._copy_into(self._shared_fetches[fetch_key], workdir)
+            sourcedir = self._source_dir(package.source, workdir)
+            if upstream_key is not None:
+                self._copy_into(
+                    os.path.join(self._shared_fetches[upstream_key], kernel.UPSTREAM),
+                    os.path.join(workdir, kernel.UPSTREAM))
+            dsc, epoch = self._prepared(package, workdir, sourcedir)
+        except:
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise
+        finally:
+            self._taken_shared(fetch_key)
+            self._taken_shared(upstream_key)
+
+        source = (workdir, dsc, epoch)
+        with self._workdirs:
+            self._sources[package.name] = source
             # How many builds are still to be handed this source. The
-            # directory outlives the fetch but not the last build that
+            # directory outlives this step but not the last build that
             # reads it, and with two architectures reading one tree the
             # first to finish is not the one that may throw it away.
             self._holding[package.name] = len(self.architectures(package))

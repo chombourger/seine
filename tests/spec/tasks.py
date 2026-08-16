@@ -451,7 +451,7 @@ class EachPackageIsATaskOfItsOwn(avocado.Test):
         self.assertEqual(tasks["deploy:seine-test-library"].needs,
                          ["package:seine-test-library"])
         self.assertEqual(tasks["package:seine-test-unrelated"].needs,
-                         ["fetch:seine-test-unrelated"])
+                         ["prepare:seine-test-unrelated"])
 
         # And the rest of the build waits on the barrier rather than on
         # whichever packages a specification happens to have.
@@ -481,25 +481,71 @@ class FetchingIsItsOwnStep(avocado.Test):
         for name in ["seine-test-application", "seine-test-library",
                      "seine-test-unrelated"]:
             self.assertIn("fetch:%s" % name, tasks)
+            self.assertIn("prepare:%s" % name, tasks)
             # A download waits on a server, so it waits for nothing but
             # the builder image -- not for the package it will be built
-            # against.
+            # against, nor for the preparing that follows it.
             self.assertEqual(tasks["fetch:%s" % name].needs,
                              ["packages-prepare"])
-            self.assertIn("fetch:%s" % name,
+            self.assertEqual(tasks["prepare:%s" % name].needs,
+                             ["fetch:%s" % name])
+            self.assertIn("prepare:%s" % name,
                           tasks["package:%s" % name].needs)
 
         # Building still waits for what it is built against, which
-        # fetching never did.
+        # neither fetching nor preparing did.
         self.assertIn("deploy:seine-test-library",
                       tasks["package:seine-test-application"].needs)
         self.assertNotIn("deploy:seine-test-library",
                          tasks["fetch:seine-test-application"].needs)
+        self.assertNotIn("deploy:seine-test-library",
+                         tasks["prepare:seine-test-application"].needs)
 
-        # And the barrier still covers everything, fetches included.
+        # And the barrier still covers everything, fetches and prepares
+        # included.
         for name in tasks:
-            if name.startswith(("fetch:", "package:", "deploy:")):
+            if name.startswith(("fetch:", "prepare:", "package:", "deploy:")):
                 self.assertIn(name, tasks["packages"].needs)
+
+# A module's packaging is written as its source is prepared, decided by
+# the ABI of the kernel it names -- which this build's own kernel has
+# none of until built. Only preparing waits for that; the fetch (a plain
+# git clone here) needs none of it and starts as early as any other
+# package's.
+class AModulesFetchDoesNotWaitOnItsKernelButPreparingDoes(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+distribution:
+    release: trixie
+    architecture: amd64
+packages:
+    - source: git://github.com/NVIDIA/open-gpu-kernel-modules.git;rev=deadbeef
+      name: nvidia-open
+      version: "580.95.05"
+      extends:
+          module:
+              build: kernel-open
+              modules:
+                  - nvidia
+              amd64-kernels:
+                  - linux
+    - source: apt://linux
+      extends:
+          kernel:
+              flavour: amd64
+image:
+    filename: tasks-test.img
+    partitions:
+        - label: rootfs
+          where: /
+        """)
+        build.parse()
+        tasks = {t.name: t for t in build.image.tasks()}
+
+        self.assertEqual(tasks["fetch:open-gpu-kernel-modules"].needs,
+                         ["packages-prepare"])
+        self.assertIn("deploy:linux", tasks["prepare:nvidia-open"].needs)
 
 class PublishingIsItsOwnStep(avocado.Test):
     def test(self):
