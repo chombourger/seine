@@ -11,7 +11,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from seine.utils import apt_sources
+from seine.utils import apt_sources, base_feed, feeds
 
 # Nothing under here may write into the machine's own cache. These build
 # Builder objects directly, and asking one for a stamp or an index makes
@@ -196,3 +196,34 @@ class ComponentsDefaultToMain(avocado.Test):
     def test(self):
         self.assertEqual(apt_sources(distro([{"suite": "trixie"}])),
                          ["deb http://example.com/debian trixie main"])
+
+class BaseFeedIsTheFirstOne(avocado.Test):
+    def test(self):
+        # mmdebstrap's own convention for a mirror list: the first is what
+        # it bootstraps from, everything after is only ever a source added
+        # once the rootfs exists.
+        self.assertEqual(base_feed(distro([
+            {"suite": "bookworm"},
+            {"suite": "bookworm-security"},
+        ])), feeds(distro([{"suite": "bookworm"},
+                           {"suite": "bookworm-security"}]))[0])
+
+    def test_the_synthetic_default_is_the_base_feed_too(self):
+        # No 'feeds:' at all is one feed, and that one is the base -- same
+        # as every other specification.
+        self.assertEqual(base_feed(DISTRO)["suite"], DISTRO["release"])
+
+class EntriesOverridesWhichFeedsAreWritten(avocado.Test):
+    def test(self):
+        # TargetBootstrap's own use: only base_feed()'s line, not the
+        # feeds after it.
+        spec = distro([{"suite": "bookworm"}, {"suite": "bookworm-security"}])
+        self.assertEqual(apt_sources(spec, entries=[base_feed(spec)]),
+                         ["deb http://example.com/debian bookworm main"])
+
+    def test_unset_is_still_every_feed(self):
+        spec = distro([{"suite": "bookworm"}, {"suite": "bookworm-security"}])
+        self.assertEqual(apt_sources(spec), [
+            "deb http://example.com/debian bookworm main",
+            "deb http://example.com/debian bookworm-security main",
+        ])

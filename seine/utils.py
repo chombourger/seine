@@ -89,15 +89,21 @@ def feeds(distro):
         })
     return parsed
 
+# The feed a root file-system bootstraps from: the first one listed, same
+# convention mmdebstrap itself uses for a mirror list.
+def base_feed(distro):
+    return feeds(distro)[0]
+
 # Those feeds as apt would write them down. 'sources' adds a deb-src line
-# for every feed that has said it carries any.
+# for every feed that has said it carries any. 'entries' overrides which
+# feeds to use (base_feed()'s alone, say); unset is every feed, as before.
 #
 # An expired feed says so in the entry rather than in an apt.conf.d
 # fragment: these lines reach every container a build talks to an archive
 # from, and the option stays scoped to the feed that asked for it.
-def apt_sources(distro, sources=False):
+def apt_sources(distro, sources=False, entries=None):
     lines = []
-    for feed in feeds(distro):
+    for feed in entries if entries is not None else feeds(distro):
         feed = dict(feed, options="" if feed["valid_until"]
                                     else "[check-valid-until=no] ")
         lines.append("deb %(options)s%(uri)s %(suite)s %(components)s" % feed)
