@@ -280,6 +280,12 @@ plan a1b2c3d4e5f6, built 2026-02-02 05:36, 4 steps at a time
   the machine was 46% busy, load 4.4 of 8 cpus
 ```
 
+After a group of images built together (see "Building several images
+together"), naming one group's own files reports that group's own slice
+alone -- its own steps and whichever shared ones they stood on, not its
+siblings' -- so naming `pc-image`'s files alone still answers for it even
+though it built alongside `rpi4-image`.
+
 Those last two lines are the pair worth reading together. Step time is
 the work the build did and build time is how long it took to do it, so
 the difference between them is what `--jobs` bought. And the machine's
