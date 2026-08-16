@@ -14,6 +14,7 @@ from seine.utils import INPUTS_LABEL
 from seine.utils import KIND_LABEL
 from seine.utils import ROOTFS_KIND
 from seine.utils import apt_sources
+from seine.utils import base_feed
 from seine.utils import locked
 from seine.utils import TOOLING_KIND
 
@@ -153,22 +154,37 @@ class TargetBootstrap(Bootstrap):
                     lambda: self.create(hostBootstrap),
                     needs=["bootstrap-host"])
 
+    # Bootstrapped from base_feed() alone, not every feed listed: a second
+    # feed costs this image its sharing with every specification that
+    # differs only there. Applied later, to the running container, by
+    # AnsibleContainerRunner._configure_feeds().
     def create(self, hostBootstrap):
         self.hostBootstrap = hostBootstrap
-        return self.build(TARGET_BOOTSTRAP_SCRIPT.format(
+        return self.build(self.dockerfile(), base=self.hostBootstrap.name)
+
+    # Split out from create() so a test can read what this would bootstrap
+    # from without a podman to build it.
+    def dockerfile(self):
+        return TARGET_BOOTSTRAP_SCRIPT.format(
             self.hostBootstrap.name,
             self.distro["architecture"],
             self.distro["release"],
-            " ".join("'%s'" % source for source in apt_sources(self.distro)),
-            "mmdebstrap-{}".format(self.distro["release"])),
-            base=self.hostBootstrap.name)
+            " ".join("'%s'" % source for source in
+                     apt_sources(self.distro, entries=[base_feed(self.distro)])),
+            "mmdebstrap-{}".format(self.distro["release"]))
 
     def defaultName(self):
+        # base_feed()'s uri/components live nowhere else in the name, so two
+        # specifications differing only there would collide on this tag.
+        # Digested rather than spelled out: a URI belongs in a log, not a path.
+        feed = hashlib.sha256(repr(sorted(base_feed(self.distro).items()))
+                              .encode()).hexdigest()[:8]
         return os.path.join(
                 "bootstrap",
                 self.distro["source"],
                 self.distro["release"],
-                self.distro["architecture"])
+                self.distro["architecture"],
+                feed)
 
 HOST_BOOTSTRAP_SCRIPT = """
 FROM {0}:{1} AS base

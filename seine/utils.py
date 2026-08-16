@@ -89,10 +89,15 @@ def feeds(distro):
         })
     return parsed
 
-# The feed a root file-system bootstraps from: the first one listed, same
-# convention mmdebstrap itself uses for a mirror list.
+# The feed a root file-system bootstraps from: the one for the release
+# itself, not whichever feed a fragment happened to list first -- merge
+# order puts 'requires'-added feeds (backports, say) ahead of it.
 def base_feed(distro):
-    return feeds(distro)[0]
+    release = distro["release"]
+    for feed in feeds(distro):
+        if feed["suite"] == release:
+            return feed
+    raise ValueError("no feed for suite '%s'!" % release)
 
 # Those feeds as apt would write them down. 'sources' adds a deb-src line
 # for every feed that has said it carries any. 'entries' overrides which

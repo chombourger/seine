@@ -254,3 +254,44 @@ class ExtraFeedsAreAppliedBeforePlaybooksRun(avocado.Test):
         from seine import ansible_runner
         made = self.script([{"suite": "bookworm"}, {"suite": "bookworm-security"}])
         self.assertIn(ansible_runner.FEEDS_LIST, made)
+
+class TargetBootstrapBootstrapsFromTheBaseFeedAlone(avocado.Test):
+    def dockerfile(self, feed_list):
+        from seine.bootstrap import HostBootstrap, TargetBootstrap
+        spec = distro(feed_list)
+        target = TargetBootstrap(spec, {})
+        target.hostBootstrap = HostBootstrap(spec, {})
+        return target.dockerfile()
+
+    def test(self):
+        # A second feed is fetched from nothing here: it costs this image
+        # its sharing with every specification that differs only there.
+        made = self.dockerfile([{"suite": "bookworm"},
+                                {"suite": "bookworm-security"}])
+        self.assertIn("bookworm main", made)
+        self.assertNotIn("bookworm-security", made)
+
+    def test_one_feed_is_unaffected(self):
+        made = self.dockerfile([{"suite": "bookworm"}])
+        self.assertIn("bookworm main", made)
+
+class TargetBootstrapNameFoldsInTheBaseFeed(avocado.Test):
+    # Not 'name': avocado.Test already has one of its own.
+    def tag(self, feed_list):
+        from seine.bootstrap import TargetBootstrap
+        return TargetBootstrap(distro(feed_list), {}).name
+
+    def test_a_different_base_feed_is_a_different_name(self):
+        # 'uri'/'components' are not spelled out in the name otherwise, so
+        # without this two specifications bootstrapping from different
+        # mirrors would collide on one tag.
+        self.assertNotEqual(
+            self.tag([{"suite": "bookworm", "uri": "http://one.example.com"}]),
+            self.tag([{"suite": "bookworm", "uri": "http://two.example.com"}]))
+
+    def test_a_different_extra_feed_is_the_same_name(self):
+        # base_feed() alone decides the name: a second feed is applied
+        # later and has nothing to do with what this image is.
+        self.assertEqual(
+            self.tag([{"suite": "bookworm"}, {"suite": "bookworm-security"}]),
+            self.tag([{"suite": "bookworm"}, {"suite": "bookworm-backports"}]))
