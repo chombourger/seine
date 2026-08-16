@@ -1154,9 +1154,17 @@ class BuildCmd(Cmd):
             sys.stderr.write("error: %s command expects a YAML file\n" % self.NAME)
             sys.exit(1)
 
-        self.options["files"] = args
-
         try:
+            # '--' separates groups of files: several images, one
+            # scheduler. A single group -- no '--' anywhere -- takes the
+            # path below exactly as it always has; multiconfig.run() has
+            # its own copy of what follows it, for more than one.
+            from seine import multiconfig
+            groups = multiconfig.split(args)
+            if len(groups) > 1:
+                sys.exit(multiconfig.run(groups, self.options))
+
+            self.options["files"] = args
             self.load_all(args)
 
             spec = self.parse()
