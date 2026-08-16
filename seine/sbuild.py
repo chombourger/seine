@@ -66,13 +66,22 @@ class BuilderImage(Bootstrap):
     kind = BUILDER_KIND
 
     def create(self, hostBootstrap):
-        return self.build(BUILDER_IMAGE_SCRIPT.format(
+        return self.build(self.dockerfile(hostBootstrap), base=hostBootstrap.name)
+
+    # Split out from create() so a caller can ask what this would build
+    # from -- and digest() it -- without a podman to build it. Unlike
+    # TargetBootstrap's own dockerfile(), this image's name does not cover
+    # what _sources() bakes in: two specifications sharing a release can
+    # still collide here if their feeds differ, which is what such a
+    # caller is checking for.
+    def dockerfile(self, hostBootstrap):
+        return BUILDER_IMAGE_SCRIPT.format(
             hostBootstrap.name,
             self.distro["source"],
             self.distro["release"],
             self._sources(),
             "apt-{}".format(self.distro["release"]),
-            REPOSITORY), base=hostBootstrap.name)
+            REPOSITORY)
 
     # The builder installs build dependencies and fetches sources from the
     # same places the image itself is built from, with deb-src alongside so
