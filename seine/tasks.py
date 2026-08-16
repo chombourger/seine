@@ -122,6 +122,22 @@ def ordered(tasks):
             seen.add(task.name)
     return done
 
+# A task list under a prefix, so several can run together without
+# 'rpi4.yml' and 'pc.yml' colliding on 'rootfs'. A need is rewritten only
+# when it names another task in 'tasks' -- a need naming something outside
+# it (a barrier several prefixed lists share on purpose, say) is left
+# alone, since prefixing it again would point it at a task that does not
+# exist.
+def namespaced(tasks, prefix):
+    names = {task.name for task in tasks}
+    if len(names) != len(tasks):
+        raise ValueError(
+            "duplicate task name in the list being prefixed '%s:'" % prefix)
+    return [Task("%s:%s" % (prefix, task.name), task.run,
+                 needs=["%s:%s" % (prefix, need) if need in names else need
+                        for need in task.needs])
+            for task in tasks]
+
 # What a build does when a step fails, which parallel builds have to
 # answer and a sequential one never had to.
 #

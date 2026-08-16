@@ -13,7 +13,7 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine.build import BuildCmd
-from seine.tasks import Task, ordered, run
+from seine.tasks import Task, namespaced, ordered, run
 
 # Nothing under here may write into the machine's own cache. These build
 # Builder objects directly, and asking one for a stamp or an index makes
@@ -102,6 +102,37 @@ class TasksAreNamedOnlyOnce(avocado.Test):
     def test(self):
         try:
             ordered([task("image"), task("image")])
+            self.fail("two tasks of the same name were accepted!")
+        except ValueError:
+            pass
+
+class NamespacedTasksAreRenamedAndReordered(avocado.Test):
+    def test(self):
+        ran = []
+        tasks = namespaced(
+            [task("rootfs", ["bootstrap-target"], ran),
+             task("bootstrap-target", None, ran)], "rpi4")
+        self.assertEqual(sorted(t.name for t in tasks),
+                         ["rpi4:bootstrap-target", "rpi4:rootfs"])
+        run(tasks)
+        self.assertEqual(ran, ["bootstrap-target", "rootfs"])
+
+    def test_a_need_outside_the_list_is_left_alone(self):
+        # A barrier several namespaced lists share -- 'packages', say --
+        # is not itself in 'tasks', so prefixing it again would point it
+        # at a task that does not exist.
+        tasks = namespaced([task("rootfs", ["packages"])], "rpi4")
+        self.assertEqual(tasks[0].needs, ["packages"])
+
+    def test_two_specifications_do_not_collide(self):
+        # The whole point: 'rootfs' from two boards, run together.
+        one = namespaced([task("rootfs")], "rpi4")
+        two = namespaced([task("rootfs")], "pc")
+        ordered(one + two)
+
+    def test_a_duplicate_name_is_rejected_before_running_anything(self):
+        try:
+            namespaced([task("rootfs"), task("rootfs")], "rpi4")
             self.fail("two tasks of the same name were accepted!")
         except ValueError:
             pass
