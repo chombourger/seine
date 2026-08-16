@@ -451,8 +451,12 @@ class MultiGroupSharesPackagesWithinAnArchCohort(avocado.Test):
         self.assertIn("prepare:linux-one", planned)
         self.assertIn("prepare:linux-two", planned)
 
-        # Then the real thing.
-        built = self.seine(space, ["build", "-v", "--jobs", "4", "--packages-only"]
+        # Then the real thing. '--rootfs-only' rather than '--packages-only'
+        # here: own_tasks() (rootfs/tarball/...) is namespaced per group
+        # unconditionally, unlike the packages tasks above (bare-named,
+        # since 'one'/'two' share one arch-cohort) -- so this is also what
+        # gives 'seine analyze' below something per-group to find.
+        built = self.seine(space, ["build", "-v", "--jobs", "4", "--rootfs-only"]
                            + one + ["--"] + two, "build")
 
         self.assertNotEqual(self.debs(space, "busybox_*_%s.deb" % HOST_ARCH), [],
@@ -475,3 +479,10 @@ class MultiGroupSharesPackagesWithinAnArchCohort(avocado.Test):
             with open(os.path.join(logs, "prepare:linux-%s.log" % label)) as f:
                 self.assertNotIn("Get:", f.read(),
                                  "prepare:linux-%s fetched from apt itself" % label)
+
+        # And per-group accounting: 'seine analyze blame' on 'one's own
+        # files alone finds 'one's own record -- its own tasks, not
+        # 'two's, even though both ran in the same 'seine build'.
+        blamed_one = self.seine(space, ["analyze", "blame"] + one, "blame-one")
+        self.assertIn("one:rootfs", blamed_one)
+        self.assertNotIn("two:rootfs", blamed_one)
