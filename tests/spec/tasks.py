@@ -12,6 +12,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
+from seine.bootstrap import HostBootstrap
 from seine.build import BuildCmd
 from seine.tasks import Task, namespaced, ordered, run
 
@@ -147,14 +148,65 @@ class ABuildRunsInTheOrderItsStepsRequire(avocado.Test):
         # sits in the source, which is why the appliance now comes before
         # the root file-system it has nothing to do with: it is ready to
         # start as soon as the packages are.
-        self.assertEqual(names, ["bootstrap-host", "bootstrap-target",
-                                 "packages", "rootfs", "appliance",
+        #
+        # 'packages' before 'bootstrap-target': shared_tasks() is declared
+        # ahead of own_tasks() -- neither needs the other, so this is only
+        # tie-breaking order, not a dependency.
+        self.assertEqual(names, ["bootstrap-host", "packages",
+                                 "bootstrap-target", "rootfs", "appliance",
                                  "tarball", "sbom", "disk", "image"])
 
         tasks = {t.name: t for t in build.image.tasks()}
         self.assertEqual(tasks["appliance"].needs,
                          ["bootstrap-target", "packages"])
         self.assertEqual(tasks["image"].needs, ["disk", "appliance"])
+
+class SharedAndOwnTasksAreTheWholeBuild(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(SPEC)
+        build.parse()
+        image = build.image
+        self.assertEqual([t.name for t in image.shared_tasks()]
+                         + [t.name for t in image.own_tasks()],
+                         [t.name for t in image.tasks()])
+
+    def test_packages_only_is_shared_tasks_alone(self):
+        build = BuildCmd()
+        build.options["packages_only"] = True
+        build.loads(SPEC)
+        build.parse()
+        image = build.image
+        self.assertEqual([t.name for t in image.shared_tasks()],
+                         [t.name for t in image.tasks()])
+
+class OwnTasksTakeTheSharedBarrierByName(avocado.Test):
+    def test(self):
+        # What a caller running several images together points 'rootfs'
+        # at instead of a bare 'packages' -- a barrier several of them
+        # share, named for the release rather than for one image.
+        build = BuildCmd()
+        build.loads(SPEC)
+        build.parse()
+        image = build.image
+        image.hostBootstrap = HostBootstrap(
+            image.spec["distribution"], image.options)
+        own = {t.name: t for t in image.own_tasks(needs_packages="trixie:packages")}
+        self.assertEqual(own["rootfs"].needs,
+                         ["bootstrap-target", "trixie:packages"])
+
+class OwnTasksTakeAGivenHostBootstrap(avocado.Test):
+    def test(self):
+        # A caller merging several images shares one HostBootstrap object
+        # rather than letting each image build its own -- own_tasks()
+        # stands its target bootstrap on whichever it is handed.
+        build = BuildCmd()
+        build.loads(SPEC)
+        build.parse()
+        image = build.image
+        given = HostBootstrap(image.spec["distribution"], image.options)
+        image.own_tasks(hostBootstrap=given)
+        self.assertIs(image.hostBootstrap, given)
 
 class OutputGoesToTheTerminalByDefault(avocado.Test):
     def test(self):

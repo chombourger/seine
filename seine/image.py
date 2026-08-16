@@ -239,43 +239,41 @@ class Image:
         image.close()
         self._image = image.name
 
-    # What a build is made of, and what each step waits for. The order this
-    # produces is the order the steps used to be written in; what is new is
-    # that it is derived from the dependencies rather than from the layout
-    # of the source.
-    #
-    # Two of them are worth reading twice. Packages need the host bootstrap
-    # and not the target one: they are built in a chroot of the build
-    # architecture. And the imager needs the packages -- its own kernel is
-    # installed from the repository they land in, so it boots the kernel
-    # the specification rebuilt rather than the distribution's.
-    def tasks(self):
+    # The host bootstrap and the packages built in a chroot of it -- the
+    # half of a build several specifications can share when they agree on
+    # a release, since neither varies by architecture. A caller building
+    # several images together passes its own 'hostBootstrap' and the union
+    # of every image's 'requested' packages; left unset, this builds its own.
+    def shared_tasks(self, hostBootstrap=None, requested=None):
         distro = self.spec["distribution"]
-
-        self.hostBootstrap = HostBootstrap(distro, self.options)
-        self.targetBootstrap = TargetBootstrap(distro, self.options)
+        self.hostBootstrap = (hostBootstrap if hostBootstrap is not None
+                              else HostBootstrap(distro, self.options))
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options))
+        return [self.hostBootstrap.task()] + builder.tasks(
+            requested if requested is not None else self.packages,
+            self.hostBootstrap)
 
-        # '--packages-only' stops here: the packages are what a build makes
-        # that another machine can be handed, and a machine filling a cache
-        # for others to import has no use for the image at the end of it.
-        # The target bootstrap goes with the rest of the image -- packages
-        # are built in a chroot of the build architecture and never touch
-        # it.
-        if self.options.get("packages_only"):
-            return [self.hostBootstrap.task()] \
-                   + builder.tasks(self.packages, self.hostBootstrap)
+    # The rest: the target bootstrap this image's own root file-system is
+    # assembled in, and everything built on top of it -- never shared
+    # between specifications, though two naming the same tag still
+    # collapse into one task if whoever merges them notices. 'needs_packages'
+    # names the barrier shared_tasks() ends with; 'hostBootstrap' must be
+    # set by here or by an earlier shared_tasks() call.
+    def own_tasks(self, hostBootstrap=None, needs_packages="packages"):
+        distro = self.spec["distribution"]
+        if hostBootstrap is not None:
+            self.hostBootstrap = hostBootstrap
+        self.targetBootstrap = TargetBootstrap(distro, self.options)
 
         # Each of these is declared beside the code that runs it, so what
         # a step needs is written where someone changing that step will
         # see it. What is left here is the handful of steps this class
         # implements itself, and the order they make between them.
         common = [
-            self.hostBootstrap.task(),
             self.targetBootstrap.task(self.hostBootstrap),
-        ] + builder.tasks(self.packages, self.hostBootstrap) + [
-            Task("rootfs", self.rootfs, needs=["bootstrap-target", "packages"]),
+            Task("rootfs", self.rootfs,
+                needs=["bootstrap-target", needs_packages]),
             Task("tarball", self.build_tarball, needs=["rootfs"]),
             SBOM(distro, self.options).task(self),
         ]
@@ -289,6 +287,18 @@ class Image:
         return common + [
             Task("disk", self._prepare_disk, needs=["tarball"]),
         ] + Imager(self).tasks()
+
+    # What a build is made of, and what each step waits for -- shared_tasks()
+    # and, unless '--packages-only' stops here, own_tasks() after it. The
+    # order is derived from the dependencies rather than from the layout of
+    # the source; the imager needs the packages, since its own kernel is
+    # installed from the repository they land in, so it boots the kernel the
+    # specification rebuilt rather than the distribution's.
+    def tasks(self):
+        shared = self.shared_tasks()
+        if self.options.get("packages_only"):
+            return shared
+        return shared + self.own_tasks()
 
     # Every container image a build of this specification would use, named
     # without building any of them.
