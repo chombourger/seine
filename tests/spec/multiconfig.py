@@ -16,8 +16,10 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
+from seine import analyze
 from seine import multiconfig
 from seine.build import BuildCmd
+from seine.tasks import Task
 from seine.utils import HOST_ARCH
 
 EXAMPLES = os.path.join(path_to_sources, "examples")
@@ -131,6 +133,58 @@ class OneArchCohortKeepsBareNames(avocado.Test):
         # Still namespaced per group: two 'rootfs' would collide otherwise.
         self.assertIn("one:rootfs", names)
         self.assertIn("two:rootfs", names)
+
+# _record_group() is checked directly, against a small hand-built stand-in
+# for merged_tasks()'s output -- no real fetch or build, just enough shape
+# and timing (Task.started/.ended/.failed, set by hand rather than by
+# actually running anything) to prove what gets recorded and for whom.
+class GroupRecordsAreScopedToTheirOwnTasks(avocado.Test):
+    def scenario(self):
+        pc = _group("pc.img", architecture="amd64")
+        rpi4 = _group("rpi4.img", architecture="arm64")
+
+        def made(name, needs=None, failed=False):
+            t = Task(name, lambda: None, needs=needs or [])
+            t.started, t.ended, t.failed = 0.0, 1.0, failed
+            return t
+
+        all_tasks = [
+            made("bootstrap-host"),
+            made("pc:bootstrap-target", ["bootstrap-host"]),
+            made("pc:rootfs", ["pc:bootstrap-target"]),
+            made("rpi4:bootstrap-target", ["bootstrap-host"]),
+            made("rpi4:rootfs", ["rpi4:bootstrap-target"]),
+        ]
+        return pc, rpi4, all_tasks
+
+    def test_a_groups_record_holds_its_own_tasks_and_what_they_stood_on(self):
+        pc, _rpi4, all_tasks = self.scenario()
+        ok = multiconfig._record_group(pc, all_tasks, 1, None)
+        self.assertTrue(ok)
+
+        [run] = analyze.runs(analyze.spec_digest(pc.spec))
+        names = {t["name"] for t in run["tasks"]}
+        # pc's own tasks, and the shared one they stood on -- not rpi4's.
+        self.assertEqual(names,
+                         {"bootstrap-host", "pc:bootstrap-target", "pc:rootfs"})
+        self.assertTrue(run["ok"])
+
+    def test_a_sibling_failing_does_not_make_a_finished_group_look_failed(self):
+        pc, rpi4, all_tasks = self.scenario()
+        by_name = {t.name: t for t in all_tasks}
+        by_name["rpi4:rootfs"].failed = True
+
+        self.assertTrue(multiconfig._record_group(pc, all_tasks, 1, None),
+                        "pc's own tasks were untouched by rpi4's failure")
+        self.assertFalse(multiconfig._record_group(rpi4, all_tasks, 1, None))
+
+    def test_a_task_that_never_started_is_not_ok(self):
+        pc, _rpi4, all_tasks = self.scenario()
+        by_name = {t.name: t for t in all_tasks}
+        by_name["pc:rootfs"].started = None
+        by_name["pc:rootfs"].ended = None
+
+        self.assertFalse(multiconfig._record_group(pc, all_tasks, 1, None))
 
 class PackagesOnlyStopsBeforeOwnTasks(avocado.Test):
     def test(self):

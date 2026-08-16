@@ -194,6 +194,20 @@ def merged_tasks(builds):
         merged += tasks.namespaced(own, _label(build))
     return merged
 
+# One group's own record: its own tasks plus whatever shared ones they
+# stood on (tasks.ancestors()), keyed by that group's own spec_digest --
+# not the whole invocation. Its own outcome too (tasks.succeeded()), not
+# the invocation's: a group whose tasks all ran is 'ok' even if a
+# sibling failed afterward.
+def _record_group(build, all_tasks, jobs, machine):
+    own = [t.name for t in all_tasks
+          if t.name.startswith("%s:" % _label(build))]
+    group_tasks = tasks.ancestors(all_tasks, own)
+    ok = tasks.succeeded(group_tasks)
+    analyze.record(group_tasks, analyze.spec_digest(build.spec),
+                   jobs=jobs, ok=ok, machine=machine)
+    return ok
+
 # The prune Image.build() does at the end of a single build, done once
 # here instead of once per group: machine-wide either way, and a second
 # one while the first still holds the lock is skipped, not queued.
@@ -264,6 +278,7 @@ def run(groups_files, options):
     # see Image.build()'s own comment on this.
     recorded = [build.dump(build.spec) for build in builds]
     ok = False
+    group_ok = {}
     machine = analyze.watching()
     with locked(ContainerEngine.storage_lock(), shared=True):
         try:
@@ -276,13 +291,15 @@ def run(groups_files, options):
             combined = {"groups": [build.spec for build in builds]}
             analyze.record(all_tasks, analyze.spec_digest(combined),
                            jobs=jobs, ok=ok, machine=machine)
+            for build in builds:
+                group_ok[build] = _record_group(build, all_tasks, jobs, machine)
     _prune()
 
     said = cache_index.summary()
     if said is not None:
         print(said)
 
-    if ok:
-        for build, files, dump in zip(builds, groups_files, recorded):
+    for build, files, dump in zip(builds, groups_files, recorded):
+        if group_ok.get(build):
             remember(files, dump)
     return 0
