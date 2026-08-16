@@ -227,11 +227,13 @@ class Imager:
     #
     # It does need the packages: its kernel is installed from the
     # repository they land in, which is what makes it boot the kernel the
-    # specification rebuilt rather than the distribution's.
-    def tasks(self):
+    # specification rebuilt rather than the distribution's. 'needs_packages'
+    # is the barrier's name, same as own_tasks()'s own -- see there for who
+    # asks for something other than plain 'packages'.
+    def tasks(self, needs_packages="packages"):
         return [
             Task("appliance", self._prepare,
-                 needs=["bootstrap-target", "packages"]),
+                 needs=["bootstrap-target", needs_packages]),
             Task("image", self._build, needs=["disk", "appliance"]),
         ]
 

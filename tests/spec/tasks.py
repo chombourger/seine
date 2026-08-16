@@ -194,6 +194,11 @@ class OwnTasksTakeTheSharedBarrierByName(avocado.Test):
         own = {t.name: t for t in image.own_tasks(needs_packages="trixie:packages")}
         self.assertEqual(own["rootfs"].needs,
                          ["bootstrap-target", "trixie:packages"])
+        # imager.py's own 'appliance' task needs the packages too, for its
+        # kernel -- threaded the same way, not left pointing at a bare
+        # 'packages' nothing here builds.
+        self.assertEqual(own["appliance"].needs,
+                         ["bootstrap-target", "trixie:packages"])
 
 class OwnTasksTakeAGivenHostBootstrap(avocado.Test):
     def test(self):

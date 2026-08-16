@@ -286,7 +286,7 @@ class Image:
 
         return common + [
             Task("disk", self._prepare_disk, needs=["tarball"]),
-        ] + Imager(self).tasks()
+        ] + Imager(self).tasks(needs_packages)
 
     # What a build is made of, and what each step waits for -- shared_tasks()
     # and, unless '--packages-only' stops here, own_tasks() after it. The
