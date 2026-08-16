@@ -411,6 +411,18 @@ class Image:
                 print("output under %s" % logs)
 
             steps = self.tasks()
+            # Taken now, before a single task has run -- not in the
+            # 'finally' below, after they have. 'disk' (_prepare_disk() ->
+            # PartitionHandler.compute_sizes()) writes '_size'/
+            # '_start_mib'/'_end_mib' straight onto the same partition/
+            # volume dicts this specification holds, the same mistake
+            # already found and fixed once for playbooks
+            # (ansible_runner.py's _run_playbooks()): a digest taken after
+            # a real build's tasks had run never matched what reloading
+            # the same files fresh, un-run, would compute -- 'seine plan'/
+            # 'seine analyze' on those files could never find the record
+            # a real build had just written.
+            digest = analyze.spec_digest(self.spec)
             display = None
             if verbose == False:
                 display = progress.Display(total=len(steps),
@@ -429,7 +441,7 @@ class Image:
                               display=display)
                 ok = True
             finally:
-                analyze.record(steps, analyze.spec_digest(self.spec),
+                analyze.record(steps, digest,
                                jobs=jobs, ok=ok, machine=machine)
 
             # What the caches spared this build, and what it had to make.

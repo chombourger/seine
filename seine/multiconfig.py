@@ -198,14 +198,14 @@ def merged_tasks(builds):
 # stood on (tasks.ancestors()), keyed by that group's own spec_digest --
 # not the whole invocation. Its own outcome too (tasks.succeeded()), not
 # the invocation's: a group whose tasks all ran is 'ok' even if a
-# sibling failed afterward.
-def _record_group(build, all_tasks, jobs, machine):
+# sibling failed afterward. 'digest' is taken by the caller, before any
+# task ran -- see run()'s own comment on why.
+def _record_group(build, all_tasks, jobs, machine, digest):
     own = [t.name for t in all_tasks
           if t.name.startswith("%s:" % _label(build))]
     group_tasks = tasks.ancestors(all_tasks, own)
     ok = tasks.succeeded(group_tasks)
-    analyze.record(group_tasks, analyze.spec_digest(build.spec),
-                   jobs=jobs, ok=ok, machine=machine)
+    analyze.record(group_tasks, digest, jobs=jobs, ok=ok, machine=machine)
     return ok
 
 # The prune Image.build() does at the end of a single build, done once
@@ -275,8 +275,15 @@ def run(groups_files, options):
         display = progress.Display(total=len(all_tasks), environment=os.environ)
 
     # Taken before the build, which writes into each spec as it goes --
-    # see Image.build()'s own comment on this.
+    # see Image.build()'s own comment on this. The two digests below are
+    # the same story: 'disk' (PartitionHandler.compute_sizes(), inside
+    # each group's own tasks) writes '_size'/'_start_mib'/'_end_mib'
+    # straight onto the partition/volume dicts each spec holds, so a
+    # digest taken after tasks.run() would never match what reloading
+    # these same files fresh, un-run, computes.
     recorded = [build.dump(build.spec) for build in builds]
+    combined_digest = analyze.spec_digest({"groups": [build.spec for build in builds]})
+    group_digests = {build: analyze.spec_digest(build.spec) for build in builds}
     ok = False
     group_ok = {}
     machine = analyze.watching()
@@ -288,11 +295,11 @@ def run(groups_files, options):
                          display=display)
             ok = True
         finally:
-            combined = {"groups": [build.spec for build in builds]}
-            analyze.record(all_tasks, analyze.spec_digest(combined),
+            analyze.record(all_tasks, combined_digest,
                            jobs=jobs, ok=ok, machine=machine)
             for build in builds:
-                group_ok[build] = _record_group(build, all_tasks, jobs, machine)
+                group_ok[build] = _record_group(
+                    build, all_tasks, jobs, machine, group_digests[build])
     _prune()
 
     said = cache_index.summary()

@@ -159,10 +159,11 @@ class GroupRecordsAreScopedToTheirOwnTasks(avocado.Test):
 
     def test_a_groups_record_holds_its_own_tasks_and_what_they_stood_on(self):
         pc, _rpi4, all_tasks = self.scenario()
-        ok = multiconfig._record_group(pc, all_tasks, 1, None)
+        digest = analyze.spec_digest(pc.spec)
+        ok = multiconfig._record_group(pc, all_tasks, 1, None, digest)
         self.assertTrue(ok)
 
-        [run] = analyze.runs(analyze.spec_digest(pc.spec))
+        [run] = analyze.runs(digest)
         names = {t["name"] for t in run["tasks"]}
         # pc's own tasks, and the shared one they stood on -- not rpi4's.
         self.assertEqual(names,
@@ -174,9 +175,11 @@ class GroupRecordsAreScopedToTheirOwnTasks(avocado.Test):
         by_name = {t.name: t for t in all_tasks}
         by_name["rpi4:rootfs"].failed = True
 
-        self.assertTrue(multiconfig._record_group(pc, all_tasks, 1, None),
-                        "pc's own tasks were untouched by rpi4's failure")
-        self.assertFalse(multiconfig._record_group(rpi4, all_tasks, 1, None))
+        self.assertTrue(multiconfig._record_group(
+            pc, all_tasks, 1, None, analyze.spec_digest(pc.spec)),
+            "pc's own tasks were untouched by rpi4's failure")
+        self.assertFalse(multiconfig._record_group(
+            rpi4, all_tasks, 1, None, analyze.spec_digest(rpi4.spec)))
 
     def test_a_task_that_never_started_is_not_ok(self):
         pc, _rpi4, all_tasks = self.scenario()
@@ -184,7 +187,8 @@ class GroupRecordsAreScopedToTheirOwnTasks(avocado.Test):
         by_name["pc:rootfs"].started = None
         by_name["pc:rootfs"].ended = None
 
-        self.assertFalse(multiconfig._record_group(pc, all_tasks, 1, None))
+        self.assertFalse(multiconfig._record_group(
+            pc, all_tasks, 1, None, analyze.spec_digest(pc.spec)))
 
 class PackagesOnlyStopsBeforeOwnTasks(avocado.Test):
     def test(self):
