@@ -4,6 +4,7 @@
 
 import atexit
 import avocado
+import glob
 import os
 import shutil
 import subprocess
@@ -16,6 +17,13 @@ sys.path.append(path_to_sources)
 
 from seine import multiconfig
 from seine.build import BuildCmd
+from seine.utils import HOST_ARCH
+
+EXAMPLES = os.path.join(path_to_sources, "examples")
+
+# As tests/spec/images.py's own: these do not run unless asked for, since
+# a kernel build takes real time even slimmed down.
+PLAN = os.environ.get("SEINE_TEST_PLAN", "")
 
 # Nothing under here may write into the machine's own cache -- see the
 # same header in tests/spec/tasks.py.
@@ -273,3 +281,123 @@ image:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("  packages", result.stdout)
         self.assertNotIn("pc:", result.stdout)
+
+# Against a real archive and a real sbuild: two groups sharing an
+# architecture, each naming its own kernel besides a plain 'busybox' both
+# of them ask for identically. What is under test is the sharing itself
+# -- busybox built once for the two of them, each kernel built once for
+# its own group and not folded into the other's -- so '--packages-only'
+# is enough, and this asks nothing of the kernels beyond that they were
+# built: unlike tests/spec/images.py's own, nothing here boots one.
+class MultiGroupSharesPackagesWithinAnArchCohort(avocado.Test):
+    """
+    :avocado: tags=full,container
+    """
+    timeout = 21600
+
+    def setUp(self):
+        self.spaces = []
+        if PLAN != "full":
+            self.cancel("SEINE_TEST_PLAN=full builds packages; this takes a while")
+        if shutil.which("podman") is None:
+            self.cancel("podman is needed to rebuild a package")
+
+    def tearDown(self):
+        for space in self.spaces:
+            subprocess.run(["podman", "unshare", "rm", "-rf", space], check=False)
+
+    def space(self, name):
+        path = os.path.join(self.workdir, name)
+        environment = dict(os.environ)
+        environment["PATH"] = "%s:%s" % (os.path.dirname(sys.executable),
+                                         environment.get("PATH", ""))
+        environment["SEINE_CACHE_DIR"] = os.path.join(path, "cache")
+        environment["SEINE_BUILD_DIR"] = os.path.join(path, "build")
+        self.spaces.append(path)
+        return environment
+
+    def seine(self, space, args, log):
+        where = os.path.join(self.outputdir, "%s.log" % log)
+        with open(where, "w") as f:
+            run = subprocess.run(
+                [sys.executable, "-u", "./seine.py"] + args,
+                cwd=path_to_sources, env=space, stdout=f,
+                stderr=subprocess.STDOUT)
+        with open(where, "r", errors="replace") as f:
+            said = f.read()
+        self.assertEqual(run.returncode, 0,
+                         "'%s' failed, see %s" % (" ".join(args), where))
+        return said
+
+    # 'busybox' plain, and a kernel this group alone owns: a real content
+    # difference ('revision'), not only a different 'name' -- so the two
+    # groups' kernels are genuinely two different builds, not the same
+    # stamp under two labels, however this is checked.
+    def specification(self, label):
+        names = ["common/trixie.yaml", "common/%s.yaml" % HOST_ARCH]
+        specs = [os.path.join(EXAMPLES, name) for name in names]
+        for spec in specs:
+            self.assertTrue(os.path.isfile(spec), "no such specification: %s" % spec)
+
+        where = os.path.join(self.workdir, "%s.yml" % label)
+        with open(where, "w") as f:
+            f.write(
+                "packages:\n"
+                "    - source: apt://busybox\n"
+                "    - source: apt://linux\n"
+                "      name: linux-%(label)s\n"
+                "      revision: %(label)s1\n"
+                "      extends:\n"
+                "          kernel:\n"
+                "              config:\n"
+                "                  - %(common)s\n"
+                "                  - %(arch_fragment)s\n"
+                "      profiles:\n"
+                "          - pkg.linux.nokerneldbginfo\n"
+                "          - pkg.linux.notools\n"
+                "          - pkg.linux.nosource\n"
+                "          - nodoc\n"
+                "          - noudeb\n"
+                "image:\n"
+                "    filename: %(label)s.img\n"
+                "    partitions:\n"
+                "        - label: rootfs\n"
+                "          where: /\n"
+                % {"label": label,
+                   "common": os.path.join(EXAMPLES, "configs", "slim-common.fragment"),
+                   "arch_fragment": os.path.join(
+                       EXAMPLES, "configs", "slim-%s.fragment" % HOST_ARCH)})
+        return specs + [where]
+
+    def repository(self, space):
+        return os.path.join(space["SEINE_CACHE_DIR"], "packages", "trixie")
+
+    def debs(self, space, pattern):
+        return glob.glob(os.path.join(self.repository(space), pattern))
+
+    def test(self):
+        space = self.space("shared")
+        one = self.specification("one")
+        two = self.specification("two")
+
+        # The graph, first: exactly one busybox build, shared by both
+        # groups' arch-cohort, before anything is actually built.
+        planned = self.seine(space, ["build", "--dry-run", "--tasks-only",
+                                     "--packages-only"] + one + ["--"] + two,
+                             "plan")
+        self.assertEqual(
+            len([line for line in planned.splitlines()
+                if line.split()[:1] == ["fetch:busybox"]]),
+            1, "busybox was not one shared task")
+        self.assertIn("fetch:linux-one", planned)
+        self.assertIn("fetch:linux-two", planned)
+
+        # Then the real thing.
+        self.seine(space, ["build", "-v", "--jobs", "4", "--packages-only"]
+                   + one + ["--"] + two, "build")
+
+        self.assertNotEqual(self.debs(space, "busybox_*_%s.deb" % HOST_ARCH), [],
+                            "busybox was not built")
+        for label in ["one", "two"]:
+            self.assertNotEqual(self.debs(space, "*+%s1*" % label), [],
+                                "linux-%s's own revision was not built" % label)
