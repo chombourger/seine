@@ -6,6 +6,7 @@ import atexit
 import avocado
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -393,11 +394,28 @@ class MultiGroupSharesPackagesWithinAnArchCohort(avocado.Test):
         self.assertIn("fetch:linux-two", planned)
 
         # Then the real thing.
-        self.seine(space, ["build", "-v", "--jobs", "4", "--packages-only"]
-                   + one + ["--"] + two, "build")
+        built = self.seine(space, ["build", "-v", "--jobs", "4", "--packages-only"]
+                           + one + ["--"] + two, "build")
 
         self.assertNotEqual(self.debs(space, "busybox_*_%s.deb" % HOST_ARCH), [],
                             "busybox was not built")
         for label in ["one", "two"]:
             self.assertNotEqual(self.debs(space, "*+%s1*" % label), [],
                                 "linux-%s's own revision was not built" % label)
+
+        # And the point of this test: linux-one and linux-two share
+        # 'apt://linux' -- same source, different config -- so only one
+        # of their two fetches should have actually talked to apt; the
+        # other took a local copy of what the first one fetched. 'Get:'
+        # is apt's own progress-line prefix while downloading.
+        match = re.search(r"output under (\S+)", built)
+        self.assertIsNotNone(match, "no log directory reported")
+        logs = match.group(1)
+        talked_to_apt = []
+        for label in ["one", "two"]:
+            with open(os.path.join(logs, "fetch:linux-%s.log" % label)) as f:
+                if "Get:" in f.read():
+                    talked_to_apt.append(label)
+        self.assertEqual(len(talked_to_apt), 1,
+                         "expected exactly one of linux-one/linux-two to "
+                         "fetch from apt for real, got %s" % talked_to_apt)
