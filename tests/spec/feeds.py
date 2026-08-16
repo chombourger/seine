@@ -227,3 +227,30 @@ class EntriesOverridesWhichFeedsAreWritten(avocado.Test):
             "deb http://example.com/debian bookworm main",
             "deb http://example.com/debian bookworm-security main",
         ])
+
+class ExtraFeedsAreAppliedBeforePlaybooksRun(avocado.Test):
+    def script(self, feed_list):
+        from seine.ansible_runner import AnsibleContainerRunner
+
+        written = []
+        class Runner(AnsibleContainerRunner):
+            def _exec(self, args, check=True):
+                written.append(args[-1])
+        runner = Runner(None, distro(feed_list), {})
+        runner._configure_feeds()
+        return "".join(written)
+
+    def test_the_base_feed_is_not_repeated(self):
+        made = self.script([{"suite": "bookworm"}, {"suite": "bookworm-security"}])
+        self.assertIn("bookworm-security", made)
+        self.assertNotIn(" bookworm main", made)
+
+    def test_nothing_runs_for_one_feed(self):
+        # base_feed() is already all TargetBootstrap gave the rootfs; there
+        # is nothing left here to add.
+        self.assertEqual(self.script([{"suite": "bookworm"}]), "")
+
+    def test_written_where_ansible_runner_says(self):
+        from seine import ansible_runner
+        made = self.script([{"suite": "bookworm"}, {"suite": "bookworm-security"}])
+        self.assertIn(ansible_runner.FEEDS_LIST, made)

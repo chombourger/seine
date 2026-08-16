@@ -10,6 +10,8 @@ from seine                      import packages
 from seine.transport_bootstrap import TransportBootstrap
 from seine import tasks
 from seine.utils                import ContainerEngine
+from seine.utils                import apt_sources
+from seine.utils                import feeds
 
 # Where the downloads cache is mounted, which is deliberately not apt's own
 # archives directory.
@@ -41,6 +43,11 @@ TMPFS = ["--tmpfs", "/run", "--tmpfs", "/tmp"]
 
 # apt's own, inside the container and nobody else's.
 ARCHIVES = "/var/cache/apt/archives"
+
+# Where the feeds TargetBootstrap left for here are written. Its own file,
+# not sources.list itself, so nothing here has to parse or rewrite what
+# mmdebstrap already put there.
+FEEDS_LIST = "/etc/apt/sources.list.d/seine-feeds.list"
 
 # Runs the spec's Ansible playbooks against a live, host-architecture-driven
 # ansible-playbook process connecting into the (possibly foreign-arch)
@@ -105,6 +112,17 @@ class AnsibleContainerRunner:
                     '    mv "%(to)s/.$name.$$" "%(to)s/$name"; '
                     'done; true' % {"from": ARCHIVES, "to": DOWNLOADS}], check=False)
 
+    # Every feed but base_feed() -- see TargetBootstrap.create() for why
+    # those aren't baked in. Nothing to do for the common case of one feed.
+    def _configure_feeds(self):
+        extra = feeds(self.distro)[1:]
+        if len(extra) == 0:
+            return
+        lines = apt_sources(self.distro, sources=True, entries=extra)
+        script = "".join("echo '%s' >> %s; " % (line, FEEDS_LIST)
+                         for line in lines)
+        self._exec(["sh", "-c", script])
+
     # Creates the target container, runs 'playbooks' against it and leaves
     # it running (stopped callers are expected to 'container export' it
     # then 'container rm' it) for build_tarball() to pick up. On failure,
@@ -121,9 +139,11 @@ class AnsibleContainerRunner:
                     packages.REPOSITORY,
                     keyring=packages.keyring(self.distro))])
             self._seed_downloads()
+            self._configure_feeds()
             # Keep apt's package index in sync with what TransportBootstrap
-            # baked in, same as the Dockerfile-based path used to do before
-            # running its own playbooks.
+            # baked in and the feeds just configured above, same as the
+            # Dockerfile-based path used to do before running its own
+            # playbooks.
             self._exec(["apt-get", "update", "-qqy"])
             self._run_playbooks(playbooks)
             self._save_downloads()
