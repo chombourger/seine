@@ -1,0 +1,2342 @@
+#!/usr/bin/env python3
+
+import asyncio
+import avocado
+import contextlib
+import io
+import json
+import os
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+import types
+
+path_to_self    = os.path.realpath(__file__)
+path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
+sys.path.append(path_to_sources)
+
+os.environ.setdefault("SEINE_CACHE_DIR", tempfile.mkdtemp(prefix="seine-ai-tests-"))
+os.chdir(tempfile.mkdtemp(prefix="seine-ai-tests-cwd-"))
+
+PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
+REBUILD_BUSYBOX = os.path.join(path_to_sources, "examples", "rebuild-busybox", "main.yaml")
+
+# Same helper, same reason, as 'tests/spec/tui.py' 's own -- not
+# imported from there (test files stay self-contained here, none of
+# them import each other): 'Static' keeps what 'update()' gave it in a
+# private attribute, '_content' on the python3-textual Debian trixie
+# actually ships, '__content' (name-mangled) on newer pip releases.
+def _content(widget):
+    if hasattr(widget, "_content"):
+        return widget._content
+    return getattr(widget, "_Static__content", "")
+
+# The three env vars ('SEINE_LLM_MODEL' etc.) are process-global state,
+# same as any other 'SEINE_*' override elsewhere in this suite -- popped
+# in every 'setUp()' below, not just where a test sets its own, so a
+# leftover from one test can never leak into the next one run in the
+# same process.
+LLM_ENV = ["SEINE_LLM_MODEL", "SEINE_LLM_API_BASE", "SEINE_LLM_API_KEY"]
+
+def _clear_llm_env():
+    for name in LLM_ENV:
+        os.environ.pop(name, None)
+
+def _run(scenario):
+    asyncio.run(scenario())
+
+# Duplicated rather than imported from tests/spec/tui.py -- the same
+# "test files stay self-contained" reason given at the top of this file.
+@contextlib.contextmanager
+def _tui_required(test):
+    try:
+        yield
+    except ImportError as e:
+        test.cancel("the 'tui' extra (textual) is not installed: %s" % e)
+
+class Configuration(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui import ai
+        self.ai = ai
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        _clear_llm_env()
+
+    def test_not_configured_with_nothing_set(self):
+        self.assertFalse(self.ai.configured())
+
+    def test_settings_json_configures_it(self):
+        from seine import settings
+        current = settings.load()
+        current["llm_model"] = "openai/from-settings"
+        settings.save(current)
+        self.assertTrue(self.ai.configured())
+        model, api_base, api_key = self.ai._resolved()
+        self.assertEqual(model, "openai/from-settings")
+
+    # SEINE_LLM_MODEL alone configures it, no settings.json needed -- a
+    # test, or a quick one-off run, can point this at a real endpoint.
+    def test_env_var_alone_configures_it(self):
+        os.environ["SEINE_LLM_MODEL"] = "openai/from-env"
+        self.assertTrue(self.ai.configured())
+
+    def test_env_var_overrides_settings_json(self):
+        from seine import settings
+        current = settings.load()
+        current["llm_model"] = "openai/from-settings"
+        current["llm_api_base"] = "http://from-settings/v1"
+        settings.save(current)
+        os.environ["SEINE_LLM_MODEL"] = "openai/from-env"
+        os.environ["SEINE_LLM_API_BASE"] = "http://from-env/v1"
+        model, api_base, api_key = self.ai._resolved()
+        self.assertEqual(model, "openai/from-env")
+        self.assertEqual(api_base, "http://from-env/v1")
+
+    # No settings.json field for the key at all -- it is the only source.
+    def test_api_key_comes_from_the_environment_only(self):
+        os.environ["SEINE_LLM_API_KEY"] = "secret"
+        _, _, api_key = self.ai._resolved()
+        self.assertEqual(api_key, "secret")
+
+# The maintainer-only editing guidance at the top of
+# seine/data/system_prompt.txt (the tag convention, why the marker
+# exists) costs tokens on every single turn if it ever reaches the
+# wire -- '_system_prompt()' is what keeps it off.
+class SystemPromptPrelude(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui import ai
+        self.ai = ai
+
+    def test_the_editing_guidance_above_the_marker_is_not_sent(self):
+        sent = self.ai._system_prompt()
+        with open(self.ai.SYSTEM_PROMPT_FILE) as f:
+            whole = f.read()
+        prelude, _, _ = whole.partition("\n---\n")
+        self.assertNotIn("editing guidance", sent)
+        self.assertNotIn(prelude.strip(), sent)
+
+    # What actually reaches the model: the rules, tagged, and the one
+    # line telling it not to repeat a tag to the person it's talking
+    # with -- the operationally relevant half of the convention.
+    def test_the_rules_and_the_no_leak_reminder_are_sent(self):
+        sent = self.ai._system_prompt()
+        self.assertIn("[SCOPE]", sent)
+        self.assertIn("never mention one to the person", sent)
+
+    # A file edited without the marker (someone dropped it by mistake)
+    # degrades to sending the whole file rather than silently sending
+    # nothing -- a broken split must not leave the AI chat mute.
+    def test_a_missing_marker_falls_back_to_the_whole_file(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False) as f:
+            f.write("no marker in this file at all\n")
+            path = f.name
+        try:
+            original = self.ai.SYSTEM_PROMPT_FILE
+            self.ai.SYSTEM_PROMPT_FILE = path
+            self.assertEqual(self.ai._system_prompt(),
+                             "no marker in this file at all\n")
+        finally:
+            self.ai.SYSTEM_PROMPT_FILE = original
+            os.unlink(path)
+
+class ToolTable(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui import ai
+            from seine.tui.app import SeineApp
+        self.ai = ai
+        self.SeineApp = SeineApp
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        _clear_llm_env()
+
+    def test_every_tool_has_a_matching_schema(self):
+        names = set(self.ai.TOOLS)
+        schema_names = {s["function"]["name"] for s in self.ai.TOOL_SCHEMAS}
+        self.assertEqual(names, schema_names)
+
+    # The only tools allowed to write -- every other tool has to stay
+    # read-only, checked here so a new tool trips this if it forgets to
+    # say so.
+    def test_only_the_named_actions_are_gated(self):
+        gated = {name for name, tool in self.ai.TOOLS.items() if tool.gated}
+        self.assertEqual(gated, {"start-build", "cancel-build",
+                                 "spec-update", "spec-create", "extend"})
+
+    def test_read_only_tools_work_with_no_active_spec(self):
+        app = self.SeineApp()
+        for name in ["overview", "plan", "packages", "analyze", "artifacts",
+                    "cache", "doctor", "installed-sizes", "build-status", "task-log",
+                    "spec-files", "read", "spec-dump", "docs", "spec-query"]:
+            text = self.ai.TOOLS[name].run(app, {})
+            self.assertIsInstance(text, str)
+            self.assertGreater(len(text), 0)
+
+    def test_spec_files_lists_what_was_loaded(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        text = self.ai.TOOLS["spec-files"].run(app, {})
+        for loaded in build.loaded_files:
+            self.assertIn(loaded, text)
+        self.assertIn(os.path.realpath(PC_IMAGE), text)
+
+    # 'examples/common/' has more '*.yaml' than 'pc-image' actually
+    # 'requires:' (arm64.yaml, rpi4-image.yaml, ... -- other boards'
+    # own fragments) -- real, not a synthetic fixture, proof this finds
+    # something genuinely useful rather than only passing on a toy case.
+    def test_spec_files_lists_unloaded_siblings_separately(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        text = self.ai.TOOLS["spec-files"].run(app, {})
+        self.assertIn("not loaded", text)
+        arm64 = os.path.realpath(os.path.join(
+            os.path.dirname(PC_IMAGE), "..", "common", "arm64.yaml"))
+        self.assertNotIn(arm64, build.loaded_files)
+        self.assertIn(arm64, text)
+        # A loaded file is never also listed as a sibling -- the two
+        # sections are a partition, not an overlapping pair of views.
+        loaded_section, _, sibling_section = text.partition("not loaded")
+        for loaded in build.loaded_files:
+            self.assertNotIn(loaded, sibling_section)
+
+    # linux-6.18/ isn't a directory any loaded file lives in -- it's a
+    # sibling of pc-image/ and common/ under examples/. The AI missed
+    # this fragment for exactly that reason before this fix.
+    def test_spec_files_lists_yaml_from_cousin_directories_too(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        text = self.ai.TOOLS["spec-files"].run(app, {})
+        kernel = os.path.realpath(os.path.join(
+            os.path.dirname(PC_IMAGE), "..", "linux-6.18", "kernel.yml"))
+        self.assertNotIn(kernel, build.loaded_files)
+        self.assertIn(kernel, text)
+
+    # A single loaded directory must not climb to its parent -- only a
+    # fork across 2+ loaded directories triggers the wider search, so
+    # an unrelated directory (home dir, test tempdir) isn't swept.
+    def test_spec_files_does_not_climb_above_a_single_loaded_directory(self):
+        main = self._minimal_spec()
+        stray = os.path.join(self.workdir, "..", "stray.yaml")
+        with open(stray, "w") as f:
+            f.write("distribution:\n  release: bookworm\n")
+        try:
+            app = self.SeineApp(files=[main])
+            text = self.ai.TOOLS["spec-files"].run(app, {})
+            self.assertNotIn("not loaded", text)
+        finally:
+            os.remove(stray)
+
+    def test_spec_files_omits_the_sibling_section_when_theres_nothing_to_show(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-files"].run(app, {})
+        self.assertNotIn("not loaded", text)
+
+    def test_read_returns_a_loaded_files_own_text(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["read"].run(app, {"path": PC_IMAGE})
+        self.assertIn("install utilities", text)
+
+    def test_read_refuses_a_path_that_was_not_loaded(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["read"].run(app, {"path": "/etc/shadow"})
+        self.assertIn("not one of this build's own loaded files", text)
+
+    # read's boundary is wider than spec-update's: a file spec-files
+    # lists as an unloaded sibling -- never part of this build -- is
+    # still readable, so the AI can inspect it before suggesting
+    # 'requires:' rather than guessing at its contents.
+    def test_read_works_on_an_unloaded_sibling_spec_files_listed(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        kernel = os.path.realpath(os.path.join(
+            os.path.dirname(PC_IMAGE), "..", "linux-6.18", "kernel.yml"))
+        text = self.ai.TOOLS["read"].run(app, {"path": kernel})
+        self.assertIn("cdn.kernel.org", text)
+
+    # read's boundary reaches one hop further than a spec file's own
+    # text: a local file this build's 'packages:' section itself names
+    # -- here, rebuild-busybox's own patch -- the same file a real
+    # build already reads to compile it. Real fixture, not synthetic,
+    # same reasoning the sibling-file tests already use.
+    def test_read_opens_a_patch_a_loaded_package_references(self):
+        app = self.SeineApp(files=[REBUILD_BUSYBOX])
+        patch = os.path.join(os.path.dirname(REBUILD_BUSYBOX),
+                             "patches", "0001-mark-the-banner-as-rebuilt.patch")
+        text = self.ai.TOOLS["read"].run(app, {"path": patch})
+        self.assertIn("mark the banner as rebuilt", text)
+
+    # A real patch file, just not one *this* build's 'packages:' names
+    # -- bcachefs's own, from a wholly different example. Being a real,
+    # readable file on disk is not enough; it has to actually be
+    # referenced by a package this build is asking for.
+    def test_read_refuses_a_local_file_no_loaded_package_references(self):
+        app = self.SeineApp(files=[REBUILD_BUSYBOX])
+        other = os.path.join(path_to_sources, "examples", "bcachefs",
+                             "patches", "0001-build-the-module-from-a-checkout.patch")
+        text = self.ai.TOOLS["read"].run(app, {"path": other})
+        self.assertIn("is not one of this build's own loaded files", text)
+
+    # 'defaults.packages:' entries are descriptions, not requests
+    # ([DEFAULTS-VS-PACKAGES]) -- a patch named only there must not
+    # become readable just because the section is loaded. Synthetic
+    # fixture: no real example pairs 'defaults.packages:' with
+    # 'patches:' to test this against directly.
+    def test_referenced_files_excludes_defaults_packages(self):
+        path = os.path.join(self.workdir, "dormant-patch.yaml")
+        with open(path, "w") as f:
+            f.write(
+                "distribution:\n"
+                "  release: bookworm\n"
+                "  architecture: amd64\n"
+                "defaults:\n"
+                "  packages:\n"
+                "  - source: apt://linux\n"
+                "    patches:\n"
+                "    - patches/hypothetical.patch\n"
+                "    extends:\n"
+                "      kernel:\n"
+                "        flavour: amd64\n"
+                "playbook: []\n"
+                "image:\n"
+                "  filename: test.img\n"
+                "  table: gpt\n"
+                "  size: 128MiB\n"
+                "  partitions:\n"
+                "  - label: system\n"
+                "    type: ext2\n"
+                "    size: 128MiB\n"
+                "    where: /\n")
+        app = self.SeineApp(files=[path])
+        build = app.context.builds[0]
+        self.assertEqual(build.referenced_files(), set())
+
+    def test_spec_dump_returns_the_merged_spec_not_one_file(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        text = self.ai.TOOLS["spec-dump"].run(app, {})
+        # 'distribution' only appears whole once main.yaml's own and its
+        # requires:'d fragments (arm64.yaml, trixie.yaml, ...) are
+        # actually merged -- proof this is the resolved tree, not any
+        # one loaded file's own text (read's job).
+        self.assertIn("architecture: amd64", text)
+        self.assertIn("release: bookworm", text)
+        # The header names the total so the model knows when it has
+        # seen everything without counting lines itself.
+        total = len(build.dump(build.spec).splitlines())
+        self.assertIn("of %d" % total, text)
+
+    def test_spec_dump_returns_a_requested_line_range(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        full = build.dump(build.spec).splitlines()
+        text = self.ai.TOOLS["spec-dump"].run(app, {"start": 2, "end": 3})
+        self.assertIn("lines 2-3 of %d" % len(full), text)
+        body = text.split("\n\n", 1)[1]
+        self.assertEqual(body, "\n".join(full[1:3]))
+
+    def test_spec_dump_says_when_start_is_past_the_end(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["spec-dump"].run(app, {"start": 999999})
+        self.assertIn("past the end", text)
+
+    # A range wider than the chunk cap is clamped rather than handed
+    # back whole -- the whole reason for chunking is to bound one
+    # reply's size regardless of what the model asks for.
+    def test_spec_dump_clamps_a_range_wider_than_the_chunk_cap(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["spec-dump"].run(
+            app, {"start": 1, "end": 1000000})
+        header = text.splitlines()[0]
+        shown = header.split("lines ")[1].split(" of")[0]
+        start, end = (int(n) for n in shown.split("-"))
+        self.assertLessEqual(end - start + 1, self.ai.SPEC_DUMP_CHUNK_LINES)
+
+    # Not spec-scoped -- no active build needed, same as doctor/cache.
+    def test_docs_lists_available_files_with_no_name(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {})
+        self.assertIn("specification.md", text)
+        self.assertIn("kernels.md", text)
+
+    def test_docs_returns_a_chunk_of_a_real_file(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {"name": "specification.md"})
+        self.assertTrue(text.startswith("lines 1-"))
+        self.assertIn(" of ", text.splitlines()[0])
+        self.assertIn("## Specification files", text)
+
+    def test_docs_refuses_an_unknown_name(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {"name": "no-such-file.md"})
+        self.assertIn("is not one of this seine's own docs", text)
+
+    # A real file, just not one docs/ itself holds directly -- escaping
+    # into seine's own data/ (a secret-bearing file, in principle) or
+    # down into docs/images/ must both be refused the same way an
+    # unknown name is, not treated as a legal 'docs/*.md'.
+    def test_docs_refuses_escaping_the_docs_directory(self):
+        app = self.SeineApp()
+        for name in ["../seine/data/system_prompt.txt", "images/tui-demo.gif"]:
+            text = self.ai.TOOLS["docs"].run(app, {"name": name})
+            self.assertIn("is not one of this seine's own docs", text)
+
+    def test_docs_clamps_a_range_wider_than_the_chunk_cap(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(
+            app, {"name": "specification.md", "start": 1, "end": 1000000})
+        header = text.splitlines()[0]
+        shown = header.split("lines ")[1].split(" of")[0]
+        start, end = (int(n) for n in shown.split("-"))
+        self.assertLessEqual(end - start + 1, self.ai.SPEC_DUMP_CHUNK_LINES)
+
+    # The installed location wins over the checkout's own docs/ when
+    # both exist, matching a real install. SYSTEM_PROMPT_FILE is
+    # redirected into self.workdir rather than the real seine/data/
+    # tree -- shared state a prior run once polluted for the whole suite.
+    def test_docs_prefers_the_installed_copy_when_present(self):
+        fake_system_prompt = os.path.join(self.workdir, "data", "system_prompt.txt")
+        installed = os.path.join(self.workdir, "data", "docs")
+        os.makedirs(installed)
+        with open(os.path.join(installed, "only-here.md"), "w") as f:
+            f.write("installed copy\n")
+        real_system_prompt_file = self.ai.SYSTEM_PROMPT_FILE
+        self.ai.SYSTEM_PROMPT_FILE = fake_system_prompt
+        self.addCleanup(setattr, self.ai, "SYSTEM_PROMPT_FILE", real_system_prompt_file)
+
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {})
+        self.assertIn("only-here.md", text)
+        self.assertNotIn("specification.md", text)
+
+    # No installed docs/ next to SYSTEM_PROMPT_FILE (the ordinary case)
+    # falls back to the repository root's own docs/ -- every test
+    # above already exercises this implicitly; named explicitly so the
+    # fallback path has its own test, not just incidental coverage.
+    # Same isolated-workdir redirection as the test above, for the
+    # same reason -- only 'data/docs' is left uncreated here.
+    def test_docs_falls_back_to_the_checkout_when_not_installed(self):
+        fake_system_prompt = os.path.join(self.workdir, "data", "system_prompt.txt")
+        real_system_prompt_file = self.ai.SYSTEM_PROMPT_FILE
+        self.ai.SYSTEM_PROMPT_FILE = fake_system_prompt
+        self.addCleanup(setattr, self.ai, "SYSTEM_PROMPT_FILE", real_system_prompt_file)
+
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {})
+        self.assertIn("specification.md", text)
+
+    def test_docs_says_when_neither_location_has_it(self):
+        real_docs_dir = self.ai._docs_dir
+        self.ai._docs_dir = lambda: None
+        self.addCleanup(setattr, self.ai, "_docs_dir", real_docs_dir)
+
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {})
+        self.assertIn("no documentation available", text)
+
+    # spec-query, given an explicit 'path', shares read's wider
+    # boundary -- the same unloaded sibling is queryable directly.
+    def test_spec_query_works_on_an_unloaded_sibling_given_an_explicit_path(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        kernel = os.path.realpath(os.path.join(
+            os.path.dirname(PC_IMAGE), "..", "linux-6.18", "kernel.yml"))
+        text = self.ai.TOOLS["spec-query"].run(
+            app, {"path": kernel, "expression": "$..source"})
+        self.assertIn("apt://linux", text)
+
+    # But a blanket search ('path' omitted) still only walks
+    # build.loaded_files -- it must not quietly widen to include
+    # files nothing 'requires:', just because they happen to sit next
+    # to a loaded one. A sibling with a distinctive key ('upstream:',
+    # only linux-6.18/kernel.yml has it in these fixtures) must not
+    # surface in a search that never named it.
+    def test_spec_query_without_a_path_does_not_search_unloaded_siblings(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["spec-query"].run(
+            app, {"expression": "$..upstream"})
+        self.assertNotIn("cdn.kernel.org", text)
+
+    # '$..name' -- every 'name:' key at any depth, the "where does X
+    # appear" shape this tool exists for -- against the same file
+    # 'test_read_returns_a_loaded_files_own_text' reads directly,
+    # so the two tests agree on what that file actually contains.
+    def test_spec_query_finds_matches_with_jsonpath(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["spec-query"].run(
+            app, {"path": PC_IMAGE, "expression": "$..name"})
+        self.assertIn("install utilities", text)
+
+    def test_spec_query_with_no_matches_says_so_not_nothing(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["spec-query"].run(
+            app, {"path": PC_IMAGE, "expression": "$.nothing_named_this"})
+        self.assertTrue(text.startswith("no matches"))
+        self.assertIn("$..apt", text)
+
+    def test_spec_query_reports_a_bad_expression_not_a_crash(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["spec-query"].run(
+            app, {"path": PC_IMAGE, "expression": "not a jsonpath expression((("})
+        self.assertIn("not a usable JSONPath expression", text)
+
+    # 'path' left out -- searches every file 'spec-files' would list,
+    # each match prefixed with which one, for "where is this" asked
+    # before any one file is known to look in.
+    def test_spec_query_with_no_path_searches_every_loaded_file(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        text = self.ai.TOOLS["spec-query"].run(app, {"expression": "$..name"})
+        self.assertIn("install utilities", text)
+        self.assertIn("%s: " % os.path.realpath(PC_IMAGE), text)
+        self.assertGreater(len(build.loaded_files), 1)  # 'requires' really did pull in more
+
+    # A file that fails to parse on its own is skipped, not left to
+    # abort the whole search -- only a named 'path' that isn't actually
+    # loaded is worth stopping for. A copy of 'PC_IMAGE' 's own tree
+    # (its 'requires' fragments included) under 'self.workdir', never
+    # the real 'examples/' -- the file corrupted on purpose here must
+    # land on the copy, not the source.
+    def test_spec_query_skips_a_file_that_fails_to_parse_during_a_global_search(self):
+        import shutil
+        examples = os.path.join(path_to_sources, "examples")
+        shutil.copytree(os.path.join(examples, "pc-image"),
+                        os.path.join(self.workdir, "pc-image"))
+        shutil.copytree(os.path.join(examples, "common"),
+                        os.path.join(self.workdir, "common"))
+        main = os.path.join(self.workdir, "pc-image", "main.yaml")
+        app = self.SeineApp(files=[main])
+        with open(main, "a") as f:
+            f.write("  - not valid next to a mapping\n")
+        text = self.ai.TOOLS["spec-query"].run(app, {"expression": "$..name"})
+        self.assertNotIn("could not", text.lower())
+        self.assertNotEqual(text, "no matches")
+
+    # '_detect_indent()' on its own -- pinned directly, since it is a
+    # text heuristic (not something 'ruamel.yaml' derives for us) and
+    # easy to silently regress without a test that names exact numbers.
+    def test_detect_indent_finds_nothing_in_a_flat_file(self):
+        self.assertEqual(self.ai._detect_indent("a: 1\nb: 2\n"), {})
+
+    def test_detect_indent_on_the_real_examples_style(self):
+        text = ("requires:\n    - x\n"
+               "playbook:\n    - name: y\n      tasks:\n           - a\n")
+        indent = self.ai._detect_indent(text)
+        self.assertEqual(indent["sequence"], 6)
+        self.assertEqual(indent["offset"], 4)
+
+    def test_detect_indent_finds_the_mapping_increment_too(self):
+        text = "a:\n    b: 1\n    c: 2\n"
+        self.assertEqual(self.ai._detect_indent(text)["mapping"], 4)
+
+    # A file already at 'ruamel.yaml' 's own default (0-indent dash,
+    # 2-space content) detects that same shape back -- applying it is a
+    # no-op, nothing about the common case changes because of this.
+    def test_detect_indent_on_already_default_style(self):
+        text = "playbook:\n- name: y\n  tasks: []\n"
+        indent = self.ai._detect_indent(text)
+        self.assertEqual(indent.get("offset", 0), 0)
+        self.assertEqual(indent.get("sequence", 2), 2)
+
+    # A writable copy of the real example tree, same shape as
+    # 'test_spec_query_skips_a_file_that_fails_to_parse_during_a_global_search'
+    # above -- 'spec-update'/'spec-create' actually write, so every test
+    # below has to run against a throwaway copy, never the real
+    # 'examples/' this repo ships.
+    def _copied_pc_image(self):
+        import shutil
+        examples = os.path.join(path_to_sources, "examples")
+        shutil.copytree(os.path.join(examples, "pc-image"),
+                        os.path.join(self.workdir, "pc-image"))
+        shutil.copytree(os.path.join(examples, "common"),
+                        os.path.join(self.workdir, "common"))
+        return os.path.join(self.workdir, "pc-image", "main.yaml")
+
+    # A small, cleanly-indented spec for the tests below that check a
+    # diff is minimal -- examples/pc-image/main.yaml's own deeper,
+    # inconsistent indent style is a separate case, its own test below.
+    def _minimal_spec(self):
+        path = os.path.join(self.workdir, "minimal.yaml")
+        with open(path, "w") as f:
+            f.write(
+                "distribution:\n"
+                "  release: bookworm\n"
+                "  architecture: amd64\n"
+                "playbook:\n"
+                "- name: some great packages\n"
+                "  tasks:\n"
+                "  - name: install utilities\n"
+                "    apt:\n"
+                "      name:\n"
+                "      - attr\n"
+                "      - iputils-ping\n"
+                "      state: present\n"
+                "  - name: install vim\n"
+                "    apt:\n"
+                "      name:\n"
+                "      - vim\n"
+                "      state: present\n"
+                "image:\n"
+                "  filename: test.img\n"
+                "  table: gpt\n"
+                "  size: 128MiB\n"
+                "  partitions:\n"
+                "  - label: system\n"
+                "    type: ext2\n"
+                "    size: 128MiB\n"
+                "    where: /\n")
+        return path
+
+    def test_spec_update_needs_path_at_value(self):
+        app = self.SeineApp(files=[self._copied_pc_image()])
+        text = self.ai.TOOLS["spec-update"].run(app, {})
+        self.assertIn("needs 'path'", text)
+
+    def test_spec_update_refuses_a_path_not_loaded(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-update"].run(
+            app, {"path": "/etc/shadow", "at": "$.playbook", "value": "[]"})
+        self.assertIn("not one of this build's own loaded files", text)
+
+    def test_spec_update_at_matching_zero_nodes(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-update"].run(
+            app, {"path": main, "at": "$.nothing_named_this", "value": "1"})
+        self.assertIn("no node matches", text)
+        self.assertIn("spec-query", text)
+
+    def test_spec_update_at_matching_many_nodes(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-update"].run(
+            app, {"path": main, "at": "$..name", "value": "x"})
+        self.assertIn("narrow it", text)
+
+    def test_spec_update_value_not_valid_yaml(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-update"].run(
+            app, {"path": main, "at": "$.playbook[0].tasks[1].apt.name",
+                 "value": "[unterminated"})
+        self.assertIn("not valid YAML", text)
+
+    def test_spec_update_append_needs_a_list(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-update"].run(
+            app, {"path": main, "at": "$.playbook[0].tasks[1].apt",
+                 "value": "x", "mode": "append"})
+        self.assertIn("does not address a list", text)
+
+    def test_spec_update_bad_mode(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-update"].run(
+            app, {"path": main, "at": "$.playbook[0].tasks[1].apt.name",
+                 "value": "[vim]", "mode": "sideways"})
+        self.assertIn("'mode' must be", text)
+
+    # 'value' has to match the target's own YAML *style* (block, here),
+    # not just its semantic value -- 'ruamel.yaml' round-trips whichever
+    # style 'value' itself was written in, so a flow-style '[vim]' would
+    # genuinely change the file's rendering even though the list is the
+    # same one item; that is a real edit, not a false "no effect".
+    def test_spec_update_no_op_is_refused(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-update"].run(
+            app, {"path": main, "at": "$.playbook[0].tasks[1].apt.name",
+                 "value": "- vim\n"})
+        self.assertIn("no effect", text)
+
+    # 'preview' and 'run' agree on the same plan -- the diff a person
+    # would review names the file and shows the real change, and 'run'
+    # actually makes it (checked by re-reading the file, not by trusting
+    # 'run' 's own return text). Cleanly-indented fixture -- the "only
+    # the touched node changes" promise this whole design rests on only
+    # holds when 'ruamel.yaml' 's own default indent style already
+    # matches the file's (see the reflow test below for when it doesn't).
+    def test_spec_update_preview_then_run_appends_one_item(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        args = {"path": main, "at": "$.playbook[0].tasks[1].apt.name",
+               "value": "sudo", "mode": "append"}
+        preview = self.ai.TOOLS["spec-update"].preview(app, args)
+        self.assertTrue(preview.ok)
+        self.assertIn(main, preview.message)
+        self.assertIn("+      - sudo", preview.message)
+        self.assertNotIn("-      - vim", preview.message)  # untouched, not removed+readded
+
+        result = self.ai.TOOLS["spec-update"].run(app, args)
+        self.assertEqual(result, "updated %s" % main)
+        with open(main) as f:
+            written = f.read()
+        self.assertIn("- vim", written)
+        self.assertIn("- sudo", written)
+        # Untouched elsewhere -- the unrelated 'install utilities' task
+        # survives verbatim, the whole point of 'ruamel.yaml' 's round
+        # trip over a plain PyYAML one.
+        self.assertIn("iputils-ping", written)
+
+    def test_spec_update_set_mode_replaces_the_whole_node(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        args = {"path": main, "at": "$.playbook[0].tasks[1].apt.name",
+               "value": "[vim, sudo]"}
+        self.ai.TOOLS["spec-update"].run(app, args)
+        with open(main) as f:
+            written = f.read()
+        self.assertIn("sudo", written)
+
+    # A secret in the *old* line of the diff must never reach the model
+    # or the confirm dialog -- same 'redact:' patterns 'dump_file()'
+    # already applies to a read, applied here to the diff instead.
+    def test_spec_update_diff_is_redacted(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        build = app.context.builds[0]
+        build.spec.setdefault("redact", []).append("iputils-ping")
+        args = {"path": main, "at": "$.playbook[0].tasks[0].apt.name",
+               "value": "[attr, iputils-ping, extra]"}
+        preview = self.ai.TOOLS["spec-update"].preview(app, args)
+        self.assertTrue(preview.ok)
+        self.assertNotIn("iputils-ping", preview.message)
+        self.assertIn("<redacted:", preview.message)
+
+    # A known caveat: a file indented differently from ruamel.yaml's own
+    # default (examples/pc-image/main.yaml included) gets every sequence
+    # line reflowed on the first edit, not just the touched node --
+    # wider than the minimal diff the tool otherwise gives, but the edit
+    # itself is still correct (checked below).
+    #
+    # _detect_indent() picks up main.yaml's 4-space list/mapping style
+    # from its first occurrence, so requires:/playbook: survive verbatim.
+    # 'tasks:', nested one level deeper, happens to use a different
+    # increment (5 spaces, not 4) that YAML().indent() can't express per
+    # nesting level, so that one block still reflows by a single space.
+    def test_spec_update_only_reflows_the_locally_inconsistent_part(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        args = {"path": main, "at": "$.playbook[0].tasks[1].apt.name",
+               "value": "sudo", "mode": "append"}
+        preview = self.ai.TOOLS["spec-update"].preview(app, args)
+        self.assertTrue(preview.ok)
+        # 'requires:' -- a sibling section, several lines away from the
+        # edit -- is untouched: no '-'/'+' mark on any of its lines.
+        self.assertNotIn("-    - ../common/amd64", preview.message)
+        self.assertNotIn("+- ../common/amd64", preview.message)
+        self.assertIn("+                    - sudo", preview.message)
+
+        self.ai.TOOLS["spec-update"].run(app, args)
+        with open(main) as f:
+            written = f.read()
+        self.assertIn("- sudo", written)
+        self.assertIn("    - ../common/amd64", written)  # 'requires:' untouched on disk too
+
+    def test_spec_create_needs_path_and_content(self):
+        app = self.SeineApp(files=[self._copied_pc_image()])
+        text = self.ai.TOOLS["spec-create"].run(app, {})
+        self.assertIn("needs 'path'", text)
+
+    def test_spec_create_refuses_an_existing_path(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        text = self.ai.TOOLS["spec-create"].run(
+            app, {"path": main, "content": "distribution: {}\n"})
+        self.assertIn("already exists", text)
+
+    def test_spec_create_refuses_an_unrelated_directory(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        elsewhere = os.path.join(self.workdir, "new.yaml")
+        text = self.ai.TOOLS["spec-create"].run(
+            app, {"path": elsewhere, "content": "distribution: {}\n"})
+        self.assertIn("not next to any", text)
+
+    def test_spec_create_content_not_valid_yaml(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        new_path = os.path.join(os.path.dirname(main), "extra.yaml")
+        text = self.ai.TOOLS["spec-create"].run(
+            app, {"path": new_path, "content": "[unterminated"})
+        self.assertIn("not valid YAML", text)
+
+    def test_spec_create_preview_then_run_writes_a_new_file(self):
+        main = self._copied_pc_image()
+        app = self.SeineApp(files=[main])
+        new_path = os.path.join(os.path.dirname(main), "extra.yaml")
+        content = "playbook:\n  - name: extra\n    tasks: []\n"
+        args = {"path": new_path, "content": content}
+        preview = self.ai.TOOLS["spec-create"].preview(app, args)
+        self.assertTrue(preview.ok)
+        self.assertIn(new_path, preview.message)
+        self.assertIn("+playbook:", preview.message)
+
+        result = self.ai.TOOLS["spec-create"].run(app, args)
+        self.assertEqual(result, "wrote %s" % new_path)
+        with open(new_path) as f:
+            self.assertEqual(f.read(), content)
+
+    def _extend_fragment(self, content="playbook:\n- name: extra play\n  tasks: []\n"):
+        path = os.path.join(self.workdir, "extra-fragment.yaml")
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def test_extend_needs_fragment(self):
+        app = self.SeineApp(files=[self._minimal_spec()])
+        text = self.ai.TOOLS["extend"].run(app, {})
+        self.assertIn("needs 'fragment'", text)
+
+    def test_extend_preview_needs_an_active_spec(self):
+        app = self.SeineApp()
+        preview = self.ai.TOOLS["extend"].preview(app, {"fragment": "whatever.yaml"})
+        self.assertFalse(preview.ok)
+        self.assertIn("no active specification", preview.message)
+
+    def test_extend_preview_refuses_a_fragment_that_fails_to_load(self):
+        app = self.SeineApp(files=[self._minimal_spec()])
+        preview = self.ai.TOOLS["extend"].preview(
+            app, {"fragment": "/does/not/exist.yaml"})
+        self.assertFalse(preview.ok)
+
+    # 'diff()' (seine/build.py) always hands back the whole spec, unmarked
+    # context lines included -- never blank even with nothing to say -- so
+    # "would this change anything" has to look for an actual '+'/'-' mark.
+    def test_extend_preview_says_no_op_when_nothing_would_change(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        noop = self._extend_fragment("distribution:\n  architecture: amd64\n")
+        preview = self.ai.TOOLS["extend"].preview(app, {"fragment": noop})
+        self.assertFalse(preview.ok)
+        self.assertIn("change nothing", preview.message)
+
+    # A dry run -- computed against a scratch 'BuildCmd', never touching
+    # 'app.context' itself, so a person can review several candidate
+    # fragments without any of them actually taking effect until 'run'.
+    def test_extend_preview_shows_what_merging_would_change(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        fragment = self._extend_fragment()
+        preview = self.ai.TOOLS["extend"].preview(app, {"fragment": fragment})
+        self.assertTrue(preview.ok)
+        self.assertIn("extra play", preview.message)
+        self.assertEqual(len(app.context.builds[0].spec["playbook"]), 1)
+
+    def test_build_status_matches_the_build_screens_own_stage_list(self):
+        app = self.SeineApp()
+        self.assertEqual(self.ai.TOOLS["build-status"].run(app, {}),
+                         app.build_state.render())
+
+    # '_live_status()' folds the *overall* state into the system prompt
+    # every turn (see '_run()') -- pinned here on its own, one case per
+    # 'BuildState' shape, rather than only indirectly through a live
+    # chat loop.
+    def test_live_status_is_empty_with_no_spec_selected(self):
+        app = self.SeineApp()
+        self.assertEqual(self.ai._live_status(app), "")
+
+    def test_live_status_not_started_yet(self):
+        app = self.SeineApp()
+        app.build_state.order = ["rootfs"]
+        app.build_state.rows = {"rootfs": {"needs": [], "state": "pending",
+                                           "started": None, "elapsed": None}}
+        self.assertIn("not started yet", self.ai._live_status(app))
+
+    def test_live_status_running(self):
+        app = self.SeineApp()
+        app.build_state.order = ["rootfs"]
+        app.build_state.worker = types.SimpleNamespace(is_running=True)
+        self.assertIn("running", self.ai._live_status(app))
+
+    def test_live_status_finished(self):
+        app = self.SeineApp()
+        app.build_state.order = ["rootfs"]
+        app.build_state.done = True
+        app.build_state.error = False
+        self.assertIn("finished", self.ai._live_status(app))
+
+    def test_live_status_failed(self):
+        app = self.SeineApp()
+        app.build_state.order = ["rootfs"]
+        app.build_state.done = True
+        app.build_state.error = True
+        self.assertIn("failed", self.ai._live_status(app))
+
+    # "Why did my build fail" without naming a step: 'task-log' picks
+    # whichever one is marked 'failed' in 'BuildState.rows', the same
+    # dict 'BuildScreen' 's own stage list already reads.
+    def test_task_log_defaults_to_the_failed_step(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.order = ["bootstrap-host", "rootfs"]
+        state.rows = {
+            "bootstrap-host": {"needs": [], "state": "done", "started": None, "elapsed": 1.0},
+            "rootfs": {"needs": ["bootstrap-host"], "state": "failed",
+                      "started": None, "elapsed": 2.0},
+        }
+        logdir = self.workdir
+        with open(os.path.join(logdir, "rootfs.log"), "w") as f:
+            f.write("line one\nERROR: it broke\n")
+        state.build = type("B", (), {"image": type("I", (), {"logs": logdir})()})()
+        text = self.ai.TOOLS["task-log"].run(app, {})
+        self.assertIn("ERROR: it broke", text)
+
+    def test_task_log_by_explicit_name(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.order = ["rootfs"]
+        state.rows = {"rootfs": {"needs": [], "state": "running",
+                                 "started": None, "elapsed": None}}
+        logdir = self.workdir
+        with open(os.path.join(logdir, "rootfs.log"), "w") as f:
+            f.write("real content\n")
+        state.build = type("B", (), {"image": type("I", (), {"logs": logdir})()})()
+        self.assertIn("real content", self.ai.TOOLS["task-log"].run(app, {"task": "rootfs"}))
+
+    def test_task_log_only_tails_the_most_recent_lines(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.order = ["rootfs"]
+        state.rows = {"rootfs": {"needs": [], "state": "running",
+                                 "started": None, "elapsed": None}}
+        logdir = self.workdir
+        with open(os.path.join(logdir, "rootfs.log"), "w") as f:
+            f.write("\n".join("line %d" % i for i in range(500)) + "\n")
+        state.build = type("B", (), {"image": type("I", (), {"logs": logdir})()})()
+        text = self.ai.TOOLS["task-log"].run(app, {"task": "rootfs"})
+        self.assertEqual(len(text.splitlines()), self.ai.LOG_TAIL_LINES)
+        self.assertIn("line 499", text)
+        self.assertNotIn("line 0\n", text)
+
+    def test_task_log_with_no_task_and_nothing_failed_or_running(self):
+        app = self.SeineApp()
+        app.build_state.build = type("B", (), {"image": type("I", (), {"logs": self.workdir})()})()
+        self.assertIn("no 'task' given", self.ai.TOOLS["task-log"].run(app, {}))
+
+    def test_task_log_missing_file_is_an_error_not_a_crash(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.build = type("B", (), {"image": type("I", (), {"logs": self.workdir})()})()
+        text = self.ai.TOOLS["task-log"].run(app, {"task": "does-not-exist"})
+        self.assertIn("could not read", text)
+
+    # 'pattern' filters server-side, one task named -- only matching
+    # lines come back, not the whole tail.
+    def test_task_log_pattern_filters_one_tasks_log(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.order = ["rootfs"]
+        state.rows = {"rootfs": {"needs": [], "state": "done",
+                                 "started": None, "elapsed": None}}
+        logdir = self.workdir
+        with open(os.path.join(logdir, "rootfs.log"), "w") as f:
+            f.write("ok: install vim\nWARNING: something\nok: install ssh\n")
+        state.build = type("B", (), {"image": type("I", (), {"logs": logdir})()})()
+        text = self.ai.TOOLS["task-log"].run(app, {"task": "rootfs", "pattern": "warn"})
+        self.assertEqual(text, "WARNING: something")
+
+    # 'task' left out alongside 'pattern' -- every step's own log in
+    # 'state.order', each match prefixed with which one, the "any
+    # warnings anywhere" case this exists for.
+    def test_task_log_pattern_with_no_task_searches_every_step(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.order = ["bootstrap-host", "rootfs", "tarball"]
+        state.rows = {name: {"needs": [], "state": "done", "started": None, "elapsed": None}
+                     for name in state.order}
+        logdir = self.workdir
+        with open(os.path.join(logdir, "bootstrap-host.log"), "w") as f:
+            f.write("clean\n")
+        with open(os.path.join(logdir, "rootfs.log"), "w") as f:
+            f.write("clean\n")
+        with open(os.path.join(logdir, "tarball.log"), "w") as f:
+            f.write('level=warning msg="teardown"\n')
+        state.build = type("B", (), {"image": type("I", (), {"logs": logdir})()})()
+        text = self.ai.TOOLS["task-log"].run(app, {"pattern": "warn"})
+        self.assertIn("tarball: ", text)
+        self.assertIn("teardown", text)
+        self.assertNotIn("bootstrap-host:", text)
+
+    def test_task_log_pattern_with_bad_regex_reports_it_not_a_crash(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.build = type("B", (), {"image": type("I", (), {"logs": self.workdir})()})()
+        text = self.ai.TOOLS["task-log"].run(app, {"task": "rootfs", "pattern": "("})
+        self.assertIn("not a usable pattern", text)
+
+    def test_task_log_pattern_with_no_matches_says_so(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.order = ["rootfs"]
+        state.rows = {"rootfs": {"needs": [], "state": "done",
+                                 "started": None, "elapsed": None}}
+        logdir = self.workdir
+        with open(os.path.join(logdir, "rootfs.log"), "w") as f:
+            f.write("all clean\n")
+        state.build = type("B", (), {"image": type("I", (), {"logs": logdir})()})()
+        text = self.ai.TOOLS["task-log"].run(app, {"task": "rootfs", "pattern": "warn|error"})
+        self.assertEqual(text, "no matching lines")
+
+    # Same "no matching lines" outcome, but across every step -- the
+    # "is package X in my image" shape this exists for: a clean build,
+    # searched whole rather than one step at a time.
+    def test_task_log_pattern_with_no_task_and_no_matches_says_so(self):
+        app = self.SeineApp()
+        state = app.build_state
+        state.order = ["bootstrap-host", "rootfs", "tarball"]
+        state.rows = {name: {"needs": [], "state": "done", "started": None, "elapsed": None}
+                     for name in state.order}
+        logdir = self.workdir
+        for name in state.order:
+            with open(os.path.join(logdir, "%s.log" % name), "w") as f:
+                f.write("nothing interesting here\n")
+        state.build = type("B", (), {"image": type("I", (), {"logs": logdir})()})()
+        text = self.ai.TOOLS["task-log"].run(app, {"pattern": "sudo"})
+        self.assertEqual(text, "no matching lines")
+
+    def test_sbom_diff_needs_both_paths(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["sbom-diff"].run(app, {})
+        self.assertIn("needs both", text)
+
+    def test_installed_sizes_needs_a_single_active_group(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["installed-sizes"].run(app, {})
+        # A real spec but no build yet -- no tarball to read.
+        self.assertIn("no tarball", text)
+
+    # A real var/lib/dpkg/status, not just a name-echoing tarball.
+    # Same shape as tests/spec/sbom.py's status_tarball(), kept local
+    # rather than imported -- test files here stay self-contained.
+    def _status_tarball(self, status):
+        path = os.path.join(self.workdir, "root.tar")
+        with tarfile.open(path, "w") as tar:
+            payload = status.encode()
+            info = tarfile.TarInfo("./var/lib/dpkg/status")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        return path
+
+    # 'name' searches every installed package, not just the top 30 --
+    # the "is package X in my image" case this exists for, where X may
+    # be far smaller than the 30th-largest package.
+    def test_installed_sizes_name_finds_a_small_package(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        build.image._tarball = self._status_tarball(
+            "Package: sudo\nStatus: install ok installed\n"
+            "Installed-Size: 10\nVersion: 1.9\n")
+        try:
+            text = self.ai.TOOLS["installed-sizes"].run(app, {"name": "sudo"})
+        finally:
+            # Avoids 'Image.__del__' trying to unlink this once
+            # 'self.workdir' (the tarball's own directory) is already
+            # gone -- a test-only ordering issue, not a real 'Image'
+            # concern (a real build's tarball outlives the object).
+            build.image._tarball = None
+        self.assertIn("sudo", text)
+        self.assertIn("10 KiB", text)
+
+    def test_installed_sizes_name_with_no_match_says_so(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        build.image._tarball = self._status_tarball(
+            "Package: bash\nStatus: install ok installed\n"
+            "Installed-Size: 7000\nVersion: 5.2\n")
+        try:
+            text = self.ai.TOOLS["installed-sizes"].run(app, {"name": "sudo"})
+        finally:
+            build.image._tarball = None
+        self.assertEqual(text, "no installed package matching 'sudo'")
+
+    # 'name' is a regex, not a plain substring -- alternation finds
+    # either of two packages in one call.
+    def test_installed_sizes_name_is_a_regex(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        build.image._tarball = self._status_tarball(
+            "Package: sudo\nStatus: install ok installed\n"
+            "Installed-Size: 10\nVersion: 1.9\n\n"
+            "Package: doas\nStatus: install ok installed\n"
+            "Installed-Size: 5\nVersion: 6.8\n\n"
+            "Package: bash\nStatus: install ok installed\n"
+            "Installed-Size: 7000\nVersion: 5.2\n")
+        try:
+            text = self.ai.TOOLS["installed-sizes"].run(app, {"name": "sudo|doas"})
+        finally:
+            build.image._tarball = None
+        self.assertIn("sudo", text)
+        self.assertIn("doas", text)
+        self.assertNotIn("bash", text)
+
+    def test_installed_sizes_name_with_bad_regex_reports_it_not_a_crash(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        build.image._tarball = self._status_tarball(
+            "Package: bash\nStatus: install ok installed\n"
+            "Installed-Size: 7000\nVersion: 5.2\n")
+        try:
+            text = self.ai.TOOLS["installed-sizes"].run(app, {"name": "("})
+        finally:
+            build.image._tarball = None
+        self.assertIn("not a usable pattern", text)
+
+    def test_reset_conversation_clears_state(self):
+        app = self.SeineApp()
+        app.ai_state.messages.append({"role": "user", "content": "hi"})
+        app.ai_state.prompt_tokens = 5
+        text = self.ai.TOOLS["reset-conversation"].run(app, {})
+        self.assertEqual(text, "conversation reset")
+        self.assertEqual(app.ai_state.messages, [])
+        self.assertEqual(app.ai_state.prompt_tokens, 0)
+
+    def test_cancel_build_with_nothing_running(self):
+        app = self.SeineApp()
+        self.assertEqual(self.ai.TOOLS["cancel-build"].run(app, {}), "no build is running")
+
+    def test_start_build_with_no_active_spec(self):
+        app = self.SeineApp()
+        self.assertIn("no single active specification",
+                      self.ai.TOOLS["start-build"].run(app, {}))
+
+# Fakes the whole shape 'seine/tui/ai.py' reads off a real 'litellm'
+# response/stream -- kept as small as the real thing actually needs, not
+# a general mock. Two calls: the first always asks for one tool (given
+# by the test), the second always answers with plain content -- enough
+# to exercise the whole loop without a real endpoint (that part is
+# 'RealEndpoint' below, opt-in).
+def fake_litellm(tool_name=None, tool_arguments="{}", captured_messages=None):
+    class Delta:
+        def __init__(self, content=None, tool_calls=None):
+            self.content = content
+            self.tool_calls = tool_calls
+            self.reasoning_content = None
+
+    class Choice:
+        def __init__(self, delta):
+            self.delta = delta
+
+    class Chunk:
+        def __init__(self, delta):
+            self.choices = [Choice(delta)]
+
+    class Function:
+        def __init__(self, name, arguments):
+            self.name = name
+            self.arguments = arguments
+
+    class ToolCall:
+        def __init__(self, id, name, arguments):
+            self.id = id
+            self.function = Function(name, arguments)
+            self.type = "function"
+
+    class Message:
+        def __init__(self, content=None, tool_calls=None):
+            self.content = content
+            self.tool_calls = tool_calls
+            self.role = "assistant"
+
+        def model_dump(self, exclude_none=True):
+            d = {"role": "assistant"}
+            if self.content is not None:
+                d["content"] = self.content
+            if self.tool_calls:
+                d["tool_calls"] = [{"id": tc.id, "type": "function",
+                                    "function": {"name": tc.function.name,
+                                                "arguments": tc.function.arguments}}
+                                   for tc in self.tool_calls]
+            return d
+
+    class Usage:
+        def __init__(self, p, c):
+            self.prompt_tokens = p
+            self.completion_tokens = c
+
+    class Response:
+        def __init__(self, message, usage):
+            class C:
+                pass
+            c = C()
+            c.message = message
+            self.choices = [c]
+            self.usage = usage
+
+    calls = {"n": 0}
+
+    def completion(model, api_base, api_key, messages, tools, tool_choice,
+                   stream, stream_options):
+        calls["n"] += 1
+        if captured_messages is not None:
+            captured_messages.append(messages)
+        if calls["n"] == 1 and tool_name is not None:
+            return iter([Chunk(Delta(tool_calls=[ToolCall("call_1", tool_name, tool_arguments)]))])
+        return iter([Chunk(Delta(content="final answer"))])
+
+    def stream_chunk_builder(chunks, messages=None):
+        for c in chunks:
+            if c.choices[0].delta.tool_calls:
+                return Response(Message(tool_calls=c.choices[0].delta.tool_calls), Usage(10, 5))
+        text = "".join(c.choices[0].delta.content or "" for c in chunks)
+        return Response(Message(content=text), Usage(20, 8))
+
+    return types.SimpleNamespace(
+        completion=completion,
+        stream_chunk_builder=stream_chunk_builder,
+        token_counter=lambda model, messages: 1,
+        get_max_tokens=lambda model: (_ for _ in ()).throw(Exception("unmapped")),
+        suppress_debug_info=False,
+    )
+
+class TheLoop(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+            from seine.tui.chat import ChatScreen
+        self.SeineApp = SeineApp
+        self.ChatScreen = ChatScreen
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        os.environ["SEINE_LLM_MODEL"] = "openai/fake"
+        self._real_litellm = sys.modules.get("litellm")
+        self.addCleanup(self._restore_litellm)
+
+    def _restore_litellm(self):
+        if self._real_litellm is not None:
+            sys.modules["litellm"] = self._real_litellm
+        else:
+            sys.modules.pop("litellm", None)
+        _clear_llm_env()
+
+    async def _settle(self, app, pilot, ticks=100):
+        for _ in range(ticks):
+            if not app.ai_state.busy:
+                return
+            await asyncio.sleep(0.02)
+            await pilot.pause()
+        self.fail("ai_state never settled")
+
+    # Same fixture as 'ToolTable._minimal_spec()' -- duplicated rather
+    # than imported, the same "test files stay self-contained" reason
+    # given at the top of this file, just applied class to class here
+    # instead of file to file ('_settle' just above is the same shape).
+    def _minimal_spec(self):
+        path = os.path.join(self.workdir, "minimal.yaml")
+        with open(path, "w") as f:
+            f.write(
+                "distribution:\n"
+                "  release: bookworm\n"
+                "  architecture: amd64\n"
+                "playbook:\n"
+                "- name: some great packages\n"
+                "  tasks:\n"
+                "  - name: install vim\n"
+                "    apt:\n"
+                "      name:\n"
+                "      - vim\n"
+                "      state: present\n"
+                "image:\n"
+                "  filename: test.img\n"
+                "  table: gpt\n"
+                "  size: 128MiB\n"
+                "  partitions:\n"
+                "  - label: system\n"
+                "    type: ext2\n"
+                "    size: 128MiB\n"
+                "    where: /\n")
+        return path
+
+    # A read-only tool call, dispatched and looped back in with no
+    # confirmation needed -- 'doctor' picked because it needs nothing
+    # from the active spec.
+    def test_a_read_only_tool_call_completes_the_conversation(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="doctor")
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "is this machine ready?"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.ChatScreen)
+                await self._settle(app, pilot)
+                roles = [m["role"] for m in app.ai_state.messages]
+                self.assertEqual(roles, ["user", "assistant", "tool", "assistant"])
+                self.assertEqual(app.ai_state.messages[-1]["content"], "final answer")
+                self.assertEqual(app.ai_state.prompt_tokens, 30)      # 10 + 20
+                self.assertEqual(app.ai_state.completion_tokens, 13)  # 5 + 8
+        _run(scenario)
+
+    # '_live_status()' lands in the *system* message sent on the wire,
+    # every turn -- not in 'app.ai_state.messages' (so it never shows in
+    # '#chatlog'), and not only when a question happens to be about the
+    # build. Checked against the real request 'litellm.completion()'
+    # would receive, not just the function in isolation.
+    def test_live_status_reaches_the_system_prompt_every_turn(self):
+        captured = []
+        sys.modules["litellm"] = fake_litellm(tool_name="doctor", captured_messages=captured)
+        async def scenario():
+            app = self.SeineApp()
+            app.build_state.order = ["rootfs"]
+            app.build_state.done = True
+            app.build_state.error = False
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "is this machine ready?"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                self.assertEqual(len(captured), 2)  # the tool call, then the final answer
+                for messages in captured:
+                    system = messages[0]["content"]
+                    self.assertIn("currently: finished", system)
+                # Never in the visible transcript.
+                for message in app.ai_state.messages:
+                    self.assertNotIn("currently: finished", str(message.get("content", "")))
+        _run(scenario)
+
+    # Colour, not a 'you:'/'seine:' prefix, tells the two apart -- dim
+    # (plus a leading '| ') for what a person typed, plain for the
+    # model's own words. A tool call's own raw result stays out of
+    # '#chatlog' by default -- one collapsed row, an icon and the tool's
+    # name -- only the question and the words actually meant to be read
+    # show in full. Blank lines separate one turn from the next.
+    def test_messages_are_colour_coded_and_blank_line_separated(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="doctor")
+        async def scenario():
+            from textual.widgets import RichLog
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "is this machine ready?"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                log = app.screen.query_one("#chatlog", RichLog)
+                rows = [(line.text, line._segments[0].style if line._segments else None)
+                       for line in log.lines]
+                by_text = {text: style for text, style in rows}
+                self.assertIn("dim", str(by_text["| is this machine ready?"]))
+                self.assertNotIn("dim", str(by_text.get("final answer", "")))
+                self.assertIn("▸ 🔧 doctor", by_text)
+                tool_content = [m for m in app.ai_state.messages
+                               if m["role"] == "tool"][0]["content"]
+                self.assertNotIn("    " + tool_content.split("\n")[0], by_text)
+                # A blank row between the question and the tool row, and
+                # another between the tool row and the final answer --
+                # but nothing trailing after the last group (no more
+                # defensive blank line after every single write).
+                texts = [text for text, _ in rows]
+                self.assertEqual(texts[1], "")
+                self.assertEqual(texts[texts.index("final answer") - 1], "")
+                self.assertEqual(texts[-1], "final answer")
+        _run(scenario)
+
+    # A dispatched tool call with no matching 'role: tool' result yet
+    # gets its own row. Built directly rather than through a real gated
+    # call: the fake harness resolves a tool call synchronously, too
+    # fast to ever observe this in-between state.
+    def test_pending_tool_call_shows_its_own_row_in_the_log(self):
+        async def scenario():
+            from textual.widgets import RichLog
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                app.show("chat")
+                await pilot.pause()
+                app.ai_state.messages = [
+                    {"role": "user", "content": "add sudo"},
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "call_1", "function": {"name": "spec-update", "arguments": "{}"}}]},
+                ]
+                app.ai_state.changed()
+                await pilot.pause()
+                log = app.screen.query_one("#chatlog", RichLog)
+                texts = [str(line) for line in log.lines]
+                joined = "\n".join(texts)
+                self.assertIn("spec-update", joined)
+                self.assertIn("Working…", joined)
+                # No '@click' meta -- there's nothing to expand yet.
+                for line in log.lines:
+                    for segment in line._segments:
+                        if segment.style is not None:
+                            self.assertNotIn("@click", str(segment.style.meta))
+        _run(scenario)
+
+    def test_draft_shows_a_trailing_cursor_and_reclaims_space_when_done(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                app.show("chat")
+                await pilot.pause()
+                screen = app.screen
+                draft = screen.query_one("#draft")
+                self.assertFalse(draft.display)  # nothing streaming yet
+                screen._on_delta("The answer")
+                await pilot.pause()
+                self.assertTrue(draft.display)
+                self.assertTrue(str(draft.renderable).endswith("▌"))
+                self.assertIn("The answer", str(draft.renderable))
+                screen._on_delta_done()
+                await pilot.pause()
+                self.assertFalse(draft.display)  # reclaimed once the reply lands
+        _run(scenario)
+
+    # '#working' is no longer a widget of its own -- 'Working…' is
+    # '#chatcol' 's own 'border_subtitle', costing no row either way.
+    # Set while busy, cleared (not just blanked) once idle -- an empty
+    # 'border_subtitle' is what makes the bottom border plain again.
+    def test_working_status_lives_on_the_chatcol_border(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                app.show("chat")
+                await pilot.pause()
+                screen = app.screen
+                chatcol = screen.query_one("#chatcol")
+                app.ai_state.busy = True
+                app.ai_state.turn_started_at = time.time()
+                screen._tick_working()
+                await pilot.pause()
+                self.assertIn("Working", chatcol.border_subtitle)
+                app.ai_state.busy = False
+                screen._tick_working()
+                await pilot.pause()
+                self.assertEqual(chatcol.border_subtitle, "")
+        _run(scenario)
+
+    # A real bug: RichLog paints $surface by default, #draft was left
+    # transparent, so the screen's darker background showed through as a
+    # separate pane. Pinned on the actual resolved colours -- #chatcol/
+    # #chatlog/#draft all the same $background, and the border genuinely
+    # distinct from it, not assumed close enough by eye.
+    def test_chat_frame_has_one_consistent_background_and_a_visible_border(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                app.show("chat")
+                await pilot.pause()
+                chatcol = app.screen.query_one("#chatcol")
+                bg = chatcol.background_colors
+                for wid in ["chatlog", "draft"]:
+                    self.assertEqual(app.screen.query_one("#" + wid).background_colors, bg)
+                border_color = chatcol.styles.border_top[1]
+                # Distinct enough from the frame's own background to
+                # actually read as a border, not asserted equal to one
+                # specific value -- only that it isn't lost in it.
+                self.assertGreater(abs(border_color.r - bg[1].r), 40)
+        _run(scenario)
+
+    # #chatrow (chat plus stats) matched itself, but #main (SpecTree/
+    # StaticPane, shared by every screen) still painted Textual's widget
+    # defaults, visibly lighter. Scoped to ChatScreen only -- the second
+    # half of this test proves that scoping held.
+    def test_chat_screens_top_half_matches_its_own_bottom_half(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                app.show("chat")
+                await pilot.pause()
+                chat_bg = app.screen.query_one("#chatcol").background_colors
+                for wid in ["main", "spectree", "cmd"]:
+                    self.assertEqual(app.screen.query_one("#" + wid).background_colors, chat_bg)
+
+                app.show("overview")
+                await pilot.pause()
+                # A screen other than chat is untouched -- 'SpecTree' 's
+                # own default background, not forced to match anything.
+                self.assertNotEqual(
+                    app.screen.query_one("#spectree").background_colors, chat_bg)
+        _run(scenario)
+
+    # export_screenshot(), not widget.background_colors like the two
+    # tests above: get_style_at() reported the scrollbar's cells as
+    # matching $background when a real SVG export still showed a black
+    # fill underneath -- background alone never reaches a ScrollView's
+    # own scrollbar-* properties.
+    def test_chatlogs_scrollbar_has_no_stray_black_fill(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                app.show("chat")
+                await pilot.pause()
+                svg = app.export_screenshot()
+                self.assertNotIn('fill="#000000"', svg)
+        _run(scenario)
+
+    # Clicking a collapsed tool row expands it in place -- the same
+    # '@click' style-meta mechanism Textual's own markup links use, so
+    # this drives it the same way a real click would: through
+    # 'ChatScreen.action_toggle_tool', not by reaching into '_expanded'
+    # directly.
+    def test_clicking_a_tool_row_expands_and_collapses_its_result(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="doctor")
+        async def scenario():
+            from textual.widgets import RichLog
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "is this machine ready?"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                screen = app.screen
+                tool_message = [m for m in app.ai_state.messages
+                                if m["role"] == "tool"][0]
+                call_id = tool_message["tool_call_id"]
+                first_line = "    " + tool_message["content"].split("\n")[0]
+                log = screen.query_one("#chatlog", RichLog)
+
+                def texts():
+                    return [line.text for line in log.lines]
+
+                self.assertNotIn(first_line, texts())
+                screen.action_toggle_tool(call_id)
+                await pilot.pause()
+                self.assertIn("▾ 🔧 doctor", texts())
+                self.assertIn(first_line, texts())
+                screen.action_toggle_tool(call_id)
+                await pilot.pause()
+                self.assertIn("▸ 🔧 doctor", texts())
+                self.assertNotIn(first_line, texts())
+        _run(scenario)
+
+    # A real mouse click, not calling 'action_toggle_tool' directly like
+    # the test above -- this is the one that actually exercises the
+    # '@click' style-meta dispatch (a click landing on '#chatlog', an
+    # ordinary 'RichLog', not this 'Screen', resolves the action against
+    # whichever of the two the meta string names).
+    def test_clicking_a_tool_row_in_the_chatlog_expands_it(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="doctor")
+        async def scenario():
+            from textual.widgets import RichLog
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "is this machine ready?"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                log = app.screen.query_one("#chatlog", RichLog)
+                row = next(i for i, line in enumerate(log.lines)
+                          if line.text.endswith("🔧 doctor"))
+                await pilot.click("#chatlog", offset=(2, row))
+                await pilot.pause()
+                texts = [line.text for line in log.lines]
+                self.assertIn("▾ 🔧 doctor", texts)
+        _run(scenario)
+
+    # #draft reads as the next line of the same conversation, not a
+    # status bar under it -- the border has to sit on #chatcol as a
+    # whole, never on #chatlog alone, or it wouldn't read as one panel.
+    def test_the_chat_panels_own_border_wraps_draft_too(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                app.show("chat")
+                await pilot.pause()
+                screen = app.screen
+                self.assertFalse(bool(screen.query_one("#chatlog").styles.border))
+                self.assertTrue(bool(screen.query_one("#chatcol").styles.border))
+        _run(scenario)
+
+    # The working indicator ticks from the moment a question is asked;
+    # once a token arrives, #draft shows the growing reply and the
+    # border's subtitle keeps ticking beside it, not replaced by it.
+    # Driven directly (_on_delta/_tick_working called by hand) rather
+    # than a real streaming worker: a race between a gated fake stream
+    # and this test's poll loop hung avocado often enough not to be
+    # worth it -- the thread handoff itself is exercised elsewhere.
+    def test_draft_and_working_indicator_both_show_while_busy(self):
+        sys.modules["litellm"] = fake_litellm()
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                app.show("chat")
+                await pilot.pause()
+                screen = app.screen
+                app.ai_state.busy = True
+                app.ai_state.turn_started_at = time.time()
+                screen._on_delta("partial")
+                screen._tick_working()
+                await pilot.pause()
+                self.assertIn("partial", _content(screen.query_one("#draft")))
+                self.assertIn("Working", screen.query_one("#chatcol").border_subtitle)
+        _run(scenario)
+
+    def test_reopening_chat_replays_the_transcript(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="doctor")
+        async def scenario():
+            from textual.widgets import RichLog
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "is this machine ready?"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/overview"
+                await pilot.press("enter")
+                await pilot.pause()
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/chat"
+                await pilot.press("enter")
+                await pilot.pause()
+                log = app.screen.query_one("#chatlog", RichLog)
+                text = "\n".join(str(line) for line in log.lines)
+                self.assertIn("is this machine ready?", text)
+                self.assertIn("final answer", text)
+        _run(scenario)
+
+    # A gated tool opens 'ConfirmAction'; approving it runs the real
+    # action ('cancel-build' picked here -- real, but side-effect-free
+    # with nothing running, unlike 'start-build').
+    def test_approving_a_gated_tool_runs_it(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="cancel-build")
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "cancel the build"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle(app, pilot)
+                tool_result = [m for m in app.ai_state.messages if m["role"] == "tool"][0]
+                self.assertEqual(tool_result["content"], "no build is running")
+        _run(scenario)
+
+    # Neither of today's two gated tools takes an argument worth
+    # showing, so this drives 'ConfirmAction' directly with one made up
+    # -- a future gated tool that does (a patch to apply, say) must not
+    # ask a person to approve it blind.
+    def test_a_gated_tools_own_arguments_are_shown_before_approval(self):
+        sys.modules["litellm"] = fake_litellm(
+            tool_name="cancel-build", tool_arguments='{"reason": "testing"}')
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "cancel the build"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                self.assertIn("reason: testing", _content(app.screen.query_one("#confirmargs")))
+                await pilot.press("escape")
+                await pilot.pause()
+                await self._settle(app, pilot)
+        _run(scenario)
+
+    def test_denying_a_gated_tool_does_not_run_it(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="cancel-build")
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "cancel the build"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                await pilot.press("down")
+                await pilot.press("enter")  # 'No'
+                await pilot.pause()
+                await self._settle(app, pilot)
+                tool_result = [m for m in app.ai_state.messages if m["role"] == "tool"][0]
+                self.assertEqual(tool_result["content"], "denied by user")
+        _run(scenario)
+
+    # 'Escape' denies too -- the same "back out, nothing happened"
+    # 'HelpScreen'/'SettingsScreen' already give every other modal.
+    def test_escape_denies_a_gated_tool(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="cancel-build")
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "cancel the build"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                tool_result = [m for m in app.ai_state.messages if m["role"] == "tool"][0]
+                self.assertEqual(tool_result["content"], "denied by user")
+        _run(scenario)
+
+    # A real hang: quitting while ConfirmAction sat open left the AI
+    # worker thread blocked forever on _confirm()'s bare event.wait() --
+    # nothing was ever going to call resolved() once the app was gone.
+    # Driven via app.exit() directly, since there's no #prompt to type
+    # /quit into with a modal focused.
+    def test_quitting_with_a_confirm_modal_open_does_not_hang(self):
+        sys.modules["litellm"] = fake_litellm(tool_name="cancel-build")
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "cancel the build"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                app.exit()
+                await asyncio.wait_for(pilot.pause(), timeout=5)
+        _run(scenario)
+
+    # 'spec-update' is the first gated tool with a 'preview' -- this is
+    # the one place the whole wiring (tool.preview -> a redacted diff ->
+    # 'ConfirmAction' rendering it coloured, with the file named) is
+    # actually exercised end to end, not just the plain-text tool
+    # functions in 'ToolTable' above.
+    def test_gated_spec_update_shows_the_file_and_a_colored_diff(self):
+        main = self._minimal_spec()
+        args = json.dumps({"path": main, "at": "$.playbook[0].tasks[0].apt.name",
+                           "value": "sudo", "mode": "append"})
+        sys.modules["litellm"] = fake_litellm(tool_name="spec-update", tool_arguments=args)
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp(files=[main])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "add sudo"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                self.assertIn(main, _content(app.screen.query_one("#confirmfile")))
+                diff = _content(app.screen.query_one("#confirmdiff"))
+                self.assertIn("+      - sudo", diff)
+                # Coloured, not plain text -- an added line carries the
+                # rgb(38,97,0) background span 'ai._diff_text()' sets.
+                added = [s for s in diff.spans if "266100" in (s.style or "")]
+                self.assertTrue(added)
+                await pilot.press("escape")
+                await pilot.pause()
+                await self._settle(app, pilot)
+        _run(scenario)
+
+    # Approving 'spec-update' has to reload the active spec from disk
+    # and highlight what changed on the tree, the same mechanism
+    # '/extend' 's own highlight already uses -- checked by re-reading
+    # 'app.context.builds[0].spec' (proof the reload actually ran, not
+    # just the file on disk) and 'SpecTree._changed' (proof the tree
+    # actually got the same treatment, not just a silent reload).
+    def test_approving_spec_update_reloads_and_highlights_the_tree(self):
+        main = self._minimal_spec()
+        args = json.dumps({"path": main, "at": "$.playbook[0].tasks[0].apt.name",
+                           "value": "sudo", "mode": "append"})
+        sys.modules["litellm"] = fake_litellm(tool_name="spec-update", tool_arguments=args)
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            from seine.tui.spectree import SpecTree
+            app = self.SeineApp(files=[main])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "add sudo"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle(app, pilot)
+                self.assertIn("sudo", app.context.builds[0].spec["playbook"][0]
+                             ["tasks"][0]["apt"]["name"])
+                tree = app.screen.query_one(SpecTree)
+                self.assertTrue(tree._changed)
+        _run(scenario)
+
+    # Approving 'extend' has to actually run 'app.context.extend()' --
+    # checked by re-reading 'app.context.builds[0].spec' after approval,
+    # not by trusting the tool's own return text, the same discipline
+    # 'test_spec_update_preview_then_run_appends_one_item' (ToolTable)
+    # already applies to a real file write.
+    def test_gated_extend_shows_the_diff_and_actually_loads_it(self):
+        main = self._minimal_spec()
+        fragment = os.path.join(self.workdir, "extra-fragment.yaml")
+        with open(fragment, "w") as f:
+            f.write("playbook:\n- name: extra play\n  tasks: []\n")
+        args = json.dumps({"fragment": fragment})
+        sys.modules["litellm"] = fake_litellm(tool_name="extend", tool_arguments=args)
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp(files=[main])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "load the extra fragment"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                self.assertIn(fragment, _content(app.screen.query_one("#confirmfile")))
+                diff = _content(app.screen.query_one("#confirmdiff"))
+                self.assertIn("extra play", diff)
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle(app, pilot)
+                self.assertEqual(len(app.context.builds[0].spec["playbook"]), 2)
+        _run(scenario)
+
+    # The model never saw its own change before this: 'extend' ran, then
+    # it had to spend a spec-dump/spec-query call just to find out what
+    # loading the fragment actually did. The tool's own result now
+    # carries the same diff the confirm dialog already showed.
+    def test_extend_tool_result_includes_the_merge_diff(self):
+        main = self._minimal_spec()
+        fragment = os.path.join(self.workdir, "extra-fragment.yaml")
+        with open(fragment, "w") as f:
+            f.write("playbook:\n- name: extra play\n  tasks: []\n")
+        args = json.dumps({"fragment": fragment})
+        sys.modules["litellm"] = fake_litellm(tool_name="extend", tool_arguments=args)
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp(files=[main])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "load the extra fragment"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle(app, pilot)
+                tool_result = [m for m in app.ai_state.messages if m["role"] == "tool"][0]
+                self.assertIn("extended with %s" % fragment, tool_result["content"])
+                self.assertIn("extra play", tool_result["content"])
+        _run(scenario)
+
+    # A person /extends a fragment, then asks the model for an unrelated
+    # change: the tree's highlight only ever shows the last one, the
+    # same one-shot behaviour /extend's own highlight has -- worth
+    # pinning down since it's easy to assume both changes stay lit.
+    def test_extend_highlight_is_superseded_by_a_later_spec_update(self):
+        main = self._minimal_spec()
+        fragment = os.path.join(self.workdir, "extra-fragment.yaml")
+        with open(fragment, "w") as f:
+            f.write("playbook:\n- name: extra play\n  tasks: []\n")
+        from seine.tui.spectree import SpecTree
+
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp(files=[main])
+            async with app.run_test() as pilot:
+                # First turn: '/extend' the fragment.
+                sys.modules["litellm"] = fake_litellm(
+                    tool_name="extend", tool_arguments=json.dumps({"fragment": fragment}))
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "load the extra fragment"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+
+                tree = app.screen.query_one(SpecTree)
+                after_extend = {n.data for n in tree._changed}
+                self.assertIn("extra play", after_extend)
+
+                # Second turn: an unrelated 'spec-update'.
+                args = json.dumps({"path": main, "at": "$.playbook[0].tasks[0].apt.name",
+                                   "value": "sudo", "mode": "append"})
+                sys.modules["litellm"] = fake_litellm(tool_name="spec-update", tool_arguments=args)
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "add sudo"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+
+                tree = app.screen.query_one(SpecTree)
+                after_update = {n.data for n in tree._changed}
+                self.assertIn("sudo", after_update)
+                # The fragment is still loaded (this isn't about it being
+                # reverted) -- only its *highlight* is gone.
+                self.assertNotIn("extra play", after_update)
+                self.assertEqual(len(app.context.builds[0].spec["playbook"]), 2)
+        _run(scenario)
+
+# Whole-build completion, only for a build 'start-build' itself started,
+# triggers an unprompted follow-up turn (BuildState.notify_ai wired
+# through App._build_finished()). A fast fake 'Image.build' stands in,
+# same shape as BuildScreenIntegration in tests/spec/tui.py -- no podman needed.
+class StartBuildNotifiesTheAI(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.image import Image
+            from seine.tui.app import OverviewScreen, SeineApp
+            from seine.tui.ai import ConfirmAction
+            from seine.tui.build import BuildScreen
+            from seine.tui.chat import ChatScreen
+        self.Image = Image
+        self.SeineApp = SeineApp
+        self.ConfirmAction = ConfirmAction
+        self.BuildScreen = BuildScreen
+        self.ChatScreen = ChatScreen
+        self.OverviewScreen = OverviewScreen
+        self.real_build = Image.build
+        self.addCleanup(setattr, Image, "build", self.real_build)
+        from seine import tasks
+        self.addCleanup(tasks._interrupted.clear)
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        os.environ["SEINE_LLM_MODEL"] = "openai/fake"
+        self._real_litellm = sys.modules.get("litellm")
+        self.addCleanup(self._restore_litellm)
+
+    def _restore_litellm(self):
+        if self._real_litellm is not None:
+            sys.modules["litellm"] = self._real_litellm
+        else:
+            sys.modules.pop("litellm", None)
+
+    # Gated by an Event the test sets, not a sleep -- the build worker
+    # and the AI turn run independently, and a fixed sleep raced the two
+    # under load. Only the test knows when the first turn has settled.
+    def _fast_build(self, failing, release):
+        from seine import tasks
+        def run(image, reporter=None):
+            steps = tasks.ordered(image.tasks())
+            for step in steps[:1]:
+                reporter.started(step.name)
+                release.wait(timeout=5)
+                reporter.finished(step.name, failed=failing)
+            if failing:
+                raise tasks.Failed([(steps[0].name, RuntimeError("boom"))],
+                                   [s.name for s in steps[1:]])
+        return run
+
+    async def _settle_to(self, pilot, predicate):
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(0.02)
+            await pilot.pause()
+
+    # Distinctive, and never something the first ("build my image")
+    # user message itself would say -- found this way rather than by
+    # snapshotting a message count/index, since the build (a separate
+    # worker) and the turn it triggers can race ahead of any single
+    # "not busy" checkpoint taken right after approving.
+    @staticmethod
+    def _notice(app):
+        return next((m for m in app.ai_state.messages
+                    if m.get("role") == "user"
+                    and "(seine)" in (m.get("content") or "")), None)
+
+    def test_success_gets_an_unprompted_follow_up_naming_the_outcome(self):
+        release = threading.Event()
+        self.Image.build = self._fast_build(failing=False, release=release)
+        sys.modules["litellm"] = fake_litellm(tool_name="start-build")
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "build my image"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(
+                    pilot, lambda: isinstance(app.screen, self.ConfirmAction))
+                self.assertIsInstance(app.screen, self.ConfirmAction)
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                # The original turn ("build started" -> final text)
+                # settles on its own; only once it has is the build
+                # (parked on the Event) let through to finish.
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+                # start-build's own app.show("build") -- untouched since,
+                # so a finished build is expected to switch back.
+                self.assertIsInstance(app.screen, self.BuildScreen)
+                release.set()
+                await self._settle_to(pilot, lambda: self._notice(app) is not None)
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+
+                self.assertTrue(app.build_state.done)
+                self.assertFalse(app.build_state.error)
+                self.assertFalse(app.build_state.notify_ai)
+                injected = self._notice(app)
+                self.assertIsNotNone(injected)
+                self.assertIn("start-build", injected["content"])
+                self.assertIn("finished successfully", injected["content"])
+                # Nothing navigated away from the Build screen the AI
+                # itself opened, so the notified turn switches back to
+                # show it, rather than leave the answer for the person
+                # to notice on their own.
+                self.assertIsInstance(app.screen, self.ChatScreen)
+        _run(scenario)
+
+    # Manually navigating off the Build screen -- to Overview here,
+    # anything not Build makes the same point -- before the build
+    # finishes is a deliberate choice: the notified turn still runs
+    # (the model still needs to know), but it must not force the
+    # screen back, overriding where the person just chose to go.
+    def test_navigating_away_before_it_finishes_is_left_alone(self):
+        release = threading.Event()
+        self.Image.build = self._fast_build(failing=False, release=release)
+        sys.modules["litellm"] = fake_litellm(tool_name="start-build")
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "build my image"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(
+                    pilot, lambda: isinstance(app.screen, self.ConfirmAction))
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+                self.assertIsInstance(app.screen, self.BuildScreen)
+
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/overview"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.OverviewScreen)
+
+                release.set()
+                await self._settle_to(pilot, lambda: self._notice(app) is not None)
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+
+                self.assertIsNotNone(self._notice(app))
+                self.assertIsInstance(app.screen, self.OverviewScreen)
+        _run(scenario)
+
+    def test_failure_gets_an_unprompted_follow_up_naming_the_outcome(self):
+        release = threading.Event()
+        self.Image.build = self._fast_build(failing=True, release=release)
+        sys.modules["litellm"] = fake_litellm(tool_name="start-build")
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "build my image"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(
+                    pilot, lambda: isinstance(app.screen, self.ConfirmAction))
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+                release.set()
+                await self._settle_to(pilot, lambda: self._notice(app) is not None)
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+
+                self.assertTrue(app.build_state.error)
+                injected = self._notice(app)
+                self.assertIsNotNone(injected)
+                self.assertIn("failed", injected["content"])
+        _run(scenario)
+
+    # A build started from the '/build' command (not the AI chat's own
+    # 'start-build' tool) must never trigger this -- nothing in that
+    # conversation ever consented to an unprompted turn.
+    def test_a_build_started_outside_the_ai_chat_is_not_notified(self):
+        # No AI turn to race here -- nothing gates the build.
+        already_released = threading.Event()
+        already_released.set()
+        self.Image.build = self._fast_build(failing=False, release=already_released)
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/build"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(pilot, lambda: app.build_state.done)
+                self.assertTrue(app.build_state.done)
+                self.assertFalse(app.build_state.notify_ai)
+                self.assertEqual(app.ai_state.messages, [])
+        _run(scenario)
+
+# One JSON file per conversation, under 'SEINE_CHAT_DIR' -- written
+# purely for a person (or a later, separate run pairing it with
+# 'seine/data/system_prompt.txt') to read back, kept local, never sent
+# anywhere itself.
+class ChatTranscriptsArePersisted(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+        self.SeineApp = SeineApp
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        os.environ["SEINE_LLM_MODEL"] = "openai/fake"
+        os.environ["SEINE_CHAT_DIR"] = os.path.join(self.workdir, "chats")
+        self._real_litellm = sys.modules.get("litellm")
+        self.addCleanup(self._restore_litellm)
+
+    def _restore_litellm(self):
+        if self._real_litellm is not None:
+            sys.modules["litellm"] = self._real_litellm
+        else:
+            sys.modules.pop("litellm", None)
+        _clear_llm_env()
+
+    async def _settle(self, app, pilot, ticks=100):
+        for _ in range(ticks):
+            if not app.ai_state.busy:
+                return
+            await asyncio.sleep(0.02)
+            await pilot.pause()
+        self.fail("ai_state never settled")
+
+    def _chat_files(self):
+        chats = os.environ["SEINE_CHAT_DIR"]
+        return sorted(os.listdir(chats)) if os.path.isdir(chats) else []
+
+    def test_a_conversation_writes_one_file_under_seine_chat_dir(self):
+        sys.modules["litellm"] = fake_litellm()
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "hi there"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                files = self._chat_files()
+                self.assertEqual(len(files), 1)
+                with open(os.path.join(os.environ["SEINE_CHAT_DIR"], files[0])) as f:
+                    record = json.load(f)
+                self.assertEqual(record["model"], "openai/fake")
+                self.assertEqual(record["messages"], app.ai_state.messages)
+                self.assertIsInstance(record["started"], float)
+        _run(scenario)
+
+    # The same file, not a new one, as a conversation goes on -- content
+    # rewritten whole each time, matching what 'settings.save()' already
+    # does for its own one file.
+    def test_a_second_question_updates_the_same_file_not_a_new_one(self):
+        sys.modules["litellm"] = fake_litellm()
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "first"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                first_files = self._chat_files()
+
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "second"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                self.assertEqual(self._chat_files(), first_files)
+                with open(os.path.join(os.environ["SEINE_CHAT_DIR"], first_files[0])) as f:
+                    record = json.load(f)
+                self.assertEqual(len(record["messages"]), 4)  # 2 questions, 2 answers
+        _run(scenario)
+
+    # 'reset-conversation' clears 'chat_file' along with everything else
+    # -- the next question starts a conversation of its own, not one
+    # that keeps overwriting what a forgotten one already wrote.
+    def test_reset_conversation_starts_a_new_file(self):
+        sys.modules["litellm"] = fake_litellm()
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "first"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                first_files = self._chat_files()
+                self.assertEqual(len(first_files), 1)
+
+                app.ai_state.reset()
+                self.assertEqual(self._chat_files(), first_files)  # reset alone writes nothing
+
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "second"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle(app, pilot)
+                second_files = self._chat_files()
+                self.assertEqual(len(second_files), 2)
+                self.assertNotEqual(second_files, first_files + first_files)
+        _run(scenario)
+
+class Routing(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+        self.SeineApp = SeineApp
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        _clear_llm_env()
+
+    # Not configured: unprefixed text is refused exactly as it always
+    # was -- the AI chat being off changes nothing about a typo'd command.
+    def test_unconfigured_bare_text_is_the_same_old_error(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "hello"
+                await pilot.press("enter")
+                await pilot.pause()
+                status = app.screen.query_one("#status")
+                self.assertIn("'/'", _content(status))
+        _run(scenario)
+
+    def test_configured_bare_text_goes_to_chat(self):
+        sys.modules["litellm"] = fake_litellm()
+        self.addCleanup(sys.modules.pop, "litellm", None)
+        os.environ["SEINE_LLM_MODEL"] = "openai/fake"
+        async def scenario():
+            from seine.tui.chat import ChatScreen
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "hello"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, ChatScreen)
+        _run(scenario)
+
+# Opt-in, real endpoint: skipped unless 'SEINE_LLM_MODEL'/
+# 'SEINE_LLM_API_BASE' are both actually set, the same "cancel, don't
+# fail, when the real thing isn't there" shape 'AnSBOMIsActuallyBuilt'
+# (tests/spec/sbom.py) already uses for podman. Nothing here is asserted
+# on the model's own wording -- only that a real round trip, tool call
+# included, actually completes.
+class RealEndpoint(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+            from seine.tui.chat import ChatScreen
+        if not (os.environ.get("SEINE_LLM_MODEL") and os.environ.get("SEINE_LLM_API_BASE")):
+            self.cancel("SEINE_LLM_MODEL/SEINE_LLM_API_BASE not set -- "
+                       "no real endpoint to test against")
+        self.SeineApp = SeineApp
+        self.ChatScreen = ChatScreen
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
+    def test_a_real_question_gets_a_real_answer(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = ("Call the doctor tool, then say in one short "
+                                "sentence whether podman is ok.")
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(300):
+                    if not app.ai_state.busy:
+                        break
+                    await asyncio.sleep(0.2)
+                    await pilot.pause()
+                self.assertFalse(app.ai_state.busy, "the real endpoint never answered")
+                self.assertIsInstance(app.screen, self.ChatScreen)
+                # Not "the model called a tool" -- a live model's own
+                # judgement call, and asserting on it would make this
+                # test flaky through no fault of seine's own. What is
+                # seine's to prove is that a real round trip (network,
+                # auth, streaming, token accounting) actually completes;
+                # 'TheLoop' above already proves the tool-dispatch
+                # mechanics deterministically, with a fake model.
+                roles = [m["role"] for m in app.ai_state.messages]
+                self.assertEqual(roles[0], "user")
+                self.assertIn("assistant", roles)
+                self.assertGreater(app.ai_state.prompt_tokens, 0)
+                self.assertGreater(app.ai_state.completion_tokens, 0)
+        _run(scenario)
+
+if __name__ == "__main__":
+    avocado.main()

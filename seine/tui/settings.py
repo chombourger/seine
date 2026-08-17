@@ -21,10 +21,10 @@ ADD_LABEL = "+ add command…"
 HINT = "Tab switch · Up/Down move · Enter edit · Del clear · Esc close"
 
 # refresh_from() reuses render_settings()'s own lines rather than
-# formatting jobs/theme a second way; KEYS maps a row index back to
+# formatting each setting a second way; KEYS maps a row index back to
 # which setting it was.
 class GeneralSettings(OptionList):
-    KEYS = ["jobs", "theme"]
+    KEYS = ["jobs", "theme", "llm_model", "llm_api_base"]
 
     def refresh_from(self):
         from seine.tui.render import render_settings
@@ -83,7 +83,7 @@ class SettingsScreen(ModalScreen):
     }
     #settingstitle { color: blue; text-style: bold; }
     #generallabel { text-style: bold; }
-    #general { height: 4; border: round $border-blurred; }
+    #general { height: 6; border: round $border-blurred; }
     #general:focus { border: round $border; }
     #startuplabel { text-style: bold; padding-top: 1; }
     #startup { height: 1fr; border: round $border-blurred; }
@@ -224,14 +224,15 @@ class SettingsScreen(ModalScreen):
         else:
             self._commit_startup(index, value)
 
-    # 'jobs' is the only general setting reaching this ('theme' is
-    # picked, not typed) -- a bad value leaves #editrow open to fix.
+    # 'theme' is picked, not typed, so never reaches this. 'jobs' is
+    # validated (a bad value leaves #editrow open to fix); llm_model/
+    # llm_api_base are free text, litellm's to judge, not this screen's.
     def _commit_general(self, index, value):
         key = self.query_one(GeneralSettings).key_at(index)
         current = settings.load()
         if not value:
             current[key] = None
-        else:
+        elif key == "jobs":
             try:
                 jobs = int(value)
             except ValueError:
@@ -241,6 +242,8 @@ class SettingsScreen(ModalScreen):
                 self._edit_error("jobs shall be at least 1")
                 return
             current[key] = jobs
+        else:
+            current[key] = value
         settings.save(current)
         self._editing = None
         self._redraw(focus="general")

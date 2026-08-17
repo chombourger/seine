@@ -286,9 +286,28 @@ class CacheCmd(Cmd):
             return
         print("%-10s %-34s %-12s %s" % ("cache", "entry", "last used", "made"))
         for kind, key, entry in listed:
-            print("%-10s %-34s %-12s %s"
-                  % (kind, key, cache_index.since(entry.get("used")),
-                     cache_index.since(entry.get("made"))))
+            line = ("%-10s %-34s %-12s %s"
+                    % (kind, key, cache_index.since(entry.get("used")),
+                       cache_index.since(entry.get("made"))))
+            if kind == cache_index.PACKAGE:
+                stamp = self._package_stamp(key)
+                if stamp:
+                    line += "  (%s)" % stamp
+            print(line)
+
+    # The on-disk stamp file for a package entry -- '<source>_<arch>_
+    # <digest>', the same digest 'seine plan' names as already built.
+    # The index itself never records the digest, only that some build
+    # of this source/arch happened.
+    def _package_stamp(self, key):
+        release, architecture, source = key.split("/", 2)
+        stamps = os.path.join(CACHES["packages"](), release, STAMPS)
+        if not os.path.isdir(stamps):
+            return None
+        for stamp in os.listdir(stamps):
+            if stamp.rsplit("_", 2)[:2] == [source, architecture]:
+                return stamp
+        return None
 
     # What was last wanted longer ago than this, and nothing else. The index
     # is the only thing asked: what it does not know about, it does not

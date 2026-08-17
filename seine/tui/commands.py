@@ -164,6 +164,9 @@ def _build(app, argv):
     build = app.context.builds[0]
     if jobs is not None:
         build.options["jobs"] = jobs
+    # TUI builds always write an SBOM, unlike the plain CLI's --sbom-only
+    # default -- ai.py's packages/installed_sizes tools need one to read.
+    build.options["sbom"] = True
     # Imported here, not at module level: breaks a real import cycle
     # (seine.tui.build -> seine.tui.base -> this module).
     from seine.tui.build import start_build
@@ -223,6 +226,16 @@ def _cache(app, argv):
 def _doctor(app, argv):
     """say whether this machine has what a build needs"""
     app.show("doctor")
+
+def _chat(app, argv):
+    """reopen the AI chat transcript
+
+    Reopens the chat screen -- typing a question straight into any
+    other screen's prompt already goes here automatically once
+    'llm_model' is set ('/settings'); this is only for getting back to
+    an existing transcript without asking anything new.
+    """
+    app.show("chat")
 
 def _diff(app, argv):
     """diff two SBOMs, package by package
@@ -325,6 +338,7 @@ REGISTRY = {
         Command("analyze",  _analyze,  "[SPEC...]",                *_doc(_analyze)),
         Command("cache",    _cache,    "",                         *_doc(_cache)),
         Command("doctor",   _doctor,   "",                         *_doc(_doctor)),
+        Command("chat",     _chat,     "",                         *_doc(_chat)),
         Command("diff",     _diff,     "OLD.spdx.json NEW.spdx.json", *_doc(_diff)),
         Command("settings", _settings, "",                         *_doc(_settings)),
         Command("set",      _set,      "KEY VALUE",                *_doc(_set)),

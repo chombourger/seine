@@ -450,7 +450,15 @@ class Image:
                               display=display)
                 ok = True
             finally:
-                analyze.record(steps, digest, jobs=jobs, ok=ok, machine=machine)
+                # 'self._tarball' still exists here regardless: it is
+                # only ever unlinked from '__del__', well after 'build()'
+                # returns. 'None' for a build that never reached the
+                # 'tarball' step at all ('--packages-only').
+                rootfs_size = None
+                if self._tarball is not None and os.path.exists(self._tarball):
+                    rootfs_size = os.path.getsize(self._tarball)
+                analyze.record(steps, digest, jobs=jobs, ok=ok, machine=machine,
+                               rootfs_size=rootfs_size)
 
             # What the caches spared this build, and what it had to make.
             # Printed after the steps rather than by them: it is the answer

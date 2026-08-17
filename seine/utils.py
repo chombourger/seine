@@ -335,6 +335,14 @@ class ContainerEngine:
     def logs_root():
         return os.environ.get("SEINE_LOG_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "logs")
+    # One JSON file per conversation with the AI chat (seine/tui/ai.py,
+    # which owns what goes in it) -- this only says where.
+    # SEINE_CHAT_DIR names it outright; unset, it is under
+    # SEINE_BUILD_DIR, the same as everything else in this family.
+    @staticmethod
+    def chats():
+        return os.environ.get("SEINE_CHAT_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "chats")
     # The image builds cache the packages they fetch, through whatever the
     # engine offers for it -- '--mount=type=cache' today, kept under
     # TMPDIR. Unset, that is /var/tmp, so the archives end up somewhere

@@ -142,7 +142,7 @@ def _load():
 # One run, written once it is over -- whether it ended or failed. Steps
 # that never ran are not in it: what did not run has nothing to say about
 # where the time went, and it is named by the failure instead.
-def record(steps, spec, jobs=1, ok=True, machine=None):
+def record(steps, spec, jobs=1, ok=True, machine=None, rootfs_size=None):
     ran = [step for step in steps if step.started is not None]
     if len(ran) == 0:
         return None
@@ -162,6 +162,11 @@ def record(steps, spec, jobs=1, ok=True, machine=None):
                    "end": round((step.ended or step.started) - started, 3),
                    "failed": step.failed} for step in ran],
     }
+    # The rootfs tarball's own size, not the disk image's -- a disk is
+    # commonly padded well past its content. None for a build that never
+    # reached the tarball step (--packages-only stops before it).
+    if rootfs_size is not None:
+        run["rootfs_size"] = rootfs_size
     if machine is not None and len(machine.samples) > 0:
         run["cpus"] = machine.cpus
         # On the same clock as the steps, so that a load worth explaining

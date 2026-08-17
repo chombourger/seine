@@ -16,6 +16,13 @@ os.environ.setdefault("SEINE_CACHE_DIR", tempfile.mkdtemp(prefix="seine-tui-test
 # Every SeineApp()/BuildCmd() below reads settings.py -- pointed at an
 # empty, per-run directory so a real settings.json can never leak in.
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="seine-tui-tests-config-")
+# None of this file is about the AI chat (that's tests/spec/ai.py's
+# job) -- popped, not just left unset, so a real endpoint exported in
+# the shell running the whole suite can't silently route a bare-text
+# test here into seine.tui.ai.ask() instead of the plain CommandError
+# it's actually testing for.
+for _var in ("SEINE_LLM_MODEL", "SEINE_LLM_API_BASE", "SEINE_LLM_API_KEY"):
+    os.environ.pop(_var, None)
 
 # 'History' (seine/tui/history.py) is deliberately cwd-relative
 # ('./.seine/history.json') -- every test in this file constructs a real
@@ -318,18 +325,22 @@ class SettingsRendering(avocado.Test):
 
     def test_nothing_set_says_default(self):
         text = self.render_settings()
-        self.assertIn("jobs     1 (default)", text)
-        self.assertIn("theme    dark (default)", text)
+        self.assertIn("jobs             1 (default)", text)
+        self.assertIn("theme            dark (default)", text)
+        self.assertIn("llm_model        (unset)", text)
+        self.assertIn("llm_api_base     (unset)", text)
 
     def test_a_configured_value(self):
         from seine import settings
         current = settings.load()
         current["jobs"] = 4
         current["theme"] = "dark"
+        current["llm_model"] = "openai/some-model"
         settings.save(current)
         text = self.render_settings()
-        self.assertIn("jobs     4", text)
-        self.assertIn("theme    dark", text)
+        self.assertIn("jobs             4", text)
+        self.assertIn("theme            dark", text)
+        self.assertIn("llm_model        openai/some-model", text)
 
 # Ghost-text completion in the prompt: command names, then a command's
 # own flags.
@@ -1422,6 +1433,19 @@ class BuildStateBehaviour(avocado.Test):
         self.build.image.logs = "/tmp/wherever"
         self.assertEqual(state.logs, "/tmp/wherever")
 
+    # notify_ai is how ai.py's 'start-build' tool marks a build as its
+    # own (seine/tui/ai.py's _start_ai_build sets it right after this
+    # same reset() would have cleared it) -- reset() must not leave a
+    # previous build's flag bleeding into the next one, whoever starts it.
+    def test_notify_ai_defaults_false_and_reset_clears_it(self):
+        state = self.BuildState()
+        self.assertFalse(state.notify_ai)
+        state.reset(self.build)
+        self.assertFalse(state.notify_ai)
+        state.notify_ai = True
+        state.reset(self.build)
+        self.assertFalse(state.notify_ai)
+
     def test_finished_ok_and_finished_failed(self):
         ok = self.BuildState()
         ok.reset(self.build)
@@ -1604,6 +1628,10 @@ class BuildScreenIntegration(avocado.Test):
         self.addCleanup(setattr, Image, "build", self.real_build)
         from seine import tasks
         self.addCleanup(tasks._interrupted.clear)
+        # BuildCmd.__init__ reads settings.py for its jobs default --
+        # isolated the same way every other class here already is.
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
 
     def test_build_command_runs_to_completion(self):
         import time as clock
@@ -1632,6 +1660,27 @@ class BuildScreenIntegration(avocado.Test):
                 self.assertTrue(app.build_state.done)
                 self.assertFalse(app.build_state.error)
                 self.assertEqual(app.build_state.message, "build finished")
+        _run(scenario)
+
+    # A TUI /build always writes an SBOM, unlike the plain CLI's
+    # --sbom-only default -- ai.py's tools have nothing to read otherwise.
+    def test_build_defaults_to_writing_an_sbom(self):
+        def fast_build(image, reporter=None):
+            for step in tasks.ordered(image.tasks())[:1]:
+                reporter.started(step.name)
+                reporter.finished(step.name, failed=False)
+        from seine import tasks
+        self.Image.build = fast_build
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                self.assertFalse(app.context.builds[0].options["sbom"])
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/build"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertTrue(app.context.builds[0].options["sbom"])
         _run(scenario)
 
     def test_a_failure_is_shown_not_raised(self):

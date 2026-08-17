@@ -1042,17 +1042,14 @@ class BuildCmd(Cmd):
         # return the spec in YAML format
         return yaml.dump(spec)
 
-    # One loaded file's own text, not the merged spec dump() returns --
-    # redacted the same patterns, but never the literal bytes on disk: a
-    # secret hidden from the merged dump must not leak back out through a
-    # single-file read. Refused for anything not in loaded_files.
-    #
-    # Read as written, not as rendered: no Jinja substitution -- the
-    # per-file variable context load() builds is long gone by the time
-    # anything calls this, so '{{ }}' shows up verbatim.
-    def dump_file(self, path):
+    # One file's own text, not the merged spec dump() returns -- redacted
+    # the same patterns, but never the literal bytes on disk. Refused
+    # unless in loaded_files or 'extra_allowed' (e.g. spec-files' unloaded
+    # siblings). Read as written, not rendered -- no Jinja substitution,
+    # so '{{ }}' shows up verbatim.
+    def dump_file(self, path, extra_allowed=()):
         real = os.path.realpath(path)
-        if real not in self.loaded_files:
+        if real not in self.loaded_files and real not in extra_allowed:
             raise ValueError("%s is not one of this build's own loaded files" % path)
         with open(real, "r") as f:
             try:
@@ -1061,6 +1058,38 @@ class BuildCmd(Cmd):
                 raise ValueError("%s: %s" % (path, e)) from e
         patterns = self.redactions(self.spec)
         return yaml.dump(self._redact(spec, patterns))
+
+    # Every local file this build's 'packages:' entries reference --
+    # patches, kernel config, derived-flavour fragments -- the same
+    # files a real build reads to compile them. Never
+    # 'defaults.packages:', a description names nothing built. Read
+    # fresh, not cached, so a spec-update mid-conversation shows up now.
+    def referenced_files(self):
+        from seine import packages
+        try:
+            parsed = packages.parse(self.spec)
+        except ValueError:
+            return set()
+        return {os.path.realpath(f) for p in parsed for f in p.referenced_files()}
+
+    # Falls back to a referenced file (patches, kernel config) when
+    # dump_file() refuses -- read as written, redacted as flat text via
+    # _redact() (no YAML round-trip needed). No path-containment check:
+    # a real build already reads and ships whatever a 'patches:'/
+    # 'config:' entry names, a bigger exposure than this preview.
+    def read(self, path, extra_allowed=()):
+        try:
+            return self.dump_file(path, extra_allowed=extra_allowed)
+        except ValueError:
+            pass
+        real = os.path.realpath(path)
+        if real not in self.referenced_files():
+            raise ValueError(
+                "%s is not one of this build's own loaded files, siblings, "
+                "or a local file a 'packages:' entry references" % path)
+        with open(real, "r") as f:
+            text = f.read()
+        return self._redact(text, self.redactions(self.spec))
 
     # What is printed in place of a secret, with a digest of what it stands
     # for. A constant would have a plan call a changed password no change

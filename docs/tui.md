@@ -71,6 +71,22 @@ not "here is the new merged file, go find the difference yourself":
 
 ![Overview screen: '/extend' highlighting what a fragment changed, auto-expanded down to the leaf](images/tui-extend.svg)
 
+### Talking to a model
+
+With `llm_model`/`llm_api_base` set (`/settings`, or `SEINE_LLM_MODEL`/
+`SEINE_LLM_API_BASE` as environment overrides), any prompt that doesn't
+start with `/` goes to a real model instead of `commands.dispatch()`'s own
+`CommandError`. It reads the same things every screen already renders --
+and, with explicit approval each time, can act: changing a node, writing
+a new file, loading a fragment onto the active spec:
+
+![Chat screen: reviewing a real spec-update -- a colour-coded diff, the file it touches named, before anything is written](images/tui-ai-diff.svg)
+
+![seine tui: a real conversation -- reading the active spec, proposing a change, the diff reviewed and approved](images/tui-ai-demo.gif)
+
+See [ai.md](ai.md) for the full tool list and the trust model behind
+what it's allowed to read.
+
 ### Building
 
 `/build` opens a live cockpit: a scrolling log tail beside a per-step

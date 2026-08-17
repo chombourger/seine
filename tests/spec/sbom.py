@@ -14,7 +14,7 @@ sys.path.append(path_to_sources)
 
 from seine            import sbom as sbom_module
 from seine.bootstrap  import HostBootstrap, TargetBootstrap
-from seine.sbom       import SBOM, wanted
+from seine.sbom       import SBOM, installed_sizes, wanted
 from seine.utils      import ContainerEngine, HOST_ARCH
 
 # A root file-system as 'container export' hands one over: the few files
@@ -210,3 +210,51 @@ class NoSBOMWasAskedForSoNoneIsBuilt(avocado.Test):
                 tarball(os.path.join(self.workdir, "root.tar")),
                 os.path.join(self.workdir, "pc-image.img"))
         self.assertEqual(engine.commands, [])
+
+# A real 'var/lib/dpkg/status', not the name-echoing 'tarball()' above --
+# 'installed_sizes()' reads its content, not just whether the path exists.
+def status_tarball(path, status):
+    with tarfile.open(path, "w") as tar:
+        payload = status.encode()
+        info = tarfile.TarInfo("./var/lib/dpkg/status")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    return path
+
+STATUS = """Package: bash
+Status: install ok installed
+Installed-Size: 7000
+Version: 5.2
+
+Package: libc6
+Status: install ok installed
+Installed-Size: 12000
+Version: 2.37
+
+Package: no-size-known
+Status: install ok installed
+Version: 1.0
+"""
+
+class InstalledSizesAreReadFromDpkgStatus(avocado.Test):
+    def test_largest_first(self):
+        path = status_tarball(os.path.join(self.workdir, "root.tar"), STATUS)
+        self.assertEqual(installed_sizes(path), [("libc6", 12000), ("bash", 7000)])
+
+    # No 'Installed-Size:' at all is a package this can say nothing
+    # about, not a crash and not a zero.
+    def test_a_package_with_no_recorded_size_is_left_out(self):
+        path = status_tarball(os.path.join(self.workdir, "root.tar"), STATUS)
+        names = [name for name, _ in installed_sizes(path)]
+        self.assertNotIn("no-size-known", names)
+
+    def test_no_status_file_at_all_is_empty_not_an_error(self):
+        path = tarball(os.path.join(self.workdir, "root.tar"), names=["usr/bin/dpkg"])
+        self.assertEqual(installed_sizes(path), [])
+
+    def test_a_missing_or_unreadable_tarball_is_empty_not_an_error(self):
+        self.assertEqual(installed_sizes("/does/not/exist.tar"), [])
+        garbage = os.path.join(self.workdir, "garbage.tar")
+        with open(garbage, "w") as f:
+            f.write("this is not a tarball")
+        self.assertEqual(installed_sizes(garbage), [])

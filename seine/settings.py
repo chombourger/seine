@@ -10,7 +10,9 @@ import json
 import os
 
 # Every default is "do nothing different" -- None means no override.
-DEFAULTS = {"jobs": None, "theme": None, "startup_commands": []}
+# llm_model unset means the AI chat (seine/tui/ai.py) is off.
+DEFAULTS = {"jobs": None, "theme": None, "startup_commands": [],
+           "llm_model": None, "llm_api_base": None}
 
 def default_path():
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")

@@ -5,3 +5,6 @@ seine.egg-info
 .pybuild
 *.img
 .seine
+# Copied in from docs/ by setup.py's build_py override -- generated,
+# not committed.
+seine/data/docs

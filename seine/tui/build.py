@@ -96,10 +96,16 @@ class BuildState:
         # package:/prepare:/deploy: name -> spec tree path, see
         # _package_paths(). Computed once in reset(), not every tick.
         self.package_paths = {}
-        # Set by BuildScreen.on_mount()/cleared by on_unmount(): "a build
-        # just finished, redraw if anyone is looking", fired from
-        # finished_ok()/finished_failed() below rather than polled.
+        # Set once, for the App's own lifetime (seine/tui/app.py's
+        # __init__): "a build just finished, redraw if anyone is
+        # looking", fired from finished_ok()/finished_failed() below
+        # rather than polled.
         self.on_finished = None
+        # Set by ai.py's 'start-build' tool, never by '/build' -- tells
+        # App._build_finished() whether this build's outcome is one the
+        # AI chat should get an unprompted turn to report on. Reset in
+        # reset() so it never survives past the build that set it.
+        self.notify_ai = False
 
     @property
     def running(self):
@@ -116,6 +122,7 @@ class BuildState:
         self.message = None
         self.error = False
         self.done = False
+        self.notify_ai = False
         self.play = None
         self.ansible_task = None
         self.package_paths = _package_paths(build)

@@ -49,8 +49,8 @@ class SavingRoundTrips(ASettingsFile):
         current["jobs"] = 4
         current["startup_commands"] = ["/plan"]
         settings.save(current, self.path())
-        self.assertEqual(settings.load(self.path()),
-                         {"jobs": 4, "theme": None, "startup_commands": ["/plan"]})
+        expected = dict(settings.DEFAULTS, jobs=4, startup_commands=["/plan"])
+        self.assertEqual(settings.load(self.path()), expected)
 
     # A key this version doesn't know about (a future 'llm', say) is
     # loaded, kept, and written straight back -- 'save()' never drops

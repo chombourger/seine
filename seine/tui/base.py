@@ -338,6 +338,15 @@ class BaseScreen(Screen):
         if line.startswith("!"):
             self.app.shell_escape(line[1:])
             return
+        # Neither a command nor shell: a question for the AI chat, once
+        # it's configured -- '/' still means "run a command" either way,
+        # so an unconfigured typo gets the usual dispatch() error, not a
+        # confusing "AI isn't set up" instead.
+        if not line.startswith("/"):
+            from seine.tui import ai
+            if ai.configured():
+                ai.ask(self.app, line)
+                return
         try:
             commands.dispatch(self.app, line)
         except commands.CommandError as e:

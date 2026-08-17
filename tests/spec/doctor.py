@@ -94,6 +94,41 @@ class IndividualChecks(avocado.Test):
         self.assertEqual(check.status, "ok")
         self.assertIn("GiB free", check.detail)
 
+LLM_ENV = ["SEINE_LLM_MODEL", "SEINE_LLM_API_KEY"]
+
+# llm_model set but no credential is the same shape as check_sign_key()
+# above -- a note, not a failure.
+class TheOptionalAICheck(avocado.Test):
+    def setUp(self):
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        for var in LLM_ENV:
+            os.environ.pop(var, None)
+
+    def test_nothing_set_is_not_reported_at_all(self):
+        # Off is not a failure of its own -- there is nothing to check.
+        self.assertIsNone(doctor.check_llm())
+
+    def test_model_set_with_no_key_is_a_note(self):
+        os.environ["SEINE_LLM_MODEL"] = "openai/some-model"
+        check = doctor.check_llm()
+        self.assertEqual(check.status, "warn")
+        self.assertIn("SEINE_LLM_API_KEY", check.detail)
+
+    def test_model_and_key_both_set_is_ok(self):
+        os.environ["SEINE_LLM_MODEL"] = "openai/some-model"
+        os.environ["SEINE_LLM_API_KEY"] = "secret"
+        check = doctor.check_llm()
+        self.assertEqual(check.status, "ok")
+
+    def test_settings_json_configures_it_too_not_only_the_env_var(self):
+        from seine import settings
+        current = settings.load()
+        current["llm_model"] = "openai/from-settings"
+        settings.save(current)
+        check = doctor.check_llm()
+        self.assertEqual(check.status, "warn")  # still no key
+        self.assertIn("openai/from-settings", check.detail)
+
 class Running(avocado.Test):
     def test_run_without_pull_has_no_network_check(self):
         checks = doctor.run()
@@ -102,6 +137,20 @@ class Running(avocado.Test):
     def test_every_check_has_a_group(self):
         for check in doctor.run():
             self.assertTrue(check.group)
+
+    # 'run()' with nothing configured has one fewer check than with
+    # 'llm_model' set -- confirms the conditional append, not just
+    # 'check_llm()' in isolation.
+    def test_llm_check_only_appears_once_configured(self):
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        for var in LLM_ENV:
+            os.environ.pop(var, None)
+        self.assertNotIn("llm_model", [c.name for c in doctor.run()])
+        os.environ["SEINE_LLM_MODEL"] = "openai/some-model"
+        try:
+            self.assertIn("llm_model", [c.name for c in doctor.run()])
+        finally:
+            del os.environ["SEINE_LLM_MODEL"]
 
 if __name__ == "__main__":
     avocado.main()

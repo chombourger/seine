@@ -169,8 +169,9 @@ def render_packages(context):
     return "\n\n".join(sections) + "\n"
 
 # 'analyze.blame()'/'analyze.critical_chain()' print, same as
-# 'Image.plan()' -- captured, not reimplemented. The newest recorded run
-# only: history beyond that is what 'seine analyze' itself is for.
+# 'Image.plan()' -- captured, not reimplemented, for the newest recorded
+# run. 'ROOTFS SIZE' below is the one section that reads more than the
+# newest run -- a single number says nothing about "did it grow".
 def render_analyze(context):
     if not context.active:
         return "no active specification -- '/use SPEC...' picks one\n"
@@ -185,6 +186,22 @@ def render_analyze(context):
         latest = history[0]
         text = _captured(lambda run=latest: analyze.blame(run))
         text += "\n" + _captured(lambda run=latest: analyze.critical_chain(run))
+        # Newest first, same order 'analyze.runs()' already returns --
+        # older runs made before this field existed just have nothing to
+        # add here, not a gap reported as zero.
+        sized = [run for run in history if run.get("rootfs_size") is not None]
+        if len(sized) > 0:
+            lines = ["", "ROOTFS SIZE"]
+            for i, run in enumerate(sized):
+                ago = max(0, time.time() - run["started"])
+                line = "  %s ago   %s" % (elapsed(ago), _human_size(run["rootfs_size"]))
+                if i + 1 < len(sized):
+                    delta = run["rootfs_size"] - sized[i + 1]["rootfs_size"]
+                    if delta != 0:
+                        line += "  (%s%s)" % ("+" if delta > 0 else "-",
+                                              _human_size(abs(delta)))
+                lines.append(line)
+            text += "\n".join(lines) + "\n"
         sections.append(text)
     return "\n\n".join(sections)
 
@@ -198,12 +215,30 @@ def render_doctor(pull=False):
     from seine import doctor
     return doctor.render(doctor.run(pull=pull))
 
-# Not spec-scoped -- jobs/theme only; startup_commands has its own
-# widget on the Settings screen. Unset shows the real fallback value,
-# not a bare "(default)".
+# ChatScreen's one-line #body: which spec the ai.py tools act on, and
+# whether the AI chat is even configured.
+def render_chat_header(context):
+    from seine import settings
+    from seine.tui.ai import configured
+    spec = context.label() if context.active else "no active specification"
+    if configured():
+        model = os.environ.get("SEINE_LLM_MODEL") or settings.load()["llm_model"]
+        return "%s -- %s" % (spec, model)
+    return "%s -- not configured ('/settings' sets llm_model)" % spec
+
+# Not spec-scoped -- jobs/theme/llm_* only; startup_commands has its own
+# widget on the Settings screen. Unset shows the real fallback value, not
+# a bare "(default)" -- llm_model/llm_api_base have no fallback, so
+# '(unset)' is the honest word for those instead.
 def render_settings():
     from seine import settings
     current = settings.load()
     jobs = str(current["jobs"]) if current["jobs"] is not None else "1 (default)"
     theme = current["theme"] or "dark (default)"
-    return "jobs     %s\ntheme    %s\n" % (jobs, theme)
+    llm_model = current["llm_model"] or "(unset)"
+    llm_api_base = current["llm_api_base"] or "(unset)"
+    return "\n".join(
+        "%-16s %s" % (key, value) for key, value in
+        [("jobs", jobs), ("theme", theme),
+         ("llm_model", llm_model), ("llm_api_base", llm_api_base)]
+    ) + "\n"

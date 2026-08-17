@@ -92,6 +92,25 @@ class WhatEachStepCostIsKept(avocado.Test):
         self.assertEqual(second["needs"], ["first"])
         self.assertEqual(recorded_run["ok"], True)
 
+# The exported root file-system's own size (seine/image.py's own
+# 'Image.build()' passes it), not the disk image's -- kept the same way
+# every other field here already is, and left out (not zero) for a run
+# that never reached the 'tarball' step.
+class RootfsSizeIsKeptAlongsideEveryOtherField(avocado.Test):
+    def test_kept_when_given(self):
+        steps = [sleeper("only", 0.0)]
+        run(steps)
+        path = analyze.record(steps, "rootfssize", rootfs_size=612345)
+        with open(path) as f:
+            recorded_run = json.load(f)
+        self.assertEqual(recorded_run["rootfs_size"], 612345)
+
+    def test_left_out_when_not_given(self):
+        steps = [sleeper("only", 0.0)]
+        run(steps)
+        recorded_run = recorded(steps, "rootfssize-none")
+        self.assertNotIn("rootfs_size", recorded_run)
+
 class AFailedBuildIsRecordedToo(avocado.Test):
     def test(self):
         def no():

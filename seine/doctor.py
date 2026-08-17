@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 
+from seine import settings
 from seine.imager import DEFAULT_HYPERVISORS
 from seine.sbom import DEBSBOM_IMAGE
 from seine.utils import ContainerEngine, HOST_ARCH
@@ -50,6 +51,7 @@ GROUP_ANSIBLE = "Ansible (seine.ansible_runner)"
 GROUP_SIGNING = "Signing (seine.signing)"
 GROUP_SBOM = "SBOM (seine.sbom)"
 GROUP_STORAGE = "Storage (seine.utils.ContainerEngine.build_dir)"
+GROUP_AI = "Optional AI integration (seine.tui.ai)"
 
 def check_podman():
     return _binary(GROUP_ENGINE, "podman")
@@ -143,6 +145,19 @@ def check_storage():
     free = shutil.disk_usage(build_dir).free
     return Check(GROUP_STORAGE, build_dir, "ok", "%.1f GiB free" % (free / 1024**3))
 
+# Same shape as check_sign_key(): configured but missing the one
+# credential is a note, not a failure. No model set at all isn't
+# reported here -- that's the feature being off, not a machine missing
+# something.
+def check_llm():
+    model = os.environ.get("SEINE_LLM_MODEL") or settings.load().get("llm_model")
+    if not model:
+        return None
+    if os.environ.get("SEINE_LLM_API_KEY"):
+        return Check(GROUP_AI, "llm_model", "ok", model)
+    return Check(GROUP_AI, "llm_model", "warn",
+                "%s configured but SEINE_LLM_API_KEY is not set" % model)
+
 # Cheap and offline by default; 'pull' opts into the one check that
 # touches the network for real.
 def run(options=None, pull=False):
@@ -151,6 +166,9 @@ def run(options=None, pull=False):
              check_ansible_playbook(), check_podman_collection(),
              check_gnupg(), check_sign_key(options),
              check_storage()]
+    llm = check_llm()
+    if llm is not None:
+        checks.append(llm)
     if pull:
         checks.append(check_debsbom_image())
     return checks

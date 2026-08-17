@@ -13,9 +13,10 @@ from textual import command
 from textual.app import App
 from textual.widgets import Static
 
-from seine.tui import commands
+from seine.tui import ai, commands
 from seine.tui.base import BaseScreen, Indicators, Prompt
 from seine.tui.build import BuildScreen, BuildState
+from seine.tui.chat import ChatScreen
 from seine.tui.context import Context
 from seine.tui.filesystem import FilesystemScreen, FilesystemState
 from seine.tui.history import History
@@ -72,7 +73,8 @@ class DiffScreen(BaseScreen):
 SCREENS = {"overview": OverviewScreen, "plan": PlanScreen, "build": BuildScreen,
           "artifacts": ArtifactsScreen, "filesystem": FilesystemScreen,
           "packages": PackagesScreen, "analyze": AnalyzeScreen,
-          "cache": CacheScreen, "doctor": DoctorScreen, "diff": DiffScreen}
+          "cache": CacheScreen, "doctor": DoctorScreen, "diff": DiffScreen,
+          "chat": ChatScreen}
 
 # Offers the same command registry through Ctrl+P. Selecting one fills the
 # prompt and focuses it rather than running it -- a second, deliberate
@@ -146,6 +148,7 @@ class SeineApp(App):
         # edge is start_build() calling refresh_indicators() directly.
         self.build_state.on_finished = self._build_finished
         self.fs_state = FilesystemState()
+        self.ai_state = ai.AIState()
         self.diff_text = None
         self._startup_error = None
         # No spec at all, not a bad one -- a spec given but failed to
@@ -198,6 +201,19 @@ class SeineApp(App):
         self.refresh_indicators()
         if isinstance(self.screen, BuildScreen):
             self.screen.update_body()
+        # One-shot: only a build 'start-build' itself started sets this
+        # (seine/tui/ai.py's _start_ai_build), and it must not fire
+        # again for whatever build runs next.
+        if self.build_state.notify_ai:
+            self.build_state.notify_ai = False
+            # Still on the Build screen start-build's own app.show()
+            # switched to -- shown, not left unnoticed, since nothing
+            # suggests they went looking elsewhere. Any other screen
+            # means they navigated away themselves; that choice is
+            # left alone.
+            if isinstance(self.screen, BuildScreen):
+                self.show("chat")
+            ai.notify_build_finished(self)
 
     def show(self, name):
         target = SCREENS[name]

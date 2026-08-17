@@ -484,6 +484,14 @@ class Package:
                 files += fragments
         return self._files(files)
 
+    # Every local file this package's own spec entry names -- patches,
+    # kernel config, derived-flavour fragments. One definition, so a
+    # caller (the digest below, or anything else) never has to repeat
+    # the concatenation, and a future fourth category is one line here.
+    def referenced_files(self):
+        return (self.patch_files() + self.kernel_config_files()
+               + self.kernel_derived_flavour_files())
+
     def _files(self, names):
         return [os.path.normpath(n) for n in names]
 
@@ -1391,8 +1399,7 @@ class Builder:
         # enough to ask for a rebuild, all the more for a kernel, where the
         # alternative is silently keeping one built from the fragment as it
         # used to read.
-        for path in (package.patch_files() + package.kernel_config_files()
-                    + package.kernel_derived_flavour_files()):
+        for path in package.referenced_files():
             with open(path, "rb") as f:
                 digest.update(f.read())
 

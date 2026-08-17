@@ -43,6 +43,7 @@ whole project. The ones in use are:
 
 | Scope          | What it covers                                        |
 | -------------- | ----------------------------------------------------- |
+| `ai`           | The AI chat: its tools, `system_prompt.txt`, `seine tui`'s `/settings`-configured model |
 | `analyze`      | Recorded build timings, and `seine analyze`           |
 | `ansible`      | Running playbooks against the target container        |
 | `bootstrap`    | The host and target bootstrap images                  |

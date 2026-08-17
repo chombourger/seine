@@ -360,6 +360,41 @@ class WhatIsCachedIsListedOneByOne(Caches):
         self.assertIn("nothing recorded yet",
                       self.run_cmd(["info", "--entries"]))
 
+# The index alone says a source/architecture was built, never which
+# digest -- the AI chat mistrusted 'seine plan' 's "already built"
+# line over this (build/chats/20260818T180821689897.json) because
+# there was no way to check it independently. The stamp on disk is
+# named by that digest, so a listing here can show it directly.
+class PackageEntriesNameTheirOnDiskStamp(Caches):
+    def setUp(self):
+        super().setUp()
+        cache_index.Index().made(cache_index.PACKAGE, "bookworm/arm64/linux")
+        stamps = os.path.join(self.paths["packages"], "bookworm", ".stamps")
+        os.makedirs(stamps, exist_ok=True)
+        open(os.path.join(stamps, "linux_arm64_b41c1f8278e07eb5"), "w").close()
+
+    def test_the_stamp_is_shown_next_to_its_entry(self):
+        shown = self.run_cmd(["info", "--entries"])
+        self.assertIn("linux_arm64_b41c1f8278e07eb5", shown)
+
+    # A rebuild for another architecture, or another source, in the
+    # same release's repository must not be picked up as this entry's
+    # own -- only the stamp actually matching source and architecture.
+    def test_a_different_architectures_stamp_is_not_shown(self):
+        stamps = os.path.join(self.paths["packages"], "bookworm", ".stamps")
+        open(os.path.join(stamps, "linux_amd64_cafef00dcafef00d"), "w").close()
+        shown = self.run_cmd(["info", "--entries"])
+        self.assertNotIn("linux_amd64_cafef00dcafef00d", shown)
+
+    # The index can outlive the stamp (a 'cache clear packages' leaves
+    # the index's own record for 'stale' to clean up later) -- that is
+    # not an error, the line just has nothing to add.
+    def test_no_stamp_on_disk_is_not_an_error(self):
+        import shutil
+        shutil.rmtree(os.path.join(self.paths["packages"], "bookworm"))
+        shown = self.run_cmd(["info", "--entries"])
+        self.assertIn("bookworm/arm64/linux", shown)
+
 class TheEntriesFlagBelongsToInfoAlone(Caches):
     def test(self):
         with self.assertRaises(SystemExit) as caught:
