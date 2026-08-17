@@ -17,35 +17,9 @@ from seine.progress import elapsed
 from seine.tui.base import BaseScreen, StaticPane
 from seine.tui.reporter import TextualReporter
 from seine.tui.render import render_overview
-from seine.tui.spectree import SpecTree, _item_label
+from seine.tui.spectree import SpecTree, _branch_for, _item_label
 
 MARKS = {"pending": "○", "running": "●", "done": "✔", "failed": "✘"}
-
-# What each seine Task is doing, in terms of the spec tree's own
-# top-level branch labels. tarball/sbom/appliance are left out: they
-# package what an earlier step already built, not their own bit of spec.
-TASK_BRANCHES = {
-    "bootstrap-host": ("distribution",),
-    "bootstrap-target": ("distribution",),
-    "packages-prepare": ("packages",),
-    "packages": ("packages",),
-    "rootfs": ("playbook",),
-    "disk": ("image",),
-    "image": ("image",),
-}
-
-# Every per-package/per-source task name packages.Builder.tasks() gives
-# itself. With --jobs > 1 several can run at once; all still light up
-# the same 'packages' branch.
-PACKAGE_TASK_PREFIXES = ("package:", "prepare:", "deploy:", "fetch:", "fetch-upstream:")
-
-def _branch_for(name):
-    branch = TASK_BRANCHES.get(name)
-    if branch:
-        return branch
-    if name.startswith(PACKAGE_TASK_PREFIXES):
-        return ("packages",)
-    return None
 
 # The specific 'packages: [i]' node a package:/prepare:/deploy: task is
 # actually building -- computed once at build start via the same
@@ -77,22 +51,6 @@ def _package_paths(build):
         paths["prepare:%s" % package.name] = path
         paths["deploy:%s" % package.name] = path
     return paths
-
-# A separate key from the plain task name, so the coarse rootfs ->
-# playbook highlight and the finer Ansible play/task one don't fight
-# over the same dict entry.
-ROOTFS_ANSIBLE_KEY = "rootfs:ansible"
-
-# Several branches can be lit at once (--jobs > 1); auto-scroll picks
-# one -- packages first (what --jobs actually parallelises), then
-# playbook/Ansible, everything else last. Ties break on key name so the
-# choice doesn't jump around tick to tick.
-def _priority(key):
-    if key in (ROOTFS_ANSIBLE_KEY, "rootfs"):
-        return 1
-    if _branch_for(key) == ("packages",):
-        return 0
-    return 2
 
 # Which Task's log the BUILD OUTPUT pane should tail right now --
 # packages first (oldest still running), then rootfs, then whatever else
@@ -301,10 +259,6 @@ class BuildScreen(BaseScreen):
 
     def on_mount(self):
         self._tail = Tail()
-        # Last node _highlight() scrolled to, so it only scrolls again on
-        # an actual change -- self-correcting across a tree reload since
-        # load() throws every node away.
-        self._scrolled_to = None
         super().on_mount()
         self._timer = self.set_interval(1.0, self._tick)
 
@@ -322,7 +276,8 @@ class BuildScreen(BaseScreen):
 
     def _tick(self):
         # _follow() first: it updates state.play/ansible_task from
-        # whatever the log grew by; _redraw() turns that into a highlight.
+        # whatever the log grew by; _redraw() turns that into #tasklist.
+        # The spec tree's own highlight is BaseScreen's tick, not this one.
         self._follow()
         self._redraw()
 
@@ -333,7 +288,6 @@ class BuildScreen(BaseScreen):
         self.query_one("#tasklist", Static).update(state.render())
         if state.message:
             self.say(state.message, error=state.error)
-        self._highlight()
 
     # ponytail: one file, not every concurrently running task's log
     # merged together -- _log_target() picks the single most relevant
@@ -366,53 +320,7 @@ class BuildScreen(BaseScreen):
             if PLAY_RECAP_RE.match(line):
                 state.play, state.ansible_task = None, None
 
-    # Highlights every Task actually 'running' right now (not just
-    # state.current -- --jobs > 1 can have several), refined to the
-    # actual Ansible play/task for rootfs specifically. Idempotent and
-    # cheap, so called every tick regardless of whether anything changed.
-    def _highlight(self):
-        state = self.app.build_state
-        tree = self.query_one(SpecTree)
-        if state.done:
-            for key in tree.active_keys():
-                tree.clear_active(key)
-            self._scrolled_to = None
-            return
-        running = {name for name, row in state.rows.items()
-                  if row["state"] == "running"}
-        wanted = set()
-        for name in running:
-            if name == "rootfs" and state.play:
-                key, labels = ROOTFS_ANSIBLE_KEY, ["playbook", state.play]
-                if state.ansible_task:
-                    labels += ["tasks", state.ansible_task]
-            else:
-                # The specific packages: [i] entry when resolvable,
-                # falling back to the whole branch otherwise.
-                path = state.package_paths.get(name)
-                if path is not None:
-                    key, labels = name, list(path)
-                else:
-                    branch = _branch_for(name)
-                    if branch is None:
-                        continue
-                    key, labels = name, list(branch)
-            wanted.add(key)
-            tree.set_active(key, labels)
-        for key in tree.active_keys():
-            if key not in wanted:
-                tree.clear_active(key)
-        self._scroll_to_active(tree, wanted)
-
-    # Auto-scrolls to whichever active node _priority() picks, only when
-    # the pick changed since last tick -- doesn't fight a user who
-    # scrolled elsewhere themselves.
-    def _scroll_to_active(self, tree, wanted):
-        if len(wanted) == 0:
-            self._scrolled_to = None
-            return
-        key = min(wanted, key=lambda k: (_priority(k), k))
-        node = tree.leaf(key)
-        if node is not None and node is not self._scrolled_to:
-            tree.scroll_to_node(node)
-            self._scrolled_to = node
+    # Highlighting moved to seine/tui/spectree.py's highlight_active():
+    # BaseScreen's own tick (base.py) now calls it for every screen, so a
+    # build kept running while the person watching navigated elsewhere
+    # still lights up wherever their spec tree currently is.

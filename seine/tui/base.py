@@ -11,7 +11,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.suggester import Suggester
 from textual.widgets import Input, OptionList, Static
 
-from seine.tui import commands
+from seine.tui import commands, spectree
 from seine.tui.paths import complete
 from seine.tui.spectree import SpecTree
 
@@ -288,6 +288,17 @@ class BaseScreen(Screen):
     def on_mount(self):
         self.refresh_data()
         self.query_one(Prompt).focus()
+        # Ticks on every screen, not only BuildScreen's own (which has a
+        # separate, faster tick for #tail/#tasklist), so a build kept
+        # running still lights up wherever the spec tree currently is.
+        self._scrolled_to = None
+        self.set_interval(1.0, self._tick_highlight)
+        self._tick_highlight()
+
+    def _tick_highlight(self):
+        tree = self.query_one(SpecTree)
+        wanted = spectree.highlight_active(tree, self.app.build_state)
+        self._scrolled_to = spectree.scroll_to_active(tree, wanted, self._scrolled_to)
 
     # Kept on the base class so every subclass gets it for free on
     # mount and after /use, rather than repeating the call. Subclasses

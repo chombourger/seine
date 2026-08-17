@@ -1722,6 +1722,62 @@ class BuildScreenIntegration(avocado.Test):
                 self.assertTrue(app.build_state.done)
         _run(scenario)
 
+    # BaseScreen's own tick, not only BuildScreen's -- gated the same way
+    # as the test above, since this has to check a step genuinely still
+    # running, not whenever a sleep happens to have elapsed.
+    def test_spectree_highlights_the_running_step_on_any_screen(self):
+        import threading
+        from seine import tasks
+        from seine.tui.spectree import SpecTree
+
+        proceed = threading.Event()
+
+        def gated_build(image, reporter=None):
+            for step in tasks.ordered(image.tasks()):
+                reporter.started(step.name)
+                proceed.wait()
+                proceed.clear()
+                reporter.finished(step.name, failed=False)
+        self.Image.build = gated_build
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                # In a finally: run_test()'s teardown joins the worker
+                # thread, and a failed assertion would otherwise leave it
+                # blocked on proceed.wait() forever.
+                try:
+                    prompt = app.screen.query_one("#prompt")
+                    prompt.value = "/build"
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    for _ in range(200):
+                        if app.build_state.current is not None:
+                            break
+                        await asyncio.sleep(0.01)
+                    self.assertTrue(app.build_state.running)
+
+                    prompt = app.screen.query_one("#prompt")
+                    prompt.value = "/overview"
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertIsInstance(app.screen, self.OverviewScreen)
+                    tree = app.screen.query_one(SpecTree)
+                    for _ in range(100):
+                        if tree.active_keys():
+                            break
+                        await asyncio.sleep(0.02)
+                        await pilot.pause()
+                    self.assertTrue(tree.active_keys())
+                finally:
+                    for _ in range(200):
+                        if not app.build_state.running:
+                            break
+                        proceed.set()
+                        await asyncio.sleep(0.01)
+                self.assertTrue(app.build_state.done)
+        _run(scenario)
+
     # Gated the same way, and for the same reason: cancelling has to land
     # while a step is deliberately still running, not whenever a sleep
     # happens to have elapsed.

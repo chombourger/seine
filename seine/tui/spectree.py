@@ -255,3 +255,95 @@ class SpecTree(Tree):
             node.set_label(Text(CHANGED_MARK + text, style=CHANGED_STYLE))
         else:
             node.set_label(text)
+
+# What each seine Task is doing, in top-level branch labels. Steps left
+# out (tarball/sbom/appliance) package what an earlier step already
+# built, not their own bit of spec -- nothing lights up for them.
+TASK_BRANCHES = {
+    "bootstrap-host": ("distribution",),
+    "bootstrap-target": ("distribution",),
+    "packages-prepare": ("packages",),
+    "packages": ("packages",),
+    "rootfs": ("playbook",),
+    "disk": ("image",),
+    "image": ("image",),
+}
+
+# Every per-package/per-source task name packages.Builder.tasks() gives
+# itself. With --jobs > 1 several can run at once; all still light up
+# the same 'packages' branch.
+PACKAGE_TASK_PREFIXES = ("package:", "prepare:", "deploy:", "fetch:", "fetch-upstream:")
+
+def _branch_for(name):
+    branch = TASK_BRANCHES.get(name)
+    if branch:
+        return branch
+    if name.startswith(PACKAGE_TASK_PREFIXES):
+        return ("packages",)
+    return None
+
+# A separate key from the plain task name, so the coarse rootfs ->
+# playbook highlight and the finer Ansible play/task one don't fight
+# over the same dict entry.
+ROOTFS_ANSIBLE_KEY = "rootfs:ansible"
+
+# Several branches can be lit at once (--jobs > 1); auto-scroll picks
+# one -- packages first (what --jobs actually parallelises), then
+# playbook/Ansible, everything else last. Ties break on key name so the
+# choice doesn't jump around tick to tick.
+def _priority(key):
+    if key in (ROOTFS_ANSIBLE_KEY, "rootfs"):
+        return 1
+    if _branch_for(key) == ("packages",):
+        return 0
+    return 2
+
+# Highlights every Task actually running, refined to the Ansible
+# play/task for rootfs specifically. Shared by every screen (BaseScreen's
+# tick), not only Build's, so a build kept running while the person
+# navigated elsewhere still lights up wherever their spec tree is.
+# Returns the keys now wanted active, for scroll_to_active() below.
+def highlight_active(tree, state):
+    if state.done:
+        for key in tree.active_keys():
+            tree.clear_active(key)
+        return set()
+    running = {name for name, row in state.rows.items()
+              if row["state"] == "running"}
+    wanted = set()
+    for name in running:
+        if name == "rootfs" and state.play:
+            key, labels = ROOTFS_ANSIBLE_KEY, ["playbook", state.play]
+            if state.ansible_task:
+                labels += ["tasks", state.ansible_task]
+        else:
+            # The specific packages: [i] entry when resolvable, falling
+            # back to the whole branch otherwise.
+            path = state.package_paths.get(name)
+            if path is not None:
+                key, labels = name, list(path)
+            else:
+                branch = _branch_for(name)
+                if branch is None:
+                    continue
+                key, labels = name, list(branch)
+        wanted.add(key)
+        tree.set_active(key, labels)
+    for key in tree.active_keys():
+        if key not in wanted:
+            tree.clear_active(key)
+    return wanted
+
+# Auto-scrolls to whichever active node _priority() picks, only when the
+# pick changed since the last call -- doesn't fight a user who scrolled
+# elsewhere. 'scrolled_to' is the caller's own memory, passed in and
+# returned rather than kept here.
+def scroll_to_active(tree, wanted, scrolled_to):
+    if len(wanted) == 0:
+        return None
+    key = min(wanted, key=lambda k: (_priority(k), k))
+    node = tree.leaf(key)
+    if node is not None and node is not scrolled_to:
+        tree.scroll_to_node(node)
+        return node
+    return scrolled_to
