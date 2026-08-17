@@ -56,6 +56,10 @@ class FakeReporter:
 class ImageBuildTakesAReporter(avocado.Test):
     def setUp(self):
         os.environ["SEINE_CACHE_DIR"] = self.workdir
+        # BuildCmd.__init__ reads settings.py's jobs default -- isolated
+        # so a real settings.json (a persisted 'jobs' != 1) can't turn
+        # "single job" into "several" underneath these tests.
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
         self.real_run = tasks.run
         self.addCleanup(setattr, tasks, "run", self.real_run)
         self.calls = []

@@ -244,6 +244,49 @@ def _diff(app, argv):
         raise CommandError(str(e))
     app.show("diff")
 
+def _settings(app, argv):
+    """open the settings screen"""
+    from seine.tui.settings import SettingsScreen
+    app.push_screen(SettingsScreen())
+
+# Textual's own named themes (gruvbox, nord, ...) aren't seine's
+# vocabulary -- dark/light is. settings.json always stores one of these
+# two keys, never a Textual name.
+THEMES = {"dark": "textual-dark", "light": "textual-light"}
+
+# jobs/theme only -- startup_commands is edited from /settings itself.
+def _set(app, argv):
+    """change one persisted setting: jobs or theme
+
+    Changes one persisted setting and saves it straight away -- 'jobs'
+    (an int >= 1, the default '/build'/'seine build' falls back to when
+    no '--jobs' is given) or 'theme' ('dark' or 'light', applied
+    immediately, not just on the next startup). 'startup_commands' is
+    edited from '/settings' itself, not here.
+    """
+    if len(argv) != 2:
+        raise CommandError("/set expects a key and a value: '/set jobs 4'")
+    key, value = argv
+    from seine import settings
+    current = settings.load()
+    if key == "jobs":
+        try:
+            jobs = int(value)
+        except ValueError:
+            raise CommandError("jobs expects a number")
+        if jobs < 1:
+            raise CommandError("jobs shall be at least 1")
+        current["jobs"] = jobs
+    elif key == "theme":
+        if value not in THEMES:
+            raise CommandError("theme is 'dark' or 'light', not '%s'" % value)
+        current["theme"] = value
+        app.theme = THEMES[value]
+    else:
+        raise CommandError("unknown setting '%s' -- jobs or theme" % key)
+    settings.save(current)
+    app.say("%s = %s" % (key, value))
+
 def _cancel(app, argv):
     """stop a running build (same as Ctrl-C)"""
     if not app.build_state.running:
@@ -283,6 +326,8 @@ REGISTRY = {
         Command("cache",    _cache,    "",                         *_doc(_cache)),
         Command("doctor",   _doctor,   "",                         *_doc(_doctor)),
         Command("diff",     _diff,     "OLD.spdx.json NEW.spdx.json", *_doc(_diff)),
+        Command("settings", _settings, "",                         *_doc(_settings)),
+        Command("set",      _set,      "KEY VALUE",                *_doc(_set)),
         Command("help",     _help,     "",                         *_doc(_help)),
         Command("quit",     _quit,     "",                         *_doc(_quit)),
     ]

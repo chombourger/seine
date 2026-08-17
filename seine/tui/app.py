@@ -160,10 +160,25 @@ class SeineApp(App):
     # Nothing to build without a spec, so a bare 'seine tui' opens on
     # Doctor rather than an empty Overview.
     def on_mount(self):
+        from seine import settings
+        current = settings.load()
+        # An unset/hand-edited theme is silently skipped, not an error.
+        if current["theme"] in commands.THEMES:
+            self.theme = commands.THEMES[current["theme"]]
         if self._no_spec_given:
             self.push_screen(DoctorScreen())
         else:
             self.push_screen(OverviewScreen())
+        # Deferred to after the initial screen's mount -- a startup
+        # command like /plan needs a screen already on the stack.
+        self.call_after_refresh(self._run_startup_commands, current["startup_commands"])
+
+    def _run_startup_commands(self, lines):
+        for line in lines:
+            try:
+                commands.dispatch(self, line)
+            except commands.CommandError as e:
+                self.say(str(e), error=True)
 
     def say(self, text, error=False):
         if isinstance(self.screen, BaseScreen):

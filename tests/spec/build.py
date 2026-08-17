@@ -3,15 +3,37 @@
 import avocado
 import os
 import sys
+import tempfile
 import time
 
 path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
+# BuildCmd() now reads settings.py's jobs default -- pointed at an
+# empty, per-run directory so a developer's real settings.json can never
+# change how many of these run in parallel.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="seine-build-tests-config-")
+
 from seine import analyze
+from seine import settings
 from seine import tasks
 from seine.build import BuildCmd
+
+# BuildCmd's jobs default: 1 unless a persisted setting overrides it;
+# an explicit -j/--jobs still wins either way.
+class DefaultJobCount(avocado.Test):
+    def setUp(self):
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
+    def test_one_with_no_settings_file(self):
+        self.assertEqual(BuildCmd().options["jobs"], 1)
+
+    def test_the_persisted_value_otherwise(self):
+        current = settings.load()
+        current["jobs"] = 3
+        settings.save(current)
+        self.assertEqual(BuildCmd().options["jobs"], 3)
 
 MINIMAL = """
 image:

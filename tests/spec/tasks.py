@@ -882,6 +882,12 @@ class AFailingStepSaysWhatWentWrong(avocado.Test):
 # 'seine plan' is 'seine build --dry-run' with the option decided for it: the
 # same graph, since a plan is only worth what a build would really do.
 class ThePlanIsTheBuildUnwalked(avocado.Test):
+    def setUp(self):
+        # BuildCmd.__init__ reads settings.py's jobs default -- isolated
+        # so a real settings.json (a persisted 'jobs' != 1) can't turn up
+        # in the plan text this checks ("N steps at a time").
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
     def plan(self, command):
         import contextlib, io
         said = io.StringIO()

@@ -14,11 +14,12 @@ import subprocess
 import sys
 import yaml
 
-from seine.image     import Image
-from seine.cmd       import Cmd
-from seine.partition import PartitionHandler
-from seine.tasks     import Interrupted
-from seine.utils     import ContainerEngine, digest, locked
+from seine            import settings
+from seine.image      import Image
+from seine.cmd        import Cmd
+from seine.partition  import PartitionHandler
+from seine.tasks      import Interrupted
+from seine.utils      import ContainerEngine, digest, locked
 
 # Specifications are rendered before they are parsed, so that one file can
 # say what is true of several architectures or releases instead of being
@@ -316,9 +317,12 @@ class BuildCmd(Cmd):
 
     def __init__(self):
         self.image = None
+        # 'jobs' falls back to the persisted setting (seine/settings.py,
+        # '/set jobs N' in the TUI) before the hardcoded '1' -- an
+        # explicit '-j'/'--jobs' below still overrides either.
         self.options = { "ansible_library": [], "build": True, "color": None,
                          "debug": False, "dry_run": False,
-                         "jobs": 1, "keep": False,
+                         "jobs": settings.load().get("jobs") or 1, "keep": False,
                          "packages_only": False, "parallel": None,
                          "rebuild": False, "require_hashes": False,
                          "rootfs_only": False,

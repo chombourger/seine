@@ -197,3 +197,13 @@ def render_cache():
 def render_doctor(pull=False):
     from seine import doctor
     return doctor.render(doctor.run(pull=pull))
+
+# Not spec-scoped -- jobs/theme only; startup_commands has its own
+# widget on the Settings screen. Unset shows the real fallback value,
+# not a bare "(default)".
+def render_settings():
+    from seine import settings
+    current = settings.load()
+    jobs = str(current["jobs"]) if current["jobs"] is not None else "1 (default)"
+    theme = current["theme"] or "dark (default)"
+    return "jobs     %s\ntheme    %s\n" % (jobs, theme)

@@ -13,6 +13,9 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 os.environ.setdefault("SEINE_CACHE_DIR", tempfile.mkdtemp(prefix="seine-tui-tests-"))
+# Every SeineApp()/BuildCmd() below reads settings.py -- pointed at an
+# empty, per-run directory so a real settings.json can never leak in.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="seine-tui-tests-config-")
 
 # 'History' (seine/tui/history.py) is deliberately cwd-relative
 # ('./.seine/history.json') -- every test in this file constructs a real
@@ -301,6 +304,33 @@ class AnalyzeCacheDoctorRendering(avocado.Test):
         for group in ["Container engine", "Imaging", "Ansible", "Storage"]:
             self.assertIn(group, text)
 
+# Not spec-scoped either, and reads 'seine/settings.py' straight --
+# nothing here goes through 'Context'.
+class SettingsRendering(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.render import render_settings
+        self.render_settings = render_settings
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
+    def test_nothing_set_says_default(self):
+        text = self.render_settings()
+        self.assertIn("jobs     1 (default)", text)
+        self.assertIn("theme    dark (default)", text)
+
+    def test_a_configured_value(self):
+        from seine import settings
+        current = settings.load()
+        current["jobs"] = 4
+        current["theme"] = "dark"
+        settings.save(current)
+        text = self.render_settings()
+        self.assertIn("jobs     4", text)
+        self.assertIn("theme    dark", text)
+
 # Ghost-text completion in the prompt: command names, then a command's
 # own flags.
 class Completion(avocado.Test):
@@ -530,6 +560,11 @@ class App(avocado.Test):
         self.PlanScreen = PlanScreen
         self.SeineApp = SeineApp
         os.environ["SEINE_CACHE_DIR"] = self.workdir
+        # Per test, not just per file (the module-level default above is
+        # shared by the whole run) -- the '/set'/startup-commands tests
+        # below persist real settings, which must not leak into an
+        # earlier-defined test that runs after them.
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
 
     def test_startup_with_a_spec_lands_on_overview(self):
         async def scenario():
@@ -796,6 +831,423 @@ class App(avocado.Test):
 
             self.assertEqual(calls[0], "suspended")
             self.assertEqual(calls[1][-1], "echo hi")
+        _run(scenario)
+
+    def test_set_jobs_persists_and_is_validated(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/set jobs not-a-number"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("expects a number", _content(app.screen.query_one("#status")))
+
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/set jobs 4"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["jobs"], 4)
+        _run(scenario)
+
+    # A bad theme name is a 'CommandError', not 'App.theme' raising
+    # 'InvalidThemeError' straight out of the prompt -- and a good one
+    # is applied immediately, not only on the next startup.
+    def test_set_theme_is_validated_and_applied_live(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/set theme gruvbox"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("'dark' or 'light'", _content(app.screen.query_one("#status")))
+
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/set theme dark"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["theme"], "dark")
+                self.assertEqual(app.theme, "textual-dark")
+        _run(scenario)
+
+    # Deferred to after the initial screen mounts (a startup command can
+    # switch screens), so this waits one pump of the event loop rather
+    # than asserting the instant 'SeineApp()' returns.
+    def test_startup_commands_run_once_after_the_first_screen_mounts(self):
+        async def scenario():
+            from seine import settings
+            current = settings.load()
+            current["startup_commands"] = ["/doctor"]
+            settings.save(current)
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.DoctorScreen)
+        _run(scenario)
+
+# The Settings screen (seine/tui/settings.py): a modal, the same shape
+# as '/help' -- opened over whatever screen was already there, closed
+# back to it. 'jobs'/'theme' are covered by 'App''s own '/set' tests
+# above; this is the one thing the screen actually edits itself.
+class SettingsScreenIntegration(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import OverviewScreen, SeineApp
+            from seine.tui.settings import GeneralSettings, SettingsScreen, StartupCommands
+        self.GeneralSettings = GeneralSettings
+        self.OverviewScreen = OverviewScreen
+        self.SeineApp = SeineApp
+        self.SettingsScreen = SettingsScreen
+        self.StartupCommands = StartupCommands
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        # Per test, not just per file -- every test here reads/writes
+        # real settings, which must not leak between them.
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
+    async def _open(self, pilot, app):
+        prompt = app.screen.query_one("#prompt")
+        prompt.value = "/settings"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    # A real keypress, not '.focus()' called directly -- what moves
+    # focus here is the same 'Tab' every other screen already uses to
+    # switch panes ('Screen.BINDINGS' 's own 'tab' -> 'app.focus_next',
+    # nothing this screen adds itself), and this is the one thing worth
+    # exercising as a real keypress rather than a shortcut.
+    async def _focus_startup(self, pilot, app):
+        await pilot.press("tab")
+        await pilot.pause()
+        self.assertTrue(app.screen.query_one(self.StartupCommands).has_focus)
+
+    def test_opens_over_whatever_screen_was_there_and_escape_returns(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                self.assertIsInstance(app.screen, self.SettingsScreen)
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.OverviewScreen)
+        _run(scenario)
+
+    def test_general_settings_has_focus_on_open(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                general = app.screen.query_one(self.GeneralSettings)
+                self.assertTrue(general.has_focus)
+                self.assertEqual(general.highlighted, 0)
+        _run(scenario)
+
+    # The bug this fixes: Tab moved focus fine but neither list had a
+    # focus-border, so a person aiming Enter at 'theme' could silently
+    # hit the startup list instead. Checked via has_focus, both directions.
+    def test_tab_moves_focus_between_the_two_lists_and_back(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                general = app.screen.query_one(self.GeneralSettings)
+                startup = app.screen.query_one(self.StartupCommands)
+                self.assertTrue(general.has_focus)
+                await self._focus_startup(pilot, app)
+                self.assertFalse(general.has_focus)
+                await pilot.press("tab")
+                await pilot.pause()
+                self.assertTrue(general.has_focus)
+                self.assertFalse(startup.has_focus)
+        _run(scenario)
+
+    def test_editing_jobs(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await pilot.press("enter")  # 'jobs' is the first, already-highlighted row
+                await pilot.pause()
+                self.assertEqual(_content(app.screen.query_one("#editlabel")), "jobs")
+                editrow = app.screen.query_one("#editrow")
+                self.assertEqual(editrow.value, "")
+                editrow.value = "4"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["jobs"], 4)
+        _run(scenario)
+
+    # An invalid value leaves '#editrow' open with what was typed still
+    # in it, rather than reverting it -- there is nowhere else on this
+    # modal to say why it didn't take (no '#status', unlike a real
+    # screen), so the hint line says it instead.
+    def test_editing_jobs_with_a_bad_value_keeps_the_editor_open(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await pilot.press("enter")
+                editrow = app.screen.query_one("#editrow")
+                editrow.value = "not-a-number"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("expects a number", _content(app.screen.query_one("#settingshint")))
+                self.assertTrue(editrow.display)
+                self.assertIsNone(settings.load()["jobs"])
+        _run(scenario)
+
+    def test_editing_jobs_prefills_the_current_value(self):
+        async def scenario():
+            from seine import settings
+            current = settings.load()
+            current["jobs"] = 3
+            settings.save(current)
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(app.screen.query_one("#editrow").value, "3")
+        _run(scenario)
+
+    # 'Down' to 'theme', the second general row: a closed choice opens
+    # '#themepicker', not '#editrow' -- 'Enter' on 'dark'/'light' commits
+    # straight away, there is no separate "confirm" step and no value
+    # it could ever post that needs validating.
+    def test_editing_theme(self):
+        async def scenario():
+            from seine import settings
+            from seine.tui.settings import ThemePicker
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await pilot.press("down")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(_content(app.screen.query_one("#editlabel")), "theme")
+                picker = app.screen.query_one(ThemePicker)
+                self.assertTrue(picker.display)
+                self.assertFalse(app.screen.query_one("#editrow").display)
+                picker.highlighted = 0  # 'dark'
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["theme"], "dark")
+                self.assertEqual(app.theme, "textual-dark")
+        _run(scenario)
+
+    # Reopening the picker highlights whatever is already set, not
+    # always the first option.
+    def test_editing_theme_highlights_the_current_value(self):
+        async def scenario():
+            from seine import settings
+            from seine.tui.settings import ThemePicker
+            current = settings.load()
+            current["theme"] = "light"
+            settings.save(current)
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await pilot.press("down")
+                await pilot.press("enter")
+                await pilot.pause()
+                picker = app.screen.query_one(ThemePicker)
+                self.assertEqual(str(picker.get_option_at_index(picker.highlighted).prompt),
+                                 "light")
+        _run(scenario)
+
+    # 'Del' on a general row clears it back to unset -- same word, same
+    # place it reaches on the startup-commands list below.
+    def test_del_clears_a_general_setting(self):
+        async def scenario():
+            from seine import settings
+            current = settings.load()
+            current["jobs"] = 4
+            settings.save(current)
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await pilot.press("delete")
+                await pilot.pause()
+                self.assertIsNone(settings.load()["jobs"])
+        _run(scenario)
+
+    def test_del_clears_theme(self):
+        async def scenario():
+            from seine import settings
+            current = settings.load()
+            current["theme"] = "dark"
+            settings.save(current)
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await pilot.press("down")
+                await pilot.press("delete")
+                await pilot.pause()
+                self.assertIsNone(settings.load()["theme"])
+        _run(scenario)
+
+    # Nothing but the trailing "add" row when no startup commands are
+    # set -- Enter on it opens '#editrow' empty, not pre-filled with a
+    # real row's text.
+    def test_nothing_set_is_just_the_add_row(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                startup = app.screen.query_one(self.StartupCommands)
+                self.assertEqual(startup.option_count, 1)
+                await self._focus_startup(pilot, app)
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(_content(app.screen.query_one("#editlabel")),
+                                 "new startup command")
+                editrow = app.screen.query_one("#editrow")
+                self.assertEqual(editrow.value, "")
+                self.assertTrue(editrow.display)
+        _run(scenario)
+
+    def test_adding_a_command_via_the_placeholder_row(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await self._focus_startup(pilot, app)
+                await pilot.press("enter")
+                await pilot.pause()
+                editrow = app.screen.query_one("#editrow")
+                editrow.value = "/plan"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["startup_commands"], ["/plan"])
+                startup = app.screen.query_one(self.StartupCommands)
+                # The one real row plus the placeholder, still there
+                # after adding to it.
+                self.assertEqual(startup.option_count, 2)
+        _run(scenario)
+
+    # Empty text submitted on the placeholder is a no-op, not an empty
+    # command silently added.
+    def test_submitting_the_placeholder_empty_adds_nothing(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await self._focus_startup(pilot, app)
+                await pilot.press("enter")
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["startup_commands"], [])
+        _run(scenario)
+
+    def test_editing_an_existing_row(self):
+        async def scenario():
+            from seine import settings
+            current = settings.load()
+            current["startup_commands"] = ["/plan"]
+            settings.save(current)
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await self._focus_startup(pilot, app)
+                startup = app.screen.query_one(self.StartupCommands)
+                startup.highlighted = 0
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(_content(app.screen.query_one("#editlabel")),
+                                 "startup command")
+                editrow = app.screen.query_one("#editrow")
+                self.assertEqual(editrow.value, "/plan")
+                editrow.value = "/doctor"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["startup_commands"], ["/doctor"])
+        _run(scenario)
+
+    # Escape while editing cancels that one edit -- back to the list,
+    # the row unchanged -- not the whole screen.
+    def test_escape_while_editing_cancels_not_closes(self):
+        async def scenario():
+            from seine import settings
+            current = settings.load()
+            current["startup_commands"] = ["/plan"]
+            settings.save(current)
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await self._focus_startup(pilot, app)
+                startup = app.screen.query_one(self.StartupCommands)
+                startup.highlighted = 0
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.SettingsScreen)
+                self.assertEqual(settings.load()["startup_commands"], ["/plan"])
+        _run(scenario)
+
+    # Submitting a real row empty clears it -- the slow path to the
+    # same place 'Del' reaches directly, below.
+    def test_clearing_a_row_by_editing_it_empty(self):
+        async def scenario():
+            from seine import settings
+            current = settings.load()
+            current["startup_commands"] = ["/plan", "/cache"]
+            settings.save(current)
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await self._focus_startup(pilot, app)
+                startup = app.screen.query_one(self.StartupCommands)
+                startup.highlighted = 0
+                await pilot.press("enter")
+                await pilot.pause()
+                editrow = app.screen.query_one("#editrow")
+                editrow.value = ""
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["startup_commands"], ["/cache"])
+        _run(scenario)
+
+    def test_del_clears_the_highlighted_row(self):
+        async def scenario():
+            from seine import settings
+            current = settings.load()
+            current["startup_commands"] = ["/plan", "/cache"]
+            settings.save(current)
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await self._focus_startup(pilot, app)
+                startup = app.screen.query_one(self.StartupCommands)
+                startup.highlighted = 1
+                await pilot.press("delete")
+                await pilot.pause()
+                self.assertEqual(settings.load()["startup_commands"], ["/plan"])
+        _run(scenario)
+
+    # The placeholder row is not a real entry -- 'Del' on it does
+    # nothing, not an 'IndexError'.
+    def test_del_on_the_placeholder_row_is_a_no_op(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                await self._open(pilot, app)
+                await self._focus_startup(pilot, app)
+                startup = app.screen.query_one(self.StartupCommands)
+                startup.highlighted = 0
+                await pilot.press("delete")
+                await pilot.pause()
+                self.assertEqual(settings.load()["startup_commands"], [])
         _run(scenario)
 
 # The Reporter that crosses from a build's worker thread back to the UI
