@@ -15,4 +15,7 @@ setup(
         'ansible-core>=2.15',
         'jinja2>=3.0',
     ],
+    extras_require={
+        'tui': ['textual'],
+    },
 )

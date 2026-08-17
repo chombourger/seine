@@ -96,9 +96,12 @@ def _cpu(before, after):
 # A machine that will not answer -- no /proc/stat, no load average -- is
 # not asked again, and the build is recorded without any of this.
 class watching:
-    def __init__(self, every=SAMPLE, stat=STAT):
+    def __init__(self, every=SAMPLE, stat=STAT, callback=None):
         self.every = every
         self.stat = stat
+        # Pushed a sample live, same shape as recorded, for a caller
+        # wanting load while a build runs. None by default.
+        self.callback = callback
         self.cpus = os.cpu_count()
         self.samples = []
         self.stop = threading.Event()
@@ -123,10 +126,12 @@ class watching:
             busy = _busy(self.stat)
             if busy is None:
                 continue
-            self.samples.append({"t": time.time(),
-                                 "load": _load(),
-                                 "cpu": _cpu(self.last, busy)})
+            sample = {"t": time.time(), "load": _load(),
+                      "cpu": _cpu(self.last, busy)}
+            self.samples.append(sample)
             self.last = busy
+            if self.callback is not None:
+                self.callback(sample)
 
 def _load():
     try:

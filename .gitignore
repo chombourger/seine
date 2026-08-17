@@ -4,3 +4,4 @@ dist
 seine.egg-info
 .pybuild
 *.img
+.seine

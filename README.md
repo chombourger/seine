@@ -148,6 +148,7 @@ model where what an image is built from, and why, stays legible.
 * [Specification files](#specification-files)
 * [Kernels](#kernels)
 * [Building](#building)
+* [TUI](#tui)
 * [Software Bill of Materials](#software-bill-of-materials)
 
 ## Getting started
@@ -258,6 +259,24 @@ watching one run, building several together, caching (including moving
 a cache to another machine), cross-compiling, and reproducibility, and
 [docs/environment.md](docs/environment.md) for every environment variable
 seine reads, including where its directories go.
+
+## TUI
+
+```
+seine tui [SPEC...]
+```
+
+opens an interactive alternative to typing `seine build`/`seine plan`/etc.
+one at a time -- the same engine, driven from a `/command` prompt, with a
+screen for each thing seine can already do: an overview of the active
+specification, a plan, a live build cockpit, a read-only browser of a
+built image, and more. Needs the `tui` extra (`pip install seine[tui]`,
+or the `seine-tui` package).
+
+![seine tui: Doctor, Overview, /extend, Plan, browsing a built image, and Help](docs/images/tui-demo.gif)
+
+See [docs/tui.md](docs/tui.md) for every screen, keyboard shortcut, and
+`/command`.
 
 ## Software Bill of Materials
 

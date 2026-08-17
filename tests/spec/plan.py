@@ -214,7 +214,7 @@ class ABuildRecordsWhatTheNextPlanReadsAgainst(avocado.Test):
         # A build that finished returns nothing -- a stub returning 0 would
         # agree with a check that is wrong -- and writes into every playbook
         # as it goes, as the ansible runner does.
-        Image.build = lambda image: self.building(image)
+        Image.build = lambda image, reporter=None: self.building(image)
         BuildCmd._prune = lambda command: None
         self.addCleanup(setattr, Image, "build", built)
         self.addCleanup(setattr, BuildCmd, "_prune", pruned)
@@ -250,7 +250,7 @@ class ABuildRecordsWhatTheNextPlanReadsAgainst(avocado.Test):
     # And a build that failed does not: what it half-built is not what the
     # next plan reads against.
     def test_a_build_that_failed_leaves_none(self):
-        Image.build = lambda image: self.building(image, failing=4)
+        Image.build = lambda image, reporter=None: self.building(image, failing=4)
         self.ran(BuildCmd, [self.spec])
         self.assertIsNone(recall([self.spec]))
 

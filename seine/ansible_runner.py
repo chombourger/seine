@@ -196,6 +196,10 @@ class AnsibleContainerRunner:
         library = self.options.get("ansible_library")
         if library:
             env["ANSIBLE_LIBRARY"] = ":".join(library)
+        # Pinned, not left to ansible.cfg: the TUI scrapes this
+        # callback's own PLAY/TASK lines from the log to highlight the
+        # spec tree.
+        env["ANSIBLE_STDOUT_CALLBACK"] = "default"
 
         try:
             # To the task's file when one is capturing, so a playbook's

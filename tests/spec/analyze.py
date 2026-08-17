@@ -240,6 +240,23 @@ class WhatTheMachineWasDoing(avocado.Test):
             self.assertGreaterEqual(sample["cpu"], 0.0)
             self.assertLessEqual(sample["cpu"], 1.0)
 
+    # A caller (the TUI) wanting the load while the build runs, not only
+    # once it is over -- the same sample, pushed as it is taken.
+    def test_a_sample_is_pushed_live_when_asked(self):
+        import time as clock
+        pushed = []
+        with analyze.watching(every=0.05, stat="/proc/stat",
+                              callback=pushed.append) as machine:
+            clock.sleep(0.2)
+        self.assertGreater(len(pushed), 0)
+        self.assertEqual(pushed, machine.samples)
+
+    def test_no_callback_is_the_same_as_before(self):
+        import time as clock
+        with analyze.watching(every=0.05, stat="/proc/stat") as machine:
+            clock.sleep(0.1)
+        self.assertGreater(len(machine.samples), 0)
+
     def test_the_report_says_how_hard_it_was_working(self):
         run = run_of([("rootfs", [], 0, 600)])
         run["cpus"] = 8

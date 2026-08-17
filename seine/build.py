@@ -326,6 +326,9 @@ class BuildCmd(Cmd):
                          "tasks": True, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
+        # self.spec exactly as merged, before parse() mutates it in place
+        # (size: strings -> byte ints) -- what Inspector needs.
+        self.raw_spec = None
         self._loading = []
         self._probing = False
         self._variables = None
@@ -950,14 +953,15 @@ class BuildCmd(Cmd):
         if self.image is None:
             self.image = Image(self.partitionHandler, self.options)
         self._apply_defaults()
+        self.raw_spec = copy.deepcopy(self.spec)
         self.spec = self.partitionHandler.parse(self.spec)
         self.spec = self.image.parse(self.spec)
         return self.spec
 
-    def build(self):
+    def build(self, reporter=None):
         if self.spec is None or self.image is None:
             raise RuntimeError("no specification was loaded or parsed!")
-        return self.image.build()
+        return self.image.build(reporter=reporter)
 
     # The intermediate images of the multi-stage builds this made, once,
     # when there is nothing left to stand on them -- rather than after

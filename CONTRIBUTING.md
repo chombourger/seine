@@ -60,6 +60,7 @@ whole project. The ones in use are:
 | `sbom`         | Software Bill of Materials generation                 |
 | `sbuild`       | The buildd chroot packages are rebuilt in             |
 | `spec`         | The specification files, and how they are loaded      |
+| `tui`          | The terminal UI, `seine tui`                          |
 | `utils`        | Shared helpers: the container engine, apt sources     |
 
 ### Summary
@@ -99,7 +100,9 @@ avocado run tests/spec/*.py
 A change in behaviour comes with a test for it. Tests that need podman
 or kvm are tagged `container`, so that the rest stay runnable anywhere;
 tag yours the same way if it builds something, and have it cancel
-itself where what it needs is missing.
+itself where what it needs is missing. `tests/spec/tui.py` (the TUI,
+`seine/tui/`) needs `textual` (the `tui` extra) the same way and is
+tagged `tui`, cancelling itself where that is missing.
 
 ## Coding style
 

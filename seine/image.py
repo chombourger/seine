@@ -387,7 +387,10 @@ class Image:
             # Two builds of one specification in the same second.
             return tempfile.mkdtemp(dir=spec, prefix="%s-" % run)
 
-    def build(self):
+    # 'reporter' is a seine.reporter.Reporter -- progress.Display by
+    # default, or a caller's own wanting to watch without owning the
+    # terminal (the TUI's TextualReporter).
+    def build(self, reporter=None):
         if self.options.get("dry_run"):
             return self.plan()
         try:
@@ -404,11 +407,12 @@ class Image:
             # A step's output goes to a file of its own unless someone
             # asked to watch it go by: several steps at once cannot share
             # a terminal, and one step at a time buries what is worth
-            # knowing in what is not.
-            logs = None
-            if verbose == False or jobs > 1:
-                logs = self._logs()
-                print("output under %s" % logs)
+            # knowing in what is not. A caller's own reporter always gets
+            # one too -- it has no terminal to fall back on.
+            self.logs = None
+            if verbose == False or jobs > 1 or reporter is not None:
+                self.logs = self._logs()
+                print("output under %s" % self.logs)
 
             steps = self.tasks()
             # Taken now, before a single task has run -- not in the
@@ -423,26 +427,30 @@ class Image:
             # 'seine analyze' on those files could never find the record
             # a real build had just written.
             digest = analyze.spec_digest(self.spec)
-            display = None
-            if verbose == False:
+            # Only the internally-built Display is entered as a context
+            # manager -- a caller's reporter owns its own lifecycle.
+            display = reporter
+            ticker = contextlib.nullcontext()
+            if display is None and verbose == False:
                 display = progress.Display(total=len(steps),
                                            environment=os.environ)
+                ticker = display
             # What every step cost, kept for 'seine analyze' to read back.
             # Written in a finally because a build that failed is the one
             # worth reading: the steps that did run still say where the
             # time went, and the build that resumes this one is filed
             # with it.
             ok = False
-            machine = analyze.watching()
+            # 'sampled' is optional on a Reporter -- Display has none, so
+            # the machine is still watched and recorded, just not pushed live.
+            machine = analyze.watching(callback=getattr(reporter, "sampled", None))
             try:
-                with machine, (display if display is not None
-                               else contextlib.nullcontext()):
-                    tasks.run(steps, jobs=jobs, logs=logs, verbose=verbose,
+                with machine, ticker:
+                    tasks.run(steps, jobs=jobs, logs=self.logs, verbose=verbose,
                               display=display)
                 ok = True
             finally:
-                analyze.record(steps, digest,
-                               jobs=jobs, ok=ok, machine=machine)
+                analyze.record(steps, digest, jobs=jobs, ok=ok, machine=machine)
 
             # What the caches spared this build, and what it had to make.
             # Printed after the steps rather than by them: it is the answer
