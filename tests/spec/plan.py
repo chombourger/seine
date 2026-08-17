@@ -342,5 +342,70 @@ class WhatAFragmentSaysNotToPrint(avocado.Test):
     def test_a_specification_without_the_section(self):
         self.assertIn("filename: demo.img", self.dumped(SPEC)[1])
 
+# dump_file() is dump()'s single-file sibling: one loaded file's own
+# text, redacted the same patterns, never the literal bytes on disk.
+class OneLoadedFilesOwnTextCanBeReadBack(avocado.Test):
+    def write(self, name, content):
+        path = os.path.join(self.workdir, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def test_a_loaded_files_own_text_comes_back(self):
+        main = self.write("main.yaml", "distribution:\n  release: trixie\n")
+        build = BuildCmd()
+        build.load(main)
+        self.assertEqual(yaml.safe_load(build.dump_file(main)),
+                         {"distribution": {"release": "trixie"}})
+
+    # A path never handed to 'load()' -- typo'd, or genuinely outside
+    # this build -- is refused outright, not read anyway: this is the
+    # one thing standing between a caller and an arbitrary filesystem
+    # read.
+    def test_a_file_never_loaded_is_refused(self):
+        outside = self.write("outside.yaml", "distribution:\n  release: trixie\n")
+        build = BuildCmd()
+        build.loads("distribution:\n  release: trixie\n")
+        with self.assertRaises(ValueError) as raised:
+            build.dump_file(outside)
+        self.assertIn("outside.yaml", str(raised.exception))
+
+    # redact: patterns are gathered from every file that merged into this
+    # build, same as dump() -- a secret one fragment hides stays hidden
+    # when a different fragment is the one being read back.
+    def test_a_secret_declared_elsewhere_is_still_hidden(self):
+        secret = "hunter2"
+        self.write("redact.yaml", "redact:\n  - hunter2\n")
+        other = self.write("other.yaml", "playbook:\n  - name: x\n    "
+                           "tasks:\n      - name: y\n        "
+                           "user: password=%s\n" % secret)
+        main = self.write("main.yaml", "requires:\n    - redact\n    - other\n")
+        build = BuildCmd()
+        build.load(main)
+        self.assertNotIn(secret, build.dump_file(other))
+
+    # Requested, read, redacted -- as the file itself was written, not
+    # as Jinja would render it: '{{ }}' shows up verbatim, since the
+    # per-file variable context a render would need is long gone by the
+    # time anything calls this.
+    def test_read_as_written_not_as_rendered(self):
+        main = self.write("main.yaml",
+                          "distribution:\n  release: '{{ 1 + 1 }}'\n")
+        build = BuildCmd()
+        build.load(main)
+        self.assertIn("{{ 1 + 1 }}", build.dump_file(main))
+
+    # A file that fails to parse on its own (not the merged spec's own
+    # problem) is reported, not left to crash the caller.
+    def test_a_file_that_does_not_parse_is_an_error_not_a_crash(self):
+        main = self.write("main.yaml", "distribution:\n  release: trixie\n")
+        build = BuildCmd()
+        build.load(main)
+        with open(main, "a") as f:
+            f.write("  - this is not valid next to a mapping\n")
+        with self.assertRaises(ValueError) as raised:
+            build.dump_file(main)
+        self.assertIn("main.yaml", str(raised.exception))
+
 if __name__ == "__main__":
     avocado.main()

@@ -334,6 +334,10 @@ class BuildCmd(Cmd):
         # (size: strings -> byte ints) -- what Inspector needs.
         self.raw_spec = None
         self._loading = []
+        # Every real file this build has loaded, in order first reached
+        # -- unlike _loading above, never popped: the durable record
+        # dump_file() checks a path against.
+        self.loaded_files = []
         self._probing = False
         self._variables = None
         self._names = []
@@ -479,6 +483,10 @@ class BuildCmd(Cmd):
     # itself; what is lost by skipping it here is the names it would have
     # contributed.
     def _load(self, yaml_filename, yaml_spec):
+        if yaml_filename != "<string>":
+            path = os.path.realpath(yaml_filename)
+            if path not in self.loaded_files:
+                self.loaded_files.append(path)
         try:
             spec = yaml.safe_load(self._render(yaml_filename, yaml_spec))
         except yaml.YAMLError:
@@ -1033,6 +1041,26 @@ class BuildCmd(Cmd):
 
         # return the spec in YAML format
         return yaml.dump(spec)
+
+    # One loaded file's own text, not the merged spec dump() returns --
+    # redacted the same patterns, but never the literal bytes on disk: a
+    # secret hidden from the merged dump must not leak back out through a
+    # single-file read. Refused for anything not in loaded_files.
+    #
+    # Read as written, not as rendered: no Jinja substitution -- the
+    # per-file variable context load() builds is long gone by the time
+    # anything calls this, so '{{ }}' shows up verbatim.
+    def dump_file(self, path):
+        real = os.path.realpath(path)
+        if real not in self.loaded_files:
+            raise ValueError("%s is not one of this build's own loaded files" % path)
+        with open(real, "r") as f:
+            try:
+                spec = yaml.safe_load(f.read()) or {}
+            except yaml.YAMLError as e:
+                raise ValueError("%s: %s" % (path, e)) from e
+        patterns = self.redactions(self.spec)
+        return yaml.dump(self._redact(spec, patterns))
 
     # What is printed in place of a secret, with a digest of what it stands
     # for. A constant would have a plan call a changed password no change
