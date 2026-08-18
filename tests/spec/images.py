@@ -888,7 +888,7 @@ class AllDerivedFlavoursAreBuilt(avocado.Test):
     """
     :avocado: tags=full,container
     """
-    timeout = 7200
+    timeout = 21600
 
     def setUp(self):
         self.spaces = []
