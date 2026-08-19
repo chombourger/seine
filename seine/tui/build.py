@@ -194,21 +194,24 @@ class BuildState:
 # Starts a build in an App-level thread worker, wired to 'state' through
 # a TextualReporter. Raises if one is already running.
 #
-# 'packages_only' is a one-shot override of 'build.options["packages_only"]'
-# -- set for this run alone and put back afterwards, so a plain '/build'
-# or another AI-started build right after this one never inherits it by
-# accident.
-def start_build(app, state, build, packages_only=False):
+# 'packages_only' and 'target' are one-shot overrides of
+# 'build.options["packages_only"/"target"]' -- set for this run alone and
+# put back afterwards, so a plain '/build' or another AI-started build
+# right after this one never inherits them by accident.
+def start_build(app, state, build, packages_only=False, target=None):
     if state.running:
         raise RuntimeError("a build is already running")
     # Set before reset(), not inside run(): reset() calls
     # build.image.tasks() synchronously, right here, to compute the step
     # list this state (and 'build-status') shows -- set only once the
-    # worker thread starts, a packages-only run displayed the full step
-    # list anyway, own_tasks() included, none of which was ever going to
-    # run or finish.
-    previous = build.options.get("packages_only")
+    # worker thread starts, a packages-only/targeted run displayed the
+    # full step list anyway, none of which was ever going to run or
+    # finish. An unknown target raises here too (via tasks()), before
+    # the worker thread ever starts.
+    previous_packages_only = build.options.get("packages_only")
+    previous_target = build.options.get("target")
     build.options["packages_only"] = packages_only
+    build.options["target"] = target
     state.reset(build)
     reporter = TextualReporter(app, state)
 
@@ -222,7 +225,8 @@ def start_build(app, state, build, packages_only=False):
             app.call_from_thread(state.finished_failed, "%s: %s" % (type(e).__name__, e))
             return
         finally:
-            build.options["packages_only"] = previous
+            build.options["packages_only"] = previous_packages_only
+            build.options["target"] = previous_target
         app.call_from_thread(state.finished_ok)
 
     state.worker = app.run_worker(run, thread=True, exclusive=True, group="build")

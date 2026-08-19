@@ -2094,6 +2094,68 @@ class StartBuildNotifiesTheAI(avocado.Test):
         self.assertNotIn("rootfs", order)
         self.assertNotIn("image", order)
 
+    # Same shape as the 'packages_only' test above, but for 'target':
+    # proves the argument reaches the real 'target' option Image.tasks()
+    # branches on, and that the *displayed* step list (computed by
+    # state.reset(), before the worker thread runs) narrows to it too.
+    def test_target_narrows_to_the_named_task_and_its_needs(self):
+        steps = []
+        apps = []
+        def run(image, reporter=None):
+            steps.extend(t.name for t in image.tasks())
+        self.Image.build = run
+        sys.modules["litellm"] = fake_litellm(
+            tool_name="start-build",
+            tool_arguments='{"target": "deploy:busybox"}')
+
+        async def scenario():
+            app = self.SeineApp(files=[REBUILD_BUSYBOX])
+            apps.append(app)
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "build just busybox"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(
+                    pilot, lambda: isinstance(app.screen, self.ConfirmAction))
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+                await self._settle_to(pilot, lambda: len(steps) > 0)
+        _run(scenario)
+
+        self.assertIn("deploy:busybox", steps)
+        self.assertNotIn("rootfs", steps)
+        self.assertNotIn("image", steps)
+
+        order = apps[0].build_state.order
+        self.assertIn("deploy:busybox", order)
+        self.assertNotIn("rootfs", order)
+        self.assertNotIn("image", order)
+
+    # An unknown target has to be reported back through the tool result,
+    # not crash the worker or leave the app stuck -- ancestors() itself
+    # only validates when tasks() calls it with a known 'target' name.
+    def test_an_unknown_target_is_reported_not_a_crash(self):
+        sys.modules["litellm"] = fake_litellm(
+            tool_name="start-build",
+            tool_arguments='{"target": "no-such-task"}')
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "build just the frobnicator"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(
+                    pilot, lambda: isinstance(app.screen, self.ConfirmAction))
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+                self.assertFalse(app.build_state.running)
+        _run(scenario)
+
     # Manually navigating off the Build screen -- to Overview here,
     # anything not Build makes the same point -- before the build
     # finishes is a deliberate choice: the notified turn still runs

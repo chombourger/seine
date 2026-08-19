@@ -519,6 +519,62 @@ class EachPackageIsATaskOfItsOwn(avocado.Test):
             if name.startswith(("package:", "deploy:")):
                 self.assertIn(name, tasks["packages"].needs)
 
+class TargetNarrowsToWhatItNeeds(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.options["target"] = "rootfs"
+        build.loads(SPEC)
+        build.parse()
+        names = {t.name for t in build.image.tasks()}
+        self.assertEqual(names,
+                         {"bootstrap-host", "packages", "bootstrap-target",
+                          "rootfs"})
+        # Nothing 'rootfs' itself needs anything that comes after it --
+        # tarball/sbom/disk/image are what asking for the whole build
+        # would have reached, not one task and its own dependencies.
+        self.assertNotIn("tarball", names)
+
+class TargetOnAPackageExcludesItsOwnDeploy(avocado.Test):
+    def test(self):
+        # The point of '--target': a package alone never reaches its own
+        # 'deploy:', since deploying is what *needs* the package rather
+        # than what the package itself needs -- the same distinction
+        # EachPackageIsATaskOfItsOwn checks the graph's shape for.
+        build = BuildCmd()
+        build.options["target"] = "package:seine-test-unrelated"
+        build.loads(PACKAGES)
+        build.parse()
+        names = {t.name for t in build.image.tasks()}
+        self.assertIn("package:seine-test-unrelated", names)
+        self.assertNotIn("deploy:seine-test-unrelated", names)
+        self.assertNotIn("packages", names)
+        self.assertNotIn("rootfs", names)
+
+class TargetOnADeployReachesItsOwnPackage(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.options["target"] = "deploy:seine-test-unrelated"
+        build.loads(PACKAGES)
+        build.parse()
+        names = {t.name for t in build.image.tasks()}
+        self.assertEqual(
+            names & {"package:seine-test-unrelated",
+                     "deploy:seine-test-unrelated"},
+            {"package:seine-test-unrelated", "deploy:seine-test-unrelated"})
+        self.assertNotIn("packages", names)
+
+class UnknownTargetIsRejected(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.options["target"] = "no-such-task"
+        build.loads(SPEC)
+        build.parse()
+        try:
+            build.image.tasks()
+            self.fail("an unknown '--target' was silently accepted!")
+        except ValueError as e:
+            self.assertIn("no-such-task", str(e))
+
 class ABuildWithoutPackagesStillHasTheBarrier(avocado.Test):
     def test(self):
         build = BuildCmd()

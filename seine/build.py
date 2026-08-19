@@ -311,6 +311,7 @@ class BuildCmd(Cmd):
         "sbom",
         "sign-key=",
         "spec-only",
+        "target=",
         "tasks-only",
         "verbose"
     ]
@@ -327,6 +328,7 @@ class BuildCmd(Cmd):
                          "rebuild": False, "require_hashes": False,
                          "rootfs_only": False,
                          "sbom": False, "sign_key": None, "spec": True,
+                         "target": None,
                          "tasks": True, "verbose": False }
         self.partitionHandler = PartitionHandler()
         self.spec = None
@@ -1208,6 +1210,13 @@ class BuildCmd(Cmd):
                 self.options["packages_only"] = True
             elif o in ("--rootfs-only"):
                 self.options["rootfs_only"] = True
+            elif o in ("--target"):
+                # Checked against the graph itself once it exists
+                # (Image.tasks(), via tasks.closure()) rather than here --
+                # a task's name depends on what the specification asks
+                # for (which package, which architecture), which is not
+                # known yet from the command line alone.
+                self.options["target"] = a
             elif o in ("--dry-run"):
                 self.options["dry_run"] = True
             elif o in ("-D", "--dump"):
@@ -1383,6 +1392,11 @@ Flags:
                         debsbom
   --spec-only           with '--dry-run', print the specification and not the
                         steps
+  --target TASK         build just this one task and whatever it needs (as
+                        'plan' names them, e.g. 'package:linux') and stop --
+                        note this is what it needs, not what needs it, so a
+                        package alone does not reach the repository, which
+                        is 'deploy:<name>' 's job
   --tasks-only          with '--dry-run', print the steps and not the
                         specification
   -v, --verbose         produce verbose output while building the image

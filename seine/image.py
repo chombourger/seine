@@ -296,9 +296,25 @@ class Image:
     # specification rebuilt rather than the distribution's.
     def tasks(self):
         shared = self.shared_tasks()
-        if self.options.get("packages_only"):
-            return shared
-        return shared + self.own_tasks()
+        all_tasks = shared if self.options.get("packages_only") \
+            else shared + self.own_tasks()
+        # '--target' narrows the graph further still, to one task and
+        # what it needs -- 'packages_only'/'rootfs_only' already say
+        # where the *usual* stopping points are; this names any task at
+        # all in whatever this list already trims to. Checked here
+        # rather than left to 'ancestors()', which silently drops a name
+        # it does not recognise -- built for merging a name list that
+        # legitimately does not cover every task, not for catching a
+        # typo in the one name a person just gave on the command line.
+        target = self.options.get("target")
+        if target is not None:
+            names = {t.name for t in all_tasks}
+            if target not in names:
+                raise ValueError(
+                    "no task '%s' -- available: %s"
+                    % (target, ", ".join(sorted(names))))
+            all_tasks = tasks.ancestors(all_tasks, [target])
+        return all_tasks
 
     # Every container image a build of this specification would use, named
     # without building any of them.

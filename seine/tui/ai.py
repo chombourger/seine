@@ -748,9 +748,10 @@ def _tool_extend(app, arguments):
 # gets the unprompted notify_build_finished() turn, never one begun by
 # '/build' or the Build screen. Set right after start_build() (whose
 # reset() clears it), so a race with an early finished_ok() can't miss it.
-def _start_ai_build(app, build, packages_only):
+def _start_ai_build(app, build, packages_only, target):
     from seine.tui.build import start_build
-    start_build(app, app.build_state, build, packages_only=packages_only)
+    start_build(app, app.build_state, build,
+                packages_only=packages_only, target=target)
     app.build_state.notify_ai = True
 
 # Both actions below run only after ConfirmAction has already approved
@@ -760,13 +761,19 @@ def _tool_start_build(app, arguments):
     if build is None:
         return NO_SINGLE_GROUP
     packages_only = bool(arguments.get("packages_only", False))
+    target = arguments.get("target")
     try:
         # start_build() touches Indicators, so it crosses back through
-        # call_from_thread, same boundary TextualReporter crosses.
-        app.call_from_thread(_start_ai_build, app, build, packages_only)
-    except RuntimeError as e:
+        # call_from_thread, same boundary TextualReporter crosses. An
+        # unknown 'target' surfaces here too, as a ValueError -- raised
+        # by build.image.tasks() inside start_build()'s own reset(),
+        # which runs before the worker thread does.
+        app.call_from_thread(_start_ai_build, app, build, packages_only, target)
+    except (RuntimeError, ValueError) as e:
         return "could not start: %s" % e
     app.call_from_thread(app.show, "build")
+    if target:
+        return "build started (target: %s)" % target
     return "build started (packages only)" if packages_only else "build started"
 
 def _tool_cancel_build(app, arguments):
@@ -939,13 +946,23 @@ TOOLS = {t.name: t for t in [
     Tool("reset-conversation", "Forget everything discussed so far in "
         "this conversation.", _no_args(), False, _tool_reset_conversation),
     Tool("start-build", "Start a real build of the active specification "
-        "-- the same thing '/build' does. 'packages_only' (default false) "
-        "stops after the 'packages:' section builds, without assembling a "
-        "root file-system or writing an image -- the cheap way to prove a "
-        "package (a kernel, say) actually compiles before paying for a "
-        "full image build.",
+        "-- the same thing '/build' does. 'target' (a task name, e.g. "
+        "'deploy:linux') restricts the build to that one task and "
+        "whatever it needs -- the cheap way to prove a single package "
+        "(a kernel, say) actually compiles before paying for a full "
+        "image build, without also rebuilding every other package. "
+        "'packages_only' (default false) stops after the whole "
+        "'packages:' section builds instead, without assembling a root "
+        "file-system or writing an image -- use it only when several "
+        "rebuilt packages need proving at once, or the exact task name "
+        "isn't known yet. Give one or the other, not both.",
         {"type": "object",
-         "properties": {"packages_only": {"type": "boolean",
+         "properties": {"target": {"type": "string",
+                                   "description": "a task name (e.g. "
+                                                  "'deploy:linux') to "
+                                                  "build, plus whatever "
+                                                  "it needs"},
+                        "packages_only": {"type": "boolean",
                                           "description": "stop after the "
                                                          "'packages:' section "
                                                          "builds, before rootfs/"
