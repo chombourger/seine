@@ -474,8 +474,8 @@ class Package:
     def patch_files(self):
         return self._files(self.patches)
 
-    def kernel_config_files(self):
-        return self._files(self.kernel_config)
+    def kernel_fragment_files(self):
+        return self._files(self.kernel_fragments)
 
     def kernel_derived_flavour_files(self):
         files = []
@@ -489,7 +489,7 @@ class Package:
     # caller (the digest below, or anything else) never has to repeat
     # the concatenation, and a future fourth category is one line here.
     def referenced_files(self):
-        return (self.patch_files() + self.kernel_config_files()
+        return (self.patch_files() + self.kernel_fragment_files()
                + self.kernel_derived_flavour_files())
 
     def _files(self, names):
@@ -1312,10 +1312,18 @@ class Builder:
                      # to derive from a different base is a rebuild even
                      # when every fragment's content stays the same; the
                      # fragments' own content is folded in below, with
-                     # the ones 'kernel_config' names.
+                     # the ones 'kernel_fragments' names.
                      ",".join(sorted("%s/%s" % (base, name)
                              for base, derived in (package.kernel_derived_flavours or {}).items()
                              for name in derived)),
+                     # 'kernel_configs' is written straight into the
+                     # fragment, not read from a file 'referenced_files()'
+                     # would catch, so it has to be folded in by hand.
+                     # Not sorted: '_write_configs' writes groups in this
+                     # order, and two touching the same symbol settle it
+                     # by which is written last.
+                     "\n".join("%s:%s" % (name, "\n".join(lines))
+                              for name, lines in package.kernel_configs.items()),
                      str(package.kernel_abi_suffix),
                      str(package.kernel_upstream),
                      str(package.kernel_upstream_sha256),

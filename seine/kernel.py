@@ -33,9 +33,22 @@ from seine.utils import WORKDIR
 # debian/, so a fragment appended to the right one is both easier to write
 # and less likely to conflict with the next point release than a patch
 # would be.
-SETTINGS = ["abi-suffix", "build-files", "config", "derived-flavours",
-            "drop-patches", "featureset", "flavour", "keep-patches",
-            "upstream", "upstream-sha256"]
+SETTINGS = ["abi-suffix", "build-files", "configs", "derived-flavours",
+            "drop-patches", "featureset", "flavour", "fragments",
+            "keep-patches", "upstream", "upstream-sha256"]
+
+# A literal 'extends: kernel: configs:' entry, checked against here rather
+# than left for oldconfig to catch: a typo in a group meant for hardware
+# nobody has tested yet would otherwise only surface as a symbol that
+# silently never got set. Two forms are accepted: an assignment, and
+# kconfig's own way of writing a disabled one -- the second so that a
+# fragment excerpt (like the one 'config:' itself is documented with) can
+# be pasted into a group unchanged rather than rewritten to '=n' first.
+# 'CONFIG_X=n' is accepted too, translated to the comment form when the
+# line is written into the fragment ('_config_line' below) -- kconfig
+# itself does not understand '=n' as an assignment at all.
+CONFIG_LINE = re.compile(r"^CONFIG_[A-Za-z0-9_]+=.+$")
+CONFIG_LINE_DISABLED = re.compile(r"^# CONFIG_[A-Za-z0-9_]+ is not set$")
 
 # What the graft makes of a tree, beyond the packaging it copies across.
 # The rules seine writes are hashed by content; what seine *does* to a tree
@@ -212,6 +225,68 @@ class Upstream:
     def __str__(self):
         return self.uri
 
+# 'extends: kernel: configs:' entries -- named groups of literal
+# 'CONFIG_OPTION=value' lines, for the common case of wanting a handful of
+# symbols set without writing a fragment file for them. Kept as the
+# assignments they were written as rather than translated here: that is a
+# serialization detail of the fragment they end up in ('_config_line'),
+# not something the specification's own words should already have lost.
+def _parse_configs(package, settings):
+    if "configs" not in settings:
+        return {}
+    configs = settings["configs"]
+    if type(configs) != type({}):
+        raise package._error(
+            "'extends: kernel: configs' shall be a dictionary of group "
+            "names to a list of 'CONFIG_OPTION=value' lines")
+    parsed = {}
+    for name, lines in configs.items():
+        if type(name) != type("") or len(name) == 0:
+            raise package._error(
+                "'extends: kernel: configs' has a group name that is not "
+                "a non-empty string")
+        if (type(lines) != type([]) or len(lines) == 0
+                or any(type(line) != type("") for line in lines)):
+            raise package._error(
+                "'extends: kernel: configs: %s' shall be a non-empty "
+                "list of 'CONFIG_OPTION=value' lines" % name)
+        for line in lines:
+            if (CONFIG_LINE.match(line) is None
+                    and CONFIG_LINE_DISABLED.match(line) is None):
+                raise package._error(
+                    "'extends: kernel: configs: %s' has '%s', which is "
+                    "neither 'CONFIG_OPTION=value' nor '# CONFIG_OPTION "
+                    "is not set'" % (name, line))
+        parsed[name] = lines
+    return parsed
+
+# The fragment line one 'CONFIG_OPTION=value' entry becomes. 'n' is the one
+# value kconfig itself does not accept as an assignment -- a disabled
+# symbol is said by commenting it out, not by '=n' -- so that value alone
+# is rewritten; anything else is passed through as written.
+def _config_line(assignment):
+    if CONFIG_LINE_DISABLED.match(assignment) is not None:
+        return assignment
+    symbol, value = assignment.split("=", 1)
+    if value == "n":
+        return "# %s is not set" % symbol
+    return assignment
+
+# Appends every 'configs:' group to an architecture's own config file, in
+# the order the specification wrote them -- two groups may touch the same
+# symbol, and the later one is meant to win, exactly as it would for two
+# fragment files. A function of its own, the way '_add_derived_flavours'
+# is, so it can be pointed at a fixture directly rather than only through
+# the whole of 'extend'.
+def _write_configs(package, config):
+    if len(package.kernel_configs) == 0:
+        return
+    with open(config, "a") as f:
+        for name, lines in package.kernel_configs.items():
+            f.write("\n# %s, added by seine\n" % name)
+            for line in lines:
+                f.write("%s\n" % _config_line(line))
+
 # Reads 'extends: kernel:' onto the package it was written on. The package
 # is handed over whole rather than a dictionary handed back: what a
 # setting is called in the yaml and what it is called on the package are
@@ -220,7 +295,8 @@ class Upstream:
 def parse(package, extends):
     settings = extends.get("kernel", {})
     package.kernel = "kernel" in extends
-    package.kernel_config = package._parse_list(settings, "config")
+    package.kernel_fragments = package._parse_list(settings, "fragments")
+    package.kernel_configs = _parse_configs(package, settings)
     package.kernel_flavour = settings.get("flavour")
     package.kernel_featureset = settings.get("featureset", DEFAULT_FEATURESET)
     package.kernel_upstream = None
@@ -717,7 +793,7 @@ def extend(builder, package, sourcedir, architectures):
     if package.kernel == False:
         return
 
-    fragments = package.kernel_config_files()
+    fragments = package.kernel_fragment_files()
     for fragment in fragments:
         if os.path.isfile(fragment) == False:
             raise ValueError("package '%s': no such kernel configuration "
@@ -739,6 +815,8 @@ def extend(builder, package, sourcedir, architectures):
                             % os.path.basename(fragment))
                     with open(fragment, "r") as contents:
                         f.write(contents.read())
+
+        _write_configs(package, config)
 
         # 'derived-flavours' first: a package carrying both is far more
         # likely to have inherited a plain 'flavour' from an

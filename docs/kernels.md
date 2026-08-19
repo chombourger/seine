@@ -17,7 +17,7 @@ packages:
     - source: apt://linux
       extends:
           kernel:
-              config:
+              fragments:
                   - configs/slim-common.fragment
                   - configs/slim-amd64.fragment
       profiles:
@@ -34,7 +34,7 @@ packages:
               upstream-sha256: 9a1c…
 ```
 
-`config` lists kconfig fragments, given relative to the YAML file listing
+`fragments` lists kconfig fragments, given relative to the YAML file listing
 them, in the ordinary kernel syntax:
 
 ```
@@ -49,6 +49,37 @@ target architecture, where they have the last word, and the kernel's
 underneath it. This needs no patch: a kernel's configuration lives in
 `debian/`, which the source format lets seine edit directly, so a fragment
 does not go stale the way a patch against a configuration file would.
+
+`configs` is the same idea, without a fragment file: a dictionary of group
+names to a list of `CONFIG_OPTION=value` lines, written directly in the
+specification, for the common case of wanting a handful of symbols set
+without a `configs/*.fragment` file to hold them:
+
+```
+          kernel:
+              configs:
+                  rtc-and-lpss:
+                      - CONFIG_RTC_DRV_CMOS=m
+                      - CONFIG_RTC_DRV_RX6110=m
+                      - CONFIG_I2C_DESIGNWARE_PCI=m
+                      - CONFIG_MFD_INTEL_LPSS_PCI=m
+                      - CONFIG_MFD_INTEL_LPSS=m
+                      - CONFIG_MFD_INTEL_LPSS_ACPI=m
+```
+
+Each group is appended to the same configuration stack as `fragments`'
+own files, after them, under a `# <group name>, added by seine` header of
+its own -- the group's name is what names the fragment it becomes. Two
+groups touching the same symbol settle it the way two fragment files
+would: the one named last wins.
+
+A line is either an assignment or kconfig's own way of writing a disabled
+symbol -- `CONFIG_OPTION=value` or `# CONFIG_OPTION is not set` -- checked
+at parse time rather than left for `oldconfig` to catch. `=n` is accepted
+as a value like any other and rewritten to the comment form when the
+fragment is written, since kconfig itself does not understand `=n` as an
+assignment; a fragment excerpt already written the other way can be
+pasted into a group unchanged.
 
 `flavour` cuts the build down to one kernel. Debian builds every kernel an
 architecture has -- on amd64 that is a cloud flavour and a realtime kernel

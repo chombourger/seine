@@ -472,7 +472,7 @@ class FilesAreResolvedAgainstTheFileThatListedThem(avocado.Test):
                     "    - source: apt://linux\n"
                     "      extends:\n"
                     "          kernel:\n"
-                    "              config:\n"
+                    "              fragments:\n"
                     "                  - configs/slim.fragment\n")
         build.load(os.path.join(self.workdir, "boards/rpi/board.yml"))
         build.load(os.path.join(self.workdir, "kernels/6.18/kernel.yml"))
@@ -481,7 +481,7 @@ class FilesAreResolvedAgainstTheFileThatListedThem(avocado.Test):
         self.assertEqual(package["patches"],
                          [os.path.join(self.workdir,
                                        "boards/rpi/patches/0001-board.patch")])
-        self.assertEqual(package["extends"]["kernel"]["config"],
+        self.assertEqual(package["extends"]["kernel"]["fragments"],
                          [os.path.join(self.workdir,
                                        "kernels/6.18/configs/slim.fragment")])
 
@@ -712,6 +712,76 @@ class DerivedFlavoursOfTheSameBaseAreMerged(avocado.Test):
         """)
         derived = build.spec["packages"][0]["extends"]["kernel"]["derived-flavours"]
         self.assertEqual(derived, {"amd64": {"slim-amd64": [], "cloud-pc": []}})
+
+# Two files rebuilding the same kernel (matched by 'source', neither
+# names it) each wanting a config group of their own -- the gap a real
+# session hit (build/chats/20260820T080504625424.json): the second
+# file's whole 'configs:' was silently dropped rather than merged.
+CONFIGS = """
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  debug-page-ref:
+                                      - CONFIG_DEBUG_PAGE_REF=y
+"""
+
+class KernelConfigGroupsAreAddedToRatherThanSettled(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(CONFIGS)
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  magic-sysrq:
+                                      - CONFIG_MAGIC_SYSRQ=n
+        """)
+        configs = build.spec["packages"][0]["extends"]["kernel"]["configs"]
+        self.assertEqual(configs,
+                         {"debug-page-ref": ["CONFIG_DEBUG_PAGE_REF=y"],
+                          "magic-sysrq": ["CONFIG_MAGIC_SYSRQ=n"]})
+
+class KernelConfigsOfTheSameGroupAreMerged(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(CONFIGS)
+        # Another file adding to the same group -- both lines are
+        # wanted, so the second file's group adds to rather than
+        # replacing what the first already said about it.
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  debug-page-ref:
+                                      - CONFIG_DEBUG_PAGE_REF_TRACKING=y
+        """)
+        configs = build.spec["packages"][0]["extends"]["kernel"]["configs"]
+        self.assertEqual(configs,
+                         {"debug-page-ref": ["CONFIG_DEBUG_PAGE_REF=y",
+                                             "CONFIG_DEBUG_PAGE_REF_TRACKING=y"]})
+
+class KernelConfigLinesAreNotAddedTwice(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads(CONFIGS)
+        build.loads("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  debug-page-ref:
+                                      - CONFIG_DEBUG_PAGE_REF=y
+        """)
+        configs = build.spec["packages"][0]["extends"]["kernel"]["configs"]
+        self.assertEqual(configs,
+                         {"debug-page-ref": ["CONFIG_DEBUG_PAGE_REF=y"]})
 
 class DefaultsAddTheirKernelsToo(avocado.Test):
     def test(self):

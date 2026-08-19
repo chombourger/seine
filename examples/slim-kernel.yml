@@ -24,7 +24,7 @@ packages:
     - source: apt://linux
       extends:
           kernel:
-              config:
+              fragments:
                   - configs/slim-common.fragment
                   - configs/slim-[[ distribution.architecture ]].fragment
       profiles:

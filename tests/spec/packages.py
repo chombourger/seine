@@ -237,7 +237,7 @@ class PackageWithoutExtensions(avocado.Test):
         """)
         package = build.image.packages[0]
         self.assertEqual(package.kernel, False)
-        self.assertEqual(package.kernel_config, [])
+        self.assertEqual(package.kernel_fragments, [])
         self.assertEqual(package.kernel_flavour, None)
 
 class UnknownExtension(avocado.Test):

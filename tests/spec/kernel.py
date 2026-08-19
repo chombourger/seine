@@ -4,6 +4,7 @@
 
 import atexit
 import avocado
+import collections
 import os
 import shutil
 import sys
@@ -61,14 +62,14 @@ class KernelExtension(avocado.Test):
                     - source: apt://linux
                       extends:
                           kernel:
-                              config:
+                              fragments:
                                   - configs/embedded.fragment
                               flavour: arm64
         """)
         package = build.image.packages[0]
         self.assertEqual(package.kernel, True)
         self.assertEqual(package.kernel_flavour, "arm64")
-        self.assertEqual(package.kernel_config, ["configs/embedded.fragment"])
+        self.assertEqual(package.kernel_fragments, ["configs/embedded.fragment"])
         # A flavour means nothing without a featureset, and nearly every
         # kernel wanted is in 'none'.
         self.assertEqual(package.kernel_featureset, "none")
@@ -93,12 +94,140 @@ class UnknownKernelSetting(avocado.Test):
                     - source: apt://linux
                       extends:
                           kernel:
-                              configs:
+                              bogus:
                                   - typo.fragment
             """)
             self.fail("parsing succeeded for an unknown 'kernel' setting!")
         except ValueError:
             pass
+
+class KernelConfigsParsed(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  rtc-and-lpss:
+                                      - CONFIG_RTC_DRV_CMOS=m
+                                      - CONFIG_MFD_INTEL_LPSS=m
+        """)
+        self.assertEqual(build.image.packages[0].kernel_configs,
+                         {"rtc-and-lpss": ["CONFIG_RTC_DRV_CMOS=m",
+                                           "CONFIG_MFD_INTEL_LPSS=m"]})
+
+# Kernels that set no 'configs:' at all -- most of them -- get an empty
+# dictionary rather than 'None', so 'extend' can check its length without
+# a special case for "never set".
+class KernelConfigsDefaultToEmpty(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+        """)
+        self.assertEqual(build.image.packages[0].kernel_configs, {})
+
+class KernelConfigsNotADict(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  - CONFIG_RTC_DRV_CMOS=m
+            """)
+            self.fail("parsing succeeded for a non-dict 'configs'!")
+        except ValueError:
+            pass
+
+class KernelConfigsGroupNameNotAString(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  123:
+                                      - CONFIG_RTC_DRV_CMOS=m
+            """)
+            self.fail("parsing succeeded for a non-string group name!")
+        except ValueError:
+            pass
+
+class KernelConfigsGroupNotAList(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  rtc: CONFIG_RTC_DRV_CMOS=m
+            """)
+            self.fail("parsing succeeded for a group that is not a list!")
+        except ValueError:
+            pass
+
+class KernelConfigsGroupRejectsEmpty(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  rtc: []
+            """)
+            self.fail("parsing succeeded for an empty group!")
+        except ValueError:
+            pass
+
+class KernelConfigsRejectsALineThatIsNotAnAssignment(avocado.Test):
+    def test(self):
+        # No 'CONFIG_' prefix, no '=', and a comment that does not match
+        # kconfig's own "is not set" wording -- none of them is a line
+        # 'configs:' understands.
+        for line in ["RTC_DRV_CMOS=m", "CONFIG_RTC_DRV_CMOS",
+                     "# CONFIG_RTC_DRV_CMOS disabled"]:
+            try:
+                parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  rtc:
+                                      - %s
+                """ % line)
+                self.fail("'%s' was accepted as a 'configs' line!" % line)
+            except ValueError:
+                pass
+
+class KernelConfigsAcceptsKconfigsOwnDisabledSyntax(avocado.Test):
+    def test(self):
+        # Lets a fragment excerpt -- like the one 'config:' is documented
+        # with -- be pasted into a group unchanged.
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              configs:
+                                  no-media:
+                                      - '# CONFIG_MEDIA_SUPPORT is not set'
+        """)
+        self.assertEqual(build.image.packages[0].kernel_configs,
+                         {"no-media": ["# CONFIG_MEDIA_SUPPORT is not set"]})
 
 class KernelFlavourNotAString(avocado.Test):
     def test(self):
@@ -1301,6 +1430,54 @@ class DerivedFlavoursCountTheBaseInTheDigest(UpstreamKernel):
         self.assertNotEqual(stamps[0], stamps[1],
                             "changing what 'pc' derives from did not ask for a rebuild")
 
+class KernelConfigsCountInTheDigest(UpstreamKernel):
+    def test(self):
+        builder = self.builder()
+        plain = self.kernel("                              flavour: amd64")
+        extended = self.kernel(
+            "                              flavour: amd64\n"
+            "                              configs:\n"
+            "                                  magic-sysrq:\n"
+            "                                      - CONFIG_MAGIC_SYSRQ=n")
+        self.assertNotEqual(builder.stamp(plain), builder.stamp(extended),
+                            "adding a 'configs' group did not ask for a rebuild")
+
+class KernelConfigsGroupContentCountsInTheDigest(UpstreamKernel):
+    def test(self):
+        # Same group name, different line -- the group changed what it
+        # asks for, not what it is called, and the digest has to tell.
+        builder = self.builder()
+        stamps = []
+        for line in ["CONFIG_MAGIC_SYSRQ=n", "CONFIG_MAGIC_SYSRQ=y"]:
+            package = self.kernel(
+                "                              flavour: amd64\n"
+                "                              configs:\n"
+                "                                  magic-sysrq:\n"
+                "                                      - %s" % line)
+            stamps.append(builder.stamp(package))
+        self.assertNotEqual(stamps[0], stamps[1],
+                            "changing a 'configs' line did not ask for a rebuild")
+
+class KernelConfigsGroupOrderCountsInTheDigest(UpstreamKernel):
+    def test(self):
+        # Unlike a patch list, this is not a set: two groups touching
+        # the same symbol settle it by which is written last.
+        builder = self.builder()
+        stamps = []
+        for entries in ["first:\n                                      - CONFIG_X=y\n"
+                        "                                  second:\n"
+                        "                                      - CONFIG_X=n",
+                        "second:\n                                      - CONFIG_X=n\n"
+                        "                                  first:\n"
+                        "                                      - CONFIG_X=y"]:
+            package = self.kernel(
+                "                              flavour: amd64\n"
+                "                              configs:\n"
+                "                                  %s" % entries)
+            stamps.append(builder.stamp(package))
+        self.assertNotEqual(stamps[0], stamps[1],
+                            "reordering 'configs' groups did not ask for a rebuild")
+
 class DerivedFlavoursDefaultTheirOwnRevision(avocado.Test):
     def revision(self, base, names):
         entries = "\n".join("                                      %s: []" % n
@@ -1372,3 +1549,68 @@ class DerivedFlavoursRevisionRejectsAHyphen(avocado.Test):
                                       rpi5: []
         """)
         self.assertEqual(build.image.packages[0].revision, "edge1")
+
+# '_write_configs' is a function of its own, the same reason
+# '_add_derived_flavours' is: pointed at a fixture directly rather than
+# only reachable through the whole of 'extend', which would also need a
+# builder image to regenerate debian/control.
+class KernelConfigsWrittenAsFragment(avocado.Test):
+    def config(self, content=""):
+        path = os.path.join(self.workdir, "config")
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def test_a_group_is_appended_with_its_name_as_header(self):
+        package = types.SimpleNamespace(kernel_configs={
+            "rtc-and-lpss": ["CONFIG_RTC_DRV_CMOS=m",
+                             "CONFIG_MFD_INTEL_LPSS=m"]})
+        path = self.config("CONFIG_ALREADY_THERE=y\n")
+        seine.kernel._write_configs(package, path)
+        with open(path, "r") as f:
+            written = f.read()
+        self.assertEqual(written,
+                         "CONFIG_ALREADY_THERE=y\n"
+                         "\n# rtc-and-lpss, added by seine\n"
+                         "CONFIG_RTC_DRV_CMOS=m\n"
+                         "CONFIG_MFD_INTEL_LPSS=m\n")
+
+    def test_an_assignment_to_n_becomes_a_kconfig_comment(self):
+        package = types.SimpleNamespace(
+            kernel_configs={"rtc": ["CONFIG_RTC_DRV_CMOS=m",
+                                    "CONFIG_RTC_DRV_RX6110=n"]})
+        path = self.config()
+        seine.kernel._write_configs(package, path)
+        with open(path, "r") as f:
+            written = f.read()
+        self.assertIn("CONFIG_RTC_DRV_CMOS=m\n", written)
+        self.assertIn("# CONFIG_RTC_DRV_RX6110 is not set\n", written)
+        self.assertNotIn("CONFIG_RTC_DRV_RX6110=n", written)
+
+    def test_kconfigs_own_disabled_syntax_passes_through_unchanged(self):
+        package = types.SimpleNamespace(
+            kernel_configs={"no-media": ["# CONFIG_MEDIA_SUPPORT is not set"]})
+        path = self.config()
+        seine.kernel._write_configs(package, path)
+        with open(path, "r") as f:
+            self.assertIn("# CONFIG_MEDIA_SUPPORT is not set\n", f.read())
+
+    def test_groups_are_written_in_the_order_they_were_named(self):
+        # A later group is meant to win over an earlier one touching the
+        # same symbol, which only holds if the file carries them in that
+        # order -- kconfig itself has no other way to tell which of two
+        # settings for one symbol is meant to stick.
+        package = types.SimpleNamespace(kernel_configs=collections.OrderedDict(
+            [("first", ["CONFIG_X=y"]), ("second", ["CONFIG_X=n"])]))
+        path = self.config()
+        seine.kernel._write_configs(package, path)
+        with open(path, "r") as f:
+            written = f.read()
+        self.assertLess(written.index("first"), written.index("second"))
+
+    def test_no_groups_leaves_the_file_untouched(self):
+        package = types.SimpleNamespace(kernel_configs={})
+        path = self.config("CONFIG_ALREADY_THERE=y\n")
+        seine.kernel._write_configs(package, path)
+        with open(path, "r") as f:
+            self.assertEqual(f.read(), "CONFIG_ALREADY_THERE=y\n")

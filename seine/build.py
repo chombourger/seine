@@ -573,7 +573,7 @@ class BuildCmd(Cmd):
 
     # The settings of a package that name files, as the path to reach them
     # from the package's own dictionary.
-    FILE_LISTS = [["patches"], ["extends", "kernel", "config"]]
+    FILE_LISTS = [["patches"], ["extends", "kernel", "fragments"]]
 
     def _resolve_files(self, package, dirname):
         for path in BuildCmd.FILE_LISTS:
@@ -724,7 +724,8 @@ class BuildCmd(Cmd):
                         for name, value in (newpackage[setting][kind] or {}).items():
                             if self._appends(kind, name):
                                 value = self._added(
-                                    package[setting][kind].get(name), value)
+                                    package[setting][kind].get(name), value,
+                                    kind, name)
                             package[setting][kind][name] = value
                     for name in newpackage[setting][kind] or []:
                         self._take_origin(package, newpackage,
@@ -816,7 +817,8 @@ class BuildCmd(Cmd):
             for setting in newextends[kind]:
                 if self._appends(kind, setting):
                     extends[kind][setting] = self._added(
-                        extends[kind].get(setting), newextends[kind][setting])
+                        extends[kind].get(setting), newextends[kind][setting],
+                        kind, setting)
                     self._take_origin(package, newpackage,
                                       "extends.%s.%s" % (kind, setting))
                 elif setting not in extends[kind]:
@@ -835,19 +837,28 @@ class BuildCmd(Cmd):
     # 'derived-flavours' is the other: a board file builds on a base an
     # architecture file already derives, and "what was said first
     # stands" would drop the second file's base entirely.
+    #
+    # 'configs' is the same idea, one level flatter: a file naming a
+    # group another file also named on the same kernel entry is two
+    # requests for that kernel, not one description repeated -- the gap
+    # a real session hit (build/chats/20260820T080504625424.json), where
+    # the second file's whole 'configs:' was dropped rather than merged.
     def _appends(self, kind, setting):
         from seine.module import MODULE_KERNELS
         if kind == "module" and MODULE_KERNELS.match(setting) is not None:
             return True
-        return kind == "kernel" and setting == "derived-flavours"
+        return kind == "kernel" and setting in ("derived-flavours", "configs")
 
     # Two lists, in the order they were written, without repeating what
     # both of them named -- the same kernel added by an architecture file
-    # and by the file asking for the module is one kernel -- or two
-    # 'derived-flavours' dictionaries, merged one base at a time so a
-    # second file naming a flavour under a base the first already used
-    # adds to it rather than replacing it.
-    def _added(self, listed, added):
+    # and by the file asking for the module is one kernel; 'configs'
+    # merged one group at a time, the same reasoning one level flatter;
+    # or 'derived-flavours', merged one base at a time so a second file
+    # naming a flavour under a base the first already used adds to it
+    # rather than replacing it.
+    def _added(self, listed, added, kind=None, setting=None):
+        if kind == "kernel" and setting == "configs":
+            return self._added_configs(listed or {}, added or {})
         if type(listed) == type({}) or type(added) == type({}):
             if type(listed) != type({}) or type(added) != type({}):
                 return added if type(added) == type({}) else listed
@@ -858,6 +869,18 @@ class BuildCmd(Cmd):
         if type(listed) != type([]) or type(added) != type([]):
             return added if type(added) == type([]) else listed
         return listed + [entry for entry in added if entry not in listed]
+
+    # 'configs' groups are name to a list of lines, not name to a
+    # dictionary like 'derived-flavours' -- a group named by both files
+    # merges its own two line lists the way a plain list would, rather
+    # than the second replacing the first outright the way a repeated
+    # 'derived-flavours' name does.
+    def _added_configs(self, listed, added):
+        merged = {group: list(lines) for group, lines in listed.items()}
+        for group, lines in added.items():
+            current = merged.setdefault(group, [])
+            merged[group] = current + [line for line in lines if line not in current]
+        return merged
 
     # What decides whether two entries are the same package: the name it
     # was given, or failing that the source package its 'source' URI

@@ -408,7 +408,7 @@ class MultiGroupSharesPackagesWithinAnArchCohort(avocado.Test):
                 "      revision: %(label)s1\n"
                 "      extends:\n"
                 "          kernel:\n"
-                "              config:\n"
+                "              fragments:\n"
                 "                  - %(common)s\n"
                 "                  - %(arch_fragment)s\n"
                 "      profiles:\n"

@@ -943,7 +943,7 @@ class AllDerivedFlavoursAreBuilt(avocado.Test):
                 "    - source: apt://linux\n"
                 "      extends:\n"
                 "          kernel:\n"
-                "              config:\n"
+                "              fragments:\n"
                 "                  - %(common)s\n"
                 "                  - %(arch_fragment)s\n"
                 "              derived-flavours:\n"
