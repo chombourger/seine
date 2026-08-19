@@ -2046,6 +2046,54 @@ class StartBuildNotifiesTheAI(avocado.Test):
                 self.assertIsInstance(app.screen, self.ChatScreen)
         _run(scenario)
 
+    # 'image.options' is the same dictionary object 'build.options' is
+    # (Image is constructed with it, never a copy -- seine/build.py's own
+    # 'parse()') -- so a fake that reads 'image.tasks()' rather than
+    # replacing it proves 'packages_only' actually reached the real
+    # option Image.tasks() itself branches on, not just that the tool
+    # accepted the argument.
+    def test_packages_only_stops_the_build_after_the_packages_section(self):
+        steps = []
+        apps = []
+        def run(image, reporter=None):
+            steps.extend(t.name for t in image.tasks())
+        self.Image.build = run
+        sys.modules["litellm"] = fake_litellm(
+            tool_name="start-build", tool_arguments='{"packages_only": true}')
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            apps.append(app)
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "build just the packages"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(
+                    pilot, lambda: isinstance(app.screen, self.ConfirmAction))
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+                await self._settle_to(pilot, lambda: len(steps) > 0)
+        _run(scenario)
+
+        self.assertIn("packages", steps)
+        # None of what only 'own_tasks()' adds -- proof this stopped at
+        # the shared step list rather than merely reordering the full one.
+        self.assertNotIn("rootfs", steps)
+        self.assertNotIn("image", steps)
+
+        # The *displayed* step list has to agree -- 'packages_only' was
+        # set on build.options only inside the worker thread's run(),
+        # after state.reset() had already computed 'order' from the
+        # full, unrestricted task list; a person (or 'build-status')
+        # would have seen 'rootfs'/'tarball'/... stuck pending forever,
+        # steps this build was never going to reach.
+        order = apps[0].build_state.order
+        self.assertIn("packages", order)
+        self.assertNotIn("rootfs", order)
+        self.assertNotIn("image", order)
+
     # Manually navigating off the Build screen -- to Overview here,
     # anything not Build makes the same point -- before the build
     # finishes is a deliberate choice: the notified turn still runs

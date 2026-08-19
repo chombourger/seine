@@ -193,9 +193,22 @@ class BuildState:
 
 # Starts a build in an App-level thread worker, wired to 'state' through
 # a TextualReporter. Raises if one is already running.
-def start_build(app, state, build):
+#
+# 'packages_only' is a one-shot override of 'build.options["packages_only"]'
+# -- set for this run alone and put back afterwards, so a plain '/build'
+# or another AI-started build right after this one never inherits it by
+# accident.
+def start_build(app, state, build, packages_only=False):
     if state.running:
         raise RuntimeError("a build is already running")
+    # Set before reset(), not inside run(): reset() calls
+    # build.image.tasks() synchronously, right here, to compute the step
+    # list this state (and 'build-status') shows -- set only once the
+    # worker thread starts, a packages-only run displayed the full step
+    # list anyway, own_tasks() included, none of which was ever going to
+    # run or finish.
+    previous = build.options.get("packages_only")
+    build.options["packages_only"] = packages_only
     state.reset(build)
     reporter = TextualReporter(app, state)
 
@@ -208,6 +221,8 @@ def start_build(app, state, build):
         except Exception as e:
             app.call_from_thread(state.finished_failed, "%s: %s" % (type(e).__name__, e))
             return
+        finally:
+            build.options["packages_only"] = previous
         app.call_from_thread(state.finished_ok)
 
     state.worker = app.run_worker(run, thread=True, exclusive=True, group="build")

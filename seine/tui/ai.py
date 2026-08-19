@@ -748,9 +748,9 @@ def _tool_extend(app, arguments):
 # gets the unprompted notify_build_finished() turn, never one begun by
 # '/build' or the Build screen. Set right after start_build() (whose
 # reset() clears it), so a race with an early finished_ok() can't miss it.
-def _start_ai_build(app, build):
+def _start_ai_build(app, build, packages_only):
     from seine.tui.build import start_build
-    start_build(app, app.build_state, build)
+    start_build(app, app.build_state, build, packages_only=packages_only)
     app.build_state.notify_ai = True
 
 # Both actions below run only after ConfirmAction has already approved
@@ -759,14 +759,15 @@ def _tool_start_build(app, arguments):
     build = _single_group(app)
     if build is None:
         return NO_SINGLE_GROUP
+    packages_only = bool(arguments.get("packages_only", False))
     try:
         # start_build() touches Indicators, so it crosses back through
         # call_from_thread, same boundary TextualReporter crosses.
-        app.call_from_thread(_start_ai_build, app, build)
+        app.call_from_thread(_start_ai_build, app, build, packages_only)
     except RuntimeError as e:
         return "could not start: %s" % e
     app.call_from_thread(app.show, "build")
-    return "build started"
+    return "build started (packages only)" if packages_only else "build started"
 
 def _tool_cancel_build(app, arguments):
     if not app.build_state.running:
@@ -938,7 +939,19 @@ TOOLS = {t.name: t for t in [
     Tool("reset-conversation", "Forget everything discussed so far in "
         "this conversation.", _no_args(), False, _tool_reset_conversation),
     Tool("start-build", "Start a real build of the active specification "
-        "-- the same thing '/build' does.", _no_args(), True, _tool_start_build),
+        "-- the same thing '/build' does. 'packages_only' (default false) "
+        "stops after the 'packages:' section builds, without assembling a "
+        "root file-system or writing an image -- the cheap way to prove a "
+        "package (a kernel, say) actually compiles before paying for a "
+        "full image build.",
+        {"type": "object",
+         "properties": {"packages_only": {"type": "boolean",
+                                          "description": "stop after the "
+                                                         "'packages:' section "
+                                                         "builds, before rootfs/"
+                                                         "image assembly"}},
+         "required": []},
+        True, _tool_start_build),
     Tool("cancel-build", "Cancel the running build -- the same thing "
         "'/cancel' does.", _no_args(), True, _tool_cancel_build),
     Tool("spec-update", "Change one node in a loaded spec file. 'at' is a "
