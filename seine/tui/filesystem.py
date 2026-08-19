@@ -236,6 +236,11 @@ class PreviewPane(VerticalScroll):
     pass
 
 class FilesystemScreen(BaseScreen):
+    DEFAULT_CSS = """
+    #path { height: 3; padding: 0 2; border: round $foreground 40%; background: $background; }
+    FilesystemScreen #fslist { background: $background; }
+    """
+
     HINT_ADD = [
         ("command",  "cdpath", "'/cd PATH'"),
         ("cdpath",   "cdup",   "'/cd ..' up"),
@@ -247,14 +252,14 @@ class FilesystemScreen(BaseScreen):
     # from anything else on the screen stack.
     BINDINGS = BaseScreen.BINDINGS + [Binding("escape", "close_preview", show=False)]
 
-    # #body sits above a focusable FilesystemList instead of an
+    # #path sits above a focusable FilesystemList instead of an
     # unfocusable StaticPane -- the body here is a list to act on, not
     # text to read. #previewpane shares that slot while previewing.
     def compose(self):
         yield Horizontal(
             SpecTree(id="spectree"),
             Vertical(
-                Static(id="body", markup=False),
+                Static(id="path", markup=False),
                 FilesystemList(id="fslist"),
                 PreviewPane(Static(id="preview", markup=False), id="previewpane"),
                 id="cmd",
@@ -290,12 +295,12 @@ class FilesystemScreen(BaseScreen):
         previewing = state.preview is not None
         if previewing:
             path, text = state.preview
-            self.query_one("#body", Static).update(path)
+            self.query_one("#path", Static).update(path)
             self.query_one("#preview", Static).update(_numbered_text(text))
             fslist.display = False
             preview.display = True
         else:
-            self.query_one("#body", Static).update(state.header())
+            self.query_one("#path", Static).update(state.header())
             fslist.set_entries(state.options())
             fslist.display = True
             preview.display = False

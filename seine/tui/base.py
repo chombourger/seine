@@ -281,8 +281,11 @@ class BaseScreen(Screen):
         yield Prompt(self.app.history, completions, id="prompt")
         # markup=False: same as #body -- engine text (a path, an argv,
         # an exception message) can contain a bare '['.
-        yield Static(id="status", markup=False)
-        yield Indicators(id="indicators")
+        yield Horizontal(
+            Static(id="status", markup=False),
+            Indicators(id="indicators"),
+            id="infobar",
+        )
         yield Static(self.HINT, id="hint")
 
     def on_mount(self):

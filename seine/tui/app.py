@@ -105,27 +105,27 @@ class SeineApp(App):
     COMMANDS = App.COMMANDS | {RegistryProvider}
     CSS = """
     #main, #buildrow { height: 1fr; }
-    #buildrow { border-top: solid $panel; }
     /* 'round', not Input's own default 'tall': 'tall' draws with
        eighth-block glyphs some real terminal fonts (Monaco/iTerm2) lack,
        breaking the border. 'round' is plain box-drawing every font has. */
     #spectree, #tail { width: 2fr; height: 100%; }
-    #prompt, #spectree, #tail, #fslist, #previewpane { border: round $border-blurred; }
+    #prompt, #spectree, #tail, #fslist, #previewpane { border: round $foreground 40%; }
     #prompt:focus, #spectree:focus, #tail:focus, #fslist:focus, #previewpane:focus {
         border: round $border;
     }
-    #cmd, #tasks { width: 1fr; height: 100%; }
+    #cmd, #tasks { width: 1fr; height: 100%; border: round $foreground 40%; }
     #body { padding: 1 2; }
     #tasklist { padding: 1 2; }
     #tail { padding: 0 1; }
     #fslist { height: 1fr; }
     #previewpane { height: 1fr; padding: 1 2; }
     #hint { color: $text-muted; padding: 0 2; }
-    #status { padding: 0 2; height: 1; }
+    #infobar { height: 1; }
+    #status { padding: 0 2; height: 1; width: 1fr; }
     #status.error { color: $error; }
     /* '$accent', not '$text-muted' like '#hint' -- this is clickable
        and worth noticing, closer to a link than a caption. */
-    #indicators { color: $accent; padding: 0 2; height: 1; }
+    #indicators { color: $accent; padding: 0 2; height: 1; width: auto; }
     #completions {
         height: auto;
         max-height: 5;
