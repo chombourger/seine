@@ -395,6 +395,58 @@ class PackageEntriesNameTheirOnDiskStamp(Caches):
         shown = self.run_cmd(["info", "--entries"])
         self.assertIn("bookworm/arm64/linux", shown)
 
+# The digest excerpt beside a package's stamp -- what a person or the AI
+# chat reads to tell whether a cached build actually has an option asked
+# for, without re-deriving it from the live spec (which may since have
+# changed, or moved out of what is loaded).
+class EntriesMatchingShowsWhatAPackageWasBuiltFrom(Caches):
+    def setUp(self):
+        super().setUp()
+        cache_index.Index().made(cache_index.PACKAGE, "bookworm/arm64/linux")
+        cache_index.Index().made(cache_index.CHROOT, "bookworm-arm64")
+        stamps = os.path.join(self.paths["packages"], "bookworm", ".stamps")
+        os.makedirs(stamps, exist_ok=True)
+        open(os.path.join(stamps, "linux_arm64_b41c1f8278e07eb5"), "w").close()
+        excerpts = os.path.join(self.paths["packages"], "bookworm",
+                                ".stamps-spec")
+        os.makedirs(excerpts, exist_ok=True)
+        with open(os.path.join(excerpts,
+                               "linux_arm64_b41c1f8278e07eb5.spec"), "w") as f:
+            f.write("source: apt://linux\n"
+                    "extends:\n"
+                    "  kernel:\n"
+                    "    configs:\n"
+                    "      magic-sysrq:\n"
+                    "      - CONFIG_MAGIC_SYSRQ=n\n")
+
+    def test_implies_entries(self):
+        # No '--entries' given at all.
+        shown = self.run_cmd(["info", "--entries-matching", "linux"])
+        self.assertIn("bookworm/arm64/linux", shown)
+
+    def test_narrows_to_matching_keys(self):
+        shown = self.run_cmd(["info", "--entries-matching", "linux"])
+        self.assertIn("bookworm/arm64/linux", shown)
+        self.assertNotIn("bookworm-arm64", shown)
+
+    def test_a_matching_package_prints_what_it_was_built_from(self):
+        shown = self.run_cmd(["info", "--entries-matching", "linux"])
+        self.assertIn("CONFIG_MAGIC_SYSRQ=n", shown)
+
+    # Without a filter there is nothing to have narrowed to, so nothing
+    # extra is printed -- '--entries' alone stays exactly as it read
+    # before this existed.
+    def test_plain_entries_does_not_print_the_excerpt(self):
+        shown = self.run_cmd(["info", "--entries"])
+        self.assertIn("bookworm/arm64/linux", shown)
+        self.assertNotIn("CONFIG_MAGIC_SYSRQ", shown)
+
+    def test_a_bad_pattern_is_refused(self):
+        code, err = self.run_cmd_failing(
+            ["info", "--entries-matching", "("])
+        self.assertNotEqual(code, 0)
+        self.assertIn("not a usable pattern", err)
+
 class TheEntriesFlagBelongsToInfoAlone(Caches):
     def test(self):
         with self.assertRaises(SystemExit) as caught:

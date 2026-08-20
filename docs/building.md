@@ -451,6 +451,35 @@ costs a report and never a build: what decides whether a package needs
 rebuilding is still its stamp, and whether an image is current is still its
 label.
 
+`--entries-matching PATTERN` (a regex, and implies `--entries`) narrows the
+listing to entries whose key matches, and, for a package entry, also prints
+the specification content that stamp was actually built from -- what tells
+whether a cached kernel really has the config option someone asked for,
+without re-reading the specification and hoping it still says what it did
+when the stamp was written:
+
+```
+$ seine cache info --entries-matching linux packages
+packages      1.1 GiB  /home/user/project/build/cache/packages
+total         1.1 GiB
+
+cache      entry                              last used    made
+package    bookworm/amd64/linux               12d ago      12d ago  (linux_amd64_b41c1f8278e07eb5)
+    source: apt://linux
+    revision: mod1
+    extends:
+      kernel:
+        flavour: amd64
+        configs:
+          magic-sysrq:
+          - CONFIG_MAGIC_SYSRQ=n
+```
+
+A path in it -- a patch, a kernel fragment -- is relative to whichever
+specification file declared it, not the absolute path a build actually
+reads: the excerpt is meant to travel with `cache export`/`import`, where
+an absolute path would only ever be true on the machine that wrote it.
+
 A build ends by saying what the caches spared it:
 
 ```

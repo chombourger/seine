@@ -6,6 +6,7 @@ import gzip
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -254,7 +255,7 @@ KINDS = {
 }
 
 class CacheCmd(Cmd):
-    def info(self, names, entries=False):
+    def info(self, names, entries=False, matching=None):
         total = 0
         for name in names:
             if name == IMAGES:
@@ -267,7 +268,7 @@ class CacheCmd(Cmd):
             print("%-10s %10s  %s" % (name, human(used), where))
         print("%-10s %10s" % ("total", human(total)))
         if entries:
-            self._entries(names)
+            self._entries(names, matching)
         return 0
 
     # What is in the caches one object at a time, least recently used first
@@ -275,10 +276,20 @@ class CacheCmd(Cmd):
     # remove. The times are seine's own record rather than the filesystem's:
     # atime is a day's worth of resolution where a filesystem keeps it at
     # all, and podman keeps no last-used time for an image.
-    def _entries(self, names):
+    #
+    # 'matching' narrows the listing to entries whose key matches (a
+    # release/architecture/source triple for a package, an image name
+    # for the rest) -- with tens of entries typical, jumping straight to
+    # the one that matters beats reading all of them. A package entry
+    # that survives the filter also gets its digest excerpt printed,
+    # the specification content that stamp was actually built from --
+    # see 'Builder.digest_excerpt()'.
+    def _entries(self, names, matching=None):
         kinds = [kind for name in names for kind in KINDS.get(name, [])]
         listed = cache_index.Index().entries(
-            present=lambda kind, key: kind in kinds)
+            present=lambda kind, key: kind in kinds
+                                      and (matching is None
+                                           or matching.search(key) is not None))
         print()
         if len(listed) == 0:
             print("nothing recorded yet: an entry is written as a build "
@@ -294,6 +305,10 @@ class CacheCmd(Cmd):
                 if stamp:
                     line += "  (%s)" % stamp
             print(line)
+            if matching is not None and kind == cache_index.PACKAGE and stamp:
+                excerpt = self._package_excerpt(key, stamp)
+                if excerpt:
+                    print("\n".join("    %s" % l for l in excerpt.splitlines()))
 
     # The on-disk stamp file for a package entry -- '<source>_<arch>_
     # <digest>', the same digest 'seine plan' names as already built.
@@ -308,6 +323,23 @@ class CacheCmd(Cmd):
             if stamp.rsplit("_", 2)[:2] == [source, architecture]:
                 return stamp
         return None
+
+    # The digest excerpt beside a package entry's stamp, as written --
+    # paths in it are relative to whichever file declared them, same as
+    # 'Builder._portable_path()' left them, not resolved against this
+    # machine's own checkout. None of it is present for a stamp older
+    # than this feature, or for one 'cache import' brought in without
+    # its excerpt (an export predating it), and that is not an error.
+    def _package_excerpt(self, key, stamp):
+        from seine.packages import STAMPS_SPEC
+        release = key.split("/", 1)[0]
+        path = os.path.join(CACHES["packages"](), release, STAMPS_SPEC,
+                            "%s.spec" % stamp)
+        try:
+            with open(path, "r") as f:
+                return f.read().rstrip("\n")
+        except OSError:
+            return None
 
     # What was last wanted longer ago than this, and nothing else. The index
     # is the only thing asked: what it does not know about, it does not
@@ -811,12 +843,14 @@ class CacheCmd(Cmd):
         # hands '--with-image-rootfs' back as if it were the name of a cache.
         try:
             opts, args = getopt.gnu_getopt(
-                argv, "h", ["entries", "force", "help", "older-than=",
-                            "replace", "spec=", "with-image-rootfs"])
+                argv, "h", ["entries", "entries-matching=", "force", "help",
+                            "older-than=", "replace", "spec=",
+                            "with-image-rootfs"])
         except getopt.GetoptError as err:
             sys.stderr.write("%s\n%s" % (err, USAGE))
             sys.exit(1)
         entries = False
+        matching = None
         force = False
         older_than = None
         replace = False
@@ -828,6 +862,16 @@ class CacheCmd(Cmd):
                 sys.exit()
             elif o in ("--entries"):
                 entries = True
+            elif o in ("--entries-matching"):
+                # Implies '--entries' -- a filter with nothing to filter
+                # is not a second flag anyone should have to remember.
+                entries = True
+                try:
+                    matching = re.compile(a)
+                except re.error as e:
+                    sys.stderr.write(
+                        "error: '%s' is not a usable pattern: %s\n" % (a, e))
+                    sys.exit(1)
             elif o in ("--force"):
                 force = True
             elif o in ("--older-than"):
@@ -909,7 +953,7 @@ class CacheCmd(Cmd):
         names = names if len(names) > 0 else list(default)
         try:
             if action == "info":
-                sys.exit(self.info(names, entries))
+                sys.exit(self.info(names, entries, matching))
             elif action == "clear":
                 sys.exit(self.stale(names, older_than) if older_than is not None
                          else self.clear(names))
@@ -992,8 +1036,16 @@ Description:
   thing it names, so a cache that has never been built against lists
   nothing.
 
+  '--entries-matching PATTERN' (a regex) narrows that listing to entries
+  whose key matches, and implies --entries. A package entry that survives
+  the filter also prints the specification content it was actually built
+  from -- source, patches, and whichever 'extends:' settings it has --
+  redacted the same way 'redact:' applies everywhere else, and with every
+  file path relative to whichever specification file named it rather than
+  where it happened to sit on this machine.
+
 Usage:
-  seine cache info [--entries] [CACHE...|all]
+  seine cache info [--entries] [--entries-matching PATTERN] [CACHE...|all]
   seine cache clear [--older-than SPAN] [CACHE...|all]
   seine cache export [--with-image-rootfs] FILE|- [CACHE...|all]
   seine cache import [--replace] [--force] FILE|- [CACHE...|all]
@@ -1019,6 +1071,7 @@ Caches:
 Examples:
   seine cache info
   seine cache info --entries
+  seine cache info --entries-matching linux
   seine cache clear chroots
   seine cache clear downloads packages
   seine cache clear --older-than 30d
@@ -1033,6 +1086,11 @@ Examples:
 Flags:
       --entries         list what is cached one object at a time, least
                         recently used first, for 'info' only
+      --entries-matching PATTERN
+                        as --entries, narrowed to keys matching this
+                        regex; a matching package entry also prints what
+                        it was built from. Implies --entries, for 'info'
+                        only
       --force           remove .debs no stamp names, for 'import' only
       --older-than SPAN remove only what was last wanted longer ago than
                         this ('30d', '6h', '2w'), for 'clear' only
