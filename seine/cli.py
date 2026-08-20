@@ -9,6 +9,7 @@ from seine.analyze import AnalyzeCmd
 from seine.build import BuildCmd, PlanCmd
 from seine.cache import CacheCmd
 from seine.cmd import Cmd
+from seine.gists import GistCmd
 from seine.progress import interactive
 
 # Deliberately doesn't import seine.tui (and hence textual) at module
@@ -267,6 +268,7 @@ COMMANDS = {
     "build": (BuildCmd, "build an image from one or more specification files"),
     "plan":  (PlanCmd, "say what a build would do, without doing any of it"),
     "cache": (CacheCmd, "show what seine has cached, remove it, or move it"),
+    "gist":  (GistCmd, "list, show, or remove reusable spec fragments"),
     "analyze": (AnalyzeCmd, "say where the time went in a build that ran"),
     "validate": (ValidateCmd, "check a specification loads and parses, without using it"),
     "inspect": (InspectCmd, "browse a finished image, read-only"),

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import avocado
+import contextlib
+import io
 import os
 import sys
 
@@ -9,6 +11,7 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine import gists
+from seine.gists import GistCmd
 
 class DefaultDir(avocado.Test):
     def setUp(self):
@@ -99,6 +102,71 @@ class ReadAndDelete(avocado.Test):
 
     def test_delete_of_a_missing_gist_raises(self):
         self.assertRaises(ValueError, gists.delete, "nope", directory=self.workdir)
+
+# 'GistCmd' reads/writes through 'default_dir()' like a real user would
+# run it -- SEINE_GISTS_DIR points that at the test's own directory,
+# same as 'tests/spec/cache.py's Caches class does for SEINE_CACHE_DIR.
+class Cli(avocado.Test):
+    def setUp(self):
+        self.environment = dict(os.environ)
+        os.environ["SEINE_GISTS_DIR"] = self.workdir
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        os.environ.clear()
+        os.environ.update(self.environment)
+
+    def test_ls_with_nothing_yet_says_so(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            GistCmd().main(["ls"])
+        self.assertIn("no gists yet", out.getvalue())
+
+    def test_ls_lists_name_and_description(self):
+        gists.create("a-kernel", "page-ref debugging", "packages: []\n",
+                    directory=self.workdir)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            GistCmd().main(["ls"])
+        self.assertIn("a-kernel", out.getvalue())
+        self.assertIn("page-ref debugging", out.getvalue())
+
+    def test_show_prints_the_raw_file(self):
+        gists.create("a-kernel", "page-ref debugging", "packages: []\n",
+                    directory=self.workdir)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            GistCmd().main(["show", "a-kernel"])
+        self.assertEqual(out.getvalue(), "# page-ref debugging\npackages: []\n")
+
+    def test_show_of_a_missing_gist_fails_with_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                GistCmd().main(["show", "nope"])
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_rm_removes_it(self):
+        gists.create("throwaway", "d", "a: 1\n", directory=self.workdir)
+        GistCmd().main(["rm", "throwaway"])
+        self.assertEqual(gists.list_gists(self.workdir), [])
+
+    def test_rm_of_a_missing_gist_fails_with_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                GistCmd().main(["rm", "nope"])
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_no_action_is_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                GistCmd().main([])
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_unknown_action_is_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                GistCmd().main(["frobnicate"])
+        self.assertEqual(caught.exception.code, 1)
 
 if __name__ == "__main__":
     avocado.main()

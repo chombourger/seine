@@ -687,6 +687,27 @@ another drive at once; a variable of its own moves any one of them
 elsewhere instead. See [Environment variables](environment.md) for the
 full layout and every variable that touches it.
 
+### Gists
+
+A fragment written for one image is often worth reusing in another --
+a gist is a plain spec fragment kept outside any one project's own
+source tree, so it survives moving between them. It lives under
+`XDG_DATA_HOME` (`SEINE_GISTS_DIR` overrides that outright), not under
+`SEINE_BUILD_DIR`: unlike a cache, nothing here is safe to delete just
+to get space back.
+
+```
+$ seine gist ls
+a-kernel   page-ref debugging
+```
+
+`seine gist show NAME` prints the fragment as-is (its own first line is
+the description above), and `seine gist rm NAME` deletes it. Creating
+one by hand is no different from any other spec fragment -- drop a
+`.yaml` file into the directory `seine gist ls` names when there is
+nothing in it yet, and it is a gist. The AI chat's own `gist-create`
+tool is the other way in -- see [ai.md](ai.md).
+
 ## Software Bill of Materials
 
 `--sbom` makes a build write a Software Bill of Materials next to the image

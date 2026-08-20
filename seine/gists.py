@@ -6,8 +6,12 @@
 # XDG_CONFIG_HOME, but XDG_DATA_HOME: this is user content meant to
 # persist and be reused, not a regenerable setting.
 
+import getopt
 import os
 import re
+import sys
+
+from seine.cmd import Cmd
 
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
@@ -66,3 +70,66 @@ def delete(name, directory=None):
     if not os.path.isfile(path):
         raise ValueError("no such gist '%s'" % name)
     os.remove(path)
+
+USAGE = """
+Usage:
+  seine gist ls
+  seine gist show NAME
+  seine gist rm NAME
+
+List, show, or remove reusable spec fragments kept outside any one
+project's source tree (%s, or SEINE_GISTS_DIR).
+
+Description:
+  A gist is a plain spec fragment -- side-loadable in 'seine tui'
+  exactly like any other file -- with a one-line '# description'
+  comment as its first line. Creating one is the AI chat's own
+  'gist-create' tool; by hand, any '.yaml' file dropped into the
+  directory above becomes a gist named after itself.
+""" % default_dir()
+
+class GistCmd(Cmd):
+    def main(self, argv):
+        try:
+            opts, args = getopt.gnu_getopt(argv, "h", ["help"])
+        except getopt.GetoptError as err:
+            sys.stderr.write("%s\n%s" % (err, USAGE))
+            sys.exit(1)
+        for o, a in opts:
+            if o in ("-h", "--help"):
+                print(USAGE)
+                sys.exit()
+
+        ACTIONS = ["ls", "show", "rm"]
+        if len(args) == 0:
+            sys.stderr.write("error: gist command expects one of %s\n"
+                             % ", ".join(ACTIONS))
+            sys.exit(1)
+        action, rest = args[0], args[1:]
+        if action not in ACTIONS:
+            sys.stderr.write("error: unknown gist action '%s'\n" % action)
+            sys.exit(1)
+
+        if action == "ls":
+            self._ls()
+        else:
+            if len(rest) != 1:
+                sys.stderr.write("error: gist %s expects one NAME\n" % action)
+                sys.exit(1)
+            try:
+                if action == "show":
+                    sys.stdout.write(read(rest[0]))
+                else:
+                    delete(rest[0])
+            except (OSError, ValueError) as e:
+                sys.stderr.write("error: %s\n" % e)
+                sys.exit(1)
+
+    def _ls(self):
+        found = list_gists()
+        if not found:
+            print("no gists yet -- %s" % default_dir())
+            return
+        width = max(len(name) for name, _ in found)
+        for name, description in found:
+            print("%-*s  %s" % (width, name, description))
