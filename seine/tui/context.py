@@ -12,11 +12,11 @@ class Context:
     def __init__(self):
         self.groups = None
         self.builds = None
-        # Set only by extend(): the active group's spec just before the
-        # most recent /extend, for SpecTree.load() to diff against.
-        # Cleared by use(), overwritten (not accumulated) by the next
-        # extend() -- highlights only the last fragment's changes.
-        self.extended_from = None
+        # Set only by side_load()/side_unload(): the active group's spec
+        # just before the most recent one, for SpecTree.load() to diff
+        # against. Cleared by use(), overwritten (not accumulated) by
+        # the next call -- highlights only the last change.
+        self.changed_from = None
 
     # Loads/parses each group the way 'seine build' does -- nothing is
     # built, so this is instant and side-effect-free.
@@ -31,21 +31,40 @@ class Context:
             builds.append(build)
         self.groups = groups
         self.builds = builds
-        self.extended_from = None
+        self.changed_from = None
 
-    # One more fragment appended to the active group's file list, same
-    # '--' composition as the real CLI. Refuses more than one active
-    # group, same as /build and /filesystem.
-    def extend(self, fragment):
+    # Refuses more than one active group, same as /build and
+    # /filesystem -- both this and side_unload() below.
+    def _one_active_group(self):
         if not self.active:
             raise ValueError("no active specification -- '/use SPEC' first")
         if len(self.builds) != 1:
             raise ValueError(
-                "extend needs exactly one active group -- multi-group "
+                "side-load needs exactly one active group -- multi-group "
                 "specifications ('/use a -- b') aren't supported here yet")
+
+    # One more fragment appended to the active group's file list, same
+    # '--' composition as the real CLI.
+    def side_load(self, fragment):
+        self._one_active_group()
         previous_spec = self.builds[0].spec
         self.use(self.groups[0] + [fragment])
-        self.extended_from = previous_spec
+        self.changed_from = previous_spec
+
+    # The reverse of side_load(): one fragment dropped back out of the
+    # active group's file list and the rest reparsed. Works on any file
+    # currently in the list, not only one side_load() itself added --
+    # the list doesn't distinguish how a file got there, so neither does
+    # this.
+    def side_unload(self, fragment):
+        self._one_active_group()
+        files = self.groups[0]
+        if fragment not in files:
+            raise ValueError("'%s' isn't currently loaded" % fragment)
+        previous_spec = self.builds[0].spec
+        remaining = [f for f in files if f != fragment]
+        self.use(remaining)
+        self.changed_from = previous_spec
 
     @property
     def active(self):

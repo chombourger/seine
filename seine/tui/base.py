@@ -308,7 +308,7 @@ class BaseScreen(Screen):
     # override update_body(), not this.
     def refresh_data(self):
         self.query_one(SpecTree).load(
-            self.app.context, previous_spec=self.app.context.extended_from)
+            self.app.context, previous_spec=self.app.context.changed_from)
         self.query_one(Indicators).refresh_text()
         self.update_body()
 
@@ -327,12 +327,12 @@ class BaseScreen(Screen):
         event.input.value = ""
         if not line.strip():
             return
-        # /extend's highlight is one-shot: any other prompt input
-        # clears it. Checked before dispatch, so a fresh /extend's own
-        # highlight isn't wiped right back out.
+        # /side-load's (or /side-unload's) highlight is one-shot: any
+        # other prompt input clears it. Checked before dispatch, so a
+        # fresh one's own highlight isn't wiped right back out.
         context = self.app.context
-        if context.extended_from is not None:
-            context.extended_from = None
+        if context.changed_from is not None:
+            context.changed_from = None
             self.query_one(SpecTree).load(context)
         # An unmodified recall is already in history; only a new/edited
         # line is worth adding.

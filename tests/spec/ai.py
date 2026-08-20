@@ -175,7 +175,8 @@ class ToolTable(avocado.Test):
     def test_only_the_named_actions_are_gated(self):
         gated = {name for name, tool in self.ai.TOOLS.items() if tool.gated}
         self.assertEqual(gated, {"start-build", "cancel-build",
-                                 "spec-update", "spec-create", "extend"})
+                                 "spec-update", "spec-create",
+                                 "side-load", "side-unload"})
 
     def test_read_only_tools_work_with_no_active_spec(self):
         app = self.SeineApp()
@@ -791,51 +792,115 @@ class ToolTable(avocado.Test):
         with open(new_path) as f:
             self.assertEqual(f.read(), content)
 
-    def _extend_fragment(self, content="playbook:\n- name: extra play\n  tasks: []\n"):
-        path = os.path.join(self.workdir, "extra-fragment.yaml")
+    def _side_load_fragment(self, content="playbook:\n- name: extra play\n  tasks: []\n",
+                         name="extra-fragment"):
+        path = os.path.join(self.workdir, "%s.yaml" % name)
         with open(path, "w") as f:
             f.write(content)
         return path
 
-    def test_extend_needs_fragment(self):
+    def test_side_load_needs_fragment(self):
         app = self.SeineApp(files=[self._minimal_spec()])
-        text = self.ai.TOOLS["extend"].run(app, {})
+        text = self.ai.TOOLS["side-load"].run(app, {})
         self.assertIn("needs 'fragment'", text)
 
-    def test_extend_preview_needs_an_active_spec(self):
+    def test_side_load_preview_needs_an_active_spec(self):
         app = self.SeineApp()
-        preview = self.ai.TOOLS["extend"].preview(app, {"fragment": "whatever.yaml"})
+        preview = self.ai.TOOLS["side-load"].preview(app, {"fragment": "whatever.yaml"})
         self.assertFalse(preview.ok)
         self.assertIn("no active specification", preview.message)
 
-    def test_extend_preview_refuses_a_fragment_that_fails_to_load(self):
+    def test_side_load_preview_refuses_a_fragment_that_fails_to_load(self):
         app = self.SeineApp(files=[self._minimal_spec()])
-        preview = self.ai.TOOLS["extend"].preview(
+        preview = self.ai.TOOLS["side-load"].preview(
             app, {"fragment": "/does/not/exist.yaml"})
         self.assertFalse(preview.ok)
 
     # 'diff()' (seine/build.py) always hands back the whole spec, unmarked
     # context lines included -- never blank even with nothing to say -- so
     # "would this change anything" has to look for an actual '+'/'-' mark.
-    def test_extend_preview_says_no_op_when_nothing_would_change(self):
+    def test_side_load_preview_says_no_op_when_nothing_would_change(self):
         main = self._minimal_spec()
         app = self.SeineApp(files=[main])
-        noop = self._extend_fragment("distribution:\n  architecture: amd64\n")
-        preview = self.ai.TOOLS["extend"].preview(app, {"fragment": noop})
+        noop = self._side_load_fragment("distribution:\n  architecture: amd64\n")
+        preview = self.ai.TOOLS["side-load"].preview(app, {"fragment": noop})
         self.assertFalse(preview.ok)
         self.assertIn("change nothing", preview.message)
 
     # A dry run -- computed against a scratch 'BuildCmd', never touching
     # 'app.context' itself, so a person can review several candidate
     # fragments without any of them actually taking effect until 'run'.
-    def test_extend_preview_shows_what_merging_would_change(self):
+    def test_side_load_preview_shows_what_merging_would_change(self):
         main = self._minimal_spec()
         app = self.SeineApp(files=[main])
-        fragment = self._extend_fragment()
-        preview = self.ai.TOOLS["extend"].preview(app, {"fragment": fragment})
+        fragment = self._side_load_fragment()
+        preview = self.ai.TOOLS["side-load"].preview(app, {"fragment": fragment})
         self.assertTrue(preview.ok)
         self.assertIn("extra play", preview.message)
         self.assertEqual(len(app.context.builds[0].spec["playbook"]), 1)
+
+    def test_side_unload_needs_fragment(self):
+        app = self.SeineApp(files=[self._minimal_spec()])
+        text = self.ai.TOOLS["side-unload"].run(app, {})
+        self.assertIn("needs 'fragment'", text)
+
+    def test_side_unload_preview_refuses_a_fragment_that_isnt_loaded(self):
+        app = self.SeineApp(files=[self._minimal_spec()])
+        preview = self.ai.TOOLS["side-unload"].preview(
+            app, {"fragment": "/does/not/exist.yaml"})
+        self.assertFalse(preview.ok)
+        self.assertIn("isn't currently loaded", preview.message)
+
+    # Side-loads a fragment for real (via Context directly -- see the
+    # threading note above), then previews unloading it through the AI
+    # tool -- proves the preview reflects the *current* group list (with
+    # the fragment in it), not the one side-loading started from.
+    def test_side_unload_preview_shows_what_reverting_would_change(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        fragment = self._side_load_fragment()
+        app.context.side_load(fragment)
+        self.assertEqual(len(app.context.builds[0].spec["playbook"]), 2)
+        preview = self.ai.TOOLS["side-unload"].preview(app, {"fragment": fragment})
+        self.assertTrue(preview.ok)
+        self.assertIn("extra play", preview.message)
+
+    # 'run()' on 'side-load'/'side-unload' crosses back to the UI thread
+    # via 'call_from_thread', which needs a real running App -- these two
+    # exercise the underlying 'Context' methods directly instead (the
+    # AI-tool wrapper's own threading and diff-generation are covered by
+    # 'TheLoop's async gated-tool tests below).
+    def test_side_unload_drops_the_fragment_back_out(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        fragment = self._side_load_fragment()
+        app.context.side_load(fragment)
+        app.context.side_unload(fragment)
+        self.assertEqual(len(app.context.builds[0].spec["playbook"]), 1)
+
+    # No LIFO assumption: three fragments side-loaded in order, unloaded
+    # out of order (last, then first, leaving the middle one) -- the
+    # group's file list is what side_unload() actually edits, not a
+    # stack, so unloading works on whichever name is asked for.
+    def test_side_unload_order_is_not_assumed_to_be_lifo(self):
+        main = self._minimal_spec()
+        app = self.SeineApp(files=[main])
+        s1 = self._side_load_fragment("playbook:\n- name: play one\n  tasks: []\n", name="s1")
+        s2 = self._side_load_fragment("playbook:\n- name: play two\n  tasks: []\n", name="s2")
+        s3 = self._side_load_fragment("playbook:\n- name: play three\n  tasks: []\n", name="s3")
+        for fragment in (s1, s2, s3):
+            app.context.side_load(fragment)
+        self.assertEqual(app.context.groups[0][-3:], [s1, s2, s3])
+
+        app.context.side_unload(s3)
+        self.assertEqual(app.context.groups[0][-2:], [s1, s2])
+
+        app.context.side_unload(s1)
+        self.assertEqual(app.context.groups[0][-1:], [s2])
+        plays = {p["name"] for p in app.context.builds[0].spec["playbook"]}
+        self.assertIn("play two", plays)
+        self.assertNotIn("play one", plays)
+        self.assertNotIn("play three", plays)
 
     def test_build_status_matches_the_build_screens_own_stage_list(self):
         app = self.SeineApp()
@@ -1804,7 +1869,7 @@ class TheLoop(avocado.Test):
 
     # Approving 'spec-update' has to reload the active spec from disk
     # and highlight what changed on the tree, the same mechanism
-    # '/extend' 's own highlight already uses -- checked by re-reading
+    # '/side-load' 's own highlight already uses -- checked by re-reading
     # 'app.context.builds[0].spec' (proof the reload actually ran, not
     # just the file on disk) and 'SpecTree._changed' (proof the tree
     # actually got the same treatment, not just a silent reload).
@@ -1837,18 +1902,19 @@ class TheLoop(avocado.Test):
                 self.assertTrue(tree._changed)
         _run(scenario)
 
-    # Approving 'extend' has to actually run 'app.context.extend()' --
-    # checked by re-reading 'app.context.builds[0].spec' after approval,
-    # not by trusting the tool's own return text, the same discipline
+    # Approving 'side-load' has to actually run
+    # 'app.context.side_load()' -- checked by re-reading
+    # 'app.context.builds[0].spec' after approval, not by trusting the
+    # tool's own return text, the same discipline
     # 'test_spec_update_preview_then_run_appends_one_item' (ToolTable)
     # already applies to a real file write.
-    def test_gated_extend_shows_the_diff_and_actually_loads_it(self):
+    def test_gated_side_load_shows_the_diff_and_actually_loads_it(self):
         main = self._minimal_spec()
         fragment = os.path.join(self.workdir, "extra-fragment.yaml")
         with open(fragment, "w") as f:
             f.write("playbook:\n- name: extra play\n  tasks: []\n")
         args = json.dumps({"fragment": fragment})
-        sys.modules["litellm"] = fake_litellm(tool_name="extend", tool_arguments=args)
+        sys.modules["litellm"] = fake_litellm(tool_name="side-load", tool_arguments=args)
         async def scenario():
             from seine.tui.ai import ConfirmAction
             app = self.SeineApp(files=[main])
@@ -1872,17 +1938,54 @@ class TheLoop(avocado.Test):
                 self.assertEqual(len(app.context.builds[0].spec["playbook"]), 2)
         _run(scenario)
 
-    # The model never saw its own change before this: 'extend' ran, then
-    # it had to spend a spec-dump/spec-query call just to find out what
-    # loading the fragment actually did. The tool's own result now
-    # carries the same diff the confirm dialog already showed.
-    def test_extend_tool_result_includes_the_merge_diff(self):
+    # The AI-tool mirror of the side-load test just above -- approving
+    # 'side-unload' has to actually run 'app.context.side_unload()', not
+    # just say so. The fragment is side-loaded directly on 'app.context'
+    # before the scenario starts (plain Python, no running app needed
+    # for that part) so there is something real to unload.
+    def test_gated_side_unload_shows_the_diff_and_actually_reverts_it(self):
         main = self._minimal_spec()
         fragment = os.path.join(self.workdir, "extra-fragment.yaml")
         with open(fragment, "w") as f:
             f.write("playbook:\n- name: extra play\n  tasks: []\n")
         args = json.dumps({"fragment": fragment})
-        sys.modules["litellm"] = fake_litellm(tool_name="extend", tool_arguments=args)
+        sys.modules["litellm"] = fake_litellm(tool_name="side-unload", tool_arguments=args)
+        async def scenario():
+            from seine.tui.ai import ConfirmAction
+            app = self.SeineApp(files=[main])
+            app.context.side_load(fragment)
+            self.assertEqual(len(app.context.builds[0].spec["playbook"]), 2)
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "drop the extra fragment"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(100):
+                    if isinstance(app.screen, ConfirmAction):
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertIsInstance(app.screen, ConfirmAction)
+                self.assertIn(fragment, _content(app.screen.query_one("#confirmfile")))
+                diff = _content(app.screen.query_one("#confirmdiff"))
+                self.assertIn("extra play", diff)
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle(app, pilot)
+                self.assertEqual(len(app.context.builds[0].spec["playbook"]), 1)
+        _run(scenario)
+
+    # The model never saw its own change before this: 'side-load' ran,
+    # then it had to spend a spec-dump/spec-query call just to find out
+    # what loading the fragment actually did. The tool's own result now
+    # carries the same diff the confirm dialog already showed.
+    def test_side_load_tool_result_includes_the_merge_diff(self):
+        main = self._minimal_spec()
+        fragment = os.path.join(self.workdir, "extra-fragment.yaml")
+        with open(fragment, "w") as f:
+            f.write("playbook:\n- name: extra play\n  tasks: []\n")
+        args = json.dumps({"fragment": fragment})
+        sys.modules["litellm"] = fake_litellm(tool_name="side-load", tool_arguments=args)
         async def scenario():
             from seine.tui.ai import ConfirmAction
             app = self.SeineApp(files=[main])
@@ -1900,15 +2003,15 @@ class TheLoop(avocado.Test):
                 await pilot.pause()
                 await self._settle(app, pilot)
                 tool_result = [m for m in app.ai_state.messages if m["role"] == "tool"][0]
-                self.assertIn("extended with %s" % fragment, tool_result["content"])
+                self.assertIn("side-loaded %s" % fragment, tool_result["content"])
                 self.assertIn("extra play", tool_result["content"])
         _run(scenario)
 
-    # A person /extends a fragment, then asks the model for an unrelated
-    # change: the tree's highlight only ever shows the last one, the
-    # same one-shot behaviour /extend's own highlight has -- worth
-    # pinning down since it's easy to assume both changes stay lit.
-    def test_extend_highlight_is_superseded_by_a_later_spec_update(self):
+    # A person side-loads a fragment, then asks the model for an
+    # unrelated change: the tree's highlight only ever shows the last
+    # one, the same one-shot behaviour /side-load's own highlight has --
+    # worth pinning down since it's easy to assume both changes stay lit.
+    def test_side_load_highlight_is_superseded_by_a_later_spec_update(self):
         main = self._minimal_spec()
         fragment = os.path.join(self.workdir, "extra-fragment.yaml")
         with open(fragment, "w") as f:
@@ -1919,9 +2022,9 @@ class TheLoop(avocado.Test):
             from seine.tui.ai import ConfirmAction
             app = self.SeineApp(files=[main])
             async with app.run_test() as pilot:
-                # First turn: '/extend' the fragment.
+                # First turn: side-load the fragment.
                 sys.modules["litellm"] = fake_litellm(
-                    tool_name="extend", tool_arguments=json.dumps({"fragment": fragment}))
+                    tool_name="side-load", tool_arguments=json.dumps({"fragment": fragment}))
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "load the extra fragment"
                 await pilot.press("enter")
@@ -1937,8 +2040,8 @@ class TheLoop(avocado.Test):
                 await self._settle(app, pilot)
 
                 tree = app.screen.query_one(SpecTree)
-                after_extend = {n.data for n in tree._changed}
-                self.assertIn("extra play", after_extend)
+                after_side_load = {n.data for n in tree._changed}
+                self.assertIn("extra play", after_side_load)
 
                 # Second turn: an unrelated 'spec-update'.
                 args = json.dumps({"path": main, "at": "$.playbook[0].tasks[0].apt.name",

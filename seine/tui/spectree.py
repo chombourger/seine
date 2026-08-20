@@ -23,9 +23,9 @@ def _item_label(item, index):
     # '[0]', not '0' -- a bare number reads like a value, not a position.
     return "[%d]" % index
 
-# 'old': this key/item's value before /extend loaded one more fragment,
-# or NO_DIFF when the caller isn't diffing at all. MISSING means the
-# key/item is entirely new.
+# 'old': this key/item's value before /side-load (or /side-unload)
+# changed the active spec, or NO_DIFF when the caller isn't diffing at
+# all. MISSING means the key/item is entirely new.
 NO_DIFF = object()
 MISSING = object()
 
@@ -80,9 +80,9 @@ def _populate(node, key, value, old, changed, redact):
 ACTIVE_MARK = "▶ "
 ACTIVE_STYLE = "bold orange1"
 
-# What /extend just added or changed, a different axis again. If a node
-# is somehow both, active wins -- what's happening now over what
-# changed a moment ago.
+# What /side-load or /side-unload just changed, a different axis again.
+# If a node is somehow both, active wins -- what's happening now over
+# what changed a moment ago.
 CHANGED_MARK = "+ "
 CHANGED_STYLE = "bold cyan1"
 
@@ -100,16 +100,17 @@ class SpecTree(Tree):
         # a whole path, marking only to its leaf.
         self._expanded = {}
         self._marked = {}
-        # Nodes /extend marked changed/new, rebuilt wholesale by every
-        # load() -- not refcounted like _marked above.
+        # Nodes /side-load or /side-unload marked changed/new, rebuilt
+        # wholesale by every load() -- not refcounted like _marked above.
         self._changed = set()
 
     # Rebuilt from scratch every call -- a spec tree is small enough
     # that diffing old against new isn't worth it.
     #
     # previous_spec: the active group's build.spec just before the most
-    # recent /extend, or None otherwise. Only ever diffed against the
-    # first group -- /extend refuses more than one active group.
+    # recent /side-load or /side-unload, or None otherwise. Only ever
+    # diffed against the first group -- both refuse more than one
+    # active group.
     def load(self, context, previous_spec=None):
         self.clear()
         self._active = {}

@@ -613,8 +613,8 @@ def _tool_spec_update(app, arguments):
     return "updated %s" % arguments.get("path")
 
 # Re-parses the active group's file list and marks what changed on the
-# spec tree, the same mechanism /extend's own highlight uses. Not called
-# by spec-create: a brand new file isn't in context.groups[0] yet.
+# spec tree, the same mechanism /side-load's own highlight uses. Not
+# called by spec-create: a brand new file isn't in context.groups[0] yet.
 #
 # context.use() only reassigns groups/builds after load_all()/parse()
 # both succeed, so a reload that fails leaves the active spec untouched
@@ -630,7 +630,7 @@ def _reload_and_highlight(app):
         except (OSError, ValueError) as e:
             error["message"] = str(e)
             return
-        context.extended_from = previous
+        context.changed_from = previous
         app.refresh_screens()
     try:
         app.call_from_thread(reload)
@@ -690,25 +690,27 @@ def _tool_spec_create(app, arguments):
     os.replace(temporary, plan.path)
     return "wrote %s" % arguments.get("path")
 
-# The AI-tool equivalent of /extend FRAGMENT: loads one more fragment
+# The AI-tool equivalent of /side-load FRAGMENT: loads one more fragment
 # on top of the active group, in-session only. Lower stakes than
-# spec-update/spec-create (no write, undone by /use again) but still
-# gated -- it changes what a /build right after would actually build.
+# spec-update/spec-create (no write, undone by /use again or by
+# side-unload) but still gated -- it changes what a /build right after
+# would actually build.
 #
-# The preview is a dry run, not a call to context.extend() itself: a
-# scratch BuildCmd loads the same files extend() would and is diffed
+# The preview is a dry run, not a call to context.side_load() itself: a
+# scratch BuildCmd loads the same files side_load() would and is diffed
 # against the real active build, so a bad fragment is refused before
 # anything touches app.context.
-def _extend_preview(app, arguments):
+def _side_load_preview(app, arguments):
     fragment = arguments.get("fragment")
     if not fragment:
-        return Preview(False, "extend needs 'fragment' (a spec file to "
-                       "load on top of the active one, same as '/extend')")
+        return Preview(False, "side-load needs 'fragment' (a spec file to "
+                       "load on top of the active one, same as "
+                       "'/side-load')")
     context = app.context
     if not context.active:
         return Preview(False, "no active specification -- '/use SPEC' first")
     if len(context.builds) != 1:
-        return Preview(False, "extend needs exactly one active group -- "
+        return Preview(False, "side-load needs exactly one active group -- "
                        "multi-group specifications ('/use a -- b') aren't "
                        "supported here yet")
     from seine.build import BuildCmd, diff
@@ -731,26 +733,78 @@ def _extend_preview(app, arguments):
 
 # Textual widgets are only touched from the UI thread -- this tool runs
 # from ask()'s worker thread, so it crosses back via call_from_thread,
-# same as start-build. The slash command's own _extend() never needs
+# same as start-build. The slash command's own _side_load() never needs
 # this: it already runs on the UI thread.
-def _tool_extend(app, arguments):
+def _tool_side_load(app, arguments):
     fragment = arguments.get("fragment")
     if not fragment:
-        return "extend needs 'fragment' (a spec file to load on top of the active one)"
+        return "side-load needs 'fragment' (a spec file to load on top of the active one)"
     context = app.context
     before = None
     if context.active and len(context.builds) == 1:
         active = context.builds[0]
         before = active.dump(active.spec)
     try:
-        app.call_from_thread(context.extend, fragment)
+        app.call_from_thread(context.side_load, fragment)
     except (OSError, ValueError) as e:
-        return "could not extend: %s" % e
+        return "could not side-load: %s" % e
     app.call_from_thread(app.refresh_screens)
     after = context.builds[0]
     from seine.build import diff
     changes = diff(before, after.dump(after.spec), color=False)
-    return "extended with %s\n\n%s" % (fragment, changes)
+    return "side-loaded %s\n\n%s" % (fragment, changes)
+
+# The reverse of side-load: a scratch BuildCmd loads the active group's
+# file list *without* 'fragment', diffed the same way, so a name that
+# isn't currently loaded (or would leave the group empty) is refused
+# before anything touches app.context.
+def _side_unload_preview(app, arguments):
+    fragment = arguments.get("fragment")
+    if not fragment:
+        return Preview(False, "side-unload needs 'fragment' (a file "
+                       "currently loaded on top of the active one)")
+    context = app.context
+    if not context.active:
+        return Preview(False, "no active specification -- '/use SPEC' first")
+    if len(context.builds) != 1:
+        return Preview(False, "side-unload needs exactly one active group "
+                       "-- multi-group specifications ('/use a -- b') "
+                       "aren't supported here yet")
+    if fragment not in context.groups[0]:
+        return Preview(False, "'%s' isn't currently loaded" % fragment)
+    from seine.build import BuildCmd, diff
+    scratch = BuildCmd()
+    scratch.options = dict(scratch.options, ansible_library=[])
+    remaining = [f for f in context.groups[0] if f != fragment]
+    try:
+        scratch.load_all(remaining)
+        scratch.parse()
+    except (OSError, ValueError) as e:
+        return Preview(False, str(e))
+    active = context.builds[0]
+    before = active.dump(active.spec)
+    after = scratch.dump(scratch.spec)
+    changes = diff(before, after, color=False)
+    return Preview(True, changes)
+
+def _tool_side_unload(app, arguments):
+    fragment = arguments.get("fragment")
+    if not fragment:
+        return "side-unload needs 'fragment' (a file currently loaded on top of the active one)"
+    context = app.context
+    before = None
+    if context.active and len(context.builds) == 1:
+        active = context.builds[0]
+        before = active.dump(active.spec)
+    try:
+        app.call_from_thread(context.side_unload, fragment)
+    except (OSError, ValueError) as e:
+        return "could not side-unload: %s" % e
+    app.call_from_thread(app.refresh_screens)
+    after = context.builds[0]
+    from seine.build import diff
+    changes = diff(before, after.dump(after.spec), color=False)
+    return "side-unloaded %s\n\n%s" % (fragment, changes)
 
 # Marks the build as the AI chat's own -- only a build started this way
 # gets the unprompted notify_build_finished() turn, never one begun by
@@ -1035,12 +1089,12 @@ TOOLS = {t.name: t for t in [
                                    "description": "the whole file, as YAML"}},
          "required": ["path", "content"]},
         True, _tool_spec_create, _tool_spec_create_preview),
-    Tool("extend", "Load one more spec file on top of the active one, "
+    Tool("side-load", "Load one more spec file on top of the active one, "
         "for this session only -- nothing on disk changes, 'requires:' "
-        "is untouched, and it's trivially undone by picking the spec "
-        "again. The natural next step right after spec-create wrote a "
-        "new file: this previews what loading it would actually change "
-        "in the merged spec, before anyone commits to making that "
+        "is untouched, and it's undone with side-unload (or by picking "
+        "the spec again). The natural next step right after spec-create "
+        "wrote a new file: this previews what loading it would actually "
+        "change in the merged spec, before anyone commits to making that "
         "permanent by adding it to a 'requires:' list. A person reviews "
         "that change before it's applied, same as any other "
         "consequential action. The call's own result already includes "
@@ -1053,7 +1107,20 @@ TOOLS = {t.name: t for t in [
                                                     "of the active one, e.g. one "
                                                     "spec-create just wrote"}},
          "required": ["fragment"]},
-        True, _tool_extend, _extend_preview),
+        True, _tool_side_load, _side_load_preview),
+    Tool("side-unload", "Drop one side-loaded spec file back out of the "
+        "active one -- the reverse of side-load, for the same "
+        "session-only fragment. Only works on a file currently in the "
+        "active group's own list; refused otherwise. Previews the "
+        "reverting diff the same way side-load previews its own.",
+        {"type": "object",
+         "properties": {"fragment": {"type": "string",
+                                     "description": "a file currently "
+                                                    "loaded on top of the "
+                                                    "active one, to drop "
+                                                    "back out"}},
+         "required": ["fragment"]},
+        True, _tool_side_unload, _side_unload_preview),
 ]}
 
 TOOL_SCHEMAS = [{"type": "function",
@@ -1124,15 +1191,17 @@ class ConfirmAction(ModalScreen):
             yield Static(self.tool.description, id="confirmdesc")
             if self.preview is not None:
                 # 'path' (spec-update/spec-create): a file about to be
-                # written. 'fragment' (extend): a file about to be loaded
-                # into the session, nothing written -- same "what does
-                # this touch" clarity, worded for which one it actually is.
+                # written. 'fragment' (side-load/side-unload): a file
+                # about to be loaded into (or dropped out of) the
+                # session, nothing written -- same "what does this
+                # touch" clarity, worded for which one it actually is.
                 path = self.arguments.get("path")
                 fragment = self.arguments.get("fragment")
                 if path:
                     yield Static("file: %s" % path, id="confirmfile", markup=False)
                 elif fragment:
-                    yield Static("loading: %s" % fragment, id="confirmfile", markup=False)
+                    verb = "unloading" if self.tool.name == "side-unload" else "loading"
+                    yield Static("%s: %s" % (verb, fragment), id="confirmfile", markup=False)
                 with VerticalScroll(id="confirmdiffscroll"):
                     yield Static(_diff_text(self.preview), id="confirmdiff")
             elif self.arguments:

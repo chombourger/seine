@@ -13,7 +13,7 @@ everything else about seine works without it. Given no `SPEC`, it opens on
 [Doctor](#doctor): nothing to build without one yet, so what the machine
 itself can build at all is the more useful first thing to see.
 
-![seine tui: Doctor, Overview, /extend, Plan, browsing a built image, and Help](images/tui-demo.gif)
+![seine tui: Doctor, Overview, /side-load, Plan, browsing a built image, and Help](images/tui-demo.gif)
 
 ### The prompt
 
@@ -59,17 +59,19 @@ every argument each one takes):
    same information `seine analyze`/`--sbom`/`seine cache`/etc. give on
    the real command line, read for whatever `/use` last set.
 
-### Composing with `/extend`
+### Composing with `/side-load`
 
 A specification is layered rather than monolithic -- `requires` pulls in
-what a release or board already sets, and `/extend FRAGMENT.yaml` adds one
-more file on top of the *active* one, live, without starting over.
+what a release or board already sets, and `/side-load FRAGMENT.yaml` adds
+one more file on top of the *active* one, live, without starting over.
+`/side-unload FRAGMENT.yaml` reverses it, dropping the file back out and
+reparsing without it -- neither touches `requires:` or anything on disk.
 What makes this worth showing rather than just telling: the spec tree
 diffs the reload against what was there a moment ago and marks exactly
-what the fragment changed, auto-expanded down to the leaf that moved --
-not "here is the new merged file, go find the difference yourself":
+what changed, auto-expanded down to the leaf that moved -- not "here is
+the new merged file, go find the difference yourself":
 
-![Overview screen: '/extend' highlighting what a fragment changed, auto-expanded down to the leaf](images/tui-extend.svg)
+![Overview screen: '/side-load' highlighting what a fragment changed, auto-expanded down to the leaf](images/tui-side-load.svg)
 
 ### Talking to a model
 

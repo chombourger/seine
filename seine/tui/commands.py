@@ -55,7 +55,7 @@ def _use(app, argv):
     app.say("using %s" % app.context.label())
     app.refresh_screens()
 
-def _extend(app, argv):
+def _side_load(app, argv):
     """load one more fragment on top of the active spec, highlighting what it changed
 
     Loads one more file on top of the active specification and re-parses
@@ -63,12 +63,28 @@ def _extend(app, argv):
     Needs a single active group -- not '/use a -- b'.
     """
     if len(argv) != 1:
-        raise CommandError("/extend expects exactly one fragment file")
+        raise CommandError("/side-load expects exactly one fragment file")
     try:
-        app.context.extend(argv[0])
+        app.context.side_load(argv[0])
     except (OSError, ValueError) as e:
         raise CommandError(str(e))
-    app.say("extended with %s" % argv[0])
+    app.say("side-loaded %s" % argv[0])
+    app.refresh_screens()
+
+def _side_unload(app, argv):
+    """drop one side-loaded fragment back out, highlighting what it reverted
+
+    The reverse of /side-load: drops one file back out of the active
+    specification's file list and re-parses without it, highlighting on
+    the spec tree what that reverted. Needs a single active group.
+    """
+    if len(argv) != 1:
+        raise CommandError("/side-unload expects exactly one fragment file")
+    try:
+        app.context.side_unload(argv[0])
+    except (OSError, ValueError) as e:
+        raise CommandError(str(e))
+    app.say("side-unloaded %s" % argv[0])
     app.refresh_screens()
 
 def _validate(app, argv):
@@ -324,7 +340,8 @@ def _help(app, argv):
 REGISTRY = {
     c.name: c for c in [
         Command("use",      _use,      "SPEC... [-- SPEC...]...",  *_doc(_use)),
-        Command("extend",   _extend,   "FRAGMENT.yaml",            *_doc(_extend)),
+        Command("side-load",   _side_load,   "FRAGMENT.yaml",      *_doc(_side_load)),
+        Command("side-unload", _side_unload, "FRAGMENT.yaml",      *_doc(_side_unload)),
         Command("plan",     _plan,     "[SPEC...]",                *_doc(_plan)),
         Command("validate", _validate, "SPEC...",                  *_doc(_validate)),
         Command("overview", _overview, "",                         *_doc(_overview)),

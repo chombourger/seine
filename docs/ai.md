@@ -56,7 +56,7 @@ editable install always has it; a packaged install may not, and the
 tool says so plainly rather than pretending to have read something it
 hasn't.
 
-Five more can act, and none of them run unconfirmed -- each shows the
+Six more can act, and none of them run unconfirmed -- each shows the
 exact effect (a real diff where one applies, added lines green, removed
 red) and waits for "Yes"/"No" before doing anything:
 
@@ -73,13 +73,16 @@ red) and waits for "Yes"/"No" before doing anything:
 * `spec-update` -- changes one node in an already-loaded file, named by
   the same JSONPath `spec-query` already returned for it.
 * `spec-create` -- writes a brand new file, only next to one already
-  loaded. Creating it is only half the job: it still needs `extend`
+  loaded. Creating it is only half the job: it still needs `side-load`
   (to preview the merge) and a `spec-update` on `requires:` to become
   permanent, the same as an existing-but-unloaded sibling `spec-files`
   found.
-* `extend` -- loads one more file on top of the active spec, live, the
-  same as typing `/extend` yourself -- session-only, undone by picking
-  the spec again. Its own result already includes the merge diff.
+* `side-load` -- loads one more file on top of the active spec, live,
+  the same as typing `/side-load` yourself -- session-only. Its own
+  result already includes the merge diff.
+* `side-unload` -- the reverse of `side-load`: drops one file back out
+  of the active spec, live, the same as typing `/side-unload`. Works on
+  any file currently loaded, not only one `side-load` itself added.
 
 ### Trust model
 
