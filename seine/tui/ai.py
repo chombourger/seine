@@ -119,7 +119,19 @@ _tool_plan = _render_tool("render_plan")
 _tool_packages = _render_tool("render_packages")
 _tool_analyze = _render_tool("render_analyze")
 _tool_artifacts = _render_tool("render_artifacts")
-_tool_cache = _render_tool("render_cache", with_context=False)
+# 'matching' (a regex) is the AI-tool equivalent of 'seine cache info
+# --entries-matching' -- not run through _render_tool() like the other
+# with_context=False tools, since that always calls its render_*()
+# with no arguments at all.
+def _tool_cache(app, arguments):
+    from seine.tui import render
+    pattern = arguments.get("matching")
+    if pattern:
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            return "'%s' is not a usable pattern: %s" % (pattern, e)
+    return render.render_cache(matching=pattern)
 _tool_doctor = _render_tool("render_doctor", with_context=False)
 
 # The build this TUI session itself started, not any spec's own history
@@ -807,8 +819,24 @@ TOOLS = {t.name: t for t in [
         "'<source>_<architecture>_<digest>' -- the same digest 'plan' "
         "names in its \"already built, and not built again\" list; "
         "matching the two confirms a specific build is genuinely "
-        "cached rather than trusting either tool's say-so alone.",
-        _no_args(), False, _tool_cache),
+        "cached rather than trusting either tool's say-so alone. "
+        "'matching' (a regex) narrows the listing to entries whose key "
+        "matches, and expands a surviving package entry with the "
+        "specification content that stamp was actually built from -- "
+        "'source'/'patches'/'extends: kernel:'/'extends: module:', the "
+        "direct way to check whether a cached build really has a "
+        "config option, rather than trusting the live spec still "
+        "matches what was built. A file path in it (a patch, a kernel "
+        "fragment) is relative to whichever file declared it, same as "
+        "spec-files/spec-query show it -- look it up there before "
+        "'read'-ing it, don't assume it is relative to anything else.",
+        {"type": "object",
+         "properties": {"matching": {"type": "string",
+                                     "description": "a regex to narrow the "
+                                                    "listing to, e.g. a "
+                                                    "package name"}},
+         "required": []},
+        False, _tool_cache),
     Tool("doctor", "Whether this machine has what a build needs.",
         _no_args(), False, _tool_doctor),
     Tool("build-status", "Per-step status of the build this TUI session "

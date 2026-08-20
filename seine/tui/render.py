@@ -206,10 +206,16 @@ def render_analyze(context):
     return "\n\n".join(sections)
 
 # 'CacheCmd.info()' prints too -- not spec-scoped, a cache is shared by
-# every build, so this ignores 'context' on purpose.
-def render_cache():
+# every build, so this ignores 'context' on purpose. 'matching' (a regex)
+# narrows the listing the same way 'seine cache info --entries-matching'
+# does, and expands a surviving package entry with what it was actually
+# built from.
+def render_cache(matching=None):
+    import re
     from seine.cache import CACHES, CacheCmd
-    return _captured(lambda: CacheCmd().info(list(CACHES.keys()), entries=True))
+    pattern = re.compile(matching) if matching else None
+    return _captured(lambda: CacheCmd().info(list(CACHES.keys()), entries=True,
+                                             matching=pattern))
 
 def render_doctor(pull=False):
     from seine import doctor

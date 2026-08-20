@@ -1096,6 +1096,40 @@ class ToolTable(avocado.Test):
             build.image._tarball = None
         self.assertIn("not a usable pattern", text)
 
+    # The AI-chat equivalent of 'seine cache info --entries-matching' --
+    # (build/chats/20260818T180821689897.json is the transcript that
+    # motivated it, mistrusting 'plan' 's "already built" line with no
+    # way to check it beyond the digest alone).
+    def test_cache_matching_narrows_to_the_entry_and_shows_what_built_it(self):
+        from seine import cache_index
+        app = self.SeineApp()
+        cache_index.Index().made(cache_index.PACKAGE, "bookworm/arm64/linux")
+        cache_index.Index().made(cache_index.CHROOT, "bookworm-arm64")
+        stamps = os.path.join(self.workdir, "packages", "bookworm", ".stamps")
+        os.makedirs(stamps, exist_ok=True)
+        open(os.path.join(stamps, "linux_arm64_b41c1f8278e07eb5"), "w").close()
+        excerpts = os.path.join(self.workdir, "packages", "bookworm",
+                                ".stamps-spec")
+        os.makedirs(excerpts, exist_ok=True)
+        with open(os.path.join(excerpts,
+                               "linux_arm64_b41c1f8278e07eb5.spec"), "w") as f:
+            f.write("source: apt://linux\n"
+                    "extends:\n"
+                    "  kernel:\n"
+                    "    configs:\n"
+                    "      magic-sysrq:\n"
+                    "      - CONFIG_MAGIC_SYSRQ=n\n")
+
+        text = self.ai.TOOLS["cache"].run(app, {"matching": "linux"})
+        self.assertIn("bookworm/arm64/linux", text)
+        self.assertNotIn("bookworm-arm64", text)
+        self.assertIn("CONFIG_MAGIC_SYSRQ=n", text)
+
+    def test_cache_matching_with_bad_regex_reports_it_not_a_crash(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["cache"].run(app, {"matching": "("})
+        self.assertIn("not a usable pattern", text)
+
     def test_reset_conversation_clears_state(self):
         app = self.SeineApp()
         app.ai_state.messages.append({"role": "user", "content": "hi"})
