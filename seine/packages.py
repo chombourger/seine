@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import threading
 import time
+import yaml
 
 from datetime import datetime
 from datetime import timezone
@@ -32,6 +33,8 @@ from seine.utils  import GIT_EMAIL
 from seine.utils  import GIT_NAME
 from seine.utils  import HOST_ARCH
 from seine.utils  import WORKDIR
+from seine.utils  import redact
+from seine.utils  import redactions
 
 # A source package to rebuild, as described by one entry of the spec's
 # 'packages' section. Where the source comes from is given as a URI:
@@ -501,6 +504,12 @@ class Package:
 # dpkg-scanpackages pays them any attention.
 STAMPS = ".stamps"
 
+# Where each stamp's digest excerpt lives -- named after it, but never in
+# the same directory: '_previous()' and 'cache.py' 's own stamp lookup
+# both list STAMPS and match by name prefix, so a sibling file living
+# there too would be misread as a stamp itself.
+STAMPS_SPEC = ".stamps-spec"
+
 # Where the container that clones finds the ssh agent of the user seine
 # runs as, and the hosts that user already trusts. Fixed names rather than
 # the paths they have on the host, which nothing here needs to preserve.
@@ -508,10 +517,14 @@ SSH_AUTH_SOCK = "/ssh-agent/sock"
 SSH_KNOWN_HOSTS = "/root/.ssh/known_hosts"
 
 class Builder:
-    def __init__(self, distro, options, builderImage):
+    # 'redact_patterns' is optional: most callers (most tests among them)
+    # have no 'redact:' section to apply, and passing '[]' everywhere for
+    # that would be pure noise.
+    def __init__(self, distro, options, builderImage, redact_patterns=None):
         self.builderImage = builderImage
         self.distro = distro
         self.options = options
+        self._redact_patterns = redact_patterns or []
         # The ABI each rebuilt kernel gave itself, by package name, read
         # off its regenerated debian/control as it was prepared. What a
         # module built against that kernel has to be named for, and not a
@@ -1465,6 +1478,113 @@ class Builder:
                             % (package.name, architecture,
                                digest.hexdigest()[:16]))
 
+    # A file 'stamp()' hashed, written the way the specification wrote
+    # it -- relative to whichever file actually declared it
+    # ('origin_of()'), not the absolute path 'referenced_files()' deals
+    # in. A stamp is meant to travel ('cache export'/'import'); an
+    # absolute path baked into one would only be true on the machine
+    # that wrote it.
+    #
+    # 'derived-flavours' can (rarely) be merged from two files at once,
+    # and origin tracking only remembers one file per setting -- so a
+    # fragment from the file that lost that race resolves against the
+    # wrong directory. Still strictly better than an absolute path, and
+    # not worth chasing until it actually bites someone.
+    def _portable_path(self, package, setting, path):
+        origin = package.origin_of(setting)
+        if origin is None:
+            return path
+        return os.path.relpath(path, os.path.dirname(origin))
+
+    # The specification content behind one build, redacted and with
+    # every file path made portable -- what 'cache' shows beside a
+    # stamp so a person or the AI chat can tell what a cached build
+    # actually has in it without re-deriving it from the live spec.
+    #
+    # Deliberately not every field 'stamp()' hashes: the release/
+    # architecture/signer/cross-build context is either already in the
+    # stamp's own name or is build environment, not specification
+    # content -- what belongs here is what a person reading the
+    # specification itself would recognise.
+    def digest_excerpt(self, package):
+        excerpt = {"source": package.source, "revision": package.revision}
+        if package.profiles:
+            excerpt["profiles"] = sorted(package.profiles)
+        if package.options:
+            excerpt["options"] = sorted(package.options)
+        if package.sha256:
+            excerpt["sha256"] = package.sha256
+        if package.patches:
+            excerpt["patches"] = [
+                self._portable_path(package, "patches", p)
+                for p in package.patch_files()]
+
+        extends = {}
+        if package.kernel:
+            extends["kernel"] = self._kernel_excerpt(package)
+        if package.module:
+            extends["module"] = self._module_excerpt(package)
+        if extends:
+            excerpt["extends"] = extends
+
+        return redact(excerpt, self._redact_patterns)
+
+    def _kernel_excerpt(self, package):
+        settings = {}
+        if package.kernel_flavour:
+            settings["flavour"] = package.kernel_flavour
+        if package.kernel_featureset != kernel.DEFAULT_FEATURESET:
+            settings["featureset"] = package.kernel_featureset
+        if package.kernel_fragments:
+            settings["fragments"] = [
+                self._portable_path(package, "extends.kernel.fragments", p)
+                for p in package.kernel_fragment_files()]
+        if package.kernel_configs:
+            settings["configs"] = package.kernel_configs
+        if package.kernel_derived_flavours:
+            # Already absolute+normalised ('_resolve_files()' resolves
+            # these fragments too, in place, at load time) -- no second
+            # pass through '_files()' needed here.
+            settings["derived-flavours"] = {
+                base: {name: [self._portable_path(
+                                  package, "extends.kernel.derived-flavours", p)
+                              for p in fragments]
+                       for name, fragments in derived.items()}
+                for base, derived in package.kernel_derived_flavours.items()}
+        if package.kernel_upstream:
+            settings["upstream"] = str(package.kernel_upstream)
+        if package.kernel_abi_suffix:
+            settings["abi-suffix"] = package.kernel_abi_suffix
+        if package.kernel_keep_patches is not None:
+            settings["keep-patches"] = sorted(package.kernel_keep_patches)
+        if package.kernel_drop_patches:
+            settings["drop-patches"] = sorted(package.kernel_drop_patches)
+        return settings
+
+    def _module_excerpt(self, package):
+        settings = {"build": package.module_build, "target": package.module_target}
+        if package.module_modules:
+            settings["modules"] = sorted(package.module_modules)
+        if package.module_build_depends:
+            settings["build-depends"] = sorted(package.module_build_depends)
+        if package.module_runtime_depends:
+            settings["runtime-depends"] = sorted(package.module_runtime_depends)
+        if package.module_make_vars:
+            settings["make-vars"] = dict(package.module_make_vars)
+        return settings
+
+    # Where an excerpt lives: same basename as its stamp, in the sibling
+    # directory ('STAMPS_SPEC') rather than beside it, so finding one
+    # from the other is swapping a directory, not appending a suffix
+    # '_previous()' 's own prefix match would then pick up too.
+    def _excerpt_path(self, stamp):
+        return os.path.join(self._stamps_spec(),
+                            "%s.spec" % os.path.basename(stamp))
+
+    def _record_excerpt(self, stamp, package):
+        with open(self._excerpt_path(stamp), "w") as f:
+            yaml.dump(self.digest_excerpt(package), f, sort_keys=False)
+
     # The stamp of every package it is built for, in build order, each one
     # folding in the stamps of what it is built after. The order is what
     # makes that possible: a package's dependencies have been given their
@@ -1490,6 +1610,11 @@ class Builder:
 
     def _stamps(self):
         stamps = os.path.join(self.repository(), STAMPS)
+        os.makedirs(stamps, exist_ok=True)
+        return stamps
+
+    def _stamps_spec(self):
+        stamps = os.path.join(self.repository(), STAMPS_SPEC)
         os.makedirs(stamps, exist_ok=True)
         return stamps
 
@@ -1531,6 +1656,9 @@ class Builder:
                 if os.path.isfile(path):
                     os.unlink(path)
             os.unlink(stamp)
+            excerpt = self._excerpt_path(stamp)
+            if os.path.isfile(excerpt):
+                os.unlink(excerpt)
 
     # What a build left in the directory it was given. Everything there is
     # its own, so there is nothing to date or to tell apart: it is the
@@ -2099,6 +2227,7 @@ class Builder:
                 shutil.rmtree(output, ignore_errors=True)
                 self._forget(package, architecture, everything)
                 self._record(stamp, sorted(set(produced) | set(sources)))
+                self._record_excerpt(stamp, package)
             # Once, at the end: one repository, and an index of it made
             # while a build of it is half moved in describes neither what
             # was there nor what is.

@@ -1809,3 +1809,167 @@ class Signing(avocado.Test):
             digests.add(os.path.basename(builder.stamps(package)[0][2]))
         self.assertEqual(len(digests), 2,
                          "signing a build did not ask for it to be rebuilt")
+
+# The specification content behind a build, redacted and with every file
+# path made portable -- what a person or the AI chat reads to tell what a
+# cached build actually has in it.
+FLUSH_IMAGE = ("image:\n"
+              "    filename: digest-excerpt-test.img\n"
+              "    partitions:\n"
+              "        - label: rootfs\n"
+              "          where: /\n")
+
+class DigestExcerpt(avocado.Test):
+    def builder(self, redact_patterns=None):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        return Builder(distro, {}, BuilderImage(distro, {}), redact_patterns)
+
+    def kernel(self, settings, extra=""):
+        return parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+%s
+%s
+        """ % (settings, extra)).image.packages[0]
+
+    # A path names the file that declared it ('origin_of()') as the
+    # anchor to be relative to -- which only exists for a spec loaded
+    # from a real file, not from 'parse()' 's in-memory string. Written
+    # to 'self.workdir' and loaded from there so a test can exercise
+    # that anchor for real, flush left (no leading indent, unlike the
+    # rest of this file's triple-quoted strings) since it is written to
+    # disk rather than parsed inline.
+    def load(self, content):
+        path = os.path.join(self.workdir, "spec.yml")
+        with open(path, "w") as f:
+            f.write(content + FLUSH_IMAGE)
+        build = BuildCmd()
+        build.load_all([path])
+        build.parse()
+        return build.image.packages[0]
+
+class APlainPackageExcerptsSourceAndRevisionOnly(DigestExcerpt):
+    def test(self):
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        self.assertEqual(self.builder().digest_excerpt(package),
+                         {"source": "apt://busybox", "revision": "mod1"})
+
+class PatchesAreExcerptedAsPortablePaths(DigestExcerpt):
+    def test(self):
+        os.makedirs(os.path.join(self.workdir, "patches"), exist_ok=True)
+        open(os.path.join(self.workdir, "patches", "0001-fix.patch"), "w").close()
+        package = self.load(
+            "packages:\n"
+            "    - source: apt://busybox\n"
+            "      patches:\n"
+            "          - patches/0001-fix.patch\n")
+        excerpt = self.builder().digest_excerpt(package)
+        # Exactly as written, not the absolute path 'patch_files()'
+        # resolved it to.
+        self.assertEqual(excerpt["patches"], ["patches/0001-fix.patch"])
+
+class KernelFragmentsAreExcerptedAsPortablePaths(DigestExcerpt):
+    def test(self):
+        os.makedirs(os.path.join(self.workdir, "configs"), exist_ok=True)
+        open(os.path.join(self.workdir, "configs", "embedded.fragment"), "w").close()
+        package = self.load(
+            "packages:\n"
+            "    - source: apt://linux\n"
+            "      extends:\n"
+            "          kernel:\n"
+            "              flavour: amd64\n"
+            "              fragments:\n"
+            "                  - configs/embedded.fragment\n")
+        excerpt = self.builder().digest_excerpt(package)
+        self.assertEqual(excerpt["extends"]["kernel"]["fragments"],
+                         ["configs/embedded.fragment"])
+
+class KernelConfigsAreExcerptedAsWritten(DigestExcerpt):
+    def test(self):
+        package = self.kernel(
+            "                              flavour: amd64",
+            "                              configs:\n"
+            "                                  magic-sysrq:\n"
+            "                                      - CONFIG_MAGIC_SYSRQ=n")
+        excerpt = self.builder().digest_excerpt(package)
+        self.assertEqual(excerpt["extends"]["kernel"]["configs"],
+                         {"magic-sysrq": ["CONFIG_MAGIC_SYSRQ=n"]})
+
+class AnUnresolvableOriginLeavesThePathAsIs(DigestExcerpt):
+    def test(self):
+        # 'kernel_upstream_sha256'/etc. are set programmatically in some
+        # tests below without an '_origins' entry at all -- the excerpt
+        # has to degrade to the path as given rather than raise.
+        import types
+        package = types.SimpleNamespace(
+            source="apt://linux", revision="mod1", profiles=[], options=[],
+            sha256=None, patches=["a.patch"],
+            kernel=False, module=False)
+        package.origin_of = lambda setting: None
+        package.patch_files = lambda: ["a.patch"]
+        excerpt = self.builder().digest_excerpt(package)
+        self.assertEqual(excerpt["patches"], ["a.patch"])
+
+class TheExcerptIsRedacted(DigestExcerpt):
+    def test(self):
+        package = parse("""
+                redact:
+                    - 'AKIA[0-9A-Z]{16}'
+                packages:
+                    - source: apt://busybox
+                      revision: AKIAABCDEFGHIJKLMNOP
+        """).image.packages[0]
+        from seine.utils import redactions
+        builder = self.builder(redactions(
+            {"redact": ["AKIA[0-9A-Z]{16}"]}))
+        excerpt = builder.digest_excerpt(package)
+        self.assertNotIn("AKIA", excerpt["revision"])
+        self.assertIn("<redacted:", excerpt["revision"])
+
+# The excerpt file lives beside its stamp in name only -- in a directory
+# of its own, never the stamps directory itself, which '_previous()' and
+# 'cache.py' 's own lookup both scan by name prefix.
+class ExcerptLivesInItsOwnDirectory(DigestExcerpt):
+    def test(self):
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        builder = self.builder()
+        stamp = builder.stamps([package])[0][2]
+        builder._record_excerpt(stamp, package)
+
+        excerpt = builder._excerpt_path(stamp)
+        self.assertTrue(os.path.isfile(excerpt))
+        self.assertNotEqual(os.path.dirname(excerpt),
+                            os.path.dirname(stamp))
+        # '_previous()' matches every file in the stamps directory by
+        # name prefix -- proof the excerpt, sitting elsewhere, is never
+        # mistaken for a stamp and its YAML mis-read as a file list.
+        self.assertEqual(builder._previous(package, "amd64"), {})
+
+class ForgettingAStampForgetsItsExcerptToo(DigestExcerpt):
+    def test(self):
+        package = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages[0]
+        builder = self.builder()
+        stamp = builder.stamps([package])[0][2]
+        open(stamp, "w").close()
+        builder._record_excerpt(stamp, package)
+        excerpt = builder._excerpt_path(stamp)
+        self.assertTrue(os.path.isfile(excerpt))
+
+        builder._forget(package, "amd64", produced=set())
+        self.assertFalse(os.path.isfile(stamp))
+        self.assertFalse(os.path.isfile(excerpt),
+                         "the excerpt outlived the stamp it belongs to")

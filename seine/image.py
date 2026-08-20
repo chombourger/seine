@@ -14,6 +14,7 @@ from seine               import packages
 from seine               import progress
 from seine               import tasks
 from seine               import utils
+from seine.utils          import redactions
 from seine.ansible_runner import AnsibleContainerRunner
 from seine.bootstrap      import HostBootstrap
 from seine.bootstrap      import TargetBootstrap
@@ -249,7 +250,8 @@ class Image:
         self.hostBootstrap = (hostBootstrap if hostBootstrap is not None
                               else HostBootstrap(distro, self.options))
         builder = packages.Builder(
-            distro, self.options, BuilderImage(distro, self.options))
+            distro, self.options, BuilderImage(distro, self.options),
+            redactions(self.spec))
         return [self.hostBootstrap.task()] + builder.tasks(
             requested if requested is not None else self.packages,
             self.hostBootstrap)
@@ -372,7 +374,8 @@ class Image:
                  ", %d steps at a time" % jobs if jobs > 1 else ""))
 
         builder = packages.Builder(
-            distro, self.options, BuilderImage(distro, self.options))
+            distro, self.options, BuilderImage(distro, self.options),
+            redactions(self.spec))
         current = builder.current(self.packages)
         if len(current) > 0:
             print("\nalready built, and not built again:")
