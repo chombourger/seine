@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import os
 import platform
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -151,6 +152,47 @@ def locked(path, shared=False, blocking=True):
 def digest(files, length=None):
     named = "\0".join(os.path.abspath(f) for f in files)
     return hashlib.sha256(named.encode()).hexdigest()[:length]
+
+# What is printed in place of a secret, with a digest of what it stands
+# for. A constant would have a plan call a changed password no change at
+# all: the baseline it compares against is a dump too, so both sides
+# would read the same. The digest changes with the secret and says
+# nothing about it.
+#
+# Kept here rather than on BuildCmd: packages.py wants it too (to redact
+# a package's own digest excerpt), and cannot import build.py without a
+# cycle (build.py already imports image.py, which imports packages.py).
+REDACTED = "<redacted:%s>"
+
+def _redacted_match(match):
+    return REDACTED % hashlib.sha256(match.group(0).encode()).hexdigest()[:8]
+
+# The 'redact' section as expressions to match with. Compiled here so
+# that a pattern that is not one is reported against the section that
+# holds it, rather than as a traceback out of the middle of a dump.
+def redactions(spec):
+    patterns = []
+    for pattern in (spec or {}).get("redact") or []:
+        try:
+            patterns.append(re.compile(pattern))
+        except re.error as e:
+            raise ValueError("redact: '%s' is not a pattern: %s"
+                             % (pattern, e)) from e
+    return patterns
+
+# A value with every match of those patterns replaced. What matches is
+# replaced and not the string holding it, so a pattern can name the
+# secret inside a larger value -- the password of an ansible task whose
+# other arguments are worth reading.
+def redact(value, patterns):
+    if type(value) == type({}):
+        return {k: redact(v, patterns) for k, v in value.items()}
+    if type(value) == type([]):
+        return [redact(v, patterns) for v in value]
+    if type(value) == type(""):
+        for pattern in patterns:
+            value = pattern.sub(_redacted_match, value)
+    return value
 
 # Label carrying the digest of what an image was built from.
 INPUTS_LABEL = "seine.inputs"

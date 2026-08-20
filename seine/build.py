@@ -4,7 +4,6 @@
 import copy
 import difflib
 import getopt
-import hashlib
 import jinja2
 import jinja2.meta
 import os
@@ -20,6 +19,7 @@ from seine.cmd        import Cmd
 from seine.partition  import PartitionHandler
 from seine.tasks      import Interrupted
 from seine.utils      import ContainerEngine, digest, locked
+from seine.utils      import redact, redactions
 
 # Specifications are rendered before they are parsed, so that one file can
 # say what is true of several architectures or releases instead of being
@@ -1059,10 +1059,10 @@ class BuildCmd(Cmd):
         # appears. The section itself is left as it is: its patterns say
         # what a reader is not being shown, and one of them matching itself
         # would hide that too.
-        patterns = self.redactions(spec)
+        patterns = redactions(spec)
         for section in spec:
             if section != "redact":
-                spec[section] = self._redact(spec[section], patterns)
+                spec[section] = redact(spec[section], patterns)
 
         # return the spec in YAML format
         return yaml.dump(spec)
@@ -1081,11 +1081,11 @@ class BuildCmd(Cmd):
                 spec = yaml.safe_load(f.read()) or {}
             except yaml.YAMLError as e:
                 raise ValueError("%s: %s" % (path, e)) from e
-        patterns = self.redactions(self.spec)
-        return yaml.dump(self._redact(spec, patterns))
+        patterns = redactions(self.spec)
+        return yaml.dump(redact(spec, patterns))
 
     # Every local file this build's 'packages:' entries reference --
-    # patches, kernel config, derived-flavour fragments -- the same
+    # patches, kernel fragments, derived-flavour fragments -- the same
     # files a real build reads to compile them. Never
     # 'defaults.packages:', a description names nothing built. Read
     # fresh, not cached, so a spec-update mid-conversation shows up now.
@@ -1097,11 +1097,11 @@ class BuildCmd(Cmd):
             return set()
         return {os.path.realpath(f) for p in parsed for f in p.referenced_files()}
 
-    # Falls back to a referenced file (patches, kernel config) when
+    # Falls back to a referenced file (a patch, a kernel fragment) when
     # dump_file() refuses -- read as written, redacted as flat text via
-    # _redact() (no YAML round-trip needed). No path-containment check:
+    # redact() (no YAML round-trip needed). No path-containment check:
     # a real build already reads and ships whatever a 'patches:'/
-    # 'config:' entry names, a bigger exposure than this preview.
+    # 'fragments:' entry names, a bigger exposure than this preview.
     def read(self, path, extra_allowed=()):
         try:
             return self.dump_file(path, extra_allowed=extra_allowed)
@@ -1114,47 +1114,8 @@ class BuildCmd(Cmd):
                 "or a local file a 'packages:' entry references" % path)
         with open(real, "r") as f:
             text = f.read()
-        return self._redact(text, self.redactions(self.spec))
+        return redact(text, redactions(self.spec))
 
-    # What is printed in place of a secret, with a digest of what it stands
-    # for. A constant would have a plan call a changed password no change
-    # at all: the baseline it compares against is a dump too, so both sides
-    # would read the same. The digest changes with the secret and says
-    # nothing about it.
-    REDACTED = "<redacted:%s>"
-
-    @staticmethod
-    def _redacted(match):
-        return BuildCmd.REDACTED % hashlib.sha256(
-            match.group(0).encode()).hexdigest()[:8]
-
-    # The 'redact' section as expressions to match with. Compiled here so
-    # that a pattern that is not one is reported against the section that
-    # holds it, rather than as a traceback out of the middle of a dump.
-    @staticmethod
-    def redactions(spec):
-        patterns = []
-        for pattern in (spec or {}).get("redact") or []:
-            try:
-                patterns.append(re.compile(pattern))
-            except re.error as e:
-                raise ValueError("redact: '%s' is not a pattern: %s"
-                                 % (pattern, e)) from e
-        return patterns
-
-    # A value with every match of those patterns replaced. What matches is
-    # replaced and not the string holding it, so a pattern can name the
-    # secret inside a larger value -- the password of an ansible task whose
-    # other arguments are worth reading.
-    def _redact(self, value, patterns):
-        if type(value) == type({}):
-            return {k: self._redact(v, patterns) for k, v in value.items()}
-        if type(value) == type([]):
-            return [self._redact(v, patterns) for v in value]
-        if type(value) == type(""):
-            for pattern in patterns:
-                value = pattern.sub(BuildCmd._redacted, value)
-        return value
 
     # The same, marked with what changed since these files last built. With
     # no baseline nothing is marked, and stderr says why -- stdout carries

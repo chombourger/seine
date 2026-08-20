@@ -10,6 +10,8 @@ from rich.text import Text
 from textual.widgets import Tree
 
 from seine import multiconfig
+from seine.utils import redact as redact_value
+from seine.utils import redactions
 
 # A list item's own name, matched the same fields BuildCmd.diff() uses
 # (name/label/suite/package), so an entry reads the same here as there.
@@ -127,8 +129,8 @@ class SpecTree(Tree):
             # Same redact: patterns/substitution 'seine plan'/'--dump'
             # already apply -- one redaction rule, not a second one
             # invented for the TUI.
-            patterns = build.redactions(build.spec)
-            redact = lambda value, build=build, patterns=patterns: build._redact(value, patterns)
+            patterns = redactions(build.spec)
+            redact = lambda value, patterns=patterns: redact_value(value, patterns)
             old = previous_spec if (previous_spec is not None and index == 0) else NO_DIFF
             for key, value in build.spec.items():
                 if isinstance(key, str) and key.startswith("_"):

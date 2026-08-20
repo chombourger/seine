@@ -28,6 +28,7 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 
 from seine import settings
+from seine.utils import redact, redactions
 
 # SEINE_LLM_MODEL/SEINE_LLM_API_BASE override the settings.json values,
 # same as SEINE_CACHE_DIR does elsewhere. SEINE_LLM_API_KEY has no
@@ -457,15 +458,10 @@ class Plan(NamedTuple):
 # it needs the same redaction dump_file() applies elsewhere. The real
 # new/old text (unredacted) is what actually gets written on approval.
 def _redacted_diff(build, old_text, new_text, from_path, to_path):
-    patterns = build.redactions(build.spec)
+    patterns = redactions(build.spec)
     diff = difflib.unified_diff(old_text.splitlines(), new_text.splitlines(),
                                 fromfile=from_path, tofile=to_path, lineterm="")
-    lines = []
-    for line in diff:
-        for pattern in patterns:
-            line = pattern.sub(build._redacted, line)
-        lines.append(line)
-    return "\n".join(lines)
+    return "\n".join(redact(line, patterns) for line in diff)
 
 # ruamel.yaml's round trip preserves comments/ordering, but dumps at its
 # own fixed default indent regardless of what the source file used --
