@@ -28,6 +28,7 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 
 from seine import settings
+from seine.utils import ContainerEngine
 from seine.utils import redact, redactions
 
 # SEINE_LLM_MODEL/SEINE_LLM_API_BASE override the settings.json values,
@@ -818,6 +819,83 @@ def _tool_gist_delete(app, arguments):
         return "could not delete: %s" % e
     return "deleted %s" % name
 
+# 'source-list' reads no active spec, same reasoning as 'gist-list':
+# a pulled source outlives whichever build asked for it.
+def _tool_source_list(app, arguments):
+    from seine import sources
+    found = sources.list_pulled()
+    if not found:
+        return "no sources pulled yet -- %s" % ContainerEngine.workbench()
+    lines = []
+    for name, entry in found:
+        lines.append("%s %s (%s) -- %s" % (
+            name, entry["version"] or "?", entry["release"],
+            os.path.join(ContainerEngine.workbench(), entry["dir"])))
+    return "\n".join(lines)
+
+# No diff to show ahead of a fetch (nothing local changes until
+# 'apt-get source' actually runs) -- this only says what would run and
+# refuses early what pull() would refuse anyway, same "check without
+# the side effect" spirit spec-update's own preview follows.
+def _source_pull_preview(app, arguments):
+    package = arguments.get("package")
+    if not package:
+        return Preview(False, "source-pull needs 'package' ('name' or "
+                       "'name=version', apt's own syntax)")
+    build = _single_group(app)
+    if build is None:
+        return Preview(False, NO_SINGLE_GROUP)
+    from seine import sources
+    name, version = sources.parse(package)
+    existing = dict(sources.list_pulled()).get(name)
+    if existing:
+        return Preview(False, "'%s' is already pulled (as %s) -- "
+                       "source-rm it first" % (name, existing["dir"]))
+    distro = build.spec["distribution"]
+    return Preview(True, "would fetch %s against %s %s's own feeds into "
+                   "%s/%s" % (package, distro["source"], distro["release"],
+                             ContainerEngine.workbench(), name))
+
+def _tool_source_pull(app, arguments):
+    build = _single_group(app)
+    if build is None:
+        return NO_SINGLE_GROUP
+    package = arguments.get("package")
+    if not package:
+        return "source-pull needs 'package' ('name' or 'name=version')"
+    from seine import sources
+    try:
+        dirname = sources.pull(package, build.spec["distribution"])
+    except ValueError as e:
+        return "could not pull: %s" % e
+    return "pulled %s into %s" % (package,
+                                  os.path.join(ContainerEngine.workbench(), dirname))
+
+def _tool_source_rm_preview(app, arguments):
+    name = arguments.get("name")
+    if not name:
+        return Preview(False, "source-rm needs 'name'")
+    from seine import sources
+    entry = dict(sources.list_pulled()).get(name)
+    if entry is None:
+        return Preview(False, "no pulled source named '%s'" % name)
+    from seine.cache import human, size_of
+    path = os.path.join(ContainerEngine.workbench(), entry["dir"])
+    return Preview(True, "would remove %s (%s, %s %s) -- any change made "
+                   "to it goes with it" % (path, human(size_of(path)),
+                                           entry["version"] or "?", entry["release"]))
+
+def _tool_source_rm(app, arguments):
+    name = arguments.get("name")
+    if not name:
+        return "source-rm needs 'name'"
+    from seine import sources
+    try:
+        sources.remove(name)
+    except ValueError as e:
+        return "could not remove: %s" % e
+    return "removed %s" % name
+
 # The AI-tool equivalent of /side-load FRAGMENT: loads one more fragment
 # on top of the active group, in-session only. Lower stakes than
 # spec-update/spec-create (no write, undone by /use again or by
@@ -1301,6 +1379,33 @@ TOOLS = {t.name: t for t in [
                                  "description": "a gist name, from gist-list"}},
          "required": ["name"]},
         True, _tool_gist_delete, _tool_gist_delete_preview),
+    Tool("source-list", "List package sources already pulled into the "
+        "workbench -- name, version, release, and where each landed. "
+        "Check this before pulling one that sounds like it may already "
+        "be there.", _no_args(), False, _tool_source_list),
+    Tool("source-pull", "Fetch a package's source into the workbench, "
+        "unpacked and ready for 'read'/'bash' -- the way to check what a "
+        "package actually does (a config option, a patch, a default) "
+        "rather than answer from training data, which may not match the "
+        "version this image actually installs. 'package' is 'name' or "
+        "'name=version' (apt's own syntax); give an exact version when "
+        "one is known -- an SBOM (seine build --sbom), if read, names "
+        "the one actually installed -- otherwise this resolves 'name' "
+        "against the active build's own feeds, which may differ from "
+        "what is installed. Refused if 'name' is already pulled.",
+        {"type": "object",
+         "properties": {"package": {"type": "string",
+                                    "description": "'name' or 'name=version'"}},
+         "required": ["package"]},
+        True, _tool_source_pull, _source_pull_preview),
+    Tool("source-rm", "Remove a pulled source and everything under it -- "
+        "a person reviews what will be deleted (size, version) before it "
+        "is, same as any other consequential action.",
+        {"type": "object",
+         "properties": {"name": {"type": "string",
+                                 "description": "a source name, from source-list"}},
+         "required": ["name"]},
+        True, _tool_source_rm, _tool_source_rm_preview),
 ]}
 
 TOOL_SCHEMAS = [{"type": "function",

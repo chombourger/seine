@@ -163,6 +163,7 @@ class ToolTable(avocado.Test):
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["XDG_CONFIG_HOME"] = self.workdir
         os.environ["SEINE_GISTS_DIR"] = os.path.join(self.workdir, "gists")
+        os.environ["SEINE_WORKBENCH_DIR"] = os.path.join(self.workdir, "workbench")
         _clear_llm_env()
 
     def test_every_tool_has_a_matching_schema(self):
@@ -178,14 +179,15 @@ class ToolTable(avocado.Test):
         self.assertEqual(gated, {"start-build", "cancel-build",
                                  "spec-update", "spec-create",
                                  "side-load", "side-unload",
-                                 "gist-create", "gist-delete"})
+                                 "gist-create", "gist-delete",
+                                 "source-pull", "source-rm"})
 
     def test_read_only_tools_work_with_no_active_spec(self):
         app = self.SeineApp()
         for name in ["overview", "plan", "packages", "analyze", "artifacts",
                     "cache", "doctor", "installed-sizes", "build-status", "task-log",
                     "spec-files", "read", "spec-dump", "docs", "spec-query",
-                    "gist-list", "gist-show"]:
+                    "gist-list", "gist-show", "source-list"]:
             text = self.ai.TOOLS[name].run(app, {})
             self.assertIsInstance(text, str)
             self.assertGreater(len(text), 0)
@@ -887,6 +889,72 @@ class ToolTable(avocado.Test):
     def test_gist_delete_of_a_missing_gist(self):
         app = self.SeineApp()
         preview = self.ai.TOOLS["gist-delete"].preview(app, {"name": "nope"})
+        self.assertFalse(preview.ok)
+
+    # Stands in for SourceBootstrap so source-pull is tested without a
+    # container -- same swap-in-place idiom tests/spec/sources.py's own
+    # FakeSourceBootstrap uses, kept separate since test files here stay
+    # self-contained.
+    def _fake_source_pull(self, dirname="bash-5.14"):
+        from seine import sources
+        class Fake:
+            def __init__(self, distro, options):
+                pass
+            def create(self):
+                return self
+            def exec(self, args, volumes=None, workdir=None):
+                os.makedirs(os.path.join(workdir, dirname))
+                return 0, ""
+        saved = sources.SourceBootstrap
+        sources.SourceBootstrap = Fake
+        self.addCleanup(setattr, sources, "SourceBootstrap", saved)
+
+    def test_source_list_with_nothing_yet(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["source-list"].run(app, {})
+        self.assertIn("no sources pulled yet", text)
+
+    def test_source_pull_needs_an_active_spec(self):
+        app = self.SeineApp()
+        preview = self.ai.TOOLS["source-pull"].preview(app, {"package": "bash"})
+        self.assertFalse(preview.ok)
+        self.assertIn("no single active specification", preview.message)
+
+    def test_source_pull_then_list_then_rm(self):
+        self._fake_source_pull()
+        app = self.SeineApp(files=[PC_IMAGE])
+
+        preview = self.ai.TOOLS["source-pull"].preview(app, {"package": "bash"})
+        self.assertTrue(preview.ok)
+        self.assertIn("bash", preview.message)
+
+        result = self.ai.TOOLS["source-pull"].run(app, {"package": "bash"})
+        self.assertIn("bash-5.14", result)
+
+        listing = self.ai.TOOLS["source-list"].run(app, {})
+        self.assertIn("bash", listing)
+        self.assertIn("bash-5.14", listing)
+
+        rm_preview = self.ai.TOOLS["source-rm"].preview(app, {"name": "bash"})
+        self.assertTrue(rm_preview.ok)
+        self.assertIn("bash-5.14", rm_preview.message)
+
+        rm_result = self.ai.TOOLS["source-rm"].run(app, {"name": "bash"})
+        self.assertIn("removed bash", rm_result)
+        self.assertIn("no sources pulled yet",
+                      self.ai.TOOLS["source-list"].run(app, {}))
+
+    def test_source_pull_refuses_an_already_pulled_name(self):
+        self._fake_source_pull()
+        app = self.SeineApp(files=[PC_IMAGE])
+        self.ai.TOOLS["source-pull"].run(app, {"package": "bash"})
+        preview = self.ai.TOOLS["source-pull"].preview(app, {"package": "bash"})
+        self.assertFalse(preview.ok)
+        self.assertIn("already pulled", preview.message)
+
+    def test_source_rm_of_a_missing_name(self):
+        app = self.SeineApp()
+        preview = self.ai.TOOLS["source-rm"].preview(app, {"name": "nope"})
         self.assertFalse(preview.ok)
 
     def _side_load_fragment(self, content="playbook:\n- name: extra play\n  tasks: []\n",
