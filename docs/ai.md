@@ -167,7 +167,7 @@ Only what's needed on *every* turn lives in this one file -- tool-call
 framing, `[SCOPE]`'s routing, `[GATED]`/`[DENIED]`'s safety rules, and
 `[PROMPT-DOCS]`'s own index. Detail specific to one kind of question
 -- build status, spec lookup, editing a file, gists, kernel configs,
-external references -- lives instead in a cluster file under
+package build options, external references -- lives instead in a cluster file under
 `seine/data/prompt/*.txt`, one per group of related tags, fetched with
 the same `docs` tool only once that kind of question actually comes
 up (it also serves `docs/*.md`, see [The tools](#the-tools) above; a
