@@ -1239,7 +1239,7 @@ class Tool(NamedTuple):
     run: object  # (app, arguments: dict) -> str
     # (app, arguments: dict) -> Preview, only for a gated tool whose
     # effect depends on 'arguments' -- 'None' (every gated tool before
-    # 'spec-update'/'spec-create') keeps '_confirm()' 's own fallback: the
+    # 'spec-update'/'spec-create') keeps 'confirm()' 's own fallback: the
     # tool's static 'description' plus a plain dump of 'arguments'.
     preview: object = None
 
@@ -1774,8 +1774,10 @@ class ConfirmAction(ModalScreen):
 # open would otherwise block forever, since nothing would ever call
 # resolved() once the app is gone. Cancellation is treated as a denial
 # -- quitting mid-approval must never quietly do the thing it was
-# about to ask about.
-def _confirm(app, tool, arguments, preview):
+# about to ask about. Public (no leading '_'): commands.py's '/target'
+# calls this too, from its own thread worker -- same requirement, same
+# modal, not a separate confirm system.
+def confirm(app, tool, arguments, preview):
     from textual.worker import get_current_worker
     event = threading.Event()
     answer = {}
@@ -1805,14 +1807,14 @@ def _dispatch(app, call):
     if tool.gated:
         preview = None
         # A bad call is refused here, before anyone is asked to approve
-        # anything -- _confirm()'s modal is for reviewing a real, valid
+        # anything -- confirm()'s modal is for reviewing a real, valid
         # change, not for rejecting a broken request.
         if tool.preview:
             pre = tool.preview(app, arguments)
             if not pre.ok:
                 return pre.message
             preview = pre.message
-        if not _confirm(app, tool, arguments, preview):
+        if not confirm(app, tool, arguments, preview):
             return "denied by user"
     return tool.run(app, arguments)
 

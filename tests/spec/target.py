@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import avocado
+import contextlib
 import os
 import sys
 import types
@@ -232,3 +233,136 @@ class Actions(avocado.Test):
         result = target.status(self.app)
         self.assertEqual(result, {"power": "ON", "uptime": 42,
                                   "storage": ("idle", 0, 0), "usb": []})
+
+# Same '_tui_required' guard tests/spec/tui.py uses for anything that
+# needs the 'tui' extra -- commands._target()'s mutating verbs reach
+# ai.confirm(), which needs textual. Kept self-contained here rather
+# than imported from tui.py, same reason tui.py gives for not sharing
+# helpers across test files.
+@contextlib.contextmanager
+def _tui_required(test):
+    try:
+        yield
+    except ImportError as e:
+        test.cancel("the 'tui' extra (textual) is not installed: %s" % e)
+
+class TargetCommand(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui import commands, ai
+        self.commands = commands
+        self.ai = ai
+        self._real_confirm = ai.confirm
+        self.addCleanup(setattr, ai, "confirm", self._real_confirm)
+
+        target._available = None
+        self._real_mtda_client = sys.modules.pop("mtda.client", None)
+        self._real_mtda = sys.modules.pop("mtda", None)
+        mtda_pkg = types.ModuleType("mtda")
+        mtda_client_mod = types.SimpleNamespace(Client=FakeClient)
+        mtda_pkg.client = mtda_client_mod
+        sys.modules["mtda"] = mtda_pkg
+        sys.modules["mtda.client"] = mtda_client_mod
+
+        self.app = types.SimpleNamespace(_target_client=None, said=[])
+        self.app.say = lambda text, error=False: self.app.said.append((text, error))
+        self.app.call_from_thread = lambda fn, *a, **kw: fn(*a, **kw)
+        self.app.run_worker = lambda fn, thread=True, exclusive=True, group=None: fn()
+
+    def tearDown(self):
+        target._available = None
+        sys.modules.pop("mtda.client", None)
+        sys.modules.pop("mtda", None)
+        if self._real_mtda is not None:
+            sys.modules["mtda"] = self._real_mtda
+        if self._real_mtda_client is not None:
+            sys.modules["mtda.client"] = self._real_mtda_client
+
+    def _client(self):
+        return self.app._target_client
+
+    def test_status_is_a_plain_read_no_worker_no_confirm(self):
+        confirmed = []
+        self.ai.confirm = lambda *a, **k: confirmed.append(1) or True
+        self.commands.dispatch(self.app, "/target status")
+        self.assertEqual(confirmed, [])
+        self.assertEqual(self._client().calls,
+                         [("target_status",), ("target_uptime",),
+                          ("storage_status",), ("usb_ports",)])
+
+    def test_bare_target_is_the_same_as_status(self):
+        self.commands.dispatch(self.app, "/target")
+        self.assertEqual(self._client().calls[0], ("target_status",))
+
+    def test_power_on_asks_for_confirmation_naming_the_action(self):
+        seen = {}
+        def fake_confirm(app, tool, arguments, preview):
+            seen["name"] = tool.name
+            seen["description"] = tool.description
+            return True
+        self.ai.confirm = fake_confirm
+        self.commands.dispatch(self.app, "/target on")
+        self.assertEqual(seen["name"], "target on")
+        self.assertEqual(self._client().calls, [("target_on",)])
+
+    def test_denied_confirmation_skips_the_action(self):
+        self.ai.confirm = lambda *a, **k: False
+        self.commands.dispatch(self.app, "/target off")
+        self.assertIsNone(self.app._target_client)
+        self.assertIn(("denied by user", False), self.app.said)
+
+    def test_usb_needs_a_port_and_a_state(self):
+        self.assertRaises(self.commands.CommandError,
+                          self.commands.dispatch, self.app, "/target usb")
+
+    def test_usb_on_reaches_the_right_port_as_an_int(self):
+        self.ai.confirm = lambda *a, **k: True
+        self.commands.dispatch(self.app, "/target usb 3 on")
+        self.assertEqual(self._client().calls, [("usb_on", 3)])
+
+    def test_write_needs_an_image_path(self):
+        self.assertRaises(self.commands.CommandError,
+                          self.commands.dispatch, self.app, "/target write")
+
+    def test_write_confirms_then_swaps_storage_to_target(self):
+        self.ai.confirm = lambda *a, **k: True
+        self.commands.dispatch(self.app, "/target write /path/to.img")
+        self.assertEqual(self._client().calls,
+                         [("storage_write_image", "/path/to.img"),
+                          ("storage_to_target",)])
+
+    def test_storage_needs_host_or_target(self):
+        self.assertRaises(self.commands.CommandError,
+                          self.commands.dispatch, self.app, "/target storage bogus")
+
+    def test_console_dump_head_tail_wait_are_plain_reads(self):
+        confirmed = []
+        self.ai.confirm = lambda *a, **k: confirmed.append(1) or True
+        self.commands.dispatch(self.app, "/target console dump")
+        self.commands.dispatch(self.app, "/target console head")
+        self.commands.dispatch(self.app, "/target console tail")
+        self.commands.dispatch(self.app, "/target console wait login: 5")
+        self.assertEqual(confirmed, [])
+        self.assertEqual(self._client().calls,
+                         [("console_dump",), ("console_head",), ("console_tail",),
+                          ("console_wait", "login:", 5.0)])
+
+    def test_console_send_and_run_confirm_first(self):
+        self.ai.confirm = lambda *a, **k: True
+        self.commands.dispatch(self.app, "/target console send hello")
+        self.commands.dispatch(self.app, "/target console run uname")
+        self.assertEqual(self._client().calls,
+                         [("console_send", "hello", True), ("console_run", "uname")])
+
+    def test_unknown_verb_is_a_command_error(self):
+        self.assertRaises(self.commands.CommandError,
+                          self.commands.dispatch, self.app, "/target bogus")
+
+    def test_no_mtda_is_a_plain_command_error_not_a_crash(self):
+        sys.modules["mtda.client"] = None
+        target._available = None
+        self.assertRaises(self.commands.CommandError,
+                          self.commands.dispatch, self.app, "/target status")

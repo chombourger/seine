@@ -8,6 +8,7 @@
 import getopt
 import inspect
 import shlex
+import types
 from typing import NamedTuple
 
 from seine import tasks
@@ -365,6 +366,128 @@ def _cancel(app, argv):
     tasks.interrupt()
     app.say("cancelling -- waiting for running steps to finish")
 
+# Every mutation below (power, usb, storage, write, snapshot, rollback,
+# console send/run) is a real hardware change, so it goes through the
+# same ai.confirm()/ConfirmAction modal the AI's own gated tools use --
+# from a thread worker, since confirm() (like every gated AI tool
+# already does) can only run there, not on the UI thread directly
+# (Textual's push_screen(..., wait_for_dismiss=True), which confirm()
+# relies on, raises NoActiveWorker otherwise). status and 'console
+# dump/head/tail/wait' are plain reads: no worker, no confirmation.
+def _target_mutate(app, name, description, arguments, action):
+    def run():
+        from seine.tui import ai
+        tool = types.SimpleNamespace(name=name, description=description)
+        if not ai.confirm(app, tool, arguments, None):
+            app.call_from_thread(app.say, "denied by user")
+            return
+        try:
+            action()
+        except Exception as e:
+            app.call_from_thread(app.say, "target: %s" % e, error=True)
+            return
+        app.call_from_thread(app.say, "%s: done" % name)
+    app.run_worker(run, thread=True, exclusive=True, group="target")
+
+def _target_status(app):
+    from seine.tui import target
+    try:
+        state = target.status(app)
+    except Exception as e:
+        raise CommandError(str(e))
+    app.say("power: %s -- uptime: %ss -- storage: %s -- usb: %s"
+            % (state["power"], state["uptime"], state["storage"], state["usb"]))
+
+def _target_console(app, argv):
+    from seine.tui import target
+    if not argv:
+        raise CommandError("/target console needs send|run|dump|head|tail|wait")
+    verb, rest = argv[0], argv[1:]
+    if verb == "send":
+        if len(rest) != 1:
+            raise CommandError("/target console send needs STRING")
+        data = rest[0]
+        _target_mutate(app, "target console send", "send characters to the console",
+                       {"data": data}, lambda: target.console_send(app, data))
+    elif verb == "run":
+        if len(rest) != 1:
+            raise CommandError("/target console run needs COMMAND")
+        cmd = rest[0]
+        _target_mutate(app, "target console run", "run a command via the console",
+                       {"command": cmd}, lambda: target.console_run(app, cmd))
+    elif verb in ("dump", "head", "tail"):
+        try:
+            text = getattr(target, "console_" + verb)(app)
+        except Exception as e:
+            raise CommandError(str(e))
+        app.say(text or "(console buffer is empty)")
+    elif verb == "wait":
+        if not rest:
+            raise CommandError("/target console wait needs a STRING to wait for")
+        what = rest[0]
+        timeout = float(rest[1]) if len(rest) > 1 else None
+        try:
+            text = target.console_wait(app, what, timeout=timeout)
+        except Exception as e:
+            raise CommandError(str(e))
+        app.say(text or "(timed out waiting for '%s')" % what)
+    else:
+        raise CommandError("unknown '/target console %s' -- '/help' lists them" % verb)
+
+def _target(app, argv):
+    """drive a real device through mtda
+
+    Power, storage, USB and console control for a physical target, over
+    mtda (github.com/mtda-project/mtda). Every mutation -- on/off/
+    toggle, usb PORT on/off/toggle, storage host/target, write IMAGE,
+    snapshot, rollback, console send/run -- asks for confirmation
+    first, same as the AI's own gated tools. 'console dump/head/tail/
+    wait' and a bare '/target' (same as '/target status') are
+    read-only, no confirmation needed. Nothing here works without mtda
+    installed on this system.
+    """
+    from seine.tui import target
+    if not target.available():
+        raise CommandError("mtda is not installed on this system -- '/target' is disabled")
+
+    verb, rest = (argv[0], argv[1:]) if argv else ("status", [])
+
+    if verb == "status":
+        _target_status(app)
+    elif verb in ("on", "off", "toggle"):
+        _target_mutate(app, "target %s" % verb, "%s the target" % verb,
+                       {}, lambda: target.power(app, verb))
+    elif verb == "usb":
+        if len(rest) != 2 or rest[1] not in ("on", "off", "toggle"):
+            raise CommandError("/target usb needs PORT on|off|toggle")
+        port, state = rest
+        _target_mutate(app, "target usb %s" % state, "%s USB port %s" % (state, port),
+                       {"port": port}, lambda: target.usb(app, port, state))
+    elif verb == "storage":
+        if len(rest) != 1 or rest[0] not in ("host", "target"):
+            raise CommandError("/target storage needs host|target")
+        where = rest[0]
+        fn = target.storage_to_host if where == "host" else target.storage_to_target
+        _target_mutate(app, "target storage %s" % where,
+                       "attach shared storage to the %s" % where, {}, lambda: fn(app))
+    elif verb == "write":
+        if len(rest) != 1:
+            raise CommandError("/target write needs IMAGE")
+        path = rest[0]
+        _target_mutate(app, "target write", "write an image to shared storage, "
+                       "then attach it to the target", {"path": path},
+                       lambda: target.write_image(app, path))
+    elif verb == "snapshot":
+        _target_mutate(app, "target snapshot", "commit changes made to shared storage",
+                       {}, lambda: target.snapshot(app))
+    elif verb == "rollback":
+        _target_mutate(app, "target rollback", "roll back changes made to shared storage",
+                       {}, lambda: target.rollback(app))
+    elif verb == "console":
+        _target_console(app, rest)
+    else:
+        raise CommandError("unknown /target verb '%s' -- '/help' lists them" % verb)
+
 def _quit(app, argv):
     """leave the TUI"""
     app.exit()
@@ -394,6 +517,10 @@ REGISTRY = {
         Command("filesystem", _filesystem, "[SPEC...]",             *_doc(_filesystem)),
         Command("cd",       _cd,       "[PATH]",                   *_doc(_cd)),
         Command("cancel",   _cancel,   "",                         *_doc(_cancel)),
+        Command("target",   _target,
+                "[on|off|toggle|usb PORT V|storage host|target|write IMAGE|"
+                "snapshot|rollback|console ...|status]",
+                *_doc(_target)),
         Command("analyze",  _analyze,  "[SPEC...]",                *_doc(_analyze)),
         Command("cache",    _cache,    "",                         *_doc(_cache)),
         Command("doctor",   _doctor,   "",                         *_doc(_doctor)),
