@@ -162,6 +162,7 @@ class ToolTable(avocado.Test):
         self.SeineApp = SeineApp
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        os.environ["SEINE_GISTS_DIR"] = os.path.join(self.workdir, "gists")
         _clear_llm_env()
 
     def test_every_tool_has_a_matching_schema(self):
@@ -176,13 +177,15 @@ class ToolTable(avocado.Test):
         gated = {name for name, tool in self.ai.TOOLS.items() if tool.gated}
         self.assertEqual(gated, {"start-build", "cancel-build",
                                  "spec-update", "spec-create",
-                                 "side-load", "side-unload"})
+                                 "side-load", "side-unload",
+                                 "gist-create", "gist-delete"})
 
     def test_read_only_tools_work_with_no_active_spec(self):
         app = self.SeineApp()
         for name in ["overview", "plan", "packages", "analyze", "artifacts",
                     "cache", "doctor", "installed-sizes", "build-status", "task-log",
-                    "spec-files", "read", "spec-dump", "docs", "spec-query"]:
+                    "spec-files", "read", "spec-dump", "docs", "spec-query",
+                    "gist-list", "gist-show"]:
             text = self.ai.TOOLS[name].run(app, {})
             self.assertIsInstance(text, str)
             self.assertGreater(len(text), 0)
@@ -791,6 +794,77 @@ class ToolTable(avocado.Test):
         self.assertEqual(result, "wrote %s" % new_path)
         with open(new_path) as f:
             self.assertEqual(f.read(), content)
+
+    # No 'files=[...]' -- gist tools don't need (or read) an active
+    # spec, unlike spec-create/side-load; this is the point (a gist
+    # lives outside any one project).
+    def test_gist_list_with_nothing_yet(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["gist-list"].run(app, {})
+        self.assertIn("no gists yet", text)
+
+    def test_gist_create_then_list_then_show(self):
+        app = self.SeineApp()
+        args = {"name": "a-kernel", "description": "page-ref debugging",
+                "content": "packages:\n- x\n"}
+        preview = self.ai.TOOLS["gist-create"].preview(app, args)
+        self.assertTrue(preview.ok)
+        self.assertIn("+# page-ref debugging", preview.message)
+
+        result = self.ai.TOOLS["gist-create"].run(app, args)
+        self.assertIn("a-kernel.yaml", result)
+
+        listing = self.ai.TOOLS["gist-list"].run(app, {})
+        self.assertIn("a-kernel", listing)
+        self.assertIn("page-ref debugging", listing)
+        self.assertIn("a-kernel.yaml", listing)  # the absolute path
+
+        shown = self.ai.TOOLS["gist-show"].run(app, {"name": "a-kernel"})
+        self.assertEqual(shown, "# page-ref debugging\npackages:\n- x\n")
+
+    def test_gist_create_refuses_an_existing_name(self):
+        app = self.SeineApp()
+        args = {"name": "dup", "description": "d", "content": "a: 1\n"}
+        self.ai.TOOLS["gist-create"].run(app, args)
+        preview = self.ai.TOOLS["gist-create"].preview(app, args)
+        self.assertFalse(preview.ok)
+        self.assertIn("already exists", preview.message)
+
+    def test_gist_create_refuses_a_bad_name(self):
+        app = self.SeineApp()
+        preview = self.ai.TOOLS["gist-create"].preview(
+            app, {"name": "Not Kebab Case", "description": "d", "content": "a: 1\n"})
+        self.assertFalse(preview.ok)
+
+    def test_gist_create_content_not_valid_yaml(self):
+        app = self.SeineApp()
+        preview = self.ai.TOOLS["gist-create"].preview(
+            app, {"name": "bad-yaml", "description": "d", "content": "[unterminated"})
+        self.assertFalse(preview.ok)
+        self.assertIn("not valid YAML", preview.message)
+
+    def test_gist_show_of_a_missing_gist(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["gist-show"].run(app, {"name": "nope"})
+        self.assertIn("could not read", text)
+
+    def test_gist_delete_preview_then_run(self):
+        app = self.SeineApp()
+        self.ai.TOOLS["gist-create"].run(
+            app, {"name": "throwaway", "description": "d", "content": "a: 1\n"})
+        preview = self.ai.TOOLS["gist-delete"].preview(app, {"name": "throwaway"})
+        self.assertTrue(preview.ok)
+        self.assertIn("-a: 1", preview.message)
+
+        result = self.ai.TOOLS["gist-delete"].run(app, {"name": "throwaway"})
+        self.assertIn("deleted throwaway", result)
+        listing = self.ai.TOOLS["gist-list"].run(app, {})
+        self.assertIn("no gists yet", listing)
+
+    def test_gist_delete_of_a_missing_gist(self):
+        app = self.SeineApp()
+        preview = self.ai.TOOLS["gist-delete"].preview(app, {"name": "nope"})
+        self.assertFalse(preview.ok)
 
     def _side_load_fragment(self, content="playbook:\n- name: extra play\n  tasks: []\n",
                          name="extra-fragment"):

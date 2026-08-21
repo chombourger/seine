@@ -469,8 +469,11 @@ class Plan(NamedTuple):
 # diff lands in the tool's return text and reaches the remote model, so
 # it needs the same redaction dump_file() applies elsewhere. The real
 # new/old text (unredacted) is what actually gets written on approval.
-def _redacted_diff(build, old_text, new_text, from_path, to_path):
-    patterns = redactions(build.spec)
+# 'spec' is the active build's own spec (for its 'redact:' patterns), or
+# None where there isn't one to redact against -- a gist lives outside
+# any build.
+def _redacted_diff(spec, old_text, new_text, from_path, to_path):
+    patterns = redactions(spec)
     diff = difflib.unified_diff(old_text.splitlines(), new_text.splitlines(),
                                 fromfile=from_path, tofile=to_path, lineterm="")
     return "\n".join(redact(line, patterns) for line in diff)
@@ -587,7 +590,7 @@ def _spec_update_plan(app, arguments):
         return Plan(False, "that change has no effect -- the file would "
                     "be unchanged")
 
-    diff = _redacted_diff(build, old_text, new_text, path, path)
+    diff = _redacted_diff(build.spec, old_text, new_text, path, path)
     return Plan(True, diff, real, new_text)
 
 def _tool_spec_update_preview(app, arguments):
@@ -673,7 +676,7 @@ def _spec_create_plan(app, arguments):
     except yaml.YAMLError as e:
         return Plan(False, "'content' is not valid YAML: %s" % e)
 
-    diff = _redacted_diff(build, "", content, "/dev/null", path)
+    diff = _redacted_diff(build.spec, "", content, "/dev/null", path)
     return Plan(True, diff, real, content)
 
 def _tool_spec_create_preview(app, arguments):
@@ -689,6 +692,105 @@ def _tool_spec_create(app, arguments):
         f.write(plan.new_text)
     os.replace(temporary, plan.path)
     return "wrote %s" % arguments.get("path")
+
+# 'gist-list' reads no active spec -- a gist lives outside any one
+# project, under gists.default_dir() regardless of what (if anything)
+# is loaded right now. Each line carries the absolute path too, so a
+# side-load call right after doesn't need a follow-up lookup for it.
+def _tool_gist_list(app, arguments):
+    from seine import gists
+    found = gists.list_gists()
+    if not found:
+        return "no gists yet -- %s" % gists.default_dir()
+    lines = []
+    for name, description in found:
+        path = gists.path_for(name)
+        lines.append("%s -- %s\n  %s" % (name, description or "(no description)", path))
+    return "\n".join(lines)
+
+def _tool_gist_show(app, arguments):
+    from seine import gists
+    name = arguments.get("name")
+    if not name:
+        return "gist-show needs 'name'"
+    try:
+        return gists.read(name)
+    except (OSError, ValueError) as e:
+        return "could not read: %s" % e
+
+# gist-create's own plan, same "brand new file, diff against nothing"
+# shape as spec-create's -- but writing under gists.default_dir()
+# instead of beside a loaded file: a gist lives outside any one
+# project, so there is no build to confine it next to, and no
+# 'redact:' patterns to apply (spec=None -- see _redacted_diff()).
+def _gist_create_plan(app, arguments):
+    name = arguments.get("name")
+    description = arguments.get("description")
+    content = arguments.get("content")
+    if not name or not description or content is None:
+        return Plan(False, "gist-create needs 'name', 'description', and "
+                    "'content' (the fragment, as YAML)")
+    from seine import gists
+    try:
+        path = gists.path_for(name)
+    except ValueError as e:
+        return Plan(False, str(e))
+    if os.path.exists(path):
+        return Plan(False, "gist '%s' already exists" % name)
+
+    import yaml
+    try:
+        yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        return Plan(False, "'content' is not valid YAML: %s" % e)
+
+    body = content if content.endswith("\n") else content + "\n"
+    new_text = "# %s\n%s" % (description, body)
+    diff = _redacted_diff(None, "", new_text, "/dev/null", path)
+    return Plan(True, diff, path, new_text)
+
+def _tool_gist_create_preview(app, arguments):
+    plan = _gist_create_plan(app, arguments)
+    return Preview(plan.ok, plan.message)
+
+# Recomputes the plan rather than trusting anything cached from preview
+# -- another gist of the same name could have appeared since, same
+# discipline _tool_spec_update() follows for a file. The real write
+# still goes through gists.create() itself, not a copy of its logic.
+def _tool_gist_create(app, arguments):
+    plan = _gist_create_plan(app, arguments)
+    if not plan.ok:
+        return plan.message
+    from seine import gists
+    try:
+        gists.create(arguments["name"], arguments["description"], arguments["content"])
+    except ValueError as e:
+        return "could not create: %s" % e
+    return "created %s" % plan.path
+
+def _tool_gist_delete_preview(app, arguments):
+    from seine import gists
+    name = arguments.get("name")
+    if not name:
+        return Preview(False, "gist-delete needs 'name'")
+    try:
+        content = gists.read(name)
+    except (OSError, ValueError) as e:
+        return Preview(False, str(e))
+    path = gists.path_for(name)
+    diff = _redacted_diff(None, content, "", path, "/dev/null")
+    return Preview(True, diff)
+
+def _tool_gist_delete(app, arguments):
+    from seine import gists
+    name = arguments.get("name")
+    if not name:
+        return "gist-delete needs 'name'"
+    try:
+        gists.delete(name)
+    except (OSError, ValueError) as e:
+        return "could not delete: %s" % e
+    return "deleted %s" % name
 
 # The AI-tool equivalent of /side-load FRAGMENT: loads one more fragment
 # on top of the active group, in-session only. Lower stakes than
@@ -1121,6 +1223,50 @@ TOOLS = {t.name: t for t in [
                                                     "back out"}},
          "required": ["fragment"]},
         True, _tool_side_unload, _side_unload_preview),
+    Tool("gist-list", "List reusable spec fragments kept outside any one "
+        "project -- 'gist ls' on the command line. Each line is a name, "
+        "its description, and the absolute path to hand straight to "
+        "side-load. Check this before drafting a fragment from scratch "
+        "for something that sounds like a repeat of earlier work.",
+        _no_args(), False, _tool_gist_list),
+    Tool("gist-show", "Print one gist's raw file content, description "
+        "line included -- the same thing 'gist show NAME' prints on the "
+        "command line.",
+        {"type": "object",
+         "properties": {"name": {"type": "string",
+                                 "description": "a gist name, from gist-list"}},
+         "required": ["name"]},
+        False, _tool_gist_show),
+    Tool("gist-create", "Save a spec fragment as a reusable gist, kept "
+        "outside any one project so it can be side-loaded again in a "
+        "different one later. Refused if the name is already taken. A "
+        "person reviews the whole new file (shown as a diff against "
+        "nothing) before it's written, same as spec-create. Offer this "
+        "as an alternative to a project's own 'requires:' permanence "
+        "once a fragment has proven itself (side-load, and a build if "
+        "it rebuilds something) and looks like something worth reusing "
+        "elsewhere, not only worth keeping in this one project.",
+        {"type": "object",
+         "properties": {"name": {"type": "string",
+                                 "description": "kebab-case, letters/"
+                                                "digits/hyphens only"},
+                        "description": {"type": "string",
+                                        "description": "one line, shown by "
+                                                       "gist-list"},
+                        "content": {"type": "string",
+                                   "description": "the fragment, as YAML"}},
+         "required": ["name", "description", "content"]},
+        True, _tool_gist_create, _tool_gist_create_preview),
+    Tool("gist-delete", "Permanently remove a gist -- a person reviews "
+        "its content (shown as a diff against nothing removed, i.e. "
+        "every line dropped) before it's deleted, same as any other "
+        "consequential action. Only removes the gist itself, never a "
+        "project that side-loaded it before.",
+        {"type": "object",
+         "properties": {"name": {"type": "string",
+                                 "description": "a gist name, from gist-list"}},
+         "required": ["name"]},
+        True, _tool_gist_delete, _tool_gist_delete_preview),
 ]}
 
 TOOL_SCHEMAS = [{"type": "function",

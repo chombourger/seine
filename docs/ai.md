@@ -46,6 +46,7 @@ read-only and run without asking:
 | `read` | One file this build trusts -- see [Trust model](#trust-model) below |
 | `spec-query`, `spec-dump` | A JSONPath search, or the fully merged spec tree |
 | `docs` | This project's own written docs (`docs/*.md`), chunked -- not always present, see below |
+| `gist-list`, `gist-show` | Reusable spec fragments kept outside any one project -- see [Gists](building.md#gists) |
 | `reset-conversation` | Forgets everything discussed so far |
 
 `docs` reaches beyond the spec itself -- the schema reference you're
@@ -56,7 +57,7 @@ editable install always has it; a packaged install may not, and the
 tool says so plainly rather than pretending to have read something it
 hasn't.
 
-Six more can act, and none of them run unconfirmed -- each shows the
+Eight more can act, and none of them run unconfirmed -- each shows the
 exact effect (a real diff where one applies, added lines green, removed
 red) and waits for "Yes"/"No" before doing anything:
 
@@ -83,6 +84,11 @@ red) and waits for "Yes"/"No" before doing anything:
 * `side-unload` -- the reverse of `side-load`: drops one file back out
   of the active spec, live, the same as typing `/side-unload`. Works on
   any file currently loaded, not only one `side-load` itself added.
+* `gist-create` -- saves a fragment as a reusable gist (see
+  [Gists](building.md#gists)), for a person to `side-load` in any
+  project later, not just this one. Refused if the name is taken.
+* `gist-delete` -- permanently removes one. Never touches a project
+  that already `side-load`ed it -- only the gist itself.
 
 ### Trust model
 
@@ -125,6 +131,14 @@ a file mentioned only in an unrelated ansible task's `copy:`/`template:`
 argument -- is refused. The model is also told never to guess a path:
 every legal one has to have actually turned up in a `spec-files`/
 `spec-query`/`spec-dump` result first.
+
+**Gists are the one deliberate exception** to "scoped to files this
+build vouches for": `gist-list`/`gist-show` read a fixed directory
+outside any build entirely, by design -- that's the point of a gist,
+reusable across projects rather than trusted only within one. A gist
+is still just a spec fragment, the same shape `read` already shows for
+a referenced file, so nothing new is exposed -- only *where* it can
+come from is different.
 
 ### The system prompt
 
