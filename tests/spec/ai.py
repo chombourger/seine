@@ -132,6 +132,15 @@ class SystemPromptPrelude(avocado.Test):
         self.assertIn("[SCOPE]", sent)
         self.assertIn("never mention one to the person", sent)
 
+    # [GATED] names every gated tool literally -- a new one added to
+    # TOOLS without a matching update here would leave the model with no
+    # warning that it needs approval before calling it.
+    def test_every_gated_tool_is_named_in_the_gated_rule(self):
+        sent = self.ai._system_prompt()
+        gated = [name for name, tool in self.ai.TOOLS.items() if tool.gated]
+        for name in gated:
+            self.assertIn("'%s'" % name, sent)
+
     # A file edited without the marker (someone dropped it by mistake)
     # degrades to sending the whole file rather than silently sending
     # nothing -- a broken split must not leave the AI chat mute.
@@ -514,6 +523,11 @@ class ToolTable(avocado.Test):
         text = self.ai.TOOLS["docs"].run(app, {"name": "gists.txt"})
         self.assertTrue(text.startswith("lines 1-"))
         self.assertIn("[GISTS]", text)
+
+    def test_docs_reads_the_sources_cluster_file(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {"name": "sources.txt"})
+        self.assertIn("[SOURCES]", text)
 
     def test_docs_says_when_neither_location_has_it(self):
         real_docs_dir = self.ai._docs_dir
