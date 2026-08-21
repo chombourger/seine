@@ -11,6 +11,7 @@ from seine.cache import CacheCmd
 from seine.cmd import Cmd
 from seine.gists import GistCmd
 from seine.progress import interactive
+from seine.secscan import IssuesCmd
 from seine.sources import SourceCmd
 
 # Deliberately doesn't import seine.tui (and hence textual) at module
@@ -272,6 +273,7 @@ COMMANDS = {
     "gist":  (GistCmd, "list, show, or remove reusable spec fragments"),
     "source": (SourceCmd, "list, remove, or pull a package's source"),
     "analyze": (AnalyzeCmd, "say where the time went in a build that ran"),
+    "issues": (IssuesCmd, "scan an SBOM for known CVEs"),
     "validate": (ValidateCmd, "check a specification loads and parses, without using it"),
     "inspect": (InspectCmd, "browse a finished image, read-only"),
     "doctor": (DoctorCmd, "say whether this machine has what a build needs"),

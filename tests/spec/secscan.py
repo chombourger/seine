@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import avocado
+import contextlib
+import io
 import json
 import os
 import stat
@@ -12,7 +14,10 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine            import secscan as secscan_module
-from seine.secscan    import Finding, cache_path, parse_lines, scan, stats
+from seine.secscan    import (Finding, IssuesCmd, _sbom_output_path, cache_path,
+                              filter_findings, parse_lines, scan, stats)
+
+PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
 
 # A well-formed line as debsbom's own '-f json' actually writes one
 # (shape confirmed against a real scan of examples/pc-image's own SBOM
@@ -137,7 +142,7 @@ class TheBuiltInScannerIsRunWithTheRightArguments(Isolated):
         self.assertIn("%s:/sbom.json:ro,z" % path, cmd)
         self.assertIn("%s:/root/.cache/debsbom:z" % engine.cache("debsbom"), cmd)
         self.assertEqual(cmd[cmd.index(secscan_module.DEBSBOM_IMAGE) + 1:],
-                         ["debsbom", "sec-scan", "--update-db", "-f", "json",
+                         ["debsbom", "sec-scan", "--update-db", "-t", "spdx", "-f", "json",
                           "--distro", "bookworm", "/sbom.json"])
 
     # No 'distro' given leaves debsbom's own default (trixie) alone
@@ -206,6 +211,129 @@ class CachingAvoidsRescanning(Isolated):
             scan(path)
             scan(path, rescan=True)
         self.assertEqual(len(engine.commands), 2)
+
+FINDINGS = [
+    Finding("CVE-1", "libssl", "1.0", "high", "open", ""),
+    Finding("CVE-2", "libssl", "1.0", "low", "open", ""),
+    Finding("CVE-3", "vim", "9.0", "unimportant", "open", ""),
+    Finding("CVE-4", "vim", "9.0", "not-yet-assigned", "undetermined", ""),
+]
+
+class FilterFindings(avocado.Test):
+    def test_no_filters_returns_everything(self):
+        self.assertEqual(filter_findings(FINDINGS), FINDINGS)
+
+    def test_package_narrows_by_name_case_insensitively(self):
+        self.assertEqual([f.cve for f in filter_findings(FINDINGS, package="VIM")],
+                         ["CVE-3", "CVE-4"])
+
+    def test_a_bad_pattern_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            filter_findings(FINDINGS, package="(unclosed")
+
+    # Cutting at 'low' keeps 'high' and 'low' (at or above), drops
+    # 'unimportant' and 'not-yet-assigned' (below it).
+    def test_min_urgency_keeps_at_or_above_the_cutoff(self):
+        self.assertEqual([f.cve for f in filter_findings(FINDINGS, min_urgency="low")],
+                         ["CVE-1", "CVE-2"])
+
+    def test_an_unknown_urgency_level_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            filter_findings(FINDINGS, min_urgency="critical")
+
+    def test_package_and_min_urgency_combine(self):
+        result = filter_findings(FINDINGS, package="vim", min_urgency="unimportant")
+        self.assertEqual([f.cve for f in result], ["CVE-3"])
+
+# 'IssuesCmd' reads settings.sbom2cve_program through scan(), so every
+# test here needs its own settings.json -- same isolation secscan's own
+# Isolated base class already gives the tests above.
+class Cli(Isolated):
+    def test_help_prints_usage_and_does_not_exit(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            IssuesCmd().main(["--help"])
+        self.assertIn("Usage:", out.getvalue())
+
+    def test_no_args_is_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                IssuesCmd().main([])
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_sbom_and_a_spec_file_together_is_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                IssuesCmd().main(["--sbom", "x.spdx.json", PC_IMAGE])
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_sbom_form_scans_the_given_file_directly(self):
+        path = sbom(self.workdir)
+        out = io.StringIO()
+        with Engine(self, output=CVE_LINE.encode()), contextlib.redirect_stdout(out):
+            IssuesCmd().main(["--sbom", path])
+        self.assertIn("CVE-2025-13151", out.getvalue())
+
+    # SEINE_DEPLOY_DIR redirected the same way the next test does -- this
+    # checkout may well have a real SBOM sitting under its own real
+    # deploy directory already (from an actual 'seine build --sbom' run
+    # against this same example), which would otherwise make this "no
+    # SBOM yet" case fail to reproduce.
+    def test_spec_form_needs_a_prior_sbom(self):
+        os.environ["SEINE_DEPLOY_DIR"] = os.path.join(self.workdir, "deploy")
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    IssuesCmd().main([PC_IMAGE])
+        finally:
+            del os.environ["SEINE_DEPLOY_DIR"]
+        self.assertEqual(caught.exception.code, 4)
+        self.assertIn("seine build --sbom", err.getvalue())
+
+    # SEINE_DEPLOY_DIR redirected into the test's own workdir -- without
+    # it, the dummy SBOM this writes at the build's real output path
+    # would land under whatever deploy directory this machine actually
+    # uses, the same isolation every other env-var-scoped test here
+    # already gives itself.
+    def test_spec_form_scans_the_builds_own_sbom_against_its_release(self):
+        os.environ["SEINE_DEPLOY_DIR"] = os.path.join(self.workdir, "deploy")
+        try:
+            from seine.build import BuildCmd
+            build = BuildCmd()
+            build.options = dict(build.options, ansible_library=[])
+            build.load_all([PC_IMAGE])
+            build.parse()
+            path = _sbom_output_path(build.image._output)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write("{}")
+
+            out = io.StringIO()
+            with Engine(self, output=CVE_LINE.encode()) as engine, \
+                    contextlib.redirect_stdout(out):
+                IssuesCmd().main([PC_IMAGE])
+        finally:
+            del os.environ["SEINE_DEPLOY_DIR"]
+        self.assertIn("CVE-2025-13151", out.getvalue())
+        self.assertIn("%s:/sbom.json:ro,z" % path, engine.commands[0])
+        self.assertIn("bookworm", engine.commands[0])
+
+    def test_filter_and_min_urgency_are_applied_to_the_scan(self):
+        path = sbom(self.workdir)
+        combined = "\n".join([CVE_LINE, MINIMAL_LINE])  # not-yet-assigned, unimportant
+        out = io.StringIO()
+        with Engine(self, output=combined.encode()), contextlib.redirect_stdout(out):
+            IssuesCmd().main(["--sbom", path, "--min-urgency", "unimportant"])
+        printed = out.getvalue()
+        self.assertIn("CVE-2004-0230", printed)
+        self.assertNotIn("CVE-2025-13151", printed)
+
+    def test_no_findings_says_so(self):
+        path = sbom(self.workdir)
+        out = io.StringIO()
+        with Engine(self, output=b""), contextlib.redirect_stdout(out):
+            IssuesCmd().main(["--sbom", path])
+        self.assertIn("no known CVEs found", out.getvalue())
 
 if __name__ == "__main__":
     avocado.main()

@@ -20,7 +20,7 @@ class WhatSeineCanBeAskedToDo(avocado.Test):
         for flag in ["-h", "--help"]:
             run = seine(flag)
             self.assertEqual(run.returncode, 0, "'%s' failed: %s" % (flag, run.stderr))
-            for command in ["build", "plan", "cache", "analyze", "validate",
+            for command in ["build", "plan", "cache", "analyze", "issues", "validate",
                            "inspect", "doctor", "diff", "tui"]:
                 self.assertIn(command, run.stdout)
 
@@ -40,7 +40,7 @@ class WhatSeineCanBeAskedToDo(avocado.Test):
 
     # And each command still answers for its own flags.
     def test_a_command_says_the_rest_itself(self):
-        for command in ["build", "plan", "cache", "analyze", "validate",
+        for command in ["build", "plan", "cache", "analyze", "issues", "validate",
                        "inspect", "doctor", "diff", "tui"]:
             run = seine(command, "--help")
             self.assertEqual(run.returncode, 0)
