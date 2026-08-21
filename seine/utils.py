@@ -213,6 +213,7 @@ BUILDER_KIND = "builder"      # where packages are built, holding the chroot
 ROOTFS_KIND = "rootfs"        # what mmdebstrap made of the archive
 IMAGER_KIND = "imager"        # the kernel libguestfs boots, and its appliance
 TRANSPORT_KIND = "transport"  # a baseline plus what ansible needs
+SOURCE_KIND = "source"        # host-arch, dpkg-dev -- where sources are pulled
 
 class ContainerEngine:
     @staticmethod
@@ -546,3 +547,14 @@ class ContainerEngine:
         return subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr,
                                 start_new_session=True,
                                 env=ContainerEngine._podman_env())
+    # stdout+stderr combined as text plus the exit status: run()'s output
+    # would otherwise hit the terminal raw (garbling the TUI, mid-chat),
+    # and check_output() raises on a non-zero exit rather than handing it
+    # back -- wrong for 'bash', whose command commonly exits non-zero on
+    # purpose (grep finding nothing).
+    @staticmethod
+    def run_captured(cmd):
+        cmd = ContainerEngine._podman_cmd(cmd)
+        run = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             start_new_session=True, env=ContainerEngine._podman_env())
+        return run.returncode, run.stdout.decode("utf-8", "replace")

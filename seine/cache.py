@@ -27,6 +27,7 @@ from seine.utils import IMAGER_KIND
 from seine.utils import TRANSPORT_KIND
 from seine.utils import ROOTFS_KIND
 from seine.utils import TOOLING_KIND
+from seine.utils import SOURCE_KIND
 
 # What seine keeps between builds, and what a build has to do again once it
 # is gone. Nothing here is needed for a build to succeed -- only to spare
@@ -106,7 +107,7 @@ INDEX_MEMBER = "index.json"
 # The root file-system a build hands to ansible is not among these either
 # way: it is a container, exported as a tarball and never committed, so
 # podman has no image of it.
-CARRIED_KINDS = [TOOLING_KIND, BUILDER_KIND, IMAGER_KIND, TRANSPORT_KIND]
+CARRIED_KINDS = [TOOLING_KIND, BUILDER_KIND, IMAGER_KIND, TRANSPORT_KIND, SOURCE_KIND]
 
 def images(with_image_rootfs=False):
     named = []
