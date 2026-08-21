@@ -29,7 +29,7 @@ class ChatScreen(BaseScreen):
        plain widget default) is a visibly lighter grey than #chatrow's
        explicit $background, and the two halves of this screen clashed. */
     ChatScreen #main { background: $background; }
-    ChatScreen #spectree { background: $surface; }
+    ChatScreen #spectree { background: $background; }
     ChatScreen #cmd { background: $background; }
     #chatrow { height: 1fr; }
     /* $border-blurred's default sits almost on top of $background, so an
@@ -37,23 +37,23 @@ class ChatScreen(BaseScreen):
     #chatcol {
         width: 2fr; height: 100%;
         border: round $foreground 40%;
-        background: $surface;
+        background: $background;
         border-subtitle-color: $warning;
         border-subtitle-align: right;
     }
     /* 'background' alone doesn't reach the scrollbar -- a separate set
        of properties, defaulting to a pure black track/corner. */
     #chatlog {
-        height: 1fr; border: none; background: $surface;
-        scrollbar-background: $surface;
-        scrollbar-background-hover: $surface;
-        scrollbar-background-active: $surface;
-        scrollbar-corner-color: $surface;
+        height: 1fr; border: none; background: $background;
+        scrollbar-background: $background;
+        scrollbar-background-hover: $background;
+        scrollbar-background-active: $background;
+        scrollbar-corner-color: $background;
         scrollbar-color: #999999;
         scrollbar-color-hover: #a0a0a0;
         scrollbar-color-active: #a0a0a0;
     }
-    #draft { height: auto; padding: 0 2; text-style: italic; background: $surface; }
+    #draft { height: auto; padding: 0 2; text-style: italic; background: $background; }
     #stats {
         width: 1fr; height: 100%; padding: 0 1;
         border: round $foreground 40%;
