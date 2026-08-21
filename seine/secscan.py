@@ -16,7 +16,7 @@ from typing import NamedTuple
 
 from seine.cmd import Cmd
 from seine import settings
-from seine.sbom import DEBSBOM_IMAGE
+from seine.sbom import DEBSBOM_IMAGE, output_path
 from seine.utils import ContainerEngine
 
 # One finding: a single CVE against a single (source) package. 'urgency'
@@ -195,18 +195,6 @@ def filter_findings(findings, package=None, min_urgency=None):
                    and URGENCY_ORDER.index(f.urgency) <= cutoff]
     return findings
 
-# Where 'seine build --sbom' would have left one for 'image' -- the same
-# '<image-without-.img>-sbom.spdx.json' naming seine/sbom.py's own
-# SBOM._output_file() uses, but without that method's own "only if
-# options say --sbom was asked for" gate: a lookup like this one cares
-# whether the file is actually there from some earlier build, not
-# whether the build being loaded *right now* happens to ask for one too.
-def _sbom_output_path(image):
-    output = os.path.realpath(image)
-    if output.endswith(".img"):
-        output = output[:-len(".img")]
-    return output + "-sbom.spdx.json"
-
 # 'seine issues SPEC...' scans the SBOM a prior 'seine build --sbom' of
 # SPEC left behind; 'seine issues --sbom=FILE' scans FILE directly, no
 # specification needed -- the same two-form split 'seine diff' already
@@ -278,7 +266,7 @@ Both check the result against debsbom's own security tracker, or a
                 sys.stderr.write("error: specification is invalid: %s\n" % e)
                 sys.exit(3)
             distro = build.spec["distribution"]["release"]
-            sbom_path = _sbom_output_path(build.image._output)
+            sbom_path = output_path(build.image._output)
             if not os.path.isfile(sbom_path):
                 sys.stderr.write(
                     "error: no SBOM for this build yet -- run 'seine build "

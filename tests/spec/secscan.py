@@ -14,7 +14,8 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine            import secscan as secscan_module
-from seine.secscan    import (Finding, IssuesCmd, _sbom_output_path, cache_path,
+from seine.sbom        import output_path
+from seine.secscan    import (Finding, IssuesCmd, cache_path,
                               filter_findings, parse_lines, scan, stats)
 
 PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
@@ -303,7 +304,7 @@ class Cli(Isolated):
             build.options = dict(build.options, ansible_library=[])
             build.load_all([PC_IMAGE])
             build.parse()
-            path = _sbom_output_path(build.image._output)
+            path = output_path(build.image._output)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 f.write("{}")

@@ -14,6 +14,7 @@ import time
 
 from seine import analyze
 from seine import packages
+from seine import sbom
 from seine.build import diff, recall
 from seine.progress import elapsed
 from seine.sbuild import BuilderImage
@@ -107,16 +108,6 @@ def render_artifacts(context):
         sections.append("\n".join(lines))
     return "\n\n".join(sections) + "\n"
 
-# The SBOM filename 'seine/sbom.py' writes to: '<image>-sbom.spdx.json',
-# derived here without an 'SBOM' instance (that class ties the name to
-# its own 'options["sbom"]' flag, which this has no reason to carry) --
-# same suffix-stripping rule as 'SBOM._output_file()'.
-def _sbom_path(image_output):
-    path = image_output
-    if path.endswith(".img"):
-        path = path[:-len(".img")]
-    return path + "-sbom.spdx.json"
-
 # Two data sources, labelled apart: what 'packages:' asked to rebuild
 # from source, and what the last '--sbom' run found installed.
 def render_packages(context):
@@ -149,7 +140,7 @@ def render_packages(context):
         lines.append("")
         lines.append("INSTALLED (from the last SBOM)")
         output = build.image._output
-        sbom_path = _sbom_path(output) if output else None
+        sbom_path = sbom.output_path(output) if output else None
         if sbom_path is None or not os.path.isfile(sbom_path):
             lines.append(
                 "  no SBOM for this build: run with --sbom to populate this section")

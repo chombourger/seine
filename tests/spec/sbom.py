@@ -127,6 +127,21 @@ class TheSBOMSitsNextToTheImageItDescribes(avocado.Test):
                          "/tmp/pc-image-sbom")
         self.assertIsNone(SBOM(DISTRO, {"sbom": False})._output_file("/tmp/pc-image.img"))
 
+# 'output_path()': the same naming, but a plain lookup -- no SBOM
+# instance, no 'options' -- rather than SBOM._output_file()'s own "only
+# if options currently say --sbom" gate. Shared by every caller
+# (seine/tui/render.py's Packages screen, seine/secscan.py) that wants
+# to know whether a prior build already left an SBOM, not whether the
+# build being loaded right now would produce one.
+class OutputPathIsAPlainLookup(avocado.Test):
+    def test_strips_the_img_suffix(self):
+        self.assertEqual(sbom_module.output_path("/tmp/pc-image.img"),
+                         "/tmp/pc-image-sbom.spdx.json")
+
+    def test_a_non_img_output_still_gets_the_suffix(self):
+        self.assertEqual(sbom_module.output_path("/tmp/pc-image"),
+                         "/tmp/pc-image-sbom.spdx.json")
+
 class OnlyWhatDebsbomReadsIsUnpacked(avocado.Test):
     def test(self):
         # Unpacking a whole root file-system reads far more than the three

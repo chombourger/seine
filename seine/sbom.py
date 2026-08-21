@@ -58,6 +58,24 @@ def installed_sizes(tarball):
             sizes.append((name, kib))
     return sorted(sizes, key=lambda entry: entry[1], reverse=True)
 
+# Where a previous 'seine build --sbom' of 'image_output' would have
+# left an SBOM -- present or not; a caller that only wants it if one is
+# actually there checks os.path.isfile() itself. Same suffix rule
+# SBOM._output_file() below uses, but without that method's own "only
+# if options say --sbom was asked for right now" gate: this is a plain
+# lookup ("did a prior build already leave one here"), not a decision
+# about whether the build being loaded *right now* would produce one --
+# seine/tui/ai.py's own read tool wants that gate (a build's own
+# options currently NOT asking for --sbom hides an SBOM that may exist
+# from an earlier, differently-configured run) and keeps its own,
+# separate lookup for that reason; this one is for every caller that
+# does not.
+def output_path(image_output):
+    path = os.path.realpath(image_output)
+    if path.endswith(".img"):
+        path = path[:-len(".img")]
+    return path + "-sbom.spdx.json"
+
 class SBOM:
     def __init__(self, distro, options=None):
         self.distro = distro
