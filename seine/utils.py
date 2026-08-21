@@ -386,6 +386,18 @@ class ContainerEngine:
     def chats():
         return os.environ.get("SEINE_CHAT_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "chats")
+    # Where a pulled package source (seine/sources.py) or a 'bash' tool
+    # call lands -- unlike scratch(), kept across builds on purpose, so
+    # a source stays pulled until 'source rm' says otherwise. Not named
+    # 'scratch' for that reason: that name is already taken by the
+    # ephemeral, build-local tmp above. SEINE_WORKBENCH_DIR names it
+    # outright; unset, it is under SEINE_BUILD_DIR.
+    @staticmethod
+    def workbench():
+        path = os.environ.get("SEINE_WORKBENCH_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "workbench")
+        os.makedirs(path, exist_ok=True)
+        return path
     # The image builds cache the packages they fetch, through whatever the
     # engine offers for it -- '--mount=type=cache' today, kept under
     # TMPDIR. Unset, that is /var/tmp, so the archives end up somewhere
