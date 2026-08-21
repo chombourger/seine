@@ -66,10 +66,14 @@ class RecordAndList(avocado.Test):
                        "bash", directory=self.workdir)
         [(name, entry)] = sources.list_pulled(self.workdir)
         self.assertEqual(name, "bash")
-        self.assertEqual({k: v for k, v in entry.items() if k != "pulled_at"},
+        self.assertEqual({k: v for k, v in entry.items()
+                          if k not in ("pulled_at", "accessed_at")},
                          {"dir": "bash-5.14", "version": "5.14-3",
                           "release": "trixie", "requested": "bash"})
         self.assertIsInstance(entry["pulled_at"], int)
+        # Pulling counts as a first use, so housekeeping has a real
+        # signal to start from rather than nothing at all.
+        self.assertEqual(entry["accessed_at"], entry["pulled_at"])
 
     # 'sources' is its own key in index.json, not the whole file -- room
     # for something else under the workbench later without a reshuffle.
@@ -88,6 +92,39 @@ class RecordAndList(avocado.Test):
         sources.record("bash", "bash-5.14", "5.14-3", "trixie",
                        "bash", directory=self.workdir)
         self.assertEqual(sources.list_pulled(self.workdir), [])
+
+class Touch(avocado.Test):
+    def test_touch_bumps_accessed_at_past_pulled_at(self):
+        os.makedirs(os.path.join(self.workdir, "bash-5.14"))
+        sources.record("bash", "bash-5.14", "5.14-3", "trixie",
+                       "bash", directory=self.workdir)
+        pulled_at = dict(sources.list_pulled(self.workdir))["bash"]["pulled_at"]
+        sources.touch("bash", directory=self.workdir)
+        entry = dict(sources.list_pulled(self.workdir))["bash"]
+        self.assertGreaterEqual(entry["accessed_at"], pulled_at)
+
+    def test_touch_of_an_unknown_name_does_nothing(self):
+        sources.touch("nope", directory=self.workdir)
+        self.assertEqual(sources.list_pulled(self.workdir), [])
+
+    def test_touch_path_finds_the_owning_source_from_a_file_inside_it(self):
+        os.makedirs(os.path.join(self.workdir, "bash-5.14"))
+        sources.record("bash", "bash-5.14", "5.14-3", "trixie",
+                       "bash", directory=self.workdir)
+        before = dict(sources.list_pulled(self.workdir))["bash"]["accessed_at"]
+        sources.touch_path(os.path.join(self.workdir, "bash-5.14", "control"),
+                           directory=self.workdir)
+        after = dict(sources.list_pulled(self.workdir))["bash"]["accessed_at"]
+        self.assertGreaterEqual(after, before)
+
+    def test_touch_path_outside_any_source_does_nothing(self):
+        os.makedirs(os.path.join(self.workdir, "bash-5.14"))
+        sources.record("bash", "bash-5.14", "5.14-3", "trixie",
+                       "bash", directory=self.workdir)
+        before = dict(sources.list_pulled(self.workdir))["bash"]["accessed_at"]
+        sources.touch_path(self.workdir, directory=self.workdir)
+        after = dict(sources.list_pulled(self.workdir))["bash"]["accessed_at"]
+        self.assertEqual(after, before)
 
 class Remove(avocado.Test):
     def test_removes_the_directory_and_the_index_entry(self):
@@ -253,6 +290,7 @@ class Cli(avocado.Test):
         self.assertIn("bash", out.getvalue())
         self.assertIn("5.14-3", out.getvalue())
         self.assertIn("bookworm", out.getvalue())
+        self.assertIn("just now", out.getvalue())
 
     def test_rm_removes_it(self):
         os.makedirs(os.path.join(self.workdir, "bash-5.14"))
@@ -343,6 +381,16 @@ class Bash(avocado.Test):
         sources.bash("true", DISTRO, cwd="bash-5.14", directory=self.workdir)
         self.assertEqual(seen["cmd"][seen["cmd"].index("-w") + 1],
                          os.path.join(self.workdir, "bash-5.14"))
+
+    def test_cwd_under_a_pulled_source_bumps_its_accessed_at(self):
+        os.makedirs(os.path.join(self.workdir, "bash-5.14"))
+        sources.record("bash", "bash-5.14", "5.14-3", "trixie",
+                       "bash", directory=self.workdir)
+        before = dict(sources.list_pulled(self.workdir))["bash"]["accessed_at"]
+        self._fake()
+        sources.bash("true", DISTRO, cwd="bash-5.14", directory=self.workdir)
+        after = dict(sources.list_pulled(self.workdir))["bash"]["accessed_at"]
+        self.assertGreaterEqual(after, before)
 
     def test_a_nonzero_exit_is_appended_not_swallowed(self):
         self._fake("oops\n", returncode=1)

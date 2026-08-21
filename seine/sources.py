@@ -104,14 +104,45 @@ def parse(spec):
     return name, version or None
 
 # Recorded by pull() once a source lands -- split out so the bookkeeping
-# can be tested without a container.
+# can be tested without a container. 'accessed_at' starts equal to
+# 'pulled_at' -- pulling counts as a first use -- and moves forward with
+# touch()/touch_path() as 'read'/'bash' actually look at it, so
+# housekeeping ("what hasn't been used lately") has a real signal instead
+# of only knowing when a source arrived.
 def record(name, dirname, version, release, requested, directory=None):
     directory = directory or ContainerEngine.workbench()
     index = _load_index(directory)
+    now = int(time.time())
     index.setdefault("sources", {})[name] = {
         "dir": dirname, "version": version, "release": release,
-        "requested": requested, "pulled_at": int(time.time())}
+        "requested": requested, "pulled_at": now, "accessed_at": now}
     _save_index(directory, index)
+
+# Bumps 'name' 's own 'accessed_at' to now -- called whenever 'read' or
+# 'bash' actually looks at a pulled source, not on source-list/source-pull
+# (which already touch pulled_at). Silently does nothing for a name not
+# in the index, same as remove()'s own directory-prefix fallback leaves
+# untouched sources alone.
+def touch(name, directory=None):
+    directory = directory or ContainerEngine.workbench()
+    index = _load_index(directory)
+    entry = index.get("sources", {}).get(name)
+    if entry is not None:
+        entry["accessed_at"] = int(time.time())
+        _save_index(directory, index)
+
+# touch(), but by path rather than name -- 'path' is resolved against
+# every pulled source's own directory, and the one it falls under (if
+# any) is the one touched. A path outside every pulled source (the
+# workbench root itself, or nothing pulled at all) is left alone.
+def touch_path(path, directory=None):
+    directory = directory or ContainerEngine.workbench()
+    real = os.path.realpath(path)
+    for name, entry in _entries(directory).items():
+        entry_dir = os.path.realpath(os.path.join(directory, entry["dir"]))
+        if real == entry_dir or real.startswith(entry_dir + os.sep):
+            touch(name, directory)
+            return
 
 # name -> index entry, or None if name was never recorded. Every listed
 # entry's own 'dir' is checked against what is actually on disk, so a
@@ -230,6 +261,7 @@ def bash(command, distro, options=None, cwd=None, directory=None,
         raise ValueError("'cwd' must stay under the workbench")
     if not os.path.isdir(real):
         raise ValueError("'%s' is not a directory under the workbench" % cwd)
+    touch_path(real, directory)
 
     image = HostBootstrap(distro, options or {})
     image.create()
@@ -308,10 +340,15 @@ class SourceCmd(Cmd):
         if not found:
             print("no sources pulled yet -- %s" % ContainerEngine.workbench())
             return
+        from seine.cache       import human, size_of
+        from seine.cache_index import since
+        directory = ContainerEngine.workbench()
         width = max(len(name) for name, _ in found)
         for name, entry in found:
-            print("%-*s  %-12s  %s" % (width, name, entry["version"] or "?",
-                                       entry["release"]))
+            size = human(size_of(os.path.join(directory, entry["dir"])))
+            print("%-*s  %-12s  %-10s  %8s  used %s" % (
+                width, name, entry["version"] or "?", entry["release"],
+                size, since(entry.get("accessed_at"))))
 
     # Loads SPEC the same way 'seine validate'/'seine inspect' do -- just
     # far enough to reach 'distribution', never touching a container --

@@ -335,9 +335,12 @@ def _tool_read(app, arguments):
     if _under_workbench(real):
         try:
             with open(real) as f:
-                return f.read()
+                text = f.read()
         except OSError as e:
             return "could not read %s: %s" % (path, e)
+        from seine import sources
+        sources.touch_path(real)
+        return text
 
     build = _single_group(app)
     if build is None:
@@ -863,11 +866,16 @@ def _tool_source_list(app, arguments):
     found = sources.list_pulled()
     if not found:
         return "no sources pulled yet -- %s" % ContainerEngine.workbench()
+    from seine.cache       import human, size_of
+    from seine.cache_index import since
+    directory = ContainerEngine.workbench()
     lines = []
     for name, entry in found:
-        lines.append("%s %s (%s) -- %s" % (
-            name, entry["version"] or "?", entry["release"],
-            os.path.join(ContainerEngine.workbench(), entry["dir"])))
+        size = human(size_of(os.path.join(directory, entry["dir"])))
+        lines.append("%s %s (%s, %s, used %s) -- %s" % (
+            name, entry["version"] or "?", entry["release"], size,
+            since(entry.get("accessed_at")),
+            os.path.join(directory, entry["dir"])))
     return "\n".join(lines)
 
 # No diff to show ahead of a fetch (nothing local changes until
@@ -1440,9 +1448,11 @@ TOOLS = {t.name: t for t in [
          "required": ["name"]},
         True, _tool_gist_delete, _tool_gist_delete_preview),
     Tool("source-list", "List package sources already pulled into the "
-        "workbench -- name, version, release, and where each landed. "
+        "workbench -- name, version, release, size on disk, how long "
+        "since 'read'/'bash' last looked at it, and where it landed. "
         "Check this before pulling one that sounds like it may already "
-        "be there.", _no_args(), False, _tool_source_list),
+        "be there, or to find ones worth source-rm-ing (large, long "
+        "unused).", _no_args(), False, _tool_source_list),
     Tool("source-pull", "Fetch a package's source into the workbench, "
         "unpacked and ready for 'read'/'bash' -- the way to check what a "
         "package actually does (a config option, a patch, a default) "
