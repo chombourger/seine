@@ -264,6 +264,114 @@ class PackagesRendering(avocado.Test):
         self.assertIn("base-files", text)
         self.assertIn("12.4", text)
 
+# Scanned via settings.sbom2cve_program (a real, tiny external program,
+# not a container stand-in) rather than pulling debsbom's own image --
+# same "exercise the real subprocess call" choice tests/spec/secscan.py's
+# own ACustomProgramReplacesTheContainer makes.
+def _fake_scanner(workdir, findings):
+    import stat
+    path = os.path.join(workdir, "fake-scanner")
+    # One print() per finding -- debsbom's own '-f json' is JSON-lines,
+    # not a single document, so the fake has to match that shape too.
+    body = "".join("print(%r)\n" % json.dumps(f) for f in findings)
+    with open(path, "w") as f:
+        f.write("#!/usr/bin/env python3\n" + body)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+    return path
+
+class IssuesRendering(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.context import Context
+            from seine.tui.render import render_issues_stats, render_issues_table
+        self.Context = Context
+        self.render_issues_table = render_issues_table
+        self.render_issues_stats = render_issues_stats
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["SEINE_DEPLOY_DIR"] = os.path.join(self.workdir, "deploy")
+
+    def _configure_scanner(self, findings):
+        from seine import settings
+        current = settings.load()
+        current["sbom2cve_program"] = _fake_scanner(self.workdir, findings)
+        settings.save(current)
+
+    def _write_sbom(self, context):
+        output = context.builds[0].image._output
+        path = output[:-len(".img")] + "-sbom.spdx.json" \
+              if output.endswith(".img") else output + "-sbom.spdx.json"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("{}")
+
+    def test_no_active_spec_says_so(self):
+        self.assertIn("use", self.render_issues_table(self.Context()))
+        self.assertIn("use", self.render_issues_stats(self.Context()))
+
+    def test_no_sbom_says_so(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self.assertIn("no SBOM for this build", self.render_issues_table(context))
+        self.assertIn("no SBOM for this build", self.render_issues_stats(context))
+
+    def test_findings_are_listed_with_package_urgency_and_status(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([
+            {"package": "busybox@1.36", "vulnerability":
+                {"id": "CVE-2024-0001", "status": "open", "urgency": "high"}},
+        ])
+        text = self.render_issues_table(context)
+        self.assertIn("CVE-2024-0001", text)
+        self.assertIn("busybox", text)
+        self.assertIn("high", text)
+        self.assertIn("open", text)
+
+    def test_no_findings_says_so(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([])
+        self.assertIn("no known CVEs found", self.render_issues_table(context))
+
+    def test_filter_and_min_urgency_narrow_the_table(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([
+            {"package": "busybox@1.36", "vulnerability":
+                {"id": "CVE-1", "status": "open", "urgency": "high"}},
+            {"package": "vim@9.0", "vulnerability":
+                {"id": "CVE-2", "status": "open", "urgency": "low"}},
+        ])
+        text = self.render_issues_table(context, package="busybox")
+        self.assertIn("CVE-1", text)
+        self.assertNotIn("CVE-2", text)
+
+        text = self.render_issues_table(context, min_urgency="high")
+        self.assertIn("CVE-1", text)
+        self.assertNotIn("CVE-2", text)
+
+    def test_stats_show_totals_and_top_packages(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([
+            {"package": "busybox@1.36", "vulnerability":
+                {"id": "CVE-1", "status": "open", "urgency": "high"}},
+            {"package": "busybox@1.36", "vulnerability":
+                {"id": "CVE-2", "status": "open", "urgency": "low"}},
+        ])
+        text = self.render_issues_stats(context)
+        self.assertIn("2 findings", text)
+        self.assertIn("2 unique CVEs", text)
+        self.assertIn("1 packages affected", text)
+        self.assertIn("busybox", text)
+
 # 'analyze'/'cache'/'doctor' are all renderers over an engine function
 # that already prints ('analyze.blame()', 'CacheCmd.info()',
 # 'doctor.render()') -- captured, not reimplemented.
@@ -560,13 +668,15 @@ class App(avocado.Test):
     def setUp(self):
         with _tui_required(self):
             from seine.tui.app import (AnalyzeScreen, ArtifactsScreen, CacheScreen,
-                                       DiffScreen, DoctorScreen, OverviewScreen,
-                                       PackagesScreen, PlanScreen, SeineApp)
+                                       DiffScreen, DoctorScreen, IssuesScreen,
+                                       OverviewScreen, PackagesScreen, PlanScreen,
+                                       SeineApp)
         self.AnalyzeScreen = AnalyzeScreen
         self.ArtifactsScreen = ArtifactsScreen
         self.CacheScreen = CacheScreen
         self.DiffScreen = DiffScreen
         self.DoctorScreen = DoctorScreen
+        self.IssuesScreen = IssuesScreen
         self.OverviewScreen = OverviewScreen
         self.PackagesScreen = PackagesScreen
         self.PlanScreen = PlanScreen
@@ -721,6 +831,76 @@ class App(avocado.Test):
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.DiffScreen)
                 self.assertIn("openssh-server", app.diff_text)
+        _run(scenario)
+
+    def test_issues_needs_an_active_spec(self):
+        async def scenario():
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/issues"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.DoctorScreen)
+                self.assertIn("no active specification", _content(app.screen.query_one("#status")))
+        _run(scenario)
+
+    def test_issues_command_switches_screen_and_scans(self):
+        async def scenario():
+            app = self.SeineApp(files=[BUSYBOX_REBUILD])
+            build = app.context.builds[0]
+            output = build.image._output
+            sbom_path = output[:-len(".img")] + "-sbom.spdx.json" \
+                       if output.endswith(".img") else output + "-sbom.spdx.json"
+            os.makedirs(os.path.dirname(sbom_path), exist_ok=True)
+            with open(sbom_path, "w") as f:
+                f.write("{}")
+            from seine import settings
+            current = settings.load()
+            current["sbom2cve_program"] = _fake_scanner(self.workdir, [
+                {"package": "busybox@1.36", "vulnerability":
+                    {"id": "CVE-2024-0001", "status": "open", "urgency": "high"}}])
+            settings.save(current)
+
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/issues --min-urgency=high"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.IssuesScreen)
+                self.assertIn("CVE-2024-0001", _content(app.screen.query_one("#issuestable")))
+                self.assertIn("1 findings", _content(app.screen.query_one("#issuesstats")))
+        _run(scenario)
+
+    # The table is the reason to be on this screen -- it must end up
+    # the widest pane, with the spec tree narrowed well below its usual
+    # 2fr (app.py's own global rule, right for a screen with one plain-
+    # text body pane, wrong once a second pane joins it here).
+    def test_issues_table_is_the_widest_pane(self):
+        async def scenario():
+            app = self.SeineApp(files=[BUSYBOX_REBUILD])
+            async with app.run_test(size=(150, 40)) as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/issues"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.IssuesScreen)
+                spectree = app.screen.query_one("#spectree").size.width
+                table = app.screen.query_one("#issuestable-pane").size.width
+                stats = app.screen.query_one("#issuesstats-pane").size.width
+                self.assertGreater(table, stats)
+                self.assertGreater(stats, spectree)
+        _run(scenario)
+
+    def test_issues_bad_option_is_refused(self):
+        async def scenario():
+            app = self.SeineApp(files=[BUSYBOX_REBUILD])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/issues --not-a-real-option"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertNotIsInstance(app.screen, self.IssuesScreen)
         _run(scenario)
 
     def test_plan_command_switches_screen_and_back(self):

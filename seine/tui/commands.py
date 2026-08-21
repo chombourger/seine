@@ -273,6 +273,41 @@ def _diff(app, argv):
         raise CommandError(str(e))
     app.show("diff")
 
+def _issues(app, argv):
+    """scan the active build's own SBOM for known CVEs
+
+    Scans the active build's own SBOM (every TUI '/build' writes one; a
+    plain 'seine build --sbom' also does) against Debian's own security
+    tracker, or a configured 'sbom2cve_program' ('/set sbom2cve_program').
+    '--filter=PKG' narrows to a package (a regex, case-insensitive);
+    '--min-urgency=LEVEL' drops anything less severe than LEVEL (high,
+    medium, low, unimportant, end-of-life, not-yet-assigned -- the
+    default: everything); '--rescan' ignores a cached scan and runs a
+    fresh one.
+    """
+    try:
+        opts, args = getopt.getopt(argv, "", ["filter=", "min-urgency=", "rescan"])
+    except getopt.GetoptError as e:
+        raise CommandError(str(e))
+    if args:
+        raise CommandError("/issues takes no positional arguments -- "
+                           "'--filter=PKG'/'--min-urgency=LEVEL'/'--rescan' only")
+    if not app.context.active:
+        raise CommandError("no active specification -- '/use SPEC' first")
+    package = min_urgency = None
+    rescan = False
+    for o, a in opts:
+        if o == "--filter":
+            package = a
+        elif o == "--min-urgency":
+            min_urgency = a
+        elif o == "--rescan":
+            rescan = True
+    app.issues_filter = package
+    app.issues_min_urgency = min_urgency
+    app.issues_rescan = rescan
+    app.show("issues")
+
 def _settings(app, argv):
     """open the settings screen"""
     from seine.tui.settings import SettingsScreen
@@ -364,6 +399,8 @@ REGISTRY = {
         Command("doctor",   _doctor,   "",                         *_doc(_doctor)),
         Command("chat",     _chat,     "",                         *_doc(_chat)),
         Command("diff",     _diff,     "OLD.spdx.json NEW.spdx.json", *_doc(_diff)),
+        Command("issues",   _issues,   "[--filter=PKG] [--min-urgency=LEVEL] [--rescan]",
+                *_doc(_issues)),
         Command("settings", _settings, "",                         *_doc(_settings)),
         Command("set",      _set,      "KEY VALUE",                *_doc(_set)),
         Command("help",     _help,     "",                         *_doc(_help)),
@@ -378,6 +415,7 @@ REGISTRY["q"] = REGISTRY["quit"]
 OPTIONS = {
     "plan":  BuildCmd.LONG_OPTIONS,
     "build": ["jobs="],
+    "issues": ["filter=", "min-urgency=", "rescan"],
 }
 
 # One line, split the way a shell would split it -- so a quoted path

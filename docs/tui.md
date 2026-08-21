@@ -58,6 +58,9 @@ every argument each one takes):
  * **Artifacts**, **Packages**, **Analyze**, **Cache**, **Diff** -- the
    same information `seine analyze`/`--sbom`/`seine cache`/etc. give on
    the real command line, read for whatever `/use` last set.
+ * **Issues** -- known CVEs against the active build's own SBOM (`seine
+   issues` on the command line, [Vulnerability scanning](building.md#vulnerability-scanning)):
+   a findings table beside summary stats.
 
 ### Composing with `/side-load`
 

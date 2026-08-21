@@ -10,11 +10,13 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import time
 
 from seine import analyze
 from seine import packages
 from seine import sbom
+from seine import secscan
 from seine.build import diff, recall
 from seine.progress import elapsed
 from seine.sbuild import BuilderImage
@@ -239,3 +241,77 @@ def render_settings():
         [("jobs", jobs), ("theme", theme),
          ("llm_model", llm_model), ("llm_api_base", llm_api_base)]
     ) + "\n"
+
+# Same "exactly one active group" restriction seine/tui/ai.py's own
+# tools apply to a spec-scoped call -- multi-group specifications
+# ('/use a -- b') aren't driven from any of these surfaces yet.
+def _issues_build(context):
+    if not context.active:
+        return None, "no active specification -- '/use SPEC...' picks one\n"
+    if len(context.builds) != 1:
+        return None, ("multi-group specifications ('/use a -- b') aren't "
+                      "supported here yet -- '/use' a single one\n")
+    return context.builds[0], None
+
+# The active build's own SBOM path, or the "not built yet" message --
+# shared by both render_issues_* below so the two panes never disagree
+# about why there is nothing to show.
+def _issues_sbom_path(build):
+    path = sbom.output_path(build.image._output)
+    if os.path.isfile(path):
+        return path, None
+    return None, ("no SBOM for this build yet -- every TUI '/build' writes "
+                  "one, or run 'seine build --sbom' first\n")
+
+def render_issues_table(context, package=None, min_urgency=None, rescan=False):
+    build, error = _issues_build(context)
+    if error:
+        return error
+    path, error = _issues_sbom_path(build)
+    if error:
+        return error
+    release = build.spec["distribution"]["release"]
+    try:
+        findings = secscan.scan(path, distro=release, rescan=rescan)
+        findings = secscan.filter_findings(findings, package=package, min_urgency=min_urgency)
+    except ValueError as e:
+        return "%s\n" % e
+    except (OSError, subprocess.CalledProcessError) as e:
+        return "scan failed: %s\n" % e
+    if not findings:
+        return "no known CVEs found\n"
+    width = max(len(f.package) for f in findings)
+    lines = ["%-16s %-*s %-18s %s" % (f.cve, width, f.package, f.urgency, f.status)
+             for f in findings]
+    return "\n".join(lines) + "\n"
+
+# Reads whatever render_issues_table() above just left cached rather
+# than scanning again -- called after it in IssuesScreen.update_body(),
+# so a '/issues --rescan' has already refreshed the cache this reads
+# back by the time this runs. 'rescan' is deliberately not repeated
+# here, not because a fresh scan is unwanted for this pane too.
+def render_issues_stats(context):
+    build, error = _issues_build(context)
+    if error:
+        return error
+    path, error = _issues_sbom_path(build)
+    if error:
+        return error
+    release = build.spec["distribution"]["release"]
+    try:
+        findings = secscan.scan(path, distro=release)
+    except (OSError, subprocess.CalledProcessError) as e:
+        return "scan failed: %s\n" % e
+    data = secscan.stats(findings)
+    lines = ["TOTALS", " %d findings" % data["total"],
+             " %d unique CVEs" % data["unique_cves"],
+             " %d packages affected" % data["packages"], "", "BY URGENCY"]
+    for level in secscan.URGENCY_ORDER:
+        lines.append(" %-17s %4d" % (level, data["by_urgency"].get(level, 0)))
+    lines += ["", "BY STATUS"]
+    for status, count in data["by_status"].most_common():
+        lines.append(" %-17s %4d" % (status, count))
+    lines += ["", "TOP PACKAGES"]
+    for pkg, count in data["by_package"].most_common(10):
+        lines.append(" %-17s %4d" % (pkg, count))
+    return "\n".join(lines) + "\n"

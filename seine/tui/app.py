@@ -21,6 +21,7 @@ from seine.tui.chat import ChatScreen
 from seine.tui.context import Context
 from seine.tui.filesystem import FilesystemScreen, FilesystemState
 from seine.tui.history import History
+from seine.tui.issues import IssuesScreen
 from seine.tui.render import (render_analyze, render_artifacts, render_cache,
                               render_doctor, render_overview, render_packages,
                               render_plan)
@@ -75,7 +76,7 @@ SCREENS = {"overview": OverviewScreen, "plan": PlanScreen, "build": BuildScreen,
           "artifacts": ArtifactsScreen, "filesystem": FilesystemScreen,
           "packages": PackagesScreen, "analyze": AnalyzeScreen,
           "cache": CacheScreen, "doctor": DoctorScreen, "diff": DiffScreen,
-          "chat": ChatScreen}
+          "issues": IssuesScreen, "chat": ChatScreen}
 
 # Offers the same command registry through Ctrl+P. Selecting one fills the
 # prompt and focuses it rather than running it -- a second, deliberate
@@ -151,6 +152,12 @@ class SeineApp(App):
         self.fs_state = FilesystemState()
         self.ai_state = ai.AIState()
         self.diff_text = None
+        # Set by commands.py's own _issues() right before app.show("issues")
+        # -- IssuesScreen.update_body() reads these back, the same
+        # app-state-then-show() shape diff_text/_diff() above already uses.
+        self.issues_filter = None
+        self.issues_min_urgency = None
+        self.issues_rescan = False
         self._startup_error = None
         # No spec at all, not a bad one -- a spec given but failed to
         # load still opens on Overview, where its error is expected.
