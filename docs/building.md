@@ -729,3 +729,38 @@ against, and what makes the SBOM answerable to a security advisory.
 debsbom runs from the container image its authors publish, pulled on first
 use. Only the few files it reads are taken out of the root file-system, so
 nothing else about the image is exposed to it.
+
+## Vulnerability scanning
+
+`seine issues` scans an SBOM (above) for known CVEs, against Debian's own
+security tracker:
+
+```
+$ seine issues --sbom=pc-image-sbom.spdx.json
+CVE-2018-12928   linux     low                open
+CVE-2016-2781    coreutils low                resolved
+```
+
+or, given a specification instead, scans the SBOM a previous
+`seine build --sbom` of it left behind:
+
+```
+seine issues examples/pc-image/main.yaml
+```
+
+`--filter=PKG` narrows to packages matching PKG (a regex); `--min-urgency=`
+drops anything less severe than the level given (`high`, `medium`, `low`,
+`unimportant`, `end-of-life`, or `not-yet-assigned`, the default -- everything).
+`--rescan` ignores a cached scan and runs a fresh one; without it, a scan
+against the same SBOM is read back from a cache beside it rather than
+rerun.
+
+The urgency shown is Debian's own triage label, not a CVSS score --
+debsbom's own scan carries no numeric severity at all.
+
+By default this also runs from debsbom's own container image (its
+`sec-scan` subcommand). Setting `sbom2cve_program` (`seine tui`'s `/set`,
+or by hand in `settings.json`) to the path of an external program
+replaces it outright: seine runs `PROGRAM SBOM_PATH` and reads the same
+JSON-lines shape back from its stdout that `debsbom sec-scan -f json`
+would have written.
