@@ -8,12 +8,15 @@
 # dpkg-source names it (same "let the tool name it" rule packages.py's
 # own rebuild fetch follows) rather than something we invent.
 
+import getopt
 import json
 import os
 import shutil
+import sys
 import time
 
 from seine.bootstrap import Bootstrap
+from seine.cmd       import Cmd
 from seine.utils     import apt_sources
 from seine.utils     import ContainerEngine
 from seine.utils     import SOURCE_KIND
@@ -199,3 +202,97 @@ def pull(spec, distro, options=None, directory=None):
     record(name, dirname, resolved_version, distro["release"], spec,
           directory=directory)
     return dirname
+
+USAGE = """
+Usage:
+  seine source ls
+  seine source rm NAME
+  seine source pull NAME[=VERSION] SPEC...
+
+List, remove, or pull a package's source into the workbench
+(%s, or SEINE_WORKBENCH_DIR) -- for the AI chat's 'bash'/'read' tools,
+or by hand, to check what a package actually does rather than what
+training data guesses. 'pull' resolves NAME against SPEC's own
+distribution/feeds, the same ones a build of SPEC would install from;
+give '=VERSION' (apt's own syntax) for a specific one, e.g. a version
+an SBOM (seine build --sbom) recorded as actually installed.
+""" % ContainerEngine.workbench()
+
+class SourceCmd(Cmd):
+    def main(self, argv):
+        try:
+            opts, args = getopt.gnu_getopt(argv, "h", ["help"])
+        except getopt.GetoptError as err:
+            sys.stderr.write("%s\n%s" % (err, USAGE))
+            sys.exit(1)
+        for o, a in opts:
+            if o in ("-h", "--help"):
+                print(USAGE)
+                sys.exit()
+
+        ACTIONS = ["ls", "rm", "pull"]
+        if len(args) == 0:
+            sys.stderr.write("error: source command expects one of %s\n"
+                             % ", ".join(ACTIONS))
+            sys.exit(1)
+        action, rest = args[0], args[1:]
+        if action not in ACTIONS:
+            sys.stderr.write("error: unknown source action '%s'\n" % action)
+            sys.exit(1)
+
+        if action == "ls":
+            self._ls()
+        elif action == "rm":
+            if len(rest) != 1:
+                sys.stderr.write("error: source rm expects one NAME\n")
+                sys.exit(1)
+            try:
+                remove(rest[0])
+            except ValueError as e:
+                sys.stderr.write("error: %s\n" % e)
+                sys.exit(1)
+        else:
+            self._pull(rest)
+
+    def _ls(self):
+        found = list_pulled()
+        if not found:
+            print("no sources pulled yet -- %s" % ContainerEngine.workbench())
+            return
+        width = max(len(name) for name, _ in found)
+        for name, entry in found:
+            print("%-*s  %-12s  %s" % (width, name, entry["version"] or "?",
+                                       entry["release"]))
+
+    # Loads SPEC the same way 'seine validate'/'seine inspect' do -- just
+    # far enough to reach 'distribution', never touching a container --
+    # so pulling a source needs nothing a real build hasn't already asked
+    # the specification for.
+    def _pull(self, rest):
+        if len(rest) < 2:
+            sys.stderr.write(
+                "error: source pull expects NAME[=VERSION] and one or "
+                "more specification files\n")
+            sys.exit(1)
+        package, files = rest[0], rest[1:]
+
+        from seine.build import BuildCmd
+        build = BuildCmd()
+        build.options = dict(build.options, ansible_library=[])
+        try:
+            build.load_all(files)
+            spec = build.parse()
+        except OSError as e:
+            sys.stderr.write("error: couldn't open specification file: %s\n" % e)
+            sys.exit(2)
+        except ValueError as e:
+            sys.stderr.write("error: specification is invalid: %s\n" % e)
+            sys.exit(3)
+
+        try:
+            dirname = pull(package, spec["distribution"])
+        except ValueError as e:
+            sys.stderr.write("error: %s\n" % e)
+            sys.exit(1)
+        print("pulled %s into %s" % (package, os.path.join(
+            ContainerEngine.workbench(), dirname)))

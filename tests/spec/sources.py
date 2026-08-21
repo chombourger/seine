@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import avocado
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -11,10 +13,13 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine import sources
+from seine.sources import SourceCmd
 from seine.utils import ContainerEngine, HOST_ARCH
 
 DISTRO = {"source": "debian", "release": "bookworm", "architecture": HOST_ARCH,
          "uri": "http://ftp.debian.org/debian"}
+
+PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
 
 class Workbench(avocado.Test):
     def setUp(self):
@@ -216,6 +221,82 @@ class Pull(avocado.Test):
                           directory=self.workdir)
         # Refused before anything ran a second time.
         self.assertEqual(len(FakeSourceBootstrap.instances), 1)
+
+# 'SourceCmd' reads/writes through ContainerEngine.workbench() like a
+# real user would run it -- SEINE_WORKBENCH_DIR points that at the
+# test's own directory, same as tests/spec/gists.py's Cli class does
+# for SEINE_GISTS_DIR. 'pull' still swaps in FakeSourceBootstrap: a real
+# fetch is 'ASourceIsActuallyPulled' below, not every case here.
+class Cli(avocado.Test):
+    def setUp(self):
+        self.environment = dict(os.environ)
+        os.environ["SEINE_WORKBENCH_DIR"] = self.workdir
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        os.environ.clear()
+        os.environ.update(self.environment)
+
+    def test_ls_with_nothing_yet_says_so(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            SourceCmd().main(["ls"])
+        self.assertIn("no sources pulled yet", out.getvalue())
+
+    def test_ls_lists_name_version_and_release(self):
+        os.makedirs(os.path.join(self.workdir, "bash-5.14"))
+        sources.record("bash", "bash-5.14", "5.14-3", "bookworm",
+                       "bash", directory=self.workdir)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            SourceCmd().main(["ls"])
+        self.assertIn("bash", out.getvalue())
+        self.assertIn("5.14-3", out.getvalue())
+        self.assertIn("bookworm", out.getvalue())
+
+    def test_rm_removes_it(self):
+        os.makedirs(os.path.join(self.workdir, "bash-5.14"))
+        sources.record("bash", "bash-5.14", "5.14-3", "bookworm",
+                       "bash", directory=self.workdir)
+        SourceCmd().main(["rm", "bash"])
+        self.assertEqual(sources.list_pulled(self.workdir), [])
+
+    def test_rm_of_an_unknown_name_fails_with_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                SourceCmd().main(["rm", "nope"])
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_pull_needs_a_package_and_a_spec_file(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                SourceCmd().main(["pull", "bash"])
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_pull_fetches_against_the_spec_s_own_distribution(self):
+        saved = sources.SourceBootstrap
+        sources.SourceBootstrap = FakeSourceBootstrap
+        FakeSourceBootstrap.effect = leaves("bash-5.14/")
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                SourceCmd().main(["pull", "bash", PC_IMAGE])
+        finally:
+            sources.SourceBootstrap = saved
+        self.assertIn("pulled bash", out.getvalue())
+        self.assertIn(os.path.join(self.workdir, "bash-5.14"), out.getvalue())
+
+    def test_no_action_is_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                SourceCmd().main([])
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_unknown_action_is_an_error(self):
+        with self.assertRaises(SystemExit) as caught:
+            with contextlib.redirect_stderr(io.StringIO()):
+                SourceCmd().main(["frobnicate"])
+        self.assertEqual(caught.exception.code, 1)
 
 class ASourceIsActuallyPulled(avocado.Test):
     """
