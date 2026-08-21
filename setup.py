@@ -27,8 +27,9 @@ setup(
     author="Cedric Hombourger",
     author_email="chombourger@gmail.com",
     packages=find_packages(),
-    package_data={"seine": ["data/*.yml", "data/*.txt", "data/module/*",
-                            "data/cross/*", "data/docs/*.md"]},
+    package_data={"seine": ["data/*.yml", "data/*.txt", "data/prompt/*.txt",
+                            "data/module/*", "data/cross/*",
+                            "data/docs/*.md"]},
     cmdclass={"build_py": build_py},
     entry_points = {
         'console_scripts': ['seine=seine.cli:main'],

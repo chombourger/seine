@@ -45,17 +45,21 @@ read-only and run without asking:
 | `spec-files` | Every file this build actually loaded, plus unloaded siblings worth pulling in |
 | `read` | One file this build trusts -- see [Trust model](#trust-model) below |
 | `spec-query`, `spec-dump` | A JSONPath search, or the fully merged spec tree |
-| `docs` | This project's own written docs (`docs/*.md`), chunked -- not always present, see below |
+| `docs` | Written reference, chunked: the AI's own system prompt, one cluster file per group of related rules (always present), and this project's own written docs (`docs/*.md`, not always present) -- see below |
 | `gist-list`, `gist-show` | Reusable spec fragments kept outside any one project -- see [Gists](building.md#gists) |
 | `reset-conversation` | Forgets everything discussed so far |
 
-`docs` reaches beyond the spec itself -- the schema reference you're
-reading now, `kernels.md`, and the rest -- for a question the model's
-own built-in facts don't cover. It's the one tool whose presence
-depends on how seine itself got installed: a source checkout or an
-editable install always has it; a packaged install may not, and the
-tool says so plainly rather than pretending to have read something it
-hasn't.
+`docs` reaches beyond both the spec and the model's own built-in facts,
+for two different things under one name (never ambiguous -- a cluster
+file and a `docs/*.md` file never share an extension): detail behind
+the system prompt's own rules -- see [The system
+prompt](#the-system-prompt) below -- and this project's own written
+docs, the schema reference you're reading now, `kernels.md`, and the
+rest. The cluster files always ship; `docs/*.md` is the one part whose
+presence depends on how seine itself got installed -- a source
+checkout or an editable install always has it, a packaged install may
+not, and the tool says so plainly rather than pretending to have read
+something it hasn't.
 
 Eight more can act, and none of them run unconfirmed -- each shows the
 exact effect (a real diff where one applies, added lines green, removed
@@ -149,6 +153,8 @@ touching it:
 * Everything above the file's own `---` marker is stripped before the
   text reaches the model -- editing guidance for whoever changes the
   file next, not something worth spending tokens on with every turn.
+  This is also where the policy for the split described below is
+  written down.
 * Below the marker, rules carry a bracketed mnemonic (`[SCOPE]`,
   `[BUILD-NOTIFY]`, ...) so one rule can point at another by name
   instead of restating it. These are bookkeeping for the prompt itself
@@ -156,3 +162,23 @@ touching it:
   mention one to the person it's talking with. Keep an existing tag's
   spelling and meaning stable when editing; a genuinely new rule gets a
   new tag rather than reusing or repurposing one.
+
+Only what's needed on *every* turn lives in this one file -- tool-call
+framing, `[SCOPE]`'s routing, `[GATED]`/`[DENIED]`'s safety rules, and
+`[PROMPT-DOCS]`'s own index. Detail specific to one kind of question
+-- build status, spec lookup, editing a file, gists, kernel configs,
+external references -- lives instead in a cluster file under
+`seine/data/prompt/*.txt`, one per group of related tags, fetched with
+the same `docs` tool only once that kind of question actually comes
+up (it also serves `docs/*.md`, see [The tools](#the-tools) above; a
+cluster file and a `docs/*.md` file never share a name since only the
+latter ends in `.md`). Unlike `docs/*.md`, these ship with every
+install (ordinary `package_data`, the same as `system_prompt.txt`
+itself) -- there is no "not present" case to handle. A tag stays
+global regardless of which file holds it, so a cluster file can point
+at `[GATED]` in the main prompt, or at a tag in a different cluster
+file, the same way the main prompt points at them. `[PROMPT-DOCS]`
+also tells the model to fetch a cluster fresh each time it's needed,
+never to rely on what an earlier turn's fetch (or plain training
+knowledge) said -- the same reason `system_prompt.txt` itself is read
+fresh every turn rather than cached.

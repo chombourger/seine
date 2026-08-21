@@ -361,28 +361,54 @@ def _docs_dir():
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "docs")
     return checkout if os.path.isdir(checkout) else None
 
-def _tool_docs(app, arguments):
+# Sibling of SYSTEM_PROMPT_FILE, not the installed/checkout dance
+# _docs_dir() does -- these cluster files ship as ordinary package_data
+# (setup.py) the same way system_prompt.txt itself does, so there is
+# normally no "not shipped" case the way a repo's own docs/ has; still
+# checked defensively below, a broken install being no reason to crash
+# the one tool that could otherwise say so.
+PROMPT_DOCS_DIR = os.path.join(os.path.dirname(SYSTEM_PROMPT_FILE), "prompt")
+
+# One tool, two directories -- the prompt's own cluster files (always
+# there) and the project's written docs/*.md (only with a checkout or a
+# build that included it) -- rather than a second tool the model has to
+# learn is a near-duplicate of this one. Different extensions keep a
+# name from ever meaning two different files at once.
+def _doc_sources():
+    sources = []
+    if os.path.isdir(PROMPT_DOCS_DIR):
+        sources.append((PROMPT_DOCS_DIR, ".txt"))
     docs_dir = _docs_dir()
-    if docs_dir is None:
+    if docs_dir:
+        sources.append((docs_dir, ".md"))
+    return sources
+
+def _tool_docs(app, arguments):
+    sources = _doc_sources()
+    if not sources:
         return ("no documentation available in this install of seine -- "
-                "docs/ ships only with a source checkout or a build that "
-                "included it")
+                "neither docs/ nor the prompt's own cluster files were "
+                "found")
     name = arguments.get("name")
     if not name:
-        available = sorted(f for f in os.listdir(docs_dir) if f.endswith(".md"))
+        available = []
+        for dir_path, ext in sources:
+            available += sorted(f for f in os.listdir(dir_path) if f.endswith(ext))
         return "give 'name', one of: " + ", ".join(available)
-    real = os.path.realpath(os.path.join(docs_dir, name))
-    if (os.path.dirname(real) != os.path.realpath(docs_dir)
-            or not real.endswith(".md") or not os.path.isfile(real)):
-        return "%s is not one of this seine's own docs/*.md files" % name
-    with open(real) as f:
-        lines = f.read().splitlines()
-    try:
-        start = int(arguments["start"]) if arguments.get("start") else 1
-        end = int(arguments["end"]) if arguments.get("end") else start + SPEC_DUMP_CHUNK_LINES - 1
-    except (TypeError, ValueError):
-        return "'start'/'end' must be line numbers (1-indexed)"
-    return _text_chunk(lines, start, end, SPEC_DUMP_CHUNK_LINES, name)
+    for dir_path, ext in sources:
+        real = os.path.realpath(os.path.join(dir_path, name))
+        if (os.path.dirname(real) == os.path.realpath(dir_path)
+                and real.endswith(ext) and os.path.isfile(real)):
+            with open(real) as f:
+                lines = f.read().splitlines()
+            try:
+                start = int(arguments["start"]) if arguments.get("start") else 1
+                end = int(arguments["end"]) if arguments.get("end") else start + SPEC_DUMP_CHUNK_LINES - 1
+            except (TypeError, ValueError):
+                return "'start'/'end' must be line numbers (1-indexed)"
+            return _text_chunk(lines, start, end, SPEC_DUMP_CHUNK_LINES, name)
+    return ("%s is not one of this seine's own docs/*.md or prompt "
+            "cluster *.txt files" % name)
 
 # Capped the same way task-log caps a log tail -- a wide-open expression
 # across every loaded file could otherwise return an unbounded wall of text.
@@ -1080,18 +1106,26 @@ TOOLS = {t.name: t for t in [
                                               "hundred lines"}},
          "required": []},
         False, _tool_spec_dump),
-    Tool("docs", "seine's own written documentation (docs/*.md) -- "
-        "'specification.md' for the full YAML schema reference, "
-        "'kernels.md' for kernel rebuilds, and others. The facts in "
-        "this prompt are the common cases, not the whole schema; this "
-        "is where to check something they don't cover, before "
-        "guessing. Chunked like spec-dump; omit 'name' to see what's "
-        "available. Not present in every install of seine (a packaged "
-        "one may not carry it) -- says so plainly rather than "
-        "pretending to have read something it hasn't.",
+    Tool("docs", "Two kinds of written reference, chunked the same way, "
+        "one 'name' namespace since they never share an extension: a "
+        "cluster file ([PROMPT-DOCS] names them and what each covers) "
+        "-- detail behind this system prompt's own tags, always "
+        "present; and seine's own docs/*.md ('specification.md' for "
+        "the full YAML schema, 'kernels.md' for kernel rebuilds, and "
+        "others) -- not present in every install (a packaged one may "
+        "not carry it). Omit 'name' to see what's actually available "
+        "right now in *this* install, from both, rather than assuming "
+        "last turn's list still holds -- a cluster file can change "
+        "between turns the same way this prompt's own text can. Fetch "
+        "the matching cluster before acting on something it covers, "
+        "not only when asked to explain it, and prefer what it says "
+        "this call over a memory of what an earlier turn's fetch said.",
         {"type": "object",
          "properties": {"name": {"type": "string",
-                                 "description": "a docs/*.md filename; "
+                                 "description": "a cluster or docs/*.md "
+                                                "filename, e.g. "
+                                                "'gists.txt' or "
+                                                "'specification.md'; "
                                                 "omit to list what's "
                                                 "available"},
                         "start": {"type": "integer",

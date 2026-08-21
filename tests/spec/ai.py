@@ -394,7 +394,8 @@ class ToolTable(avocado.Test):
     # unknown name is, not treated as a legal 'docs/*.md'.
     def test_docs_refuses_escaping_the_docs_directory(self):
         app = self.SeineApp()
-        for name in ["../seine/data/system_prompt.txt", "images/tui-demo.gif"]:
+        for name in ["../seine/data/system_prompt.txt", "images/tui-demo.gif",
+                    "../system_prompt.txt"]:
             text = self.ai.TOOLS["docs"].run(app, {"name": name})
             self.assertIn("is not one of this seine's own docs", text)
 
@@ -442,10 +443,32 @@ class ToolTable(avocado.Test):
         text = self.ai.TOOLS["docs"].run(app, {})
         self.assertIn("specification.md", text)
 
-    def test_docs_says_when_neither_location_has_it(self):
+    # 'docs' also serves the prompt's own cluster files (always
+    # present, unlike docs/*.md) -- with docs/ unavailable, the tool
+    # still has something to offer rather than going silent.
+    def test_docs_falls_back_to_prompt_clusters_when_docs_dir_is_absent(self):
         real_docs_dir = self.ai._docs_dir
         self.ai._docs_dir = lambda: None
         self.addCleanup(setattr, self.ai, "_docs_dir", real_docs_dir)
+
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {})
+        self.assertIn("gists.txt", text)
+        self.assertNotIn("specification.md", text)
+
+    def test_docs_reads_a_prompt_cluster_file_by_name(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["docs"].run(app, {"name": "gists.txt"})
+        self.assertTrue(text.startswith("lines 1-"))
+        self.assertIn("[GISTS]", text)
+
+    def test_docs_says_when_neither_location_has_it(self):
+        real_docs_dir = self.ai._docs_dir
+        real_prompt_dir = self.ai.PROMPT_DOCS_DIR
+        self.ai._docs_dir = lambda: None
+        self.ai.PROMPT_DOCS_DIR = os.path.join(self.workdir, "no-such-prompt-dir")
+        self.addCleanup(setattr, self.ai, "_docs_dir", real_docs_dir)
+        self.addCleanup(setattr, self.ai, "PROMPT_DOCS_DIR", real_prompt_dir)
 
         app = self.SeineApp()
         text = self.ai.TOOLS["docs"].run(app, {})
