@@ -16,7 +16,7 @@ sys.path.append(path_to_sources)
 from seine            import secscan as secscan_module
 from seine.sbom        import output_path
 from seine.secscan    import (Finding, IssuesCmd, cache_path,
-                              filter_findings, parse_lines, scan, stats)
+                              filter_findings, parse_lines, read_cache, scan, stats)
 
 PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
 
@@ -184,6 +184,29 @@ class ACustomProgramReplacesTheContainer(Isolated):
             findings = scan(path)
         self.assertEqual(engine.commands, [])
         self.assertEqual(findings, [Finding("CVE-9999-0001", path, "1", "low", "open", "")])
+
+# A caller that must never trigger a real scan itself (seine/tui/ai.py's
+# own read-only 'issues' tool) reads read_cache() directly instead of
+# scan() -- 'test_no_cache_yet_is_none' below is exercised with no
+# Engine swapped in at all, since a call that reached the container/
+# program would be exactly the bug this guards, not just a failed one.
+class ReadCacheNeverScans(Isolated):
+    def test_no_cache_yet_is_none(self):
+        self.assertIsNone(read_cache(sbom(self.workdir)))
+
+    def test_a_fresh_cache_is_returned(self):
+        path = sbom(self.workdir)
+        with Engine(self, output=CVE_LINE.encode()):
+            scan(path)  # populates the cache read_cache() reads back
+        self.assertEqual(read_cache(path)[0].cve, "CVE-2025-13151")
+
+    def test_a_stale_cache_is_none(self):
+        path = sbom(self.workdir)
+        with Engine(self, output=CVE_LINE.encode()):
+            scan(path)
+        future = time.time() + 10
+        os.utime(path, (future, future))
+        self.assertIsNone(read_cache(path))
 
 class CachingAvoidsRescanning(Isolated):
     def test_a_fresh_cache_is_reused_not_rerun(self):

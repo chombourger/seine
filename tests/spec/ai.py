@@ -212,8 +212,8 @@ class ToolTable(avocado.Test):
     def test_read_only_tools_work_with_no_active_spec(self):
         app = self.SeineApp()
         for name in ["overview", "plan", "packages", "analyze", "artifacts",
-                    "cache", "doctor", "installed-sizes", "build-status", "task-log",
-                    "spec-files", "read", "spec-dump", "docs", "spec-query",
+                    "cache", "doctor", "installed-sizes", "issues", "build-status",
+                    "task-log", "spec-files", "read", "spec-dump", "docs", "spec-query",
                     "gist-list", "gist-show", "source-list"]:
             text = self.ai.TOOLS[name].run(app, {})
             self.assertIsInstance(text, str)
@@ -1441,6 +1441,92 @@ class ToolTable(avocado.Test):
         finally:
             build.image._tarball = None
         self.assertIn("not a usable pattern", text)
+
+    # A real (tiny) external program configured as settings.json's
+    # sbom2cve_program, exercising a real scan() call to populate the
+    # cache -- the same "prove the tool reads back what /issues really
+    # left behind" choice test_installed_sizes_* above make with a real
+    # tarball rather than a stand-in.
+    def _write_scanned_sbom(self, build, findings):
+        import stat
+        path = os.path.join(self.workdir, "fake-scanner")
+        body = "".join("print(%r)\n" % json.dumps(f) for f in findings)
+        with open(path, "w") as f:
+            f.write("#!/usr/bin/env python3\n" + body)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+
+        from seine import secscan, settings, sbom
+        current = settings.load()
+        current["sbom2cve_program"] = path
+        settings.save(current)
+
+        sbom_path = sbom.output_path(build.image._output)
+        os.makedirs(os.path.dirname(sbom_path), exist_ok=True)
+        with open(sbom_path, "w") as f:
+            f.write("{}")
+        secscan.scan(sbom_path)  # populates the cache 'issues' reads back
+        return sbom_path
+
+    def test_issues_needs_a_single_active_group(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["issues"].run(app, {})
+        # A real spec but no scan cached yet.
+        self.assertIn("no CVE scan cached", text)
+
+    def test_issues_reads_back_a_cached_scan(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        self._write_scanned_sbom(build, [
+            {"package": "libssl@3.0", "vulnerability":
+                {"id": "CVE-2024-0001", "status": "open", "urgency": "high"}}])
+        text = self.ai.TOOLS["issues"].run(app, {})
+        self.assertIn("CVE-2024-0001", text)
+        self.assertIn("libssl", text)
+        self.assertIn("high", text)
+
+    def test_issues_name_narrows_to_a_package(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        self._write_scanned_sbom(build, [
+            {"package": "libssl@3.0", "vulnerability":
+                {"id": "CVE-1", "status": "open", "urgency": "high"}},
+            {"package": "vim@9.0", "vulnerability":
+                {"id": "CVE-2", "status": "open", "urgency": "low"}}])
+        text = self.ai.TOOLS["issues"].run(app, {"name": "libssl"})
+        self.assertIn("CVE-1", text)
+        self.assertNotIn("CVE-2", text)
+
+    def test_issues_min_urgency_drops_less_severe_findings(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        self._write_scanned_sbom(build, [
+            {"package": "libssl@3.0", "vulnerability":
+                {"id": "CVE-1", "status": "open", "urgency": "high"}},
+            {"package": "vim@9.0", "vulnerability":
+                {"id": "CVE-2", "status": "open", "urgency": "low"}}])
+        text = self.ai.TOOLS["issues"].run(app, {"min_urgency": "high"})
+        self.assertIn("CVE-1", text)
+        self.assertNotIn("CVE-2", text)
+
+    def test_issues_bad_min_urgency_reports_it_not_a_crash(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        self._write_scanned_sbom(build, [
+            {"package": "libssl@3.0", "vulnerability":
+                {"id": "CVE-1", "status": "open", "urgency": "high"}}])
+        text = self.ai.TOOLS["issues"].run(app, {"min_urgency": "critical"})
+        self.assertIn("must be one of", text)
+
+    def test_issues_caps_a_large_result_with_a_hint_to_narrow(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        findings = [{"package": "linux@6.1", "vulnerability":
+                    {"id": "CVE-%d" % i, "status": "open", "urgency": "low"}}
+                   for i in range(60)]
+        self._write_scanned_sbom(build, findings)
+        text = self.ai.TOOLS["issues"].run(app, {})
+        self.assertIn("... (10 more", text)
+        self.assertEqual(text.count("CVE-"), 50)  # capped, not all 60
 
     # The AI-chat equivalent of 'seine cache info --entries-matching' --
     # (build/chats/20260818T180821689897.json is the transcript that

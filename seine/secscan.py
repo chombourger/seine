@@ -71,8 +71,12 @@ def cache_path(sbom_path):
 # read back a scan of what used to be there. Anything else wrong with
 # the cache (missing, unreadable, not what json.load() expects) is
 # treated the same as "no cache yet": scan() runs a fresh one rather
-# than raising.
-def _read_cache(sbom_path):
+# than raising. Public (not '_read_cache') so a caller that must never
+# trigger a real scan itself -- seine/tui/ai.py's own read-only 'issues'
+# tool, a container run or an external program being too consequential
+# for it to start on its own -- can read the cache without going
+# through scan() at all.
+def read_cache(sbom_path):
     path = cache_path(sbom_path)
     try:
         if os.path.getmtime(path) < os.path.getmtime(sbom_path):
@@ -133,7 +137,7 @@ def scan(sbom_path, distro=None, rescan=False):
     # absolute file.
     sbom_path = os.path.realpath(sbom_path)
     if not rescan:
-        cached = _read_cache(sbom_path)
+        cached = read_cache(sbom_path)
         if cached is not None:
             return cached
 

@@ -251,6 +251,46 @@ def _tool_installed_sizes(app, arguments):
     lines = ["%-40s %8d KiB" % (pkg, kib) for pkg, kib in sizes[:30]]
     return "\n".join(lines)
 
+# Capped the same way task-log/spec-query are -- a real scan can easily
+# run into four figures of findings (examples/pc-image's own SBOM had
+# 1664, seen live while secscan.py was written).
+ISSUES_MAX_ROWS = 50
+
+# Never scans itself: seine/secscan.py's own scan() would, on a missing
+# or stale cache, run a container (or an external program) with
+# '--update-db' -- a real network fetch, exactly the kind of
+# consequential action [GATED] reserves for a confirmed call, not an
+# always-available read tool. read_cache() only ever reads back what
+# '/issues' (or 'seine issues') already scanned and cached -- 'name'/
+# 'min_urgency' then narrow that cached list the same way
+# installed-sizes' own 'name' does.
+def _tool_issues(app, arguments):
+    build = _single_group(app)
+    if build is None:
+        return NO_SINGLE_GROUP
+    from seine import sbom, secscan
+    path = sbom.output_path(build.image._output)
+    findings = secscan.read_cache(path) if os.path.isfile(path) else None
+    if findings is None:
+        return ("no CVE scan cached yet for this build's own SBOM -- "
+                "'/issues' scans it first (a container run or an "
+                "external program with '--update-db', not something "
+                "this tool triggers on its own)")
+    try:
+        findings = secscan.filter_findings(
+            findings, package=arguments.get("name"), min_urgency=arguments.get("min_urgency"))
+    except ValueError as e:
+        return str(e)
+    if not findings:
+        return "no cached findings match"
+    lines = ["%-16s %-24s %-18s %s" % (f.cve, f.package, f.urgency, f.status)
+             for f in findings[:ISSUES_MAX_ROWS]]
+    text = "\n".join(lines)
+    if len(findings) > ISSUES_MAX_ROWS:
+        text += ("\n... (%d more -- narrow with 'name' or 'min_urgency')"
+                 % (len(findings) - ISSUES_MAX_ROWS))
+    return text
+
 # The three below read a build's own loaded files back via BuildCmd.
 # loaded_files/dump_file() (seine/build.py, general capability, nothing
 # AI-specific) -- an arbitrary path is refused there, not here.
@@ -1280,6 +1320,32 @@ TOOLS = {t.name: t for t in [
                                                 "against, instead of the top 30"}},
          "required": []},
         False, _tool_installed_sizes),
+    Tool("issues", "Known CVEs against the active build's own SBOM, "
+        "read from whatever '/issues' (the TUI screen) or 'seine "
+        "issues' (the command line) already scanned and cached -- "
+        "never scans on its own, since that means a container run or "
+        "an external program downloading a fresh security-tracker "
+        "database, both real network activity. Answers 'nothing "
+        "cached yet' if neither has been run for this build. 'name' "
+        "narrows to a package (a regex, case-insensitive, same as "
+        "installed-sizes' own 'name'); 'min_urgency' drops anything "
+        "less severe than it -- one of high, medium, low, unimportant, "
+        "end-of-life, not-yet-assigned (the default: everything "
+        "cached). The urgency shown is Debian's own triage label, not "
+        "a CVSS score -- the scan itself carries no numeric severity "
+        "at all; ask about a specific CVE's CVSS/EPSS with 'web-fetch' "
+        "against opencve.io instead ([CVE-SEVERITY]).",
+        {"type": "object",
+         "properties": {"name": {"type": "string",
+                                 "description": "a regex to match package names "
+                                                "against, instead of every cached finding"},
+                        "min_urgency": {"type": "string",
+                                       "description": "drop anything less severe "
+                                                      "than this -- high, medium, "
+                                                      "low, unimportant, end-of-life, "
+                                                      "or not-yet-assigned"}},
+         "required": []},
+        False, _tool_issues),
     Tool("spec-files", "Every file the active specification actually "
         "loaded, in load order -- the only paths spec-update will "
         "accept. Also lists, separately, any '*.yml'/'*.yaml' sitting "
