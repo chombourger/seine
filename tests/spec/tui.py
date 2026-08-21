@@ -885,6 +885,19 @@ class App(avocado.Test):
                 self.assertEqual(app.theme, "textual-dark")
         _run(scenario)
 
+    def test_set_sbom2cve_program_persists(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/set sbom2cve_program /usr/local/bin/my-scanner"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["sbom2cve_program"],
+                                 "/usr/local/bin/my-scanner")
+        _run(scenario)
+
     # Deferred to after the initial screen mounts (a startup command can
     # switch screens), so this waits one pump of the event loop rather
     # than asserting the instant 'SeineApp()' returns.

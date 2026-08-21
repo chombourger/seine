@@ -283,15 +283,19 @@ def _settings(app, argv):
 # two keys, never a Textual name.
 THEMES = {"dark": "textual-dark", "light": "textual-light"}
 
-# jobs/theme only -- startup_commands is edited from /settings itself.
+# jobs/theme/sbom2cve_program only -- startup_commands is edited from
+# /settings itself.
 def _set(app, argv):
-    """change one persisted setting: jobs or theme
+    """change one persisted setting: jobs, theme, or sbom2cve_program
 
     Changes one persisted setting and saves it straight away -- 'jobs'
     (an int >= 1, the default '/build'/'seine build' falls back to when
-    no '--jobs' is given) or 'theme' ('dark' or 'light', applied
-    immediately, not just on the next startup). 'startup_commands' is
-    edited from '/settings' itself, not here.
+    no '--jobs' is given), 'theme' ('dark' or 'light', applied
+    immediately, not just on the next startup), or 'sbom2cve_program'
+    (a program run as 'PROGRAM SBOM_PATH' by '/issues' and 'seine
+    issues' in place of debsbom's own container, expected to write the
+    same JSON-lines shape 'debsbom sec-scan -f json' does).
+    'startup_commands' is edited from '/settings' itself, not here.
     """
     if len(argv) != 2:
         raise CommandError("/set expects a key and a value: '/set jobs 4'")
@@ -311,8 +315,11 @@ def _set(app, argv):
             raise CommandError("theme is 'dark' or 'light', not '%s'" % value)
         current["theme"] = value
         app.theme = THEMES[value]
+    elif key == "sbom2cve_program":
+        current["sbom2cve_program"] = value
     else:
-        raise CommandError("unknown setting '%s' -- jobs or theme" % key)
+        raise CommandError(
+            "unknown setting '%s' -- jobs, theme, or sbom2cve_program" % key)
     settings.save(current)
     app.say("%s = %s" % (key, value))
 
