@@ -302,15 +302,52 @@ def _tool_spec_files(app, arguments):
                 "read/spec-query):\n" + "\n".join(siblings))
     return text
 
+# A source-pull tool call, or 'seine source pull' run by hand, lives
+# entirely under the workbench -- no active spec needed to read it back,
+# same as source-list/gist-show need none. Checked before _single_group()
+# for that reason, not after.
+def _under_workbench(real):
+    workbench = os.path.realpath(ContainerEngine.workbench())
+    return real == workbench or real.startswith(workbench + os.sep)
+
+# The active build's own SBOM output (seine build --sbom), if its
+# options still say one would be produced and it is actually there --
+# not any SBOM (sbom-diff takes an explicit path for that), only the
+# one naming what this build itself installs, so the model can look up
+# an exact version before calling source-pull instead of guessing one.
+def _build_sbom_path(build):
+    from seine.sbom import SBOM
+    output = SBOM(build.spec["distribution"], build.options)._output_file(
+        build.image._output)
+    if output is None:
+        return None
+    path = output + ".spdx.json"
+    return path if os.path.isfile(path) else None
+
 def _tool_read(app, arguments):
     path = arguments.get("path")
     if not path:
         return ("read needs a 'path' argument -- a file from spec-files, "
-                "or one a spec entry's own content already named (e.g. a "
-                "package's 'patches:' entry)")
+                "one a spec entry's own content already named (e.g. a "
+                "package's 'patches:' entry), a file under the workbench "
+                "(source-list), or the active build's own SBOM")
+    real = os.path.realpath(path)
+    if _under_workbench(real):
+        try:
+            with open(real) as f:
+                return f.read()
+        except OSError as e:
+            return "could not read %s: %s" % (path, e)
+
     build = _single_group(app)
     if build is None:
         return NO_SINGLE_GROUP
+
+    sbom_path = _build_sbom_path(build)
+    if sbom_path is not None and real == os.path.realpath(sbom_path):
+        with open(real) as f:
+            return f.read()
+
     try:
         return build.read(path, extra_allowed=_sibling_files(build))
     except ValueError as e:
@@ -896,6 +933,24 @@ def _tool_source_rm(app, arguments):
         return "could not remove: %s" % e
     return "removed %s" % name
 
+# Says nothing about how this runs (a throwaway container, HostBootstrap,
+# a bind mount) -- same as start-build's own description never mentions
+# the container it starts. All of that is sources.bash()'s business, not
+# a contract the model needs.
+def _tool_bash(app, arguments):
+    build = _single_group(app)
+    if build is None:
+        return NO_SINGLE_GROUP
+    command = arguments.get("command")
+    if not command:
+        return "bash needs 'command'"
+    from seine import sources
+    try:
+        return sources.bash(command, build.spec["distribution"],
+                            cwd=arguments.get("cwd"))
+    except ValueError as e:
+        return "could not run: %s" % e
+
 # The AI-tool equivalent of /side-load FRAGMENT: loads one more fragment
 # on top of the active group, in-session only. Lower stakes than
 # spec-update/spec-create (no write, undone by /use again or by
@@ -1149,20 +1204,25 @@ TOOLS = {t.name: t for t in [
         "inspectable first with read or a targeted spec-query; "
         "spec-update still refuses them.",
         _no_args(), False, _tool_spec_files),
-    Tool("read", "One file this build trusts, as written (not rendered, "
+    Tool("read", "A file this build trusts, as written (not rendered, "
         "not merged with any other file) -- secrets still redacted. "
-        "Two kinds: a spec file spec-files listed (loaded or an "
-        "unloaded sibling), returned as YAML; or a local file one of "
+        "Four kinds: a spec file spec-files listed (loaded or an "
+        "unloaded sibling), returned as YAML; a local file one of "
         "this build's own 'packages:' entries names -- a patch, a "
         "kernel config fragment, a derived-flavour fragment -- shown "
         "as plain text once its path has actually turned up in a "
-        "spec-query/spec-dump result (never guess one). Refused for "
-        "anything neither of those two things.",
+        "spec-query/spec-dump result (never guess one); anything under "
+        "the workbench (source-list, source-pull) -- no active "
+        "specification needed for this one; or the active build's own "
+        "SBOM (seine build --sbom), to look up a package's exact "
+        "installed version before calling source-pull. Refused for "
+        "anything else.",
         {"type": "object",
          "properties": {"path": {"type": "string",
                                  "description": "a file path from spec-files, "
-                                                "or one a spec entry's own "
-                                                "content already named"}},
+                                                "source-list, or one a spec "
+                                                "entry's own content already "
+                                                "named"}},
          "required": ["path"]},
         False, _tool_read),
     Tool("spec-dump", "The merged specification -- every loaded file "
@@ -1406,6 +1466,23 @@ TOOLS = {t.name: t for t in [
                                  "description": "a source name, from source-list"}},
          "required": ["name"]},
         True, _tool_source_rm, _tool_source_rm_preview),
+    # Ungated: unlike start-build/spec-update/source-pull, this can't
+    # reach past its own unprivileged, throwaway container -- the
+    # workbench bind mount is the whole blast radius.
+    Tool("bash", "Run a shell command. Its working directory is the "
+        "workbench (source-list, source-pull) or, with 'cwd', a "
+        "directory under it -- nothing outside that is reachable, and "
+        "output is capped, so narrow the command rather than ask for "
+        "everything at once. Use this to scan a pulled source ('grep -r', "
+        "'find', './configure --help') or answer anything read alone "
+        "can't.",
+        {"type": "object",
+         "properties": {"command": {"type": "string"},
+                        "cwd": {"type": "string",
+                               "description": "a subdirectory of the "
+                                              "workbench, default its root"}},
+         "required": ["command"]},
+        False, _tool_bash),
 ]}
 
 TOOL_SCHEMAS = [{"type": "function",

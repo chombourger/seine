@@ -15,7 +15,7 @@ import shutil
 import sys
 import time
 
-from seine.bootstrap import Bootstrap
+from seine.bootstrap import Bootstrap, HostBootstrap
 from seine.cmd       import Cmd
 from seine.utils     import apt_sources
 from seine.utils     import ContainerEngine
@@ -202,6 +202,55 @@ def pull(spec, distro, options=None, directory=None):
     record(name, dirname, resolved_version, distro["release"], spec,
           directory=directory)
     return dirname
+
+# The wall-clock ceiling on one 'bash' call, enforced by podman's own
+# 'container run --timeout' rather than a Python-side subprocess
+# timeout: that kills the container itself, server-side, so a client
+# process this repo does not otherwise babysit is never left to expire
+# in some other way and leak a container behind.
+BASH_TIMEOUT_SECONDS = 120
+
+# Past this many lines, only the tail is kept -- same reasoning
+# task-log's own LOG_TAIL_LINES follows: one reply cannot become an
+# unbounded wall of text regardless of what the command printed.
+BASH_OUTPUT_MAX_LINES = 200
+
+# Runs 'command' in a throwaway, unprivileged container -- host
+# architecture, the same HostBootstrap image every build already made,
+# so this needs no image of its own. cwd is the workbench, or 'cwd'
+# (checked to still resolve under it) -- the only thing bind-mounted
+# in, so nothing else on the host is reachable from inside.
+def bash(command, distro, options=None, cwd=None, directory=None,
+        timeout=BASH_TIMEOUT_SECONDS):
+    directory = directory or ContainerEngine.workbench()
+    workdir = os.path.join(directory, cwd) if cwd else directory
+    real = os.path.realpath(workdir)
+    root = os.path.realpath(directory)
+    if real != root and not real.startswith(root + os.sep):
+        raise ValueError("'cwd' must stay under the workbench")
+    if not os.path.isdir(real):
+        raise ValueError("'%s' is not a directory under the workbench" % cwd)
+
+    image = HostBootstrap(distro, options or {})
+    image.create()
+
+    cmd = ["container", "run", "--rm", "--timeout", str(timeout),
+          "-v", "%s:%s" % (directory, directory), "-w", real,
+          image.name, "sh", "-c", command]
+    returncode, output = ContainerEngine.run_captured(cmd)
+
+    lines = output.splitlines()
+    truncated = len(lines) > BASH_OUTPUT_MAX_LINES
+    if truncated:
+        lines = lines[-BASH_OUTPUT_MAX_LINES:]
+    text = "\n".join(lines)
+    if truncated:
+        text = ("... (truncated to the last %d lines -- narrow the "
+                "command instead of asking for everything at once)\n"
+                % BASH_OUTPUT_MAX_LINES) + text
+    if returncode != 0:
+        text += "\n(exit status %d)" % returncode
+    return text
 
 USAGE = """
 Usage:

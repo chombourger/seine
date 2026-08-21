@@ -296,6 +296,57 @@ class ToolTable(avocado.Test):
         text = self.ai.TOOLS["read"].run(app, {"path": other})
         self.assertIn("is not one of this build's own loaded files", text)
 
+    # No 'files=[...]' -- reading a pulled source needs no active
+    # specification, same as source-list.
+    def test_read_reaches_a_file_under_the_workbench_with_no_active_spec(self):
+        from seine.utils import ContainerEngine
+        path = os.path.join(ContainerEngine.workbench(), "bash-5.14", "debian", "control")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as f:
+            f.write("Source: bash\n")
+        app = self.SeineApp()
+        text = self.ai.TOOLS["read"].run(app, {"path": path})
+        self.assertEqual(text, "Source: bash\n")
+
+    def test_read_of_a_missing_workbench_file_is_an_error_not_a_crash(self):
+        from seine.utils import ContainerEngine
+        path = os.path.join(ContainerEngine.workbench(), "nope", "control")
+        app = self.SeineApp()
+        text = self.ai.TOOLS["read"].run(app, {"path": path})
+        self.assertIn("could not read", text)
+
+    # The active build's own SBOM -- not any SBOM (sbom-diff takes an
+    # explicit path for that) -- so a version looked up here is
+    # guaranteed to be this build's own, not an unrelated file that
+    # happens to sit on disk.
+    def test_read_reaches_the_active_builds_own_sbom(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        build.options["sbom"] = True
+        from seine.sbom import SBOM
+        sbom_path = SBOM(build.spec["distribution"], build.options)._output_file(
+            build.image._output) + ".spdx.json"
+        os.makedirs(os.path.dirname(sbom_path), exist_ok=True)
+        with open(sbom_path, "w") as f:
+            f.write('{"packages": []}')
+        text = self.ai.TOOLS["read"].run(app, {"path": sbom_path})
+        self.assertEqual(text, '{"packages": []}')
+
+    def test_read_does_not_reach_an_sbom_when_none_would_be_produced(self):
+        app = self.SeineApp(files=[PC_IMAGE])
+        build = app.context.builds[0]
+        from seine.sbom import SBOM
+        sbom_path = SBOM(build.spec["distribution"], dict(build.options, sbom=True))\
+            ._output_file(build.image._output) + ".spdx.json"
+        os.makedirs(os.path.dirname(sbom_path), exist_ok=True)
+        with open(sbom_path, "w") as f:
+            f.write('{"packages": []}')
+        # build.options["sbom"] is still False here -- the file exists
+        # on disk (maybe from an earlier build) but this build would not
+        # produce it, so it is not reachable through this build's read.
+        text = self.ai.TOOLS["read"].run(app, {"path": sbom_path})
+        self.assertIn("is not one of this build's own loaded files", text)
+
     # 'defaults.packages:' entries are descriptions, not requests
     # ([DEFAULTS-VS-PACKAGES]) -- a patch named only there must not
     # become readable just because the section is loaded. Synthetic
@@ -956,6 +1007,39 @@ class ToolTable(avocado.Test):
         app = self.SeineApp()
         preview = self.ai.TOOLS["source-rm"].preview(app, {"name": "nope"})
         self.assertFalse(preview.ok)
+
+    # Patches the classes directly, same reasoning tests/spec/sources.py's
+    # own Bash class gives -- both are reached through the class, never
+    # an instance.
+    def _fake_bash(self, output="", returncode=0):
+        from seine import sources
+        from seine.utils import ContainerEngine
+        saved_create = sources.HostBootstrap.create
+        saved_run = ContainerEngine.run_captured
+        sources.HostBootstrap.create = lambda self: self
+        ContainerEngine.run_captured = staticmethod(lambda cmd: (returncode, output))
+        def restore():
+            sources.HostBootstrap.create = saved_create
+            ContainerEngine.run_captured = saved_run
+        self.addCleanup(restore)
+
+    def test_bash_needs_an_active_spec(self):
+        app = self.SeineApp()
+        text = self.ai.TOOLS["bash"].run(app, {"command": "true"})
+        self.assertIn("no single active specification", text)
+
+    def test_bash_runs_and_returns_the_output(self):
+        self._fake_bash("hello\n")
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["bash"].run(app, {"command": "echo hello"})
+        self.assertEqual(text, "hello")
+
+    def test_bash_reports_a_bad_cwd_rather_than_crash(self):
+        self._fake_bash()
+        app = self.SeineApp(files=[PC_IMAGE])
+        text = self.ai.TOOLS["bash"].run(
+            app, {"command": "true", "cwd": "does-not-exist"})
+        self.assertIn("could not run", text)
 
     def _side_load_fragment(self, content="playbook:\n- name: extra play\n  tasks: []\n",
                          name="extra-fragment"):

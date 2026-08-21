@@ -298,6 +298,98 @@ class Cli(avocado.Test):
                 SourceCmd().main(["frobnicate"])
         self.assertEqual(caught.exception.code, 1)
 
+# HostBootstrap.create() and ContainerEngine.run_captured() are patched
+# directly on the class (both are called through the class, never an
+# instance, so a plain function works either way) rather than swapped
+# module references -- bash() reaches ContainerEngine through
+# 'from seine.utils import ContainerEngine', the same class object, so
+# patching the attribute on the class is what actually takes effect.
+class Bash(avocado.Test):
+    def setUp(self):
+        self.saved_create = sources.HostBootstrap.create
+        self.saved_run = ContainerEngine.run_captured
+        sources.HostBootstrap.create = lambda self: self
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        sources.HostBootstrap.create = self.saved_create
+        ContainerEngine.run_captured = self.saved_run
+
+    def _fake(self, output="", returncode=0):
+        seen = {}
+        def run_captured(cmd):
+            seen["cmd"] = cmd
+            return returncode, output
+        ContainerEngine.run_captured = staticmethod(run_captured)
+        return seen
+
+    def test_refuses_a_cwd_that_escapes_the_workbench(self):
+        self.assertRaises(ValueError, sources.bash, "true", DISTRO,
+                          cwd="../escape", directory=self.workdir)
+
+    def test_refuses_a_cwd_that_is_not_a_directory(self):
+        self.assertRaises(ValueError, sources.bash, "true", DISTRO,
+                          cwd="nope", directory=self.workdir)
+
+    def test_runs_against_the_workbench_by_default(self):
+        seen = self._fake("hello\n")
+        text = sources.bash("echo hello", DISTRO, directory=self.workdir)
+        self.assertEqual(text, "hello")
+        self.assertEqual(seen["cmd"][seen["cmd"].index("-w") + 1], self.workdir)
+
+    def test_cwd_narrows_the_working_directory(self):
+        os.makedirs(os.path.join(self.workdir, "bash-5.14"))
+        seen = self._fake()
+        sources.bash("true", DISTRO, cwd="bash-5.14", directory=self.workdir)
+        self.assertEqual(seen["cmd"][seen["cmd"].index("-w") + 1],
+                         os.path.join(self.workdir, "bash-5.14"))
+
+    def test_a_nonzero_exit_is_appended_not_swallowed(self):
+        self._fake("oops\n", returncode=1)
+        text = sources.bash("false", DISTRO, directory=self.workdir)
+        self.assertIn("oops", text)
+        self.assertIn("(exit status 1)", text)
+
+    def test_output_past_the_cap_keeps_only_the_tail(self):
+        many = "\n".join("line %d" % i for i in range(300))
+        self._fake(many)
+        text = sources.bash("seq 300", DISTRO, directory=self.workdir)
+        self.assertIn("truncated", text)
+        self.assertIn("line 299", text)
+        self.assertNotIn("line 0\n", text)
+
+class ABashCommandIsActuallyRun(avocado.Test):
+    """
+    :avocado: tags=container
+    """
+    def setUp(self):
+        if shutil.which("podman") is None:
+            self.cancel("podman is needed to run a real container")
+
+    def test_reads_a_file_under_the_bind_mounted_workbench(self):
+        os.makedirs(os.path.join(self.workdir, "bash-5.14"))
+        with open(os.path.join(self.workdir, "bash-5.14", "control"), "w") as f:
+            f.write("Source: bash\n")
+        text = sources.bash("cat bash-5.14/control", DISTRO, directory=self.workdir)
+        self.assertEqual(text, "Source: bash")
+
+    # A host path outside the one bind mount (the workbench) is simply
+    # absent from the container's own filesystem -- not a permission
+    # refusal, proof the trust boundary is the bind mount itself and
+    # nothing wider.
+    def test_cannot_reach_a_host_path_outside_the_bind_mount(self):
+        import tempfile
+        marker = tempfile.NamedTemporaryFile(
+            prefix="seine-source-bash-test-", delete=False)
+        try:
+            marker.write(b"host-only\n")
+            marker.close()
+            text = sources.bash("cat %s" % marker.name, DISTRO,
+                                directory=self.workdir)
+            self.assertIn("No such file or directory", text)
+        finally:
+            os.remove(marker.name)
+
 class ASourceIsActuallyPulled(avocado.Test):
     """
     :avocado: tags=container
