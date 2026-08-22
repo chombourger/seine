@@ -366,3 +366,63 @@ class TargetCommand(avocado.Test):
         target._available = None
         self.assertRaises(self.commands.CommandError,
                           self.commands.dispatch, self.app, "/target status")
+
+# TargetState.on_event() parses one line exactly as mtda's main.py:
+# notify() publishes it on the 'EVT' topic -- confirmed against
+# main.py's own _storage_event()/_power_event() call sites and
+# constants.py's actual POWER/STORAGE string values, not guessed.
+class LiveState(avocado.Test):
+    def setUp(self):
+        self.state = target.TargetState()
+
+    def test_power_on_and_off(self):
+        self.state.on_event("POWER ON")
+        self.assertEqual(self.state.power, "ON")
+        self.state.on_event("POWER OFF")
+        self.assertEqual(self.state.power, "OFF")
+
+    def test_storage_location_changes(self):
+        self.state.on_event("STORAGE TARGET")
+        self.assertEqual(self.state.storage, "TARGET")
+        self.state.on_event("STORAGE HOST")
+        self.assertEqual(self.state.storage, "HOST")
+
+    def test_writing_progress_is_parsed_in_order(self):
+        self.state.on_event("STORAGE WRITING 4194304 8589934592 12582912.0 4194304")
+        self.assertTrue(self.state.writing)
+        self.assertEqual(self.state.write_read, 4194304)
+        self.assertEqual(self.state.write_total, 8589934592)
+        self.assertEqual(self.state.write_speed, 12582912.0)
+        self.assertEqual(self.state.write_written, 4194304)
+
+    def test_power_off_clears_an_in_progress_write(self):
+        self.state.on_event("STORAGE WRITING 1 100 1.0 1")
+        self.state.on_event("POWER OFF")
+        self.assertFalse(self.state.writing)
+
+    def test_a_storage_location_change_also_clears_writing(self):
+        self.state.on_event("STORAGE WRITING 1 100 1.0 1")
+        self.state.on_event("STORAGE TARGET")
+        self.assertFalse(self.state.writing)
+
+    def test_bytes_are_decoded_the_same_as_a_plain_string(self):
+        self.state.on_event(b"POWER ON")
+        self.assertEqual(self.state.power, "ON")
+
+    # LOCKED/UNLOCKED/OPENED/CORRUPTED/INITIALIZED/CONNECTION/SESSION/
+    # SYSTEM -- nothing seine tracks yet depends on these; must not crash.
+    def test_unhandled_domains_and_reasons_are_ignored_not_a_crash(self):
+        self.state.on_event("STORAGE LOCKED")
+        self.state.on_event("STORAGE OPENED some-session")
+        self.state.on_event("SYSTEM 0.42")
+        self.state.on_event("CONNECTION ESTABLISHED")
+        self.state.on_event("")
+        self.assertIsNone(self.state.power)
+        self.assertIsNone(self.state.storage)
+        self.assertFalse(self.state.writing)
+
+# The footer chip's own behaviour lives in seine/tui/base.py's
+# TargetIndicator.refresh_text() -- a plain read of TargetState, same
+# shape Indicators.refresh_text() already has, and (like Indicators)
+# left without a dedicated widget-level test: tests/spec/tui.py has
+# none for Indicators either, only for whole-screen behaviour.

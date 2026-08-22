@@ -121,3 +121,54 @@ def status(app):
             "uptime": client.target_uptime(),
             "storage": client.storage_status(),
             "usb": client.usb_ports()}
+
+# --- Live state (fed by the 'EVT' topic on mtda's Subscribe stream) ---
+
+# What the footer chip and (later) the Remote Target screen's status
+# pane render -- kept apart from any widget so it is testable without a
+# running App, the same split build.py's BuildState uses. Nothing here
+# starts a connection; commit that adds the console pane owns
+# subscribing a RemoteConsole to feed on_event() below.
+class TargetState:
+    def __init__(self):
+        self.power = None      # CONSTS.POWER value ('ON'/'OFF'/...), None until seen
+        self.storage = None    # CONSTS.STORAGE location ('HOST'/'NETWORK'/'TARGET'), None until seen
+        self.writing = False
+        self.write_read = 0
+        self.write_total = 0
+        self.write_speed = 0.0
+        self.write_written = 0
+
+    # One line off the 'EVT' topic, exactly as mtda's main.py:notify()
+    # publishes it: f"{domain} {info}" -- 'POWER ON', 'STORAGE TARGET',
+    # 'STORAGE WRITING <read> <total> <speed> <written>' (main.py:757-
+    # 764's _storage_event()/1235-1248's _power_event(), the WRITING
+    # shape from writer.py per mtda.md). mtda-cli's own AppOutput.
+    # on_event() is only a reference for the WRITING case -- it ignores
+    # every other domain, so POWER/STORAGE-location handling below is
+    # derived straight from main.py's notify() call sites instead.
+    def on_event(self, line):
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", "replace")
+        info = line.split()
+        if not info:
+            return
+        domain, rest = info[0], info[1:]
+        if not rest:
+            return
+        if domain == "POWER":
+            self.power = rest[0]
+            if rest[0] == "OFF":
+                self.writing = False
+        elif domain == "STORAGE":
+            if rest[0] == "WRITING" and len(rest) == 5:
+                self.writing = True
+                self.write_read = int(rest[1])
+                self.write_total = int(rest[2])
+                self.write_speed = float(rest[3])
+                self.write_written = int(rest[4])
+            elif rest[0] in ("HOST", "NETWORK", "TARGET"):
+                self.storage = rest[0]
+                self.writing = False
+            # LOCKED/UNLOCKED/OPENED/CORRUPTED/INITIALIZED/??? -- no
+            # seine-visible state depends on these yet.

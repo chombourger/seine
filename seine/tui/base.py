@@ -214,6 +214,30 @@ class Indicators(Static):
         self.update("%d build%s" % (count, "" if count == 1 else "s"))
         self.display = True
 
+# Same role as Indicators above, one door down: hidden unless a
+# storage write is actually in progress (app.target_state.writing, fed
+# by TargetState.on_event() -- see seine/tui/target.py), showing live
+# progress rather than a plain count since there is only ever one
+# target. Click reruns '/target': today that is the same thing '/target
+# status' does, and becomes "switch to the Remote Target screen" for
+# free once that screen exists, with no change needed here.
+class TargetIndicator(Static):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.display = False
+
+    def on_click(self, event):
+        commands.dispatch(self.app, "/target")
+
+    def refresh_text(self):
+        state = self.app.target_state
+        if not state.writing or state.write_total <= 0:
+            self.display = False
+            return
+        percent = int(state.write_read * 100 / state.write_total)
+        self.update("writing image %d%%" % percent)
+        self.display = True
+
 class BaseScreen(Screen):
     # Status-line chips, keyed for subclasses to update/add/remove
     # rather than redefining HINT wholesale -- hand-typed copies used
@@ -284,6 +308,7 @@ class BaseScreen(Screen):
         yield Horizontal(
             Static(id="status", markup=False),
             Indicators(id="indicators"),
+            TargetIndicator(id="target-indicator"),
             id="infobar",
         )
         yield Static(self.HINT, id="hint")
@@ -310,6 +335,7 @@ class BaseScreen(Screen):
         self.query_one(SpecTree).load(
             self.app.context, previous_spec=self.app.context.changed_from)
         self.query_one(Indicators).refresh_text()
+        self.query_one(TargetIndicator).refresh_text()
         self.update_body()
 
     # Overridden by each screen: what goes in the body ('#cmd') pane.

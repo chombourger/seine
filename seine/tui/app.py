@@ -15,7 +15,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from seine.tui import ai, commands
-from seine.tui.base import BaseScreen, Indicators, Prompt
+from seine.tui.base import BaseScreen, Indicators, Prompt, TargetIndicator
 from seine.tui.build import BuildScreen, BuildState
 from seine.tui.chat import ChatScreen
 from seine.tui.context import Context
@@ -25,6 +25,7 @@ from seine.tui.issues import IssuesScreen
 from seine.tui.render import (render_analyze, render_artifacts, render_cache,
                               render_doctor, render_overview, render_packages,
                               render_plan)
+from seine.tui.target import TargetState
 
 class OverviewScreen(BaseScreen):
     # Not reported from SeineApp.on_mount(): push_screen() schedules this
@@ -151,6 +152,7 @@ class SeineApp(App):
         self.build_state.on_finished = self._build_finished
         self.fs_state = FilesystemState()
         self.ai_state = ai.AIState()
+        self.target_state = TargetState()
         self.diff_text = None
         # Set by commands.py's own _issues() right before app.show("issues")
         # -- IssuesScreen.update_body() reads these back, the same
@@ -199,11 +201,13 @@ class SeineApp(App):
         if isinstance(self.screen, BaseScreen):
             self.screen.refresh_data()
 
-    # Every BaseScreen has an Indicators chip; called whenever it might
-    # need updating, regardless of which screen is current.
+    # Refreshes both chips regardless of which one a caller actually
+    # changed -- ConsoleAdapter.on_event() (target.py) needs
+    # TargetIndicator kept current too, not just Indicators.
     def refresh_indicators(self):
         if isinstance(self.screen, BaseScreen):
             self.screen.query_one(Indicators).refresh_text()
+            self.screen.query_one(TargetIndicator).refresh_text()
 
     def _build_finished(self):
         self.refresh_indicators()
