@@ -26,6 +26,7 @@ from seine.tui.render import (render_analyze, render_artifacts, render_cache,
                               render_doctor, render_overview, render_packages,
                               render_plan)
 from seine.tui.target import TargetState
+from seine.tui.target_screen import TargetScreen
 
 class OverviewScreen(BaseScreen):
     # Not reported from SeineApp.on_mount(): push_screen() schedules this
@@ -77,7 +78,7 @@ SCREENS = {"overview": OverviewScreen, "plan": PlanScreen, "build": BuildScreen,
           "artifacts": ArtifactsScreen, "filesystem": FilesystemScreen,
           "packages": PackagesScreen, "analyze": AnalyzeScreen,
           "cache": CacheScreen, "doctor": DoctorScreen, "diff": DiffScreen,
-          "issues": IssuesScreen, "chat": ChatScreen}
+          "issues": IssuesScreen, "chat": ChatScreen, "target": TargetScreen}
 
 # Offers the same command registry through Ctrl+P. Selecting one fills the
 # prompt and focuses it rather than running it -- a second, deliberate
@@ -126,9 +127,11 @@ class SeineApp(App):
     #infobar { height: 1; }
     #status { padding: 0 2; height: 1; width: 1fr; }
     #status.error { color: $error; }
+    #status.warning { color: $warning; }
     /* '$accent', not '$text-muted' like '#hint' -- this is clickable
        and worth noticing, closer to a link than a caption. */
     #indicators { color: $accent; padding: 0 2; height: 1; width: auto; }
+    #target-indicator { color: $accent; padding: 0 2; height: 1; width: auto; }
     #completions {
         height: auto;
         max-height: 5;
@@ -193,9 +196,9 @@ class SeineApp(App):
             except commands.CommandError as e:
                 self.say(str(e), error=True)
 
-    def say(self, text, error=False):
+    def say(self, text, error=False, warning=False):
         if isinstance(self.screen, BaseScreen):
-            self.screen.say(text, error=error)
+            self.screen.say(text, error=error, warning=warning)
 
     def refresh_screens(self):
         if isinstance(self.screen, BaseScreen):

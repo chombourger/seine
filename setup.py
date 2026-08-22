@@ -47,7 +47,10 @@ setup(
         # styled Text with meta (e.g. #chatlog's clickable tool rows).
         # pip has no reason to avoid rich 15 on its own: textual only
         # declares 'rich>=13.3.3', no upper bound.
-        'tui': ['textual', 'rich<14'],
+        # pyte: pure-Python VT100 emulation for the Remote Target screen's
+        # console pane (seine/tui/target.py) -- no C extension, small
+        # enough to sit alongside textual rather than its own extra.
+        'tui': ['textual', 'rich<14', 'pyte'],
         # The optional AI chat, seine/tui/ai.py -- never a dependency of
         # 'tui' itself, only of the one module that imports it.
         'ai': ['litellm', 'jsonpath-ng', 'ruamel.yaml'],

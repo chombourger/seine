@@ -8,6 +8,7 @@
 from textual.app import Screen
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.suggester import Suggester
 from textual.widgets import Input, OptionList, Static
 
@@ -218,9 +219,8 @@ class Indicators(Static):
 # storage write is actually in progress (app.target_state.writing, fed
 # by TargetState.on_event() -- see seine/tui/target.py), showing live
 # progress rather than a plain count since there is only ever one
-# target. Click reruns '/target': today that is the same thing '/target
-# status' does, and becomes "switch to the Remote Target screen" for
-# free once that screen exists, with no change needed here.
+# target. Click reruns '/target', switching to the Remote Target screen
+# for a closer look at the write in progress.
 class TargetIndicator(Static):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -239,6 +239,15 @@ class TargetIndicator(Static):
         self.display = True
 
 class BaseScreen(Screen):
+    # Textual's own default (App.AUTO_FOCUS = "*") auto-focuses whatever
+    # focusable widget composes first on screen-resume -- harmless on
+    # every other screen (on_mount() below re-focuses the prompt right
+    # after anyway), but TargetScreen's ConsolePane composes before the
+    # prompt and is focusable, so without this override it would win
+    # that transient auto-focus and fire its own on_focus() (a real
+    # ai.confirm() for raw keystroke mode) before anyone asked for it.
+    AUTO_FOCUS = "#prompt"
+
     # Status-line chips, keyed for subclasses to update/add/remove
     # rather than redefining HINT wholesale -- hand-typed copies used
     # to drift (FilesystemScreen once silently lost its own
@@ -323,8 +332,13 @@ class BaseScreen(Screen):
         self.set_interval(1.0, self._tick_highlight)
         self._tick_highlight()
 
+    # NoMatches guard: TargetScreen has no spec to show a tree of, so no
+    # #spectree at all -- every other screen still has one, unaffected.
     def _tick_highlight(self):
-        tree = self.query_one(SpecTree)
+        try:
+            tree = self.query_one(SpecTree)
+        except NoMatches:
+            return
         wanted = spectree.highlight_active(tree, self.app.build_state)
         self._scrolled_to = spectree.scroll_to_active(tree, wanted, self._scrolled_to)
 
@@ -332,8 +346,12 @@ class BaseScreen(Screen):
     # mount and after /use, rather than repeating the call. Subclasses
     # override update_body(), not this.
     def refresh_data(self):
-        self.query_one(SpecTree).load(
-            self.app.context, previous_spec=self.app.context.changed_from)
+        try:
+            tree = self.query_one(SpecTree)
+        except NoMatches:
+            pass
+        else:
+            tree.load(self.app.context, previous_spec=self.app.context.changed_from)
         self.query_one(Indicators).refresh_text()
         self.query_one(TargetIndicator).refresh_text()
         self.update_body()
@@ -343,9 +361,10 @@ class BaseScreen(Screen):
         pass
 
     # CSS class, not markup, for the same reason #status is markup=False.
-    def say(self, text, error=False):
+    def say(self, text, error=False, warning=False):
         status = self.query_one("#status", Static)
         status.set_class(error, "error")
+        status.set_class(warning, "warning")
         status.update(text)
 
     async def on_input_submitted(self, event):
@@ -359,7 +378,10 @@ class BaseScreen(Screen):
         context = self.app.context
         if context.changed_from is not None:
             context.changed_from = None
-            self.query_one(SpecTree).load(context)
+            try:
+                self.query_one(SpecTree).load(context)
+            except NoMatches:
+                pass
         # An unmodified recall is already in history; only a new/edited
         # line is worth adding.
         if event.input.recalled != line:
@@ -367,16 +389,26 @@ class BaseScreen(Screen):
         if line.startswith("!"):
             self.app.shell_escape(line[1:])
             return
-        # Neither a command nor shell: a question for the AI chat, once
-        # it's configured -- '/' still means "run a command" either way,
-        # so an unconfigured typo gets the usual dispatch() error, not a
-        # confusing "AI isn't set up" instead.
-        if not line.startswith("/"):
-            from seine.tui import ai
-            if ai.configured():
-                ai.ask(self.app, line)
-                return
+        # Neither a command nor shell: overridable, so a screen with
+        # something better to do with a bare line (TargetScreen sends it
+        # to the target's console) can -- default falls through to
+        # dispatch()'s own "commands start with '/'" error rather than a
+        # confusing "AI isn't set up" message when nothing claims it.
+        if not line.startswith("/") and self._handle_freeform(line):
+            return
         try:
             commands.dispatch(self.app, line)
         except commands.CommandError as e:
             self.say(str(e), error=True)
+
+    # A question for the AI chat, once configured -- '/' still means
+    # "run a command" either way, so an unconfigured typo gets the usual
+    # dispatch() error rather than a confusing "AI isn't set up" one.
+    # Returns whether the line was actually handled, so on_input_
+    # submitted() knows whether to fall through.
+    def _handle_freeform(self, line):
+        from seine.tui import ai
+        if ai.configured():
+            ai.ask(self.app, line)
+            return True
+        return False
