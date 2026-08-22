@@ -92,7 +92,17 @@ class IndividualChecks(avocado.Test):
     def test_storage_reports_free_space(self):
         check = doctor.check_storage()
         self.assertEqual(check.status, "ok")
-        self.assertIn("GiB free", check.detail)
+
+    # mtda is optional -- absent is a note, not a failure, unlike guestfs.
+    def test_mtda_missing_is_a_note_not_an_error(self):
+        import importlib.util
+        real = importlib.util.find_spec
+        importlib.util.find_spec = lambda name: None if name == "mtda.client" else real(name)
+        try:
+            check = doctor.check_mtda()
+        finally:
+            importlib.util.find_spec = real
+        self.assertEqual(check.status, "warn")
 
 LLM_ENV = ["SEINE_LLM_MODEL", "SEINE_LLM_API_KEY"]
 
