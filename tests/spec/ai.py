@@ -207,14 +207,18 @@ class ToolTable(avocado.Test):
                                  "spec-update", "spec-create",
                                  "side-load", "side-unload",
                                  "gist-create", "gist-delete",
-                                 "source-pull", "source-rm"})
+                                 "source-pull", "source-rm",
+                                 "mtda-power", "mtda-usb", "mtda-storage", "mtda-write-image",
+                                 "mtda-snapshot", "mtda-rollback",
+                                 "mtda-console-send", "mtda-console-run"})
 
     def test_read_only_tools_work_with_no_active_spec(self):
         app = self.SeineApp()
         for name in ["overview", "plan", "packages", "analyze", "artifacts",
                     "cache", "doctor", "installed-sizes", "issues", "build-status",
                     "task-log", "spec-files", "read", "spec-dump", "docs", "spec-query",
-                    "gist-list", "gist-show", "source-list"]:
+                    "gist-list", "gist-show", "source-list",
+                    "mtda-status", "mtda-console-read", "mtda-console-wait"]:
             text = self.ai.TOOLS[name].run(app, {})
             self.assertIsInstance(text, str)
             self.assertGreater(len(text), 0)
@@ -1668,6 +1672,173 @@ def fake_litellm(tool_name=None, tool_arguments="{}", captured_messages=None):
         get_max_tokens=lambda model: (_ for _ in ()).throw(Exception("unmapped")),
         suppress_debug_info=False,
     )
+
+# A stand-in for mtda.client.Client -- same shape/role as tests/spec/
+# target.py's own FakeClient, duplicated rather than imported (test
+# files here stay self-contained, none import another).
+class _FakeMtdaClient:
+    def __init__(self):
+        self.calls = []
+        self.agent = types.SimpleNamespace(remote=None)
+
+    def start(self):
+        pass
+
+    def target_on(self):
+        self.calls.append(("target_on",))
+
+    def target_off(self):
+        self.calls.append(("target_off",))
+
+    def target_toggle(self):
+        self.calls.append(("target_toggle",))
+
+    def target_status(self):
+        return "ON"
+
+    def target_uptime(self):
+        return 42
+
+    def usb_on(self, ndx):
+        self.calls.append(("usb_on", ndx))
+
+    def usb_off(self, ndx):
+        self.calls.append(("usb_off", ndx))
+
+    def usb_toggle(self, ndx):
+        self.calls.append(("usb_toggle", ndx))
+
+    def usb_ports(self):
+        return []
+
+    def storage_write_image(self, path):
+        self.calls.append(("storage_write_image", path))
+
+    def storage_to_host(self):
+        self.calls.append(("storage_to_host",))
+
+    def storage_to_target(self):
+        self.calls.append(("storage_to_target",))
+
+    def storage_commit(self):
+        self.calls.append(("storage_commit",))
+
+    def storage_rollback(self):
+        self.calls.append(("storage_rollback",))
+
+    def storage_status(self):
+        return ("idle", 0, 0)
+
+    def console_send(self, data, raw=False):
+        self.calls.append(("console_send", data, raw))
+
+    def console_run(self, cmd):
+        self.calls.append(("console_run", cmd))
+        return "output"
+
+    def console_dump(self):
+        return "log so far"
+
+    def console_head(self):
+        return "first line"
+
+    def console_tail(self):
+        return "last line"
+
+    def console_wait(self, what, timeout=None):
+        self.calls.append(("console_wait", what, timeout))
+        return "matched line"
+
+# Only wiring is tested here (arguments -> the right target.py call,
+# with the right shape of result) -- target.py's own suite already
+# covers the underlying actions, mtda quirks, and the console pipeline
+# in full.
+class MtdaTools(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui import ai, target
+        self.ai = ai
+        target._available = None
+        self._real_mtda_client = sys.modules.pop("mtda.client", None)
+        self._real_mtda = sys.modules.pop("mtda", None)
+        self.client = _FakeMtdaClient()
+        mtda_pkg = types.ModuleType("mtda")
+        mtda_pkg.client = types.SimpleNamespace(Client=lambda: self.client)
+        sys.modules["mtda"] = mtda_pkg
+        sys.modules["mtda.client"] = mtda_pkg.client
+        self.app = types.SimpleNamespace(_target_client=None)
+
+    def tearDown(self):
+        from seine.tui import target
+        target._available = None
+        sys.modules.pop("mtda.client", None)
+        sys.modules.pop("mtda", None)
+        if self._real_mtda is not None:
+            sys.modules["mtda"] = self._real_mtda
+        if self._real_mtda_client is not None:
+            sys.modules["mtda.client"] = self._real_mtda_client
+
+    def test_mtda_power_dispatches_to_the_matching_verb(self):
+        self.assertEqual(self.ai.TOOLS["mtda-power"].run(self.app, {"state": "on"}),
+                         "target on: done")
+        self.assertEqual(self.client.calls, [("target_on",)])
+
+    def test_mtda_power_rejects_a_bad_state_without_touching_the_client(self):
+        text = self.ai.TOOLS["mtda-power"].run(self.app, {"state": "sideways"})
+        self.assertIn("'state'", text)
+        self.assertEqual(self.client.calls, [])
+
+    def test_mtda_usb_passes_the_port_through(self):
+        self.ai.TOOLS["mtda-usb"].run(self.app, {"port": "2", "state": "off"})
+        self.assertEqual(self.client.calls, [("usb_off", 2)])
+
+    def test_mtda_storage_dispatches_to_the_matching_side(self):
+        self.assertEqual(self.ai.TOOLS["mtda-storage"].run(self.app, {"where": "host"}),
+                         "storage host: done")
+        self.assertEqual(self.client.calls, [("storage_to_host",)])
+
+    def test_mtda_storage_rejects_a_bad_side_without_touching_the_client(self):
+        text = self.ai.TOOLS["mtda-storage"].run(self.app, {"where": "sideways"})
+        self.assertIn("'where'", text)
+        self.assertEqual(self.client.calls, [])
+
+    def test_mtda_write_image_then_attaches_storage_to_the_target(self):
+        self.ai.TOOLS["mtda-write-image"].run(self.app, {"path": "/tmp/x.img"})
+        self.assertEqual(self.client.calls,
+                         [("storage_write_image", "/tmp/x.img"), ("storage_to_target",)])
+
+    def test_mtda_snapshot_and_rollback(self):
+        self.ai.TOOLS["mtda-snapshot"].run(self.app, {})
+        self.ai.TOOLS["mtda-rollback"].run(self.app, {})
+        self.assertEqual(self.client.calls, [("storage_commit",), ("storage_rollback",)])
+
+    def test_mtda_console_send_and_run(self):
+        self.ai.TOOLS["mtda-console-send"].run(self.app, {"data": "root\n"})
+        text = self.ai.TOOLS["mtda-console-run"].run(self.app, {"command": "uname -a"})
+        self.assertEqual(text, "output")
+        self.assertEqual(self.client.calls,
+                         [("console_send", "root\n", True), ("console_run", "uname -a")])
+
+    def test_mtda_console_read_defaults_to_tail_and_dispatches_by_which(self):
+        self.assertEqual(self.ai.TOOLS["mtda-console-read"].run(self.app, {}), "last line")
+        self.assertEqual(self.ai.TOOLS["mtda-console-read"].run(
+            self.app, {"which": "head"}), "first line")
+        self.assertEqual(self.ai.TOOLS["mtda-console-read"].run(
+            self.app, {"which": "dump"}), "log so far")
+
+    def test_mtda_console_wait_passes_the_timeout_through(self):
+        text = self.ai.TOOLS["mtda-console-wait"].run(
+            self.app, {"what": "login:", "timeout": 5})
+        self.assertEqual(text, "matched line")
+        self.assertEqual(self.client.calls, [("console_wait", "login:", 5.0)])
+
+    def test_mtda_status_reports_all_four_fields(self):
+        text = self.ai.TOOLS["mtda-status"].run(self.app, {})
+        self.assertIn("power: ON", text)
+        self.assertIn("uptime: 42s", text)
 
 class TheLoop(avocado.Test):
     """

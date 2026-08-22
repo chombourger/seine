@@ -1231,6 +1231,129 @@ def _tool_web_fetch(app, arguments):
         return "'start'/'end' must be line numbers (1-indexed)"
     return _text_chunk(lines, start, end, SPEC_DUMP_CHUNK_LINES, url)
 
+# Every mtda-* tool below calls straight into seine/tui/target.py's own
+# action functions -- the same code '/target' itself calls, not a
+# reimplementation. Confirmation for a gated one already happened in
+# _dispatch() before its run() is ever called (unlike '/target' itself,
+# which never confirms -- typing/clicking it already is the
+# confirmation; only the model's own unsupervised judgement is gated).
+# target.Unavailable (mtda not installed) and any real RPC failure both
+# come back the same way any other tool's own error does: a plain
+# string, not a raise.
+def _tool_mtda_status(app, arguments):
+    from seine.tui import target
+    try:
+        state = target.status(app)
+    except Exception as e:
+        return "target: %s" % e
+    return ("power: %s -- uptime: %ss -- storage: %s -- usb: %s"
+            % (state["power"], state["uptime"], state["storage"], state["usb"]))
+
+def _tool_mtda_power(app, arguments):
+    from seine.tui import target
+    state = arguments.get("state")
+    if state not in ("on", "off", "toggle"):
+        return "'state' must be 'on', 'off', or 'toggle'"
+    try:
+        target.power(app, state)
+    except Exception as e:
+        return "target: %s" % e
+    return "target %s: done" % state
+
+def _tool_mtda_usb(app, arguments):
+    from seine.tui import target
+    port, state = arguments.get("port"), arguments.get("state")
+    if not port or state not in ("on", "off", "toggle"):
+        return "'port' and 'state' ('on'/'off'/'toggle') are both required"
+    try:
+        target.usb(app, port, state)
+    except Exception as e:
+        return "target: %s" % e
+    return "usb port %s %s: done" % (port, state)
+
+def _tool_mtda_storage(app, arguments):
+    from seine.tui import target
+    where = arguments.get("where")
+    if where not in ("host", "target"):
+        return "'where' must be 'host' or 'target'"
+    fn = target.storage_to_host if where == "host" else target.storage_to_target
+    try:
+        fn(app)
+    except Exception as e:
+        return "target: %s" % e
+    return "storage %s: done" % where
+
+def _tool_mtda_write_image(app, arguments):
+    from seine.tui import target
+    path = arguments.get("path")
+    if not path:
+        return "'path' (an image file already on this machine) is required"
+    try:
+        target.write_image(app, path)
+    except Exception as e:
+        return "target: %s" % e
+    return "wrote %s and attached storage to the target" % path
+
+def _tool_mtda_snapshot(app, arguments):
+    from seine.tui import target
+    try:
+        target.snapshot(app)
+    except Exception as e:
+        return "target: %s" % e
+    return "snapshot: done"
+
+def _tool_mtda_rollback(app, arguments):
+    from seine.tui import target
+    try:
+        target.rollback(app)
+    except Exception as e:
+        return "target: %s" % e
+    return "rollback: done"
+
+def _tool_mtda_console_send(app, arguments):
+    from seine.tui import target
+    data = arguments.get("data")
+    if not data:
+        return "'data' (the characters to send) is required"
+    try:
+        target.console_send(app, data)
+    except Exception as e:
+        return "target: %s" % e
+    return "sent"
+
+def _tool_mtda_console_run(app, arguments):
+    from seine.tui import target
+    cmd = arguments.get("command")
+    if not cmd:
+        return "'command' is required"
+    try:
+        return target.console_run(app, cmd) or "(no output)"
+    except Exception as e:
+        return "target: %s" % e
+
+def _tool_mtda_console_read(app, arguments):
+    from seine.tui import target
+    which = arguments.get("which", "tail")
+    if which not in ("dump", "head", "tail"):
+        return "'which' must be 'dump', 'head', or 'tail'"
+    try:
+        text = getattr(target, "console_" + which)(app)
+    except Exception as e:
+        return "target: %s" % e
+    return text or "(console buffer is empty)"
+
+def _tool_mtda_console_wait(app, arguments):
+    from seine.tui import target
+    what = arguments.get("what")
+    if not what:
+        return "'what' (the text to wait for) is required"
+    timeout = arguments.get("timeout")
+    try:
+        text = target.console_wait(app, what, timeout=float(timeout) if timeout else None)
+    except Exception as e:
+        return "target: %s" % e
+    return text or "(timed out waiting for '%s')" % what
+
 class Tool(NamedTuple):
     name: str
     description: str
@@ -1667,6 +1790,85 @@ TOOLS = {t.name: t for t in [
                                               "hundred lines"}},
          "required": ["url"]},
         False, _tool_web_fetch),
+    Tool("mtda-status", "Power/uptime/storage/USB status of the real "
+        "target -- the same thing '/target status' prints. This "
+        "'target' is real hardware driven over mtda (github.com/"
+        "siemens/mtda), unrelated to start-build's own 'target' "
+        "parameter (a build task name).",
+        _no_args(), False, _tool_mtda_status),
+    Tool("mtda-power", "Turn the target on/off, or toggle it -- the same "
+        "thing '/target on'/'off'/'toggle' does.",
+        {"type": "object",
+         "properties": {"state": {"type": "string", "enum": ["on", "off", "toggle"]}},
+         "required": ["state"]},
+        True, _tool_mtda_power),
+    Tool("mtda-usb", "Turn one USB port on/off, or toggle it -- the same "
+        "thing '/target usb PORT on|off|toggle' does. 'port' is a number "
+        "or name, from mtda-status.",
+        {"type": "object",
+         "properties": {"port": {"type": "string"},
+                        "state": {"type": "string", "enum": ["on", "off", "toggle"]}},
+         "required": ["port", "state"]},
+        True, _tool_mtda_usb),
+    Tool("mtda-storage", "Attach the target's shared storage to this "
+        "host, or back to the target -- the same thing '/target storage "
+        "host|target' does. Storage must be on the host before "
+        "mtda-write-image can write to it; mtda-write-image already "
+        "re-attaches it to the target afterwards, so this is only "
+        "needed to get storage onto the host in the first place, or to "
+        "hand it back to the target without writing anything.",
+        {"type": "object",
+         "properties": {"where": {"type": "string", "enum": ["host", "target"]}},
+         "required": ["where"]},
+        True, _tool_mtda_storage),
+    Tool("mtda-write-image", "Write an image already on this machine to "
+        "the target's shared storage, then attach that storage to the "
+        "target -- the same thing '/target write IMAGE' does.",
+        {"type": "object",
+         "properties": {"path": {"type": "string",
+                                 "description": "path to an image file on this machine"}},
+         "required": ["path"]},
+        True, _tool_mtda_write_image),
+    Tool("mtda-snapshot", "Snapshot the target's shared storage -- the "
+        "same thing '/target snapshot' does.", _no_args(), True, _tool_mtda_snapshot),
+    Tool("mtda-rollback", "Roll the target's shared storage back to its "
+        "last snapshot -- the same thing '/target rollback' does.",
+        _no_args(), True, _tool_mtda_rollback),
+    Tool("mtda-console-send", "Send raw characters to the target's "
+        "console, unbuffered -- no newline added automatically. The same "
+        "thing '/target console send STRING' does.",
+        {"type": "object",
+         "properties": {"data": {"type": "string"}},
+         "required": ["data"]},
+        True, _tool_mtda_console_send),
+    Tool("mtda-console-run", "Run a command on the target's console and "
+        "return its output -- the same thing '/target console run "
+        "COMMAND' does.",
+        {"type": "object",
+         "properties": {"command": {"type": "string"}},
+         "required": ["command"]},
+        True, _tool_mtda_console_run),
+    Tool("mtda-console-read", "Read from the target's console output -- "
+        "'tail' (default) for just the last line, 'head' for the first, "
+        "or 'dump' for the whole buffer. Prefer 'tail'/'head' over 'dump' "
+        "for something like \"did it boot\": far cheaper than paying for "
+        "the whole buffer every time. Read-only, no confirmation needed.",
+        {"type": "object",
+         "properties": {"which": {"type": "string", "enum": ["dump", "head", "tail"],
+                                  "description": "default 'tail'"}},
+         "required": []},
+        False, _tool_mtda_console_read),
+    Tool("mtda-console-wait", "Block until 'what' appears in the "
+        "target's console output, or 'timeout' seconds pass -- the same "
+        "thing '/target console wait STRING [TIMEOUT]' does. Read-only, "
+        "no confirmation needed.",
+        {"type": "object",
+         "properties": {"what": {"type": "string"},
+                        "timeout": {"type": "number",
+                                   "description": "seconds to wait before giving "
+                                                  "up; omit for mtda's own default"}},
+         "required": ["what"]},
+        False, _tool_mtda_console_wait),
 ]}
 
 TOOL_SCHEMAS = [{"type": "function",
