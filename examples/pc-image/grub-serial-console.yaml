@@ -1,0 +1,17 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# A serial console (ttyS0) on the kernel command line -- useful for
+# driving this image over mtda (github.com/siemens/mtda)'s console,
+# where nothing is attached to the emulated video output. tty0 stays
+# listed too, so VGA output keeps working; ttyS0 is listed last, so it
+# is the primary console (getty, kernel messages default there).
+playbook:
+    - name: enable a serial console on ttyS0
+      priority: 900
+      tasks:
+          - name: add console=ttyS0 to the kernel command line
+            lineinfile:
+                path: /etc/default/grub
+                regexp: '^GRUB_CMDLINE_LINUX='
+                line: 'GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200"'
