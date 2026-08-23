@@ -8,6 +8,7 @@ import hashlib
 import os
 import platform
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -214,6 +215,38 @@ ROOTFS_KIND = "rootfs"        # what mmdebstrap made of the archive
 IMAGER_KIND = "imager"        # the kernel libguestfs boots, and its appliance
 TRANSPORT_KIND = "transport"  # a baseline plus what ansible needs
 SOURCE_KIND = "source"        # host-arch, dpkg-dev -- where sources are pulled
+
+# A process group of its own for whatever cmd is (podman, ansible-playbook):
+# Ctrl-C goes to the terminal's process group, so the key asking seine to
+# start no more steps would otherwise kill the ones it waits for. Moving
+# the child into its own group *after* spawning it -- rather than asking
+# subprocess for a new session up front with start_new_session=True --
+# keeps CPython on its posix_spawn fast path instead of a real fork():
+# fork() runs every pthread_atfork handler registered in this process,
+# including grpc's (mtda's transport, once '/target connect' opens a
+# channel), which waits for its own thread pool to go idle before letting
+# the fork proceed -- and hangs forever once a live console/EVT stream
+# keeps that pool permanently busy. posix_spawn never calls fork(), so it
+# never trips that wait. A plain process group, not a full session, is all
+# Ctrl-C isolation ever needed.
+#
+# That fast path also demands an executable with a directory component
+# (CPython's own eligibility check on os.path.dirname(executable)) --
+# 'podman'/'ansible-playbook' alone does not qualify, only what PATH
+# resolves them to. Passing that resolved path as executable=, argv[0]
+# left as cmd[0], gets the fast path without changing what the process
+# sees itself invoked as.
+def spawn_own_pgroup(cmd, **kwargs):
+    if "executable" not in kwargs and not os.path.dirname(cmd[0]):
+        resolved = shutil.which(cmd[0])
+        if resolved:
+            kwargs["executable"] = resolved
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        os.setpgid(proc.pid, proc.pid)
+    except OSError:
+        pass  # already past the point where it matters (exited/exec'd)
+    return proc
 
 class ContainerEngine:
     @staticmethod
@@ -521,17 +554,14 @@ class ContainerEngine:
         said = tail.splitlines()[-ContainerEngine.SAID_LINES:]
         return "\n".join(line.rstrip() for line in said).strip() or None
 
-    # A session of its own for everything the engine runs: Ctrl-C goes to
-    # the terminal's process group, so the key asking seine to start no
-    # more steps would otherwise kill the ones it waits for.
     @staticmethod
     def run(cmd, check=False):
         cmd = ContainerEngine._podman_cmd(cmd)
         output = tasks.output()
-        run = subprocess.run(cmd, check=False, stdout=output,
-                             stderr=subprocess.STDOUT if output else None,
-                             start_new_session=True,
-                             env=ContainerEngine._podman_env())
+        run = spawn_own_pgroup(cmd, stdout=output,
+                               stderr=subprocess.STDOUT if output else None,
+                               env=ContainerEngine._podman_env())
+        run.wait()
         if check and run.returncode != 0:
             raise subprocess.CalledProcessError(
                 run.returncode, cmd, output=ContainerEngine._said(output))
@@ -539,13 +569,16 @@ class ContainerEngine:
     @staticmethod
     def check_output(cmd):
         cmd = ContainerEngine._podman_cmd(cmd)
-        return subprocess.check_output(cmd, start_new_session=True,
-                                       env=ContainerEngine._podman_env())
+        run = spawn_own_pgroup(cmd, stdout=subprocess.PIPE,
+                               env=ContainerEngine._podman_env())
+        out, _ = run.communicate()
+        if run.returncode != 0:
+            raise subprocess.CalledProcessError(run.returncode, cmd, output=out)
+        return out
     @staticmethod
     def Popen(cmd, stdin=None, stdout=None, stderr=None):
         cmd = ContainerEngine._podman_cmd(cmd)
-        return subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr,
-                                start_new_session=True,
+        return spawn_own_pgroup(cmd, stdin=stdin, stdout=stdout, stderr=stderr,
                                 env=ContainerEngine._podman_env())
     # stdout+stderr combined as text plus the exit status: run()'s output
     # would otherwise hit the terminal raw (garbling the TUI, mid-chat),
@@ -555,6 +588,7 @@ class ContainerEngine:
     @staticmethod
     def run_captured(cmd):
         cmd = ContainerEngine._podman_cmd(cmd)
-        run = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             start_new_session=True, env=ContainerEngine._podman_env())
-        return run.returncode, run.stdout.decode("utf-8", "replace")
+        run = spawn_own_pgroup(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               env=ContainerEngine._podman_env())
+        out, _ = run.communicate()
+        return run.returncode, out.decode("utf-8", "replace")

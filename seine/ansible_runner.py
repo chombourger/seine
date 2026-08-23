@@ -10,6 +10,7 @@ from seine                      import packages
 from seine.transport_bootstrap import TransportBootstrap
 from seine import tasks
 from seine.utils                import ContainerEngine
+from seine.utils                import spawn_own_pgroup
 from seine.utils                import apt_sources
 from seine.utils                import feeds
 
@@ -205,12 +206,14 @@ class AnsibleContainerRunner:
             # To the task's file when one is capturing, so a playbook's
             # output stays with the rest of what that step did.
             output = tasks.output()
-            # In a session of its own, as the container engine is run: a
-            # playbook killed half-way leaves a half-customized root
-            # file-system.
-            subprocess.run(cmd, check=True, stdout=output, env=env,
-                           start_new_session=True,
-                           stderr=subprocess.STDOUT if output else None)
+            # In a process group of its own, as the container engine is
+            # run (see spawn_own_pgroup): a playbook killed half-way
+            # leaves a half-customized root file-system.
+            proc = spawn_own_pgroup(cmd, stdout=output, env=env,
+                                    stderr=subprocess.STDOUT if output else None)
+            proc.wait()
+            if proc.returncode != 0:
+                raise subprocess.CalledProcessError(proc.returncode, cmd)
         finally:
             os.unlink(ansiblefile.name)
             os.unlink(inventoryfile.name)

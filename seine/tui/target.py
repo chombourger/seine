@@ -36,6 +36,49 @@ def available():
 class Unavailable(Exception):
     pass
 
+# grpc-core's own thread pool (mtda's client/agent transport) refuses to
+# let a real fork() proceed until it reports idle -- but with a channel
+# open, its background global timer never stops rescheduling itself, so
+# that wait never ends. seine's own subprocess calls are routed around
+# this through posix_spawn (spawn_own_pgroup in utils.py), which never
+# calls fork() at all -- but the 'image' task's libguestfs launches its
+# qemu appliance with a real fork()+exec() of its own, in C, that seine
+# has no say over.
+#
+# os.register_at_fork looked like the fix (a CPython-level hook run
+# before ANY fork()), but it isn't one: CPython only invokes those
+# callbacks from its own os.fork()/subprocess implementation, never for
+# a fork() a C extension calls directly -- confirmed against this
+# libguestfs by watching a stuck build's own worker thread (py-spy
+# --native) sitting inside guestfs_launch -> fork() -> grpc's C++
+# thread_pool.cc wait, with no os.register_at_fork callback having run.
+# A real pthread_atfork(3) registration (glibc, fires for every fork()
+# in the process, C or Python) would cover it, but dlsym can't resolve
+# the symbol through ctypes on this glibc/Debian build to register one.
+#
+# So this is targeted, not generic: imager.py exposes before_launch()/
+# after_launch() no-ops around its one g.launch() call, and wiring them
+# here to disconnect()/reconnect is enough, because libguestfs's is the
+# only fork this process makes that seine doesn't already route through
+# posix_spawn. before() only tears the channel down if it finds one
+# actually connected (so this never fights an explicit '/target
+# disconnect' made while a build is running), and after() only
+# reconnects if before() was the one that disconnected it.
+def _wire_launch_guard(app):
+    from seine import imager
+    def before():
+        app._launch_guard_disconnected = getattr(app, "_target_client", None) is not None
+        if app._launch_guard_disconnected:
+            disconnect(app)
+    def after():
+        if getattr(app, "_launch_guard_disconnected", False):
+            try:
+                get_client(app)
+            except Exception:
+                pass
+    imager.before_launch = before
+    imager.after_launch = after
+
 # The real dial, shared by get_client() (lazy, no host of its own) and
 # connect() (explicit, optional host) below. host=None reads mtda's own
 # local config, exactly like running mtda-cli with no '--remote' does;
@@ -55,6 +98,7 @@ def _connect(app, host=None):
     import mtda.client
     client = mtda.client.Client(host=host)
     client.start()
+    _wire_launch_guard(app)
     remote = getattr(client.agent, "remote", None)
     state = getattr(app, "target_state", None)
     if state is not None:
@@ -100,7 +144,9 @@ def connect(app, host=None):
 # console/EVT stream started by console_remote() is a second, unrelated
 # grpc channel of its own (mtda/console/remote.py's RemoteConsole builds
 # and Subscribe()s on it directly), tracked as client.agent.console_output
-# and never touched by client.stop().
+# and never touched by client.stop(). Left open, it is exactly what keeps
+# grpc-core's thread pool from ever reporting idle -- see
+# _wire_launch_guard()'s comment above for why that matters here.
 def disconnect(app):
     client = getattr(app, "_target_client", None)
     if client is not None:
