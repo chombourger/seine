@@ -415,9 +415,11 @@ def _target(app, argv):
     mtda (github.com/siemens/mtda). No confirmation on any of these --
     typing the command is the confirmation; only the AI's own tool
     calls for the same actions are gated. A bare '/target' just
-    switches to the screen -- everything above also works typed from
-    anywhere else. Nothing here works without mtda installed on this
-    system.
+    switches to the screen, with no automatic connect (unless one is
+    already live, or $MTDA_REMOTE names a default agent) -- 'connect'
+    below is how to actually reach one. Everything here also works
+    typed from anywhere else. Nothing here works without mtda installed
+    on this system.
     """
     from seine.tui import target
     if not target.available():
@@ -428,7 +430,20 @@ def _target(app, argv):
         return
     verb, rest = argv[0], argv[1:]
 
-    if verb == "status":
+    if verb == "connect":
+        if len(rest) > 1:
+            raise CommandError("/target connect takes at most one AGENT")
+        agent = rest[0] if rest else None
+        app.show("target")
+        app.screen.connect(agent, force=True)
+    elif verb == "disconnect":
+        if rest:
+            raise CommandError("/target disconnect takes no arguments")
+        target.disconnect(app)
+        app.say("target: disconnected")
+        if hasattr(app.screen, "_redraw_status"):
+            app.screen._redraw_status()
+    elif verb == "status":
         _target_status(app)
     elif verb in ("on", "off", "toggle"):
         target.run_and_report(app, "target %s" % verb, lambda: target.power(app, verb))
@@ -488,8 +503,9 @@ REGISTRY = {
         Command("cd",       _cd,       "[PATH]",                   *_doc(_cd)),
         Command("cancel",   _cancel,   "",                         *_doc(_cancel)),
         Command("target",   _target,
-                "[on|off|toggle|usb PORT V|storage host|target|write IMAGE|"
-                "snapshot|rollback|console ...|status]",
+                "[connect [AGENT]|disconnect|on|off|toggle|usb PORT V|"
+                "storage host|target|write IMAGE|snapshot|rollback|"
+                "console ...|status]",
                 *_doc(_target)),
         Command("analyze",  _analyze,  "[SPEC...]",                *_doc(_analyze)),
         Command("cache",    _cache,    "",                         *_doc(_cache)),

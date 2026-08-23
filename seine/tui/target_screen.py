@@ -20,6 +20,7 @@
 # line (a couple of seconds, #status.warning) that keystrokes are now
 # going straight to the target, not seine.
 
+import os
 import queue
 import threading
 import time
@@ -142,6 +143,14 @@ class TargetScreen(BaseScreen):
     #targetstatus { background: $background; padding: 1 2; }
     """
 
+    # Set here, not on_mount(): '/target connect' (commands.py) can call
+    # this screen's own connect() right after app.show("target")
+    # constructs it, and that worker's _redraw_status() may reach
+    # _update_console_border() before on_mount() runs on the event loop.
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._spinner_frame = 0
+
     def compose(self):
         yield Horizontal(
             ConsolePane(Static(id="console", markup=False), id="console-pane"),
@@ -152,7 +161,6 @@ class TargetScreen(BaseScreen):
 
     def on_mount(self):
         super().on_mount()
-        self._spinner_frame = 0
         # Status pane (+ the console pane's own uptime/spinner border,
         # same tick): BuildScreen's own precedent for "good enough" --
         # a 1s tick, not a push per POWER/STORAGE event (those are rare
@@ -167,12 +175,14 @@ class TargetScreen(BaseScreen):
         # capping a boot log's redraw rate at a small fraction of the
         # hundreds/sec that caused the original problem.
         self._console_timer = self.set_interval(1 / 30, self._maybe_redraw_console)
-        # Own group, not 'target': run_and_report()'s mutating actions
-        # are 'target'/exclusive=True, and a click firing while this is
-        # still dialling must not cancel the connect attempt out from
-        # under it.
-        self.app.run_worker(self._connect, thread=True, exclusive=True,
-                            group="target-connect")
+        # No auto-connect otherwise -- '/target connect [agent]' is now
+        # how a first connection happens; this only re-dials on its own
+        # when there's already a live client to refresh (navigated back
+        # to an already-connected screen) or $MTDA_REMOTE names a default
+        # agent to reach, same signal mtda-cli itself honors.
+        if getattr(self.app, "_target_client", None) is not None or \
+                os.environ.get("MTDA_REMOTE"):
+            self.connect()
 
     def on_unmount(self):
         for timer in (getattr(self, "_status_timer", None),
@@ -180,26 +190,36 @@ class TargetScreen(BaseScreen):
             if timer is not None:
                 timer.stop()
 
-    # Runs in a worker: get_client() dials mtda (and, when a remote is
-    # configured, starts the console/EVT subscription) -- a real network
-    # call, kept off the UI thread the same way every other target
-    # action here already is.
-    def _connect(self):
+    # force=True is '/target connect [agent]' (commands.py, any screen):
+    # always a real teardown-and-redial, even with no host, so it's a
+    # genuine "try again". force=False is on_mount()'s own refresh: dial
+    # only if nothing is connected yet.
+    def connect(self, host=None, force=False):
+        self.app.run_worker(lambda: self._connect(host, force), thread=True,
+                            exclusive=True, group="target-connect")
+
+    # Runs in a worker: dialling mtda is a real network call, kept off
+    # the UI thread like every other target action here.
+    def _connect(self, host=None, force=False):
         from seine.tui import target
         try:
-            target.get_client(self.app)
+            if force:
+                target.connect(self.app, host)
+            else:
+                target.get_client(self.app)
         except Exception as e:
             self.app.call_from_thread(self.say, "target: %s" % e, error=True)
             return
-        # Primer read: the EVT stream is forward-only, so without this
-        # power/storage would show blank until something happens to
-        # change while the screen is open. Not fatal if it fails (a
-        # flaky read here shouldn't block the console pane from working)
-        # -- live events still catch up on their own from here.
+        # Primer read for power/storage: the EVT stream is forward-only.
+        # gRPC dials lazily, so this is often the first RPC to actually
+        # reach the host -- a failure here is a real connect failure, so
+        # it rolls the connection back instead of leaving it half-open.
         try:
             self.app.target_state.seed(target.status(self.app))
-        except Exception:
-            pass
+        except Exception as e:
+            target.disconnect(self.app)
+            self.app.call_from_thread(self.say, "target: %s" % e, error=True)
+            return
         self.app.call_from_thread(self._redraw_console)
         self.app.call_from_thread(self._redraw_status)
 

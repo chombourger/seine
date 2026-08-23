@@ -336,11 +336,19 @@ class TargetCommand(avocado.Test):
         sys.modules["mtda"] = mtda_pkg
         sys.modules["mtda.client"] = mtda_client_mod
 
-        self.app = types.SimpleNamespace(_target_client=None, said=[], shown=[])
+        self.app = types.SimpleNamespace(_target_client=None, said=[], shown=[],
+                                         connect_calls=[], redraws=0)
         self.app.say = lambda text, error=False: self.app.said.append((text, error))
         self.app.call_from_thread = lambda fn, *a, **kw: fn(*a, **kw)
         self.app.run_worker = lambda fn, thread=True, exclusive=True, group=None: fn()
         self.app.show = lambda name: self.app.shown.append(name)
+        # '/target connect'/'disconnect' (commands.py) only need
+        # app.screen.connect()/._redraw_status() -- the real dial/redraw
+        # behaviour behind those is TargetScreen's own, exercised in
+        # TargetScreenIntegration; this is just wiring.
+        self.app.screen = types.SimpleNamespace(
+            connect=lambda host, force: self.app.connect_calls.append((host, force)),
+            _redraw_status=lambda: setattr(self.app, "redraws", self.app.redraws + 1))
 
     def tearDown(self):
         target._available = None
@@ -366,6 +374,29 @@ class TargetCommand(avocado.Test):
         # No RPC call -- switching screens doesn't dial mtda, only the
         # availability check (import, no network) runs first.
         self.assertIsNone(self.app._target_client)
+
+    def test_connect_switches_to_the_screen_and_forces_a_reconnect(self):
+        self.commands.dispatch(self.app, "/target connect")
+        self.assertEqual(self.app.shown, ["target"])
+        self.assertEqual(self.app.connect_calls, [(None, True)])
+
+    def test_connect_forwards_the_named_agent(self):
+        self.commands.dispatch(self.app, "/target connect 192.0.2.5:1234")
+        self.assertEqual(self.app.connect_calls, [("192.0.2.5:1234", True)])
+
+    def test_connect_takes_at_most_one_agent(self):
+        self.assertRaises(self.commands.CommandError,
+                          self.commands.dispatch, self.app, "/target connect a b")
+
+    def test_disconnect_clears_the_client_and_redraws(self):
+        target.get_client(self.app)  # something to disconnect from
+        self.commands.dispatch(self.app, "/target disconnect")
+        self.assertIsNone(self.app._target_client)
+        self.assertEqual(self.app.redraws, 1)
+
+    def test_disconnect_takes_no_arguments(self):
+        self.assertRaises(self.commands.CommandError,
+                          self.commands.dispatch, self.app, "/target disconnect now")
 
     # No confirmation: typing '/target on' already is the deliberate
     # act, unlike the AI's own tool calls (ai.py's own gating, tested
@@ -805,6 +836,12 @@ class TargetScreenIntegration(avocado.Test):
 
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        # A default agent -- TargetScreen.on_mount() only auto-connects
+        # when this (or an already-live client) says to; most of this
+        # class is about what happens *after* a connection, same as
+        # before '/target connect' existed. The no-auto-connect and
+        # explicit-connect paths get their own tests further down.
+        os.environ["MTDA_REMOTE"] = "192.0.2.1"
 
     def tearDown(self):
         target._available = None
@@ -814,6 +851,7 @@ class TargetScreenIntegration(avocado.Test):
             sys.modules["mtda"] = self._real_mtda
         if self._real_mtda_client is not None:
             sys.modules["mtda.client"] = self._real_mtda_client
+        os.environ.pop("MTDA_REMOTE", None)
 
     def test_slash_target_switches_screens_and_renders_both_panes(self):
         async def scenario():
@@ -1075,6 +1113,77 @@ class TargetScreenIntegration(avocado.Test):
                 self.assertIn("boom", status.renderable)
                 self.assertTrue(status.has_class("error"))
                 self.assertIsNone(app.screen._status_timer._task)
+        _run(scenario)
+
+    # No $MTDA_REMOTE (unlike every test above, via setUp) and nothing
+    # connected yet -- on_mount() must not dial on its own.
+    def test_no_default_agent_and_no_prior_client_does_not_auto_connect(self):
+        os.environ.pop("MTDA_REMOTE", None)
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.show("target")
+                await pilot.pause()
+                await asyncio.sleep(0.1)  # nothing to poll for -- a dial never starts
+                self.assertIsNone(getattr(app, "_target_client", None))
+                self.assertIn("/target connect",
+                             app.screen.query_one("#targetstatus").renderable.plain)
+        _run(scenario)
+
+    # '/target connect' works from any screen (switches to the target
+    # screen as a side effect) and always dials, regardless of
+    # $MTDA_REMOTE.
+    def test_target_connect_command_dials_and_switches_screens(self):
+        os.environ.pop("MTDA_REMOTE", None)
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                self.assertNotIsInstance(app.screen, self.TargetScreen)
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/target connect"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.TargetScreen)
+                for _ in range(50):
+                    if getattr(app, "_target_client", None) is not None:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertIsNotNone(app._target_client)
+                self.assertEqual(app.target_state.agent, "Local")
+        _run(scenario)
+
+    def test_target_connect_with_an_agent_forwards_the_host(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/target connect 192.0.2.5:1234"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(50):
+                    if getattr(app, "_target_client", None) is not None:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertEqual(app._target_client.host, "192.0.2.5:1234")
+        _run(scenario)
+
+    def test_target_disconnect_clears_the_client_and_shows_the_hint_again(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.show("target")
+                await pilot.pause()
+                for _ in range(50):
+                    if getattr(app, "_target_client", None) is not None:
+                        break
+                    await asyncio.sleep(0.02)
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/target disconnect"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsNone(app._target_client)
+                self.assertIn("/target connect",
+                             app.screen.query_one("#targetstatus").renderable.plain)
         _run(scenario)
 
 # _key_to_bytes() is a pure function -- a plain SimpleNamespace stands
