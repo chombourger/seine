@@ -3,7 +3,10 @@
 
 # The prompt's history, oldest first, so Up/Down walks it like a shell.
 # Kept under the current directory, not a user-wide state dir -- a build
-# session's spec files are project-specific.
+# session's spec files are project-specific. SEINE_HISTORY_FILE moves
+# it, same as SEINE_CACHE_DIR moves the caches (seine/utils.py) -- the
+# TUI tests set it so a real run's own history.json is never touched
+# by one.
 #
 # Every entry carries a scope ('commands', 'chat', 'target', ...):
 # what kind of line it is, not which screen typed it. A '/command' is
@@ -22,7 +25,7 @@ import os
 import time
 
 def path():
-    return os.path.join(".seine", "history.json")
+    return os.environ.get("SEINE_HISTORY_FILE") or os.path.join(".seine", "history.json")
 
 # Read by _prune_after() below, and by '/set history_pruning' (commands.py)
 # to validate a new value before it's saved.

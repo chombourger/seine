@@ -860,6 +860,10 @@ class TargetScreenIntegration(avocado.Test):
 
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        # This class builds a real SeineApp -- without this, its
+        # History (cwd-relative by default) would write into whatever
+        # directory avocado was actually run from, not a throwaway one.
+        os.environ["SEINE_HISTORY_FILE"] = os.path.join(self.workdir, "history.json")
         # A default agent -- TargetScreen.on_mount() only auto-connects
         # when this (or an already-live client) says to; most of this
         # class is about what happens *after* a connection, same as
@@ -876,6 +880,7 @@ class TargetScreenIntegration(avocado.Test):
         if self._real_mtda_client is not None:
             sys.modules["mtda.client"] = self._real_mtda_client
         os.environ.pop("MTDA_REMOTE", None)
+        os.environ.pop("SEINE_HISTORY_FILE", None)
 
     def test_slash_target_switches_screens_and_renders_both_panes(self):
         async def scenario():
@@ -1321,6 +1326,9 @@ class ConsolePaneRawMode(avocado.Test):
 
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        # See TargetScreenIntegration.setUp()'s own comment -- same
+        # real-SeineApp, same reason.
+        os.environ["SEINE_HISTORY_FILE"] = os.path.join(self.workdir, "history.json")
 
     def tearDown(self):
         target._available = None
@@ -1330,6 +1338,7 @@ class ConsolePaneRawMode(avocado.Test):
             sys.modules["mtda"] = self._real_mtda
         if self._real_mtda_client is not None:
             sys.modules["mtda.client"] = self._real_mtda_client
+        os.environ.pop("SEINE_HISTORY_FILE", None)
 
     # No confirmation: focusing the pane is already deliberate, and
     # confirming every keystroke individually would be unusable.

@@ -35,6 +35,26 @@ class ParsingPruneAfter(avocado.Test):
         with self.assertRaises(ValueError):
             history.parse_prune_after("-5")
 
+class DefaultPath(avocado.Test):
+    def test_honours_seine_history_file(self):
+        real = os.environ.get("SEINE_HISTORY_FILE")
+        os.environ["SEINE_HISTORY_FILE"] = "/somewhere/history.json"
+        try:
+            self.assertEqual(history.path(), "/somewhere/history.json")
+        finally:
+            if real is None:
+                os.environ.pop("SEINE_HISTORY_FILE", None)
+            else:
+                os.environ["SEINE_HISTORY_FILE"] = real
+
+    def test_falls_back_to_cwd_relative(self):
+        real = os.environ.pop("SEINE_HISTORY_FILE", None)
+        try:
+            self.assertEqual(history.path(), os.path.join(".seine", "history.json"))
+        finally:
+            if real is not None:
+                os.environ["SEINE_HISTORY_FILE"] = real
+
 # History._prune_after() reads seine.settings, which is XDG-located --
 # every test here points XDG_CONFIG_HOME at its own workdir so it never
 # touches a real user's settings.json.
