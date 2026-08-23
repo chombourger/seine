@@ -624,7 +624,7 @@ image:
                 await self._type(pilot, "/use @stuff/one.yaml")
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertEqual(app.history.lines[-1], "/use @stuff/one.yaml")
+                self.assertEqual(app.history.lines[-1]["line"], "/use @stuff/one.yaml")
         _run(scenario)
 
     # Real typing can have Enter arrive a keystroke ahead of the pane --
@@ -972,20 +972,20 @@ class App(avocado.Test):
                 prompt.value = "/nope"
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertEqual(app.history.lines, ["/nope"])
+                self.assertEqual([e["line"] for e in app.history.lines], ["/nope"])
 
                 prompt = app.screen.query_one("#prompt")
                 await pilot.press("up")
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertEqual(app.history.lines, ["/nope"])
+                self.assertEqual([e["line"] for e in app.history.lines], ["/nope"])
 
                 prompt = app.screen.query_one("#prompt")
                 await pilot.press("up")
                 await pilot.press("x")
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertEqual(app.history.lines, ["/nope", "/nopex"])
+                self.assertEqual([e["line"] for e in app.history.lines], ["/nope", "/nopex"])
         _run(scenario)
 
     # '!<command>' hands the real terminal to a real shell via
@@ -1076,6 +1076,28 @@ class App(avocado.Test):
                 await pilot.pause()
                 self.assertEqual(settings.load()["sbom2cve_program"],
                                  "/usr/local/bin/my-scanner")
+        _run(scenario)
+
+    # Validated the same way jobs/theme are: a bad value is a
+    # CommandError, not a crash the next time History reads it back
+    # (seine.tui.history.parse_prune_after()).
+    def test_set_history_pruning_persists_and_is_validated(self):
+        async def scenario():
+            from seine import settings
+            app = self.SeineApp()
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/set history_pruning not-a-duration"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("history_pruning expects",
+                             _content(app.screen.query_one("#status")))
+
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/set history_pruning 15d"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(settings.load()["history_pruning"], "15d")
         _run(scenario)
 
     # Deferred to after the initial screen mounts (a startup command can

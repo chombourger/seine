@@ -318,18 +318,21 @@ def _settings(app, argv):
 # two keys, never a Textual name.
 THEMES = {"dark": "textual-dark", "light": "textual-light"}
 
-# jobs/theme/sbom2cve_program only -- startup_commands is edited from
-# /settings itself.
+# jobs/theme/sbom2cve_program/history_pruning only -- startup_commands
+# is edited from /settings itself.
 def _set(app, argv):
-    """change one persisted setting: jobs, theme, or sbom2cve_program
+    """change one persisted setting: jobs, theme, sbom2cve_program, or history_pruning
 
     Changes one persisted setting and saves it straight away -- 'jobs'
     (an int >= 1, the default '/build'/'seine build' falls back to when
     no '--jobs' is given), 'theme' ('dark' or 'light', applied
-    immediately, not just on the next startup), or 'sbom2cve_program'
+    immediately, not just on the next startup), 'sbom2cve_program'
     (a program run as 'PROGRAM SBOM_PATH' by '/issues' and 'seine
     issues' in place of debsbom's own container, expected to write the
-    same JSON-lines shape 'debsbom sec-scan -f json' does).
+    same JSON-lines shape 'debsbom sec-scan -f json' does), or
+    'history_pruning' (how long a prompt history line is kept -- 'Nd'
+    for N days, or '0' to keep it forever; defaults to 30 days when
+    never set).
     'startup_commands' is edited from '/settings' itself, not here.
     """
     if len(argv) != 2:
@@ -352,9 +355,17 @@ def _set(app, argv):
         app.theme = THEMES[value]
     elif key == "sbom2cve_program":
         current["sbom2cve_program"] = value
+    elif key == "history_pruning":
+        from seine.tui.history import parse_prune_after
+        try:
+            parse_prune_after(value)
+        except ValueError as e:
+            raise CommandError(str(e))
+        current["history_pruning"] = value
     else:
         raise CommandError(
-            "unknown setting '%s' -- jobs, theme, or sbom2cve_program" % key)
+            "unknown setting '%s' -- jobs, theme, sbom2cve_program, or "
+            "history_pruning" % key)
     settings.save(current)
     app.say("%s = %s" % (key, value))
 
