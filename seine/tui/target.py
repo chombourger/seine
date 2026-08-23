@@ -36,42 +36,88 @@ def available():
 class Unavailable(Exception):
     pass
 
-# Lazily dialled: whichever side (typed command or AI tool call) touches
-# the target first pays the connection cost, then both reuse the same
-# mtda.client.Client cached on the app. No host/port of our own here --
-# a bare Client() reads mtda's own local config, exactly like running
-# mtda-cli with no '--remote' does; MTDA_REMOTE (main.py:1652) already
-# covers overriding it, same as for mtda-cli -- seine has nothing of its
-# own to configure.
+# The real dial, shared by get_client() (lazy, no host of its own) and
+# connect() (explicit, optional host) below. host=None reads mtda's own
+# local config, exactly like running mtda-cli with no '--remote' does;
+# MTDA_REMOTE (main.py:1652) already covers overriding it, same as for
+# mtda-cli.
 #
 # Also starts the console/event subscription, but only when there is
 # somewhere to subscribe to: client.console_remote() (main.py:348-366)
 # builds and starts a RemoteConsole for us, reusing the same host/
-# ctrlport the RPC client already resolved -- one lazy connect pays for
-# both the RPC client and the live console/EVT stream, same "first
-# touch" moment either way. Skipped silently (no live console, no
-# crash, and no pyte import either -- see ConsoleAdapter) when
-# agent.remote is None: a fully in-process mtda with no gRPC at all,
-# outside what this integration targets.
+# ctrlport the RPC client already resolved -- one connect pays for both
+# the RPC client and the live console/EVT stream, same "first touch"
+# moment either way. Skipped silently (no live console, no crash, and
+# no pyte import either -- see ConsoleAdapter) when agent.remote is
+# None: a fully in-process mtda with no gRPC at all, outside what this
+# integration targets.
+def _connect(app, host=None):
+    import mtda.client
+    client = mtda.client.Client(host=host)
+    client.start()
+    remote = getattr(client.agent, "remote", None)
+    state = getattr(app, "target_state", None)
+    if state is not None:
+        state.agent = remote if remote else "Local"
+        state.session = client.session()
+    if remote:
+        adapter = ConsoleAdapter(app)
+        client.console_remote(remote, adapter)
+        app._target_console = adapter
+    app._target_client = client
+    return client
+
+# Lazily dialled: whichever side (typed command or AI tool call) touches
+# the target first pays the connection cost, then both reuse the same
+# mtda.client.Client cached on the app -- unaffected by connect()/
+# disconnect() below, which only add an explicit way to pick or drop an
+# agent on top of this implicit one.
 def get_client(app):
     if not available():
         raise Unavailable("mtda is not installed on this system")
     client = getattr(app, "_target_client", None)
     if client is None:
-        import mtda.client
-        client = mtda.client.Client()
-        client.start()
-        remote = getattr(client.agent, "remote", None)
-        state = getattr(app, "target_state", None)
-        if state is not None:
-            state.agent = remote if remote else "Local"
-            state.session = client.session()
-        if remote:
-            adapter = ConsoleAdapter(app)
-            client.console_remote(remote, adapter)
-            app._target_console = adapter
-        app._target_client = client
+        client = _connect(app)
     return client
+
+# Explicit '/target connect [agent]': always tears down whatever is
+# currently connected first (see disconnect() below), even for a bare
+# reconnect with no host -- unlike get_client(), a real "try again", not
+# just "connect if not already".
+def connect(app, host=None):
+    if not available():
+        raise Unavailable("mtda is not installed on this system")
+    disconnect(app)
+    return _connect(app, host)
+
+# '/target disconnect', and the first step of connect() above. '.stop()'
+# is the real teardown on the installed mtda.client.Client -- not
+# '.close()', that only exists on the (unmerged) TLS branch's rewritten
+# client. Errors from a channel that may already be dead are not this
+# call's problem to report.
+#
+# client.stop() only closes the RPC channel (client._impl) -- the live
+# console/EVT stream started by console_remote() is a second, unrelated
+# grpc channel of its own (mtda/console/remote.py's RemoteConsole builds
+# and Subscribe()s on it directly), tracked as client.agent.console_output
+# and never touched by client.stop().
+def disconnect(app):
+    client = getattr(app, "_target_client", None)
+    if client is not None:
+        try:
+            console = getattr(client.agent, "console_output", None)
+            if console is not None:
+                console.stop()
+        except Exception:
+            pass
+        try:
+            client.stop()
+        except Exception:
+            pass
+    app._target_client = None
+    app._target_console = None
+    if hasattr(app, "target_state"):
+        app.target_state = TargetState()
 
 # Shared by every mutating caller -- '/target' (commands.py), the
 # Remote Target screen's clickable status tokens, and a bare line typed
@@ -433,11 +479,19 @@ def render_target_status(state):
     from rich.text import Text
     text = Text()
 
-    # 'Local' once connected with no remote configured, blank before
-    # the first connect.
+    # state.agent is None until connect()/get_client() actually dial --
+    # no more auto-connect on screen mount, so this is a real, common
+    # "haven't tried yet" state, not just a brief startup flicker.
+    connected = state.agent is not None
+
     text.append("Agent:\n\n", style=Style())
-    text.append(" %s\n" % (state.agent or ""), style=Style())
-    text.append(" %s\n\n" % (state.session or ""), style=Style())
+    if connected:
+        text.append(" %s\n" % state.agent, style=Style())
+        text.append(" %s\n\n" % (state.session or ""), style=Style())
+    else:
+        text.append(
+            " not connected -- '/target connect [agent]'\n\n",
+            style=Style(color="grey50"))
 
     text.append("Controls:\n\n", style=Style())
 
@@ -453,16 +507,26 @@ def render_target_status(state):
     # host/target) -- a toggle, not a fixed destination. Indented one
     # column past 'Controls:', with a plain space between the two
     # icons so they don't read as a single glued token.
+    #
+    # Not connected: both icons grey regardless of the last-seen power/
+    # storage value, and neither carries a 'target-click' meta at all --
+    # TargetStatusStatic.on_click() (target_screen.py) no-ops when that
+    # key is absent, which is the entire "disabled" mechanism, no
+    # separate click-guard needed.
     text.append(" ")
+    power_meta = {"target-click": "power"} if connected else {}
     text.append("⏻ ", style=Style(
-        bold=True, color="dark_orange" if state.power == "ON" else "grey50",
-        meta={"target-click": "power"}))
+        bold=True,
+        color="dark_orange" if connected and state.power == "ON" else "grey50",
+        meta=power_meta))
     text.append(" ")
 
     on_target = state.storage == "TARGET"
+    storage_meta = ({"target-click": ("storage", "host" if on_target else "target")}
+                     if connected else {})
     text.append("💾" if on_target else "⏏", style=Style(
-        bold=True, color="dark_orange" if on_target else "grey50",
-        meta={"target-click": ("storage", "host" if on_target else "target")}))
+        bold=True, color="dark_orange" if connected and on_target else "grey50",
+        meta=storage_meta))
     text.append("\n")
 
     if state.writing and state.write_total > 0:

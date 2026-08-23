@@ -1677,7 +1677,8 @@ def fake_litellm(tool_name=None, tool_arguments="{}", captured_messages=None):
 # target.py's own FakeClient, duplicated rather than imported (test
 # files here stay self-contained, none import another).
 class _FakeMtdaClient:
-    def __init__(self):
+    def __init__(self, host=None):
+        self.host = host
         self.calls = []
         self.agent = types.SimpleNamespace(remote=None)
 
@@ -1766,7 +1767,7 @@ class MtdaTools(avocado.Test):
         self._real_mtda = sys.modules.pop("mtda", None)
         self.client = _FakeMtdaClient()
         mtda_pkg = types.ModuleType("mtda")
-        mtda_pkg.client = types.SimpleNamespace(Client=lambda: self.client)
+        mtda_pkg.client = types.SimpleNamespace(Client=lambda host=None: self.client)
         sys.modules["mtda"] = mtda_pkg
         sys.modules["mtda.client"] = mtda_pkg.client
         self.app = types.SimpleNamespace(_target_client=None)

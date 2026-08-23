@@ -60,9 +60,11 @@ class Availability(avocado.Test):
 # sent it, without a real mtda service anywhere. Same role as ai.py's
 # fake_litellm().
 class FakeClient:
-    def __init__(self):
+    def __init__(self, host=None):
+        self.host = host
         self.calls = []
         self.started = False
+        self.stopped = False
         # No remote by default -- matches a Client() whose config has no
         # [remote] host set, so get_client() skips console_remote()
         # (real behaviour, main.py:348-366). Tests that care about the
@@ -72,6 +74,9 @@ class FakeClient:
 
     def start(self):
         self.started = True
+
+    def stop(self):
+        self.stopped = True
 
     def console_remote(self, host, screen):
         self.console_remote_calls.append((host, screen))
@@ -212,12 +217,41 @@ class Actions(avocado.Test):
     def test_console_subscription_starts_when_a_remote_is_configured(self):
         client = FakeClient()
         client.agent.remote = "192.0.2.1"
-        sys.modules["mtda.client"].Client = lambda: client
+        sys.modules["mtda.client"].Client = lambda host=None: client
         target.get_client(self.app)
         self.assertEqual(len(client.console_remote_calls), 1)
         host, adapter = client.console_remote_calls[0]
         self.assertEqual(host, "192.0.2.1")
         self.assertIs(adapter, self.app._target_console)
+
+    def test_connect_forwards_the_host_and_replaces_the_cached_client(self):
+        target.get_client(self.app)  # first, default-host connection
+        first = self._client()
+        target.connect(self.app, "192.0.2.9:1234")
+        second = self._client()
+        self.assertIsNot(first, second)
+        self.assertTrue(first.stopped)
+        self.assertEqual(second.host, "192.0.2.9:1234")
+
+    def test_connect_with_no_host_still_tears_down_and_redials(self):
+        target.get_client(self.app)
+        first = self._client()
+        target.connect(self.app)
+        self.assertIsNot(first, self._client())
+        self.assertTrue(first.stopped)
+
+    def test_disconnect_clears_the_client_and_resets_state(self):
+        self.app.target_state = target.TargetState()
+        target.get_client(self.app)
+        client = self._client()
+        target.disconnect(self.app)
+        self.assertTrue(client.stopped)
+        self.assertIsNone(self.app._target_client)
+        self.assertIsNone(self.app.target_state.agent)
+
+    def test_disconnect_without_a_client_is_a_no_op(self):
+        target.disconnect(self.app)  # must not raise
+        self.assertIsNone(self.app._target_client)
 
     def test_power_dispatches_to_the_matching_verb(self):
         for state, rpc in (("on", "target_on"), ("off", "target_off"),
@@ -662,6 +696,10 @@ class TargetStatusRendering(avocado.Test):
             import pyte  # noqa: F401 -- render_target_status needs rich, not pyte,
                          # but keep the same cancel-if-missing guard for consistency
         self.state = target.TargetState()
+        # Connected by default -- these tests are about the power/storage
+        # icons' own click/colour behaviour, not the disconnected state
+        # (see test_not_connected_* below for that).
+        self.state.agent = "Local"
 
     def _clicks(self, rendered):
         return [s.style.meta.get("target-click") for s in rendered.spans
@@ -718,6 +756,27 @@ class TargetStatusRendering(avocado.Test):
         self.state.on_event("STORAGE WRITING 50 100 1.0 50")
         rendered = target.render_target_status(self.state)
         self.assertIn("WRITING  50%", rendered.plain)
+
+    # state.agent is None until connect()/get_client() actually dial --
+    # no more auto-connect on screen mount, so a fresh TargetState()
+    # (not this class's own connected self.state) is the common case.
+    def test_not_connected_shows_a_hint_instead_of_agent_session(self):
+        state = target.TargetState()
+        rendered = target.render_target_status(state)
+        self.assertIn("/target connect", rendered.plain)
+
+    # Both icons grey and carry no 'target-click' meta at all --
+    # TargetStatusStatic.on_click() (target_screen.py) no-ops when that
+    # key is absent, which is the entire "disabled" mechanism.
+    def test_not_connected_icons_are_grey_and_not_clickable(self):
+        state = target.TargetState()
+        state.on_event("POWER ON")
+        state.on_event("STORAGE TARGET")
+        rendered = target.render_target_status(state)
+        self.assertEqual(self._clicks(rendered), [])
+        colors = {s.style.color.name for s in rendered.spans
+                  if s.style.bold}
+        self.assertEqual(colors, {"grey50"})
 
 # Full app, real Textual event loop -- the one place these pieces
 # (screen, adapter, action worker, freeform-input override) are
@@ -794,7 +853,7 @@ class TargetScreenIntegration(avocado.Test):
     def test_console_widget_does_not_exceed_a_small_terminal(self):
         client = FakeClient()
         client.agent.remote = "192.0.2.1"
-        sys.modules["mtda.client"].Client = lambda: client
+        sys.modules["mtda.client"].Client = lambda host=None: client
 
         async def scenario():
             app = self.SeineApp(files=[PC_IMAGE])
@@ -839,7 +898,7 @@ class TargetScreenIntegration(avocado.Test):
     def test_console_pane_redraws_once_the_tick_finds_it_dirty(self):
         client = FakeClient()
         client.agent.remote = "192.0.2.1"
-        sys.modules["mtda.client"].Client = lambda: client
+        sys.modules["mtda.client"].Client = lambda host=None: client
 
         async def scenario():
             app = self.SeineApp(files=[PC_IMAGE])
