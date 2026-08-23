@@ -90,6 +90,61 @@ class AddingAndRecalling(AHistoryFile):
         self.assertEqual(h.next(), "/two")
         self.assertEqual(h.next(), "")  # past the newest
 
+class SideLoading(AHistoryFile):
+    def test_add_side_never_reaches_the_file(self):
+        h = history.History(self.path())
+        h.side_load("target")
+        h.add_side("target", "root")
+        self.assertFalse(os.path.exists(self.path()))
+        self.assertEqual(h.lines, [])
+
+    def test_add_side_participates_in_recall(self):
+        h = history.History(self.path())
+        h.side_load("target")
+        h.add_side("target", "root")
+        self.assertEqual(h.prev(), "root")
+
+    # Persisted and side-loaded lines interleave by when they were
+    # actually typed, not grouped by source.
+    def test_persisted_and_side_loaded_interleave_by_time(self):
+        h = history.History(self.path())
+        h.add("/use foo.yaml")
+        h.side_load("target")
+        h.add_side("target", "dmesg")
+        h.add("/build")
+        self.assertEqual(h.prev(), "/build")
+        self.assertEqual(h.prev(), "dmesg")
+        self.assertEqual(h.prev(), "/use foo.yaml")
+
+    # A second side_load() of the same name is a clean slate, same as
+    # target.connect() tearing down before a fresh dial.
+    def test_side_load_again_drops_the_previous_group(self):
+        h = history.History(self.path())
+        h.side_load("target")
+        h.add_side("target", "old-device-command")
+        h.side_load("target")
+        self.assertEqual(h.prev(), None)
+
+    def test_side_unload_drops_the_group_from_recall(self):
+        h = history.History(self.path())
+        h.add("/build")
+        h.side_load("target")
+        h.add_side("target", "root")
+        h.side_unload("target")
+        self.assertEqual(h.prev(), "/build")
+
+    def test_side_unload_with_nothing_loaded_is_a_no_op(self):
+        h = history.History(self.path())
+        h.side_unload("target")  # must not raise
+        self.assertEqual(h.prev(), None)
+
+    # add_side() works even without a prior side_load() -- one less
+    # precondition a caller can get wrong.
+    def test_add_side_without_a_prior_side_load_still_works(self):
+        h = history.History(self.path())
+        h.add_side("target", "root")
+        self.assertEqual(h.prev(), "root")
+
 class Pruning(AHistoryFile):
     # Appends to whatever is already on disk -- a test writing more than
     # one entry (differently aged) needs them to coexist, not overwrite

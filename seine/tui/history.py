@@ -45,7 +45,44 @@ class History:
         self.lines = self._load()
         if self._prune():
             self._write()
-        self.at = len(self.lines)
+        # name -> list of {"line", "ts"}, growable via add_side() below --
+        # never read from or written to 'self.where'. side_load()/
+        # side_unload() is how a caller (TargetScreen, eventually) gets
+        # its own recall without a word of it ever reaching disk, e.g. a
+        # password typed at a console login prompt.
+        self._side = {}
+        self.at = len(self._merged())
+
+    # Persisted lines plus every currently side-loaded record, oldest
+    # first -- with nothing side-loaded (every caller today) this is
+    # exactly self.lines, so prev()/next() below are unchanged for them.
+    def _merged(self):
+        merged = list(self.lines)
+        for group in self._side.values():
+            merged.extend(group)
+        merged.sort(key=lambda e: e["ts"])
+        return merged
+
+    # Resets (or starts) an empty in-memory record set under 'name'. Not
+    # additive: a second side_load() of the same name drops whatever it
+    # held, a clean slate like target.connect() forcing a fresh dial.
+    def side_load(self, name):
+        self._side[name] = []
+        self.at = len(self._merged())
+
+    # A no-op if 'name' was never side-loaded -- forgiving the same way
+    # target.disconnect() is a no-op with nothing connected.
+    def side_unload(self, name):
+        self._side.pop(name, None)
+        self.at = len(self._merged())
+
+    # Auto-creates 'name' if add_side() is called without a side_load()
+    # first, rather than raising -- one less precondition for a caller
+    # to get wrong, and side_load()'s own "clean slate" reset is what
+    # actually matters, not the group merely existing.
+    def add_side(self, name, line):
+        self._side.setdefault(name, []).append({"line": line, "ts": time.time()})
+        self.at = len(self._merged())
 
     # Anything short of a JSON array of {"line", "ts"} objects is no
     # history rather than an error -- same "unreadable counts as empty"
@@ -91,7 +128,7 @@ class History:
     def add(self, line):
         self.lines.append({"line": line, "ts": time.time()})
         self._prune()
-        self.at = len(self.lines)
+        self.at = len(self._merged())
         self._write()
 
     def _write(self):
@@ -105,11 +142,13 @@ class History:
             pass
 
     def prev(self):
+        merged = self._merged()
         if self.at > 0:
             self.at -= 1
-        return self.lines[self.at]["line"] if self.at < len(self.lines) else None
+        return merged[self.at]["line"] if self.at < len(merged) else None
 
     def next(self):
-        if self.at < len(self.lines):
+        merged = self._merged()
+        if self.at < len(merged):
             self.at += 1
-        return self.lines[self.at]["line"] if self.at < len(self.lines) else ""
+        return merged[self.at]["line"] if self.at < len(merged) else ""
