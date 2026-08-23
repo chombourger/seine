@@ -1342,17 +1342,63 @@ def _tool_mtda_console_read(app, arguments):
         return "target: %s" % e
     return text or "(console buffer is empty)"
 
+# Crosses back to the UI thread (call_from_thread, below) since it
+# touches ai_state, same as notify_build_finished(). Silently skipped
+# if the AI is mid-turn already -- 'waiting' just goes back to idle and
+# a fresh mtda-console-wait call picks the console up from there.
+def _console_wait_finished(app, what, text, error):
+    app.target_state.waiting = False
+    app.target_state.wait_what = None
+    if app.ai_state.busy:
+        return
+    if error:
+        outcome = "failed: %s" % error
+    elif text:
+        outcome = "matched:\n\n%s" % text
+    else:
+        outcome = "timed out"
+    app.ai_state.busy = True
+    app.ai_state.turn_started_at = time.time()
+    app.ai_state.messages.append({
+        "role": "user",
+        "content": "(seine) The console-wait you started for '%s' %s" % (what, outcome)})
+    app.ai_state.changed()
+    try:
+        app.say("AI chat: console-wait for '%s' %s"
+                % (what, "matched" if text else "finished"))
+    except NoMatches:
+        pass
+    app.run_worker(lambda: _run(app), thread=True, exclusive=True, group="ai")
+
+# Runs the wait in its own worker thread/group (not "ai"), so a slow or
+# default-length mtda timeout never blocks the model -- the call itself
+# returns right away and _console_wait_finished() delivers the outcome
+# later as an unprompted turn, same shape as notify_build_finished().
 def _tool_mtda_console_wait(app, arguments):
     from seine.tui import target
     what = arguments.get("what")
     if not what:
         return "'what' (the text to wait for) is required"
+    if app.target_state.waiting:
+        return "already waiting in the background for '%s'" % app.target_state.wait_what
     timeout = arguments.get("timeout")
-    try:
-        text = target.console_wait(app, what, timeout=float(timeout) if timeout else None)
-    except Exception as e:
-        return "target: %s" % e
-    return text or "(timed out waiting for '%s')" % what
+    timeout = float(timeout) if timeout else None
+    app.target_state.waiting = True
+    app.target_state.wait_what = what
+
+    def run():
+        try:
+            text = target.console_wait(app, what, timeout=timeout)
+        except Exception as e:
+            app.call_from_thread(_console_wait_finished, app, what, None, str(e))
+        else:
+            app.call_from_thread(_console_wait_finished, app, what, text, None)
+
+    app.run_worker(run, thread=True, exclusive=True, group="target-wait")
+    return ("waiting in the background for '%s' (timeout: %s) -- you'll get "
+            "an unprompted message when it matches or times out; go do "
+            "something else meanwhile instead of stalling on this."
+            % (what, timeout if timeout else "mtda's default"))
 
 class Tool(NamedTuple):
     name: str
@@ -1858,10 +1904,13 @@ TOOLS = {t.name: t for t in [
                                   "description": "default 'tail'"}},
          "required": []},
         False, _tool_mtda_console_read),
-    Tool("mtda-console-wait", "Block until 'what' appears in the "
-        "target's console output, or 'timeout' seconds pass -- the same "
-        "thing '/target console wait STRING [TIMEOUT]' does. Read-only, "
-        "no confirmation needed.",
+    Tool("mtda-console-wait", "Start waiting, in the background, for "
+        "'what' to appear in the target's console output, or 'timeout' "
+        "seconds to pass -- same match as '/target console wait STRING "
+        "[TIMEOUT]', but this call returns immediately instead of "
+        "blocking; you'll get an unprompted follow-up message with the "
+        "outcome once it matches or times out. Only one wait runs at a "
+        "time. Read-only, no confirmation needed.",
         {"type": "object",
          "properties": {"what": {"type": "string"},
                         "timeout": {"type": "number",

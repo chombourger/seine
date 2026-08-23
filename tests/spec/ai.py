@@ -1685,6 +1685,9 @@ class _FakeMtdaClient:
     def start(self):
         pass
 
+    def session(self):
+        return "fake-session"
+
     def target_on(self):
         self.calls.append(("target_on",))
 
@@ -1770,7 +1773,19 @@ class MtdaTools(avocado.Test):
         mtda_pkg.client = types.SimpleNamespace(Client=lambda host=None: self.client)
         sys.modules["mtda"] = mtda_pkg
         sys.modules["mtda.client"] = mtda_pkg.client
-        self.app = types.SimpleNamespace(_target_client=None)
+        self.app = types.SimpleNamespace(
+            _target_client=None,
+            target_state=target.TargetState(),
+            ai_state=types.SimpleNamespace(
+                busy=False, messages=[], turn_started_at=None,
+                changed=lambda: None),
+            say=lambda *a, **k: None,
+            # Runs 'fn' inline -- good enough for wiring tests, no real
+            # Textual App needed. Except group 'ai': that's a real chat
+            # turn (network and all), covered by 'TheLoop' below, so it
+            # is left un-started here instead of actually firing.
+            run_worker=lambda fn, **k: fn() if k.get("group") != "ai" else None,
+            call_from_thread=lambda fn, *a: fn(*a))
 
     def tearDown(self):
         from seine.tui import target
@@ -1830,11 +1845,24 @@ class MtdaTools(avocado.Test):
         self.assertEqual(self.ai.TOOLS["mtda-console-read"].run(
             self.app, {"which": "dump"}), "log so far")
 
-    def test_mtda_console_wait_passes_the_timeout_through(self):
+    # setUp's fake worker runs inline, so this covers the whole round
+    # trip in one call: kick off, mtda call, then the follow-up turn.
+    def test_mtda_console_wait_runs_in_the_background_then_notifies(self):
         text = self.ai.TOOLS["mtda-console-wait"].run(
             self.app, {"what": "login:", "timeout": 5})
-        self.assertEqual(text, "matched line")
+        self.assertIn("waiting in the background for 'login:'", text)
         self.assertEqual(self.client.calls, [("console_wait", "login:", 5.0)])
+        self.assertFalse(self.app.target_state.waiting)
+        self.assertTrue(self.app.ai_state.busy)
+        self.assertEqual(self.app.ai_state.messages[-1]["role"], "user")
+        self.assertIn("matched line", self.app.ai_state.messages[-1]["content"])
+
+    def test_mtda_console_wait_refuses_a_second_call_while_one_is_running(self):
+        self.app.target_state.waiting = True
+        self.app.target_state.wait_what = "login:"
+        text = self.ai.TOOLS["mtda-console-wait"].run(self.app, {"what": "prompt:"})
+        self.assertIn("already waiting", text)
+        self.assertEqual(self.client.calls, [])
 
     def test_mtda_status_reports_all_four_fields(self):
         text = self.ai.TOOLS["mtda-status"].run(self.app, {})

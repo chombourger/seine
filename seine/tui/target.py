@@ -296,6 +296,11 @@ class TargetState:
         # A local clock, not mtda's own -- 'EVT' never carries an uptime
         # figure, only ON/OFF transitions. None while off/unknown.
         self.power_on_at = None
+        # Set by ai.py's 'mtda-console-wait' tool while its background
+        # worker is running, so a second call is refused rather than
+        # racing two waits on the same console.
+        self.waiting = False
+        self.wait_what = None
 
     # RemoteConsole's EVT stream is forward-only -- it never replays
     # past state, so on_event() alone leaves power/storage blank until
