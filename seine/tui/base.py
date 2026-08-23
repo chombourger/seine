@@ -385,7 +385,7 @@ class BaseScreen(Screen):
         # An unmodified recall is already in history; only a new/edited
         # line is worth adding.
         if event.input.recalled != line:
-            self.app.history.add(line)
+            self._history_add(line)
         if line.startswith("!"):
             self.app.shell_escape(line[1:])
             return
@@ -400,6 +400,13 @@ class BaseScreen(Screen):
             commands.dispatch(self.app, line)
         except commands.CommandError as e:
             self.say(str(e), error=True)
+
+    # Persisted by default -- overridden by TargetScreen so a freeform
+    # console line (unlike a '/command' typed there) goes into an
+    # in-memory-only record instead (seine.tui.history's own
+    # side_load()/add_side()), never written to disk.
+    def _history_add(self, line):
+        self.app.history.add(line)
 
     # A question for the AI chat, once configured -- '/' still means
     # "run a command" either way, so an unconfigured typo gets the usual

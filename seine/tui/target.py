@@ -36,6 +36,10 @@ def available():
 class Unavailable(Exception):
     pass
 
+# History group name shared with target_screen.py's own _history_add()
+# override -- one name to keep the two sides from drifting apart.
+HISTORY_GROUP = "target"
+
 # grpc-core's own thread pool (mtda's client/agent transport) refuses to
 # let a real fork() proceed until it reports idle -- but with a channel
 # open, its background global timer never stops rescheduling itself, so
@@ -109,6 +113,12 @@ def _connect(app, host=None):
         client.console_remote(remote, adapter)
         app._target_console = adapter
     app._target_client = client
+    # A fresh, in-memory-only console recall for this connection -- see
+    # seine.tui.history.side_load()'s own comment for why this never
+    # touches disk.
+    history = getattr(app, "history", None)
+    if history is not None:
+        history.side_load(HISTORY_GROUP)
     return client
 
 # Lazily dialled: whichever side (typed command or AI tool call) touches
@@ -164,6 +174,9 @@ def disconnect(app):
     app._target_console = None
     if hasattr(app, "target_state"):
         app.target_state = TargetState()
+    history = getattr(app, "history", None)
+    if history is not None:
+        history.side_unload(HISTORY_GROUP)
 
 # Shared by every mutating caller -- '/target' (commands.py), the
 # Remote Target screen's clickable status tokens, and a bare line typed

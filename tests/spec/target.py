@@ -253,6 +253,30 @@ class Actions(avocado.Test):
         target.disconnect(self.app)  # must not raise
         self.assertIsNone(self.app._target_client)
 
+    def test_connect_side_loads_a_fresh_history_group(self):
+        from seine.tui import history
+        self.app.history = history.History(os.path.join(self.workdir, "history.json"))
+        self.app.history.add_side(target.HISTORY_GROUP, "old-device-command")
+        target.connect(self.app)
+        # A fresh dial is a clean slate, same as the client itself --
+        # the previous agent's console lines don't leak into this one.
+        self.assertIsNone(self.app.history.prev())
+
+    def test_disconnect_side_unloads_the_history_group(self):
+        from seine.tui import history
+        self.app.history = history.History(os.path.join(self.workdir, "history.json"))
+        target.connect(self.app)
+        self.app.history.add_side(target.HISTORY_GROUP, "root")
+        target.disconnect(self.app)
+        self.assertIsNone(self.app.history.prev())
+
+    # No app.history at all (the lighter TargetCommand/AI-tool fixtures)
+    # must not crash connect()/disconnect() -- same tolerance as the
+    # existing 'no app.target_state' case.
+    def test_connect_and_disconnect_tolerate_no_history_on_app(self):
+        target.connect(self.app)
+        target.disconnect(self.app)
+
     def test_power_dispatches_to_the_matching_verb(self):
         for state, rpc in (("on", "target_on"), ("off", "target_off"),
                            ("toggle", "target_toggle")):
@@ -973,6 +997,63 @@ class TargetScreenIntegration(avocado.Test):
                 # own worker group -- only check the freeform line's own
                 # call landed, not the exact call list.
                 self.assertIn(("console_send", "echo hi", False), app._target_client.calls)
+        _run(scenario)
+
+    # A console line is recallable (Up/Down) but never written to
+    # history.json -- '/target ...' typed on the same screen still is,
+    # same as everywhere else.
+    def test_a_freeform_console_line_is_recallable_but_never_persisted(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.show("target")
+                await pilot.pause()
+                for _ in range(50):
+                    if getattr(app, "_target_client", None) is not None:
+                        break
+                    await asyncio.sleep(0.02)
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "root"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(app.history.prev(), "root")
+                self.assertNotIn("root", [e["line"] for e in app.history.lines])
+
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/target status"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("/target status", [e["line"] for e in app.history.lines])
+        _run(scenario)
+
+    # target.disconnect() side-unloads the console's in-memory history --
+    # a fresh connect starts recall clean, no leakage from the previous
+    # agent's console session.
+    def test_disconnecting_drops_the_consoles_recall(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.show("target")
+                await pilot.pause()
+                for _ in range(50):
+                    if getattr(app, "_target_client", None) is not None:
+                        break
+                    await asyncio.sleep(0.02)
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "root"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual(app.history.prev(), "root")
+
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/target disconnect"
+                await pilot.press("enter")
+                await pilot.pause()
+                # The disconnect command itself persists (it's a
+                # '/command'), landing right where "root" used to be --
+                # proof the side-loaded group is actually gone, not just
+                # that the cursor moved.
+                self.assertEqual(app.history.prev(), "/target disconnect")
         _run(scenario)
 
     def test_clicking_power_toggles_directly_no_confirmation(self):

@@ -286,6 +286,18 @@ class TargetScreen(BaseScreen):
         self._spinner_frame += 1
         pane.border_subtitle = "%s up %s" % (frame, elapsed(time.time() - state.power_on_at))
 
+    # '/command' and '!shell' still go into the normal persisted
+    # history -- only a genuine console line is diverted to the
+    # in-memory-only 'target' record set (target.connect()/disconnect()
+    # own its side_load()/side_unload()), so a password typed at a
+    # login prompt never reaches history.json.
+    def _history_add(self, line):
+        from seine.tui import target
+        if line.startswith("/") or line.startswith("!"):
+            self.app.history.add(line)
+        else:
+            self.app.history.add_side(target.HISTORY_GROUP, line)
+
     # A line that's neither '/command' nor '!shell', typed at this
     # screen: goes to the target's console instead of the AI chat.
     # raw=False: lets '\n', '\x03', etc. be typed as the two-character
