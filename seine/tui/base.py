@@ -76,7 +76,7 @@ class Prompt(Input):
         Binding("down", "history_next", "history", show=False),
     ]
 
-    def __init__(self, history, completions, **kwargs):
+    def __init__(self, history, completions, scopes, **kwargs):
         super().__init__(
             placeholder="/command (/help lists them, ! for shell, @ for a path)",
             suggester=CommandSuggester(),
@@ -86,6 +86,15 @@ class Prompt(Input):
             **kwargs)
         self.history = history
         self.completions = completions
+        # Which history.py scopes this screen's Up/Down walks -- e.g.
+        # {'commands', 'chat'} here, {'commands', 'target'} on the
+        # Remote Target screen (BaseScreen.HISTORY_SCOPES). The cursor
+        # below is this Prompt's own: two screens recalling different
+        # scope sets can't share one position and have it mean the same
+        # thing to both, so unlike history.json itself, this never
+        # leaves the widget.
+        self.scopes = scopes
+        self.at = len(history.entries(scopes))
         # Last history string recalled verbatim, so submit can tell
         # "recalled unedited" from "edited/typed" -- only the latter
         # belongs back in history.
@@ -97,7 +106,10 @@ class Prompt(Input):
         if self.completions.display:
             self.completions.action_cursor_up()
             return
-        line = self.history.prev()
+        entries = self.history.entries(self.scopes)
+        if self.at > 0:
+            self.at -= 1
+        line = entries[self.at]["line"] if self.at < len(entries) else None
         if line is not None:
             self.value = line
             self.cursor_position = len(line)
@@ -107,7 +119,10 @@ class Prompt(Input):
         if self.completions.display:
             self.completions.action_cursor_down()
             return
-        self.value = self.history.next() or ""
+        entries = self.history.entries(self.scopes)
+        if self.at < len(entries):
+            self.at += 1
+        self.value = entries[self.at]["line"] if self.at < len(entries) else ""
         self.cursor_position = len(self.value)
         self.recalled = self.value
 
@@ -248,6 +263,12 @@ class BaseScreen(Screen):
     # ai.confirm() for raw keystroke mode) before anyone asked for it.
     AUTO_FOCUS = "#prompt"
 
+    # Which seine.tui.history scopes this screen's own Prompt recalls
+    # with Up/Down -- 'commands' ('/command'/'!shell') is universal, so
+    # every override still includes it. TargetScreen overrides this to
+    # swap 'chat' for 'target' (its own in-memory-only console lines).
+    HISTORY_SCOPES = {"commands", "chat"}
+
     # Status-line chips, keyed for subclasses to update/add/remove
     # rather than redefining HINT wholesale -- hand-typed copies used
     # to drift (FilesystemScreen once silently lost its own
@@ -311,7 +332,7 @@ class BaseScreen(Screen):
     def footer(self):
         completions = PathCompletions(id="completions")
         yield completions
-        yield Prompt(self.app.history, completions, id="prompt")
+        yield Prompt(self.app.history, completions, self.HISTORY_SCOPES, id="prompt")
         # markup=False: same as #body -- engine text (a path, an argv,
         # an exception message) can contain a bare '['.
         yield Horizontal(
@@ -383,9 +404,13 @@ class BaseScreen(Screen):
             except NoMatches:
                 pass
         # An unmodified recall is already in history; only a new/edited
-        # line is worth adding.
+        # line is worth adding. Resets this Prompt's own cursor to "just
+        # past the newest" so the next Up shows what was just added, not
+        # wherever a previous recall walk had left it -- add()/add_side()
+        # can't do this themselves, the cursor moved out of History.
         if event.input.recalled != line:
             self._history_add(line)
+            event.input.at = len(self.app.history.entries(event.input.scopes))
         if line.startswith("!"):
             self.app.shell_escape(line[1:])
             return
@@ -401,12 +426,15 @@ class BaseScreen(Screen):
         except commands.CommandError as e:
             self.say(str(e), error=True)
 
-    # Persisted by default -- overridden by TargetScreen so a freeform
-    # console line (unlike a '/command' typed there) goes into an
-    # in-memory-only record instead (seine.tui.history's own
-    # side_load()/add_side()), never written to disk.
+    # 'commands' for a '/command' or '!shell' line (persisted, and part
+    # of every screen's own HISTORY_SCOPES -- see the class attribute
+    # below), 'chat' for anything else here. Overridden by TargetScreen
+    # so its own freeform (console) lines go into an in-memory-only
+    # record instead (seine.tui.history's own side_load()/add_side()),
+    # never written to disk.
     def _history_add(self, line):
-        self.app.history.add(line)
+        scope = "commands" if line.startswith(("/", "!")) else "chat"
+        self.app.history.add(line, scope=scope)
 
     # A question for the AI chat, once configured -- '/' still means
     # "run a command" either way, so an unconfigured typo gets the usual

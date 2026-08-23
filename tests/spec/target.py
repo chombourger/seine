@@ -260,7 +260,7 @@ class Actions(avocado.Test):
         target.connect(self.app)
         # A fresh dial is a clean slate, same as the client itself --
         # the previous agent's console lines don't leak into this one.
-        self.assertIsNone(self.app.history.prev())
+        self.assertIsNone(self.app.history.last({target.HISTORY_GROUP}))
 
     def test_disconnect_side_unloads_the_history_group(self):
         from seine.tui import history
@@ -268,7 +268,7 @@ class Actions(avocado.Test):
         target.connect(self.app)
         self.app.history.add_side(target.HISTORY_GROUP, "root")
         target.disconnect(self.app)
-        self.assertIsNone(self.app.history.prev())
+        self.assertIsNone(self.app.history.last({target.HISTORY_GROUP}))
 
     # No app.history at all (the lighter TargetCommand/AI-tool fixtures)
     # must not crash connect()/disconnect() -- same tolerance as the
@@ -1016,7 +1016,7 @@ class TargetScreenIntegration(avocado.Test):
                 prompt.value = "root"
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertEqual(app.history.prev(), "root")
+                self.assertEqual(app.history.last(app.screen.HISTORY_SCOPES), "root")
                 self.assertNotIn("root", [e["line"] for e in app.history.lines])
 
                 prompt = app.screen.query_one("#prompt")
@@ -1043,7 +1043,7 @@ class TargetScreenIntegration(avocado.Test):
                 prompt.value = "root"
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertEqual(app.history.prev(), "root")
+                self.assertEqual(app.history.last(app.screen.HISTORY_SCOPES), "root")
 
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/target disconnect"
@@ -1053,7 +1053,7 @@ class TargetScreenIntegration(avocado.Test):
                 # '/command'), landing right where "root" used to be --
                 # proof the side-loaded group is actually gone, not just
                 # that the cursor moved.
-                self.assertEqual(app.history.prev(), "/target disconnect")
+                self.assertEqual(app.history.last(app.screen.HISTORY_SCOPES), "/target disconnect")
         _run(scenario)
 
     def test_clicking_power_toggles_directly_no_confirmation(self):

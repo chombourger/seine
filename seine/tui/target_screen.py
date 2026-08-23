@@ -124,6 +124,10 @@ class ConsolePane(StaticPane):
             event.prevent_default()
 
 class TargetScreen(BaseScreen):
+    # 'target' instead of 'chat' -- matches target.HISTORY_GROUP, the
+    # scope _history_add() below tags a console line with.
+    HISTORY_SCOPES = {"commands", "target"}
+
     DEFAULT_CSS = """
     /* min-width: CONSOLE_COLUMNS (80) plus border chrome -- Textual
        doesn't auto-shrink a fixed-width child for an undersized
@@ -293,8 +297,8 @@ class TargetScreen(BaseScreen):
     # login prompt never reaches history.json.
     def _history_add(self, line):
         from seine.tui import target
-        if line.startswith("/") or line.startswith("!"):
-            self.app.history.add(line)
+        if line.startswith(("/", "!")):
+            self.app.history.add(line, scope="commands")
         else:
             self.app.history.add_side(target.HISTORY_GROUP, line)
 

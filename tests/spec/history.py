@@ -60,35 +60,43 @@ class LoadingIsTolerant(AHistoryFile):
             f.write("this is not json")
         self.assertEqual(history.History(self.path()).lines, [])
 
-    # No migration from the older plain-string-array format -- it just
-    # doesn't match the {"line", "ts"} shape, so it reads as empty.
+    # No migration from an older format -- it just doesn't match the
+    # {"line", "ts", "scope"} shape, so it reads as empty.
     def test_the_old_plain_string_array_format_is_empty_not_migrated(self):
         with open(self.path(), "w") as f:
             json.dump(["/old", "history"], f)
         self.assertEqual(history.History(self.path()).lines, [])
 
 class AddingAndRecalling(AHistoryFile):
-    def test_add_appends_a_line_and_session_advances(self):
+    def test_add_appends_a_line_with_its_scope(self):
         h = history.History(self.path())
         h.add("/foo")
-        h.add("/bar")
-        self.assertEqual([e["line"] for e in h.lines], ["/foo", "/bar"])
-        self.assertEqual(h.at, 2)
+        h.add("hi", scope="chat")
+        self.assertEqual([(e["line"], e["scope"]) for e in h.lines],
+                         [("/foo", "commands"), ("hi", "chat")])
 
     def test_add_persists_across_instances(self):
         history.History(self.path()).add("/foo")
         reloaded = history.History(self.path())
         self.assertEqual([e["line"] for e in reloaded.lines], ["/foo"])
 
-    def test_prev_and_next_walk_oldest_first(self):
+    def test_entries_are_oldest_first_and_filtered_by_scope(self):
         h = history.History(self.path())
         h.add("/one")
+        h.add("hi", scope="chat")
         h.add("/two")
-        self.assertEqual(h.prev(), "/two")
-        self.assertEqual(h.prev(), "/one")
-        self.assertEqual(h.prev(), "/one")  # already at the oldest, stays put
-        self.assertEqual(h.next(), "/two")
-        self.assertEqual(h.next(), "")  # past the newest
+        self.assertEqual([e["line"] for e in h.entries({"commands"})],
+                         ["/one", "/two"])
+        self.assertEqual([e["line"] for e in h.entries({"commands", "chat"})],
+                         ["/one", "hi", "/two"])
+
+    def test_last_is_the_most_recent_matching_entry(self):
+        h = history.History(self.path())
+        h.add("/one")
+        h.add("hi", scope="chat")
+        self.assertEqual(h.last({"commands", "chat"}), "hi")
+        self.assertEqual(h.last({"commands"}), "/one")
+        self.assertIsNone(h.last({"target"}))
 
 class SideLoading(AHistoryFile):
     def test_add_side_never_reaches_the_file(self):
@@ -102,7 +110,7 @@ class SideLoading(AHistoryFile):
         h = history.History(self.path())
         h.side_load("target")
         h.add_side("target", "root")
-        self.assertEqual(h.prev(), "root")
+        self.assertEqual(h.last({"target"}), "root")
 
     # Persisted and side-loaded lines interleave by when they were
     # actually typed, not grouped by source.
@@ -112,9 +120,8 @@ class SideLoading(AHistoryFile):
         h.side_load("target")
         h.add_side("target", "dmesg")
         h.add("/build")
-        self.assertEqual(h.prev(), "/build")
-        self.assertEqual(h.prev(), "dmesg")
-        self.assertEqual(h.prev(), "/use foo.yaml")
+        self.assertEqual([e["line"] for e in h.entries({"commands", "target"})],
+                         ["/use foo.yaml", "dmesg", "/build"])
 
     # A second side_load() of the same name is a clean slate, same as
     # target.connect() tearing down before a fresh dial.
@@ -123,7 +130,7 @@ class SideLoading(AHistoryFile):
         h.side_load("target")
         h.add_side("target", "old-device-command")
         h.side_load("target")
-        self.assertEqual(h.prev(), None)
+        self.assertIsNone(h.last({"target"}))
 
     def test_side_unload_drops_the_group_from_recall(self):
         h = history.History(self.path())
@@ -131,19 +138,19 @@ class SideLoading(AHistoryFile):
         h.side_load("target")
         h.add_side("target", "root")
         h.side_unload("target")
-        self.assertEqual(h.prev(), "/build")
+        self.assertEqual(h.last({"commands", "target"}), "/build")
 
     def test_side_unload_with_nothing_loaded_is_a_no_op(self):
         h = history.History(self.path())
         h.side_unload("target")  # must not raise
-        self.assertEqual(h.prev(), None)
+        self.assertIsNone(h.last({"target"}))
 
     # add_side() works even without a prior side_load() -- one less
     # precondition a caller can get wrong.
     def test_add_side_without_a_prior_side_load_still_works(self):
         h = history.History(self.path())
         h.add_side("target", "root")
-        self.assertEqual(h.prev(), "root")
+        self.assertEqual(h.last({"target"}), "root")
 
 class Pruning(AHistoryFile):
     # Appends to whatever is already on disk -- a test writing more than
@@ -155,7 +162,8 @@ class Pruning(AHistoryFile):
                 entries = json.load(f)
         except (OSError, ValueError):
             entries = []
-        entries.append({"line": line, "ts": time.time() - age_seconds})
+        entries.append({"line": line, "ts": time.time() - age_seconds,
+                        "scope": "commands"})
         with open(self.path(), "w") as f:
             json.dump(entries, f)
 
