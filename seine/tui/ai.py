@@ -1444,7 +1444,7 @@ def _tool_run_test(app, arguments):
     if files is None:
         return spec  # the error message, in that case
 
-    _call_if_running(app, app.test_state.reset, files)
+    _call_if_running(app, app.test_state.reset, files, spec)
     from seine.testing import runner
     from seine.tui.reporter import TextualReporter
     try:

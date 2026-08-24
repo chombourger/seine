@@ -62,10 +62,15 @@ class _Listener:
         self.reporter = reporter
         self.outcomes = outcomes
         self._started = {}
+        # The test currently running, for log_message() below to
+        # attribute a line to -- None outside any test (suite setup,
+        # library import), where there is no single test to blame it on.
+        self._current = None
 
     def start_test(self, data, result):
         name = "%s.%s" % (result.parent.name, data.name)
         self._started[id(data)] = time.time()
+        self._current = name
         if self.reporter:
             self.reporter.started(name)
 
@@ -76,12 +81,22 @@ class _Listener:
         self.outcomes.append(TestOutcome(
             name, result.parent.name, result.status, result.message,
             list(result.tags), elapsed))
+        self._current = None
         if self.reporter:
             self.reporter.finished(name, failed=(result.status == "FAIL"))
 
+    # Every message Robot's own log level lets through (INFO by
+    # default) reaches 'output' (optional, a no-op if unsupported);
+    # only FAIL/WARN also become the transient 'say' status line.
     def log_message(self, message):
-        if self.reporter and message.level in ("FAIL", "WARN"):
+        if not self.reporter:
+            return
+        if message.level in ("FAIL", "WARN"):
             self.reporter.say(message.message)
+        if self._current is not None:
+            output = getattr(self.reporter, "output", None)
+            if output is not None:
+                output(self._current, "[%s] %s" % (message.level, message.message))
 
 class NoTests(ValueError):
     pass

@@ -220,11 +220,18 @@ def _config_fixture(fixture, step):
 # Instead, an entry's own 'setup:'/'teardown:' is the default for every
 # test *that entry* contributes -- a test's own 'setup:'/'teardown:'
 # still overrides it, same as always.
+# Shared with spectree.py's own test_paths(): a running test's fully
+# qualified Robot name is '<suite_name()>.<case name>', which the spec
+# tree's own live-highlight has to reproduce exactly to find the right
+# node -- one naming rule, not two copies that can drift apart.
+def suite_name(entries, default="seine test"):
+    if len(entries) == 1:
+        return entries[0].get("name") or default
+    return default
+
 def compile(entries, context, name="seine test"):
     import robot.running as running
-    if len(entries) == 1:
-        name = entries[0].get("name") or name
-    suite = running.TestSuite(name)
+    suite = running.TestSuite(suite_name(entries, name))
 
     seen_libraries = set()
     seen_keywords = {}

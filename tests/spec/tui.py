@@ -2122,6 +2122,39 @@ class BuildScreenIntegration(avocado.Test):
                               _content(status))
         _run(scenario)
 
+# A failed row with no message under it is the same gap render() had
+# before this: pass/fail marks and a count, no reason -- the CLI and
+# the AI chat's own 'run-test' already print a failure's message
+# beside its name, this screen didn't.
+class TestStateRendering(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.testing.runner import SuiteResult, TestOutcome
+            from seine.tui.testing import TestState
+        self.SuiteResult = SuiteResult
+        self.TestOutcome = TestOutcome
+        self.TestState = TestState
+
+    def test_a_failed_rows_message_is_shown(self):
+        state = self.TestState()
+        state.reset(["spec.yaml"])
+        state.task_started("suite.ok")
+        state.task_finished("suite.ok", failed=False)
+        state.task_started("suite.bad")
+        state.task_finished("suite.bad", failed=True)
+        result = self.SuiteResult(
+            [self.TestOutcome("suite.ok", "suite", "PASS", "", [], 0.01),
+             self.TestOutcome("suite.bad", "suite", "FAIL", "'x' != 'y'", [], 0.01)],
+            "/tmp/out/output.xml")
+        state.finished_ok(result)
+        text = state.render()
+        self.assertIn("suite.bad", text)
+        self.assertIn("'x' != 'y'", text)
+        self.assertIn("output under /tmp/out", text)
+
 # seine.testing.runner.run_spec() is patched out below the same way
 # Image.build is above BuildScreenIntegration -- this isn't about
 # proving Robot Framework runs correctly (tests/spec/testing.py's own
@@ -2172,6 +2205,126 @@ class TestScreenIntegration(avocado.Test):
                 self.assertTrue(app.test_state.done)
                 self.assertFalse(app.test_state.error)
                 self.assertEqual(app.test_state.rows["suite.one"]["state"], "done")
+        _run(scenario)
+
+    # A failed test's own message reaches the status bar, the same way
+    # a build failure already does -- not just the pass/fail count.
+    def test_a_failure_shows_its_message_on_screen(self):
+        def fast_run_spec(files, spec=None, tags=None, outdir=None,
+                          reporter=None, dryrun=False):
+            reporter.started("suite.bad")
+            reporter.say("'x' != 'y'")
+            reporter.finished("suite.bad", failed=True)
+            outcome = self.runner.TestOutcome("suite.bad", "suite", "FAIL", "'x' != 'y'", [], 0.01)
+            return self.runner.SuiteResult([outcome], "/dev/null")
+        self.runner.run_spec = fast_run_spec
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/test"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(50):
+                    if not app.test_state.running:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertTrue(app.test_state.error)
+                # update_body() runs on a 1s timer -- called directly
+                # here rather than waiting for it, the same reason
+                # BuildScreenIntegration's own tests read state (build_
+                # state.message) instead of a rendered widget for a
+                # timing-sensitive check.
+                app.screen.update_body()
+                await pilot.pause()
+                # finished_ok() sets the status bar to the summary line,
+                # same as BuildState's own "build finished" -- the
+                # failure's own message lives in the body (#body),
+                # tested here, not the transient status line.
+                status = app.screen.query_one("#status")
+                self.assertIn("1 failed", _content(status))
+                body = app.screen.query_one("#body")
+                self.assertIn("'x' != 'y'", _content(body))
+        _run(scenario)
+
+    # Gated the same way BuildScreenIntegration's own
+    # test_spectree_highlights_the_running_step_on_any_screen is: a
+    # test genuinely still running, not a sleep that happened to elapse.
+    # PC_IMAGE (examples/pc-image/main.yaml) really does 'requires:
+    # test-boot', so its real test names resolve against the real spec
+    # tree -- proves spectree.highlight_active_test(), not a fake shape.
+    def test_spectree_highlights_the_running_test(self):
+        import threading
+        proceed = threading.Event()
+
+        def gated_run_spec(files, spec=None, tags=None, outdir=None,
+                           reporter=None, dryrun=False):
+            name = "seine test.boots to a login prompt and identifies as Linux"
+            reporter.started(name)
+            proceed.wait()
+            reporter.finished(name, failed=False)
+            outcome = self.runner.TestOutcome(name, "seine test", "PASS", "", [], 0.01)
+            return self.runner.SuiteResult([outcome], "/dev/null")
+        self.runner.run_spec = gated_run_spec
+
+        async def scenario():
+            from seine.tui.spectree import SpecTree
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                try:
+                    prompt = app.screen.query_one("#prompt")
+                    prompt.value = "/test"
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    for _ in range(100):
+                        if "seine test.boots to a login prompt and identifies as Linux" \
+                                in app.test_state.test_paths and app.test_state.running:
+                            break
+                        await asyncio.sleep(0.02)
+                    for _ in range(100):
+                        tree = app.screen.query_one(SpecTree)
+                        if tree.active_keys():
+                            break
+                        await asyncio.sleep(0.02)
+                        await pilot.pause()
+                    self.assertTrue(tree.active_keys())
+                finally:
+                    proceed.set()
+                    for _ in range(100):
+                        if not app.test_state.running:
+                            break
+                        await asyncio.sleep(0.02)
+                self.assertTrue(app.test_state.done)
+        _run(scenario)
+
+    # log_message() forwarding -- every keyword-level line, not only
+    # FAIL/WARN, reaches TestState.output_lines, which TestScreen's own
+    # #tail pane tails (_follow(), a plain list slice, not asserted
+    # against RichLog's own internal render state here).
+    def test_output_lines_reach_the_tail_pane(self):
+        def fast_run_spec(files, spec=None, tags=None, outdir=None,
+                          reporter=None, dryrun=False):
+            reporter.started("suite.one")
+            reporter.output("suite.one", "[INFO] uname -s")
+            reporter.finished("suite.one", failed=False)
+            outcome = self.runner.TestOutcome("suite.one", "suite", "PASS", "", [], 0.01)
+            return self.runner.SuiteResult([outcome], "/dev/null")
+        self.runner.run_spec = fast_run_spec
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/test"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(50):
+                    if not app.test_state.running:
+                        break
+                    await asyncio.sleep(0.02)
+                await pilot.pause()
+                self.assertIn("suite.one| [INFO] uname -s", app.test_state.output_lines)
         _run(scenario)
 
 # A real traceback, its frame identity fabricated via CodeType.replace()

@@ -361,6 +361,7 @@ class BaseScreen(Screen):
         except NoMatches:
             return
         wanted = spectree.highlight_active(tree, self.app.build_state)
+        wanted |= spectree.highlight_active_test(tree, self.app.test_state)
         self._scrolled_to = spectree.scroll_to_active(tree, wanted, self._scrolled_to)
 
     # Kept on the base class so every subclass gets it for free on

@@ -6,6 +6,8 @@
 # through the same seine.reporter.Reporter TextualReporter already
 # implements -- no test-specific reporting code needed here at all.
 
+import os
+
 from seine.testing import runner
 from seine.tui.reporter import TextualReporter
 
@@ -19,12 +21,25 @@ class TestState:
         self.error = False
         self.done = False
         self.result = None
+        # A running test's own spec-tree path (spectree.highlight_active_
+        # test() reads this), keyed the same as 'rows' -- empty when no
+        # spec was given to compute it from.
+        self.test_paths = {}
+        # Every keyword-level log line seen so far, TestScreen's own
+        # #tail pane tails this the way BuildScreen tails a task's log
+        # file -- there is no file here, only this growing list.
+        self.output_lines = []
+        # Bumped on every reset() so TestScreen can tell a fresh run
+        # apart from one still going, and clear #tail instead of
+        # appending to what a previous run already left there.
+        self.run_id = 0
 
     @property
     def running(self):
         return self.worker is not None and self.worker.is_running
 
-    def reset(self, files):
+    def reset(self, files, spec=None):
+        from seine.tui import spectree
         self.files = files
         self.rows = {}
         self.order = []
@@ -32,6 +47,9 @@ class TestState:
         self.error = False
         self.done = False
         self.result = None
+        self.test_paths = spectree.test_paths(spec) if spec else {}
+        self.output_lines = []
+        self.run_id += 1
 
     # Reporter sink -- 'task_started'/'task_finished'/'sampled' are
     # TextualReporter's own hardcoded names (seine/tui/reporter.py),
@@ -53,6 +71,9 @@ class TestState:
     def sampled(self, sample):
         pass
 
+    def output(self, name, line):
+        self.output_lines.append("%s| %s" % (name, line))
+
     def finished_ok(self, result):
         self.done = True
         self.result = result
@@ -64,15 +85,25 @@ class TestState:
         self.error = True
         self.message = text
 
+    # A failed row's own message goes right under it, the same reason
+    # the CLI and the AI chat's own 'run-test' tool both print it beside
+    # the test's name rather than only in the summary count -- otherwise
+    # this screen is the one place a failure gives no reason at all.
     def render(self):
         if len(self.order) == 0:
             return "no test run yet -- '/test SPEC...'\n"
         marks = {"pending": "○", "running": "●", "done": "✔", "failed": "✘"}
-        lines = ["%s %s" % (marks[self.rows[name]["state"]], name)
-                for name in self.order]
+        by_name = {t.name: t for t in self.result.tests} if self.result else {}
+        lines = []
+        for name in self.order:
+            lines.append("%s %s" % (marks[self.rows[name]["state"]], name))
+            outcome = by_name.get(name)
+            if outcome is not None and outcome.failed and outcome.message:
+                lines.append("    %s" % outcome.message)
         if self.result is not None:
             lines.append("")
             lines.append(self.result.summary())
+            lines.append("output under %s" % os.path.dirname(self.result.output_xml))
         return "\n".join(lines) + "\n"
 
 # Mirrors start_build()'s own shape: a worker thread, a Reporter crossing
@@ -83,7 +114,7 @@ class TestState:
 def start_test(app, state, files, spec=None, tags=None, outdir=None):
     if state.running:
         raise RuntimeError("a test run is already running")
-    state.reset(files)
+    state.reset(files, spec=spec)
     reporter = TextualReporter(app, state)
 
     def run():

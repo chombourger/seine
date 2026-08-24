@@ -337,6 +337,48 @@ def highlight_active(tree, state):
             tree.clear_active(key)
     return wanted
 
+# A running test's spec-tree path, keyed by its fully qualified Robot
+# name ('<suite>.<case name>', the same key TestState.rows uses).
+# suite_name() (seine.testing.loader) decides the '<suite>' half,
+# imported lazily so core TUI never pulls in the optional 'test' extra
+# just to compute a name.
+def test_paths(spec):
+    from seine.testing.loader import suite_name
+    entries = (spec or {}).get("test") or []
+    name = suite_name(entries)
+    paths = {}
+    for i, entry in enumerate(entries):
+        entry_label = _item_label(entry, i)
+        for j, case in enumerate(entry.get("tests", [])):
+            qualified = "%s.%s" % (name, case.get("name", "[%d]" % j))
+            paths[qualified] = ["test", entry_label, "tests", _item_label(case, j)]
+    return paths
+
+# highlight_active()'s own shape, for TestState instead of BuildState:
+# 'state.rows' is the same {name: {"state": ...}} shape either way, but
+# a test's path comes from 'state.test_paths' (precomputed at reset())
+# rather than a package/Ansible-specific lookup -- clears only the keys
+# this function itself ever sets (state.rows' own), not every active
+# key in the tree, so a build highlighted at the same time is untouched.
+def highlight_active_test(tree, state):
+    if state.done:
+        for key in list(state.rows):
+            tree.clear_active(key)
+        return set()
+    wanted = set()
+    for name, row in state.rows.items():
+        if row["state"] != "running":
+            continue
+        path = state.test_paths.get(name)
+        if path is None:
+            continue
+        tree.set_active(name, path)
+        wanted.add(name)
+    for key in state.rows:
+        if key not in wanted:
+            tree.clear_active(key)
+    return wanted
+
 # Auto-scrolls to whichever active node _priority() picks, only when the
 # pick changed since the last call -- doesn't fight a user who scrolled
 # elsewhere. 'scrolled_to' is the caller's own memory, passed in and

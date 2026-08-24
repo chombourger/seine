@@ -11,11 +11,12 @@ import subprocess
 
 from textual import command
 from textual.app import App
+from textual.containers import Horizontal
 from textual.css.query import NoMatches
-from textual.widgets import Static
+from textual.widgets import RichLog, Static
 
 from seine.tui import ai, commands
-from seine.tui.base import BaseScreen, Indicators, Prompt, TargetIndicator
+from seine.tui.base import BaseScreen, Indicators, Prompt, StaticPane, TargetIndicator
 from seine.tui.build import BuildScreen, BuildState
 from seine.tui.chat import ChatScreen
 from seine.tui.context import Context
@@ -25,6 +26,7 @@ from seine.tui.issues import IssuesScreen
 from seine.tui.render import (render_analyze, render_artifacts, render_cache,
                               render_doctor, render_overview, render_packages,
                               render_plan)
+from seine.tui.spectree import SpecTree
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
 from seine.tui.testing import TestState
@@ -76,20 +78,58 @@ class DiffScreen(BaseScreen):
         self.query_one("#body", Static).update(text)
 
 # A live view over app.test_state, the same "own tick, redraw #body"
-# shape BuildScreen's own #tasklist uses -- simpler, since a test run
-# has no per-step log to tail, only pass/fail rows.
+# shape BuildScreen's own #tasklist uses, plus a #tail output pane fed
+# by TestState.output_lines -- BuildScreen's own row/CSS ids (#tail,
+# #buildrow) reused as-is rather than a new DEFAULT_CSS block, safe
+# since only one screen is ever mounted at a time.
 class TestScreen(BaseScreen):
-    def update_body(self):
-        self.query_one("#body", Static).update(self.app.test_state.render())
+    def compose(self):
+        yield Horizontal(
+            SpecTree(id="spectree"),
+            StaticPane(Static(id="body", markup=False), id="cmd"),
+            id="main",
+        )
+        yield Horizontal(RichLog(id="tail", markup=False, wrap=True, max_lines=4000),
+                         id="buildrow")
+        yield from self.footer()
 
     def on_mount(self):
         super().on_mount()
-        self._timer = self.set_interval(1.0, self.update_body)
+        self._output_run_id = None
+        self._output_offset = 0
+        self._timer = self.set_interval(1.0, self._tick)
 
     def on_unmount(self):
         timer = getattr(self, "_timer", None)
         if timer is not None:
             timer.stop()
+
+    def _tick(self):
+        self._follow()
+        self.update_body()
+
+    def update_body(self):
+        state = self.app.test_state
+        self.query_one("#body", Static).update(state.render())
+        if state.message:
+            self.say(state.message, error=state.error)
+
+    # A fresh run (state.run_id bumped by TestState.reset()) starts the
+    # pane over, the same "remounted widget starts from the current
+    # log's beginning" spirit BuildScreen's own Tail class follows for
+    # a real file -- there is no file here, so 'new since last tick' is
+    # just a list slice instead of a seek.
+    def _follow(self):
+        state = self.app.test_state
+        tail = self.query_one("#tail", RichLog)
+        if state.run_id != self._output_run_id:
+            self._output_run_id = state.run_id
+            self._output_offset = 0
+            tail.clear()
+        new_lines = state.output_lines[self._output_offset:]
+        if new_lines:
+            tail.write("\n".join(new_lines))
+            self._output_offset = len(state.output_lines)
 
 SCREENS = {"overview": OverviewScreen, "plan": PlanScreen, "build": BuildScreen,
           "artifacts": ArtifactsScreen, "filesystem": FilesystemScreen,

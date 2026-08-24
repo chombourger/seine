@@ -21,3 +21,12 @@ class TextualReporter:
 
     def sampled(self, sample):
         self.app.call_from_thread(self.sink.sampled, sample)
+
+    # BuildState carries no 'output' (nothing calls this for a build
+    # today -- seine.tasks captures a step's output to its own file
+    # instead, tailed straight off disk); guarded the same way a
+    # Reporter caller checks for 'sampled' before calling it.
+    def output(self, name, line):
+        sink_output = getattr(self.sink, "output", None)
+        if sink_output is not None:
+            self.app.call_from_thread(sink_output, name, line)
