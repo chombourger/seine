@@ -266,6 +266,31 @@ def console_tail(app):
 def console_wait(app, what, timeout=None):
     return get_client(app).console_wait(what, timeout=timeout)
 
+# --- Video (a real framebuffer capture, unrelated to the console/pyte
+# decode above -- what a GUI target with nothing on its serial console
+# needs: a Wayland/Qt app has no text to wait for, only pixels) ---
+
+# (bytes, content_type) straight off mtda's own VideoSnapshot RPC, or
+# (None, None) if this agent has no video source configured. Not decoded
+# or written anywhere here -- same "one thin wrapper, callers decide
+# what to do with it" shape as console_dump()/console_tail().
+def video_snapshot(app):
+    return get_client(app).video_snapshot()
+
+# --- Keyboard / mouse (HID injection -- what a target with no console
+# and no ssh, only a screen and input, needs to be driven at all: a
+# Wayland/Qt kiosk app, a BIOS/UEFI menu with no serial redirection) ---
+
+def keyboard_press(app, key, repeat=1, ctrl=False, shift=False, alt=False, meta=False):
+    return get_client(app).keyboard_press(
+        key, repeat=repeat, ctrl=ctrl, shift=shift, alt=alt, meta=meta)
+
+def keyboard_write(app, what):
+    return get_client(app).keyboard_write(what)
+
+def mouse_move(app, x, y, buttons=0):
+    return get_client(app).mouse_move(x, y, buttons)
+
 # --- Status (one-shot reads; TargetState below is the live counterpart) ---
 
 def status(app):
