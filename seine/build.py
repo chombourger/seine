@@ -608,6 +608,7 @@ class BuildCmd(Cmd):
                         os.path.normpath(os.path.join(dirname, f))
                         if type(f) == type("") else f for f in fragments]
 
+    # direction: most-specific file wins (docs/merging.md).
     def _merge_distro(self, spec):
         if "distribution" in spec:
             if "distribution" in self.spec:
@@ -624,6 +625,9 @@ class BuildCmd(Cmd):
     # would otherwise have to restate the others to keep them, and
     # restating them means writing down URIs a snapshot has changed.
     # Naming a suite already listed still overrides it.
+    #
+    # direction: most-specific file wins, per setting within a matched
+    # suite (docs/merging.md).
     def _merge_feeds(self, feeds):
         merged = self.spec["distribution"].get("feeds")
         if merged is None:
@@ -639,6 +643,7 @@ class BuildCmd(Cmd):
             else:
                 merged.append(feed)
 
+    # direction: most-specific file wins (docs/merging.md).
     def _merge_imager(self, spec):
         if "imager" in spec:
             if "imager" in self.spec:
@@ -825,6 +830,8 @@ class BuildCmd(Cmd):
     # general to the particular, so a board file gets the last word over
     # the architecture file it sits on. Anything under 'packages' still
     # beats every default, since that is the file doing the asking.
+    #
+    # direction: most-specific file wins (docs/merging.md).
     def _merge_defaults(self, spec):
         if "defaults" not in spec:
             return
@@ -937,6 +944,9 @@ class BuildCmd(Cmd):
     # One level deeper than the rest: 'extends' is a dictionary of kinds,
     # and two files describing the same kernel are describing the same
     # 'kernel' entry rather than replacing each other's.
+    #
+    # direction: asking file wins, unless _appends() says the setting is
+    # additive instead (docs/merging.md).
     def _merge_extends(self, extends, newextends, package, newpackage):
         if type(newextends) != type({}):
             return
@@ -1051,6 +1061,8 @@ class BuildCmd(Cmd):
             index = index + 1
         return parts
 
+    # direction: additive; a '~flag' removes one a fragment already set
+    # (docs/merging.md).
     def _merge_part_flags(self, part, newpart):
         for flag in newpart["flags"]:
             if flag.startswith("~"):
@@ -1062,6 +1074,8 @@ class BuildCmd(Cmd):
                     part["flags"].append(flag)
         return part
 
+    # direction: asking file wins, 'flags' additive instead
+    # (docs/merging.md).
     def _merge_part_or_vol(self, part, newpart, kind):
         for setting in newpart:
             if setting == "flags":
@@ -1076,6 +1090,7 @@ class BuildCmd(Cmd):
                 part[setting] = newpart[setting]
         return part
 
+    # direction: asking file wins, matched by 'label' (docs/merging.md).
     def _merge_parts_or_vols(self, spec, kind):
         parts = self.spec["image"][kind]
         for newpart in spec["image"][kind]:
@@ -1087,6 +1102,10 @@ class BuildCmd(Cmd):
                 parts = self._update_named_part_or_vol(parts, part, kind)
         self.spec["image"][kind] = parts
 
+    # direction: most-specific file wins for a plain setting;
+    # 'partitions'/'volumes' route to _merge_parts_or_vols instead, which
+    # goes the other way -- asking file wins, matched by 'label'
+    # (docs/merging.md).
     def _merge_image(self, spec):
         if "image" in self.spec:
             for setting in spec["image"]:
@@ -1101,6 +1120,9 @@ class BuildCmd(Cmd):
     # than taken from the last one to say it: the fragment that holds a
     # secret is the fragment that knows it is one, and it is rarely the
     # file a build is started from.
+    #
+    # direction: additive, deduplicated -- order doesn't matter
+    # (docs/merging.md).
     def _merge_redact(self, spec):
         for pattern in spec.get("redact") or []:
             patterns = self.spec.setdefault("redact", [])

@@ -205,7 +205,10 @@ so a fragment shared across releases or boards stays a single copy.
 
 See [docs/specification.md](docs/specification.md) for every section and
 setting: variables, feeds and snapshots, package pinning and grafting,
-signing, the imager, and image layout.
+signing, the imager, and image layout. See
+[docs/merging.md](docs/merging.md) for how two files touching the same
+section combine -- which one wins a setting both write, and why that
+differs by section.
 
 ## Kernels
 

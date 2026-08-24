@@ -29,7 +29,8 @@ image:
 
 For each module listed in the `requires` section, a corresponding file with
 either the `.yml` or `.yaml` suffix shall be found in the folder of the yaml
-file requiring them.
+file requiring them. See [docs/merging.md](merging.md) for how two files
+touching the same section combine.
 
 ### Variables
 
@@ -270,8 +271,9 @@ A default is parsed whether or not anything uses it: a misspelt setting
 in an architecture file is reported by the file that holds it rather than
 waiting for the one image that rebuilds a kernel.
 
-`defaults` holds package entries only. Playbooks already append rather
-than replace, and the other sections are merged by key.
+`defaults` holds package entries only. Playbooks and tests already merge
+by name (see [`playbook`](#playbook)/[`test`](#test)), and the other
+sections are merged by key.
 
 ### packages
 
@@ -781,6 +783,12 @@ playbook:
       tasks:
           ...
 ```
+
+Composed across `requires` the same way `test` entries are: an entry
+named the same as one already loaded is merged into it -- `tasks` add
+up (an exact repeat, from a fragment reached twice via two `requires`
+paths, is dropped; new tasks append in order) -- rather than a second
+entry with the same name running alongside the first.
 
 Frequently used tasks include:
  * `apt`

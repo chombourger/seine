@@ -10,7 +10,9 @@ A specification carries its tests the same way it carries its
 [docs/specification.md#test](specification.md#test)), a list of entries
 composed across `requires`: an entry named the same as one already
 loaded is merged into it rather than duplicated, the same way `packages`
-merge by name. It is not a second,
+merge by name -- see [docs/merging.md](merging.md) for the full rule,
+including why `keywords:`/`steps:` are refused rather than merged on a
+real mismatch. It is not a second,
 static language living beside a build spec's own: a build spec
 deliberately has no `if`/`for` (see
 [Variables](specification.md#variables) for why), but a test's whole job
