@@ -210,7 +210,7 @@ class ToolTable(avocado.Test):
                                  "source-pull", "source-rm",
                                  "mtda-power", "mtda-usb", "mtda-storage", "mtda-write-image",
                                  "mtda-snapshot", "mtda-rollback",
-                                 "mtda-console-send", "mtda-console-run"})
+                                 "mtda-console-send", "mtda-console-run", "run-test"})
 
     def test_read_only_tools_work_with_no_active_spec(self):
         app = self.SeineApp()
@@ -218,7 +218,8 @@ class ToolTable(avocado.Test):
                     "cache", "doctor", "installed-sizes", "issues", "build-status",
                     "task-log", "spec-files", "read", "spec-dump", "docs", "spec-query",
                     "gist-list", "gist-show", "source-list",
-                    "mtda-status", "mtda-console-read", "mtda-console-wait"]:
+                    "mtda-status", "mtda-console-read", "mtda-console-wait",
+                    "test-result", "test-validate"]:
             text = self.ai.TOOLS[name].run(app, {})
             self.assertIsInstance(text, str)
             self.assertGreater(len(text), 0)
