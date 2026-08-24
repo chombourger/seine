@@ -9,6 +9,7 @@ import os
 import platform
 import subprocess
 import tarfile
+import tempfile
 
 from seine import tasks
 
@@ -400,11 +401,32 @@ class ContainerEngine:
               % (" ".join(ContainerEngine._podman_cmd([])),
                  " ".join(ContainerEngine._kept)))
 
+    # conmon's own console-socket file -- created for a tty container
+    # (sbuild's own, see BuilderImage.exec()'s 'tty') -- is a Go temp file
+    # under TMPDIR too, and AF_UNIX cuts a socket path off at 108 bytes.
+    # 'cache' can easily be that long on its own once it is a deep CI
+    # workdir (an avocado job-results tree, say); a short-named symlink
+    # under XDG_RUNTIME_DIR keeps the joined path under the limit without
+    # moving where anything actually lands. Reused across calls that share
+    # the same 'cache' (its own name is a hash of it), so this never grows
+    # unbounded within one XDG_RUNTIME_DIR.
+    @staticmethod
+    def _short_tmpdir(cache):
+        base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+        short = os.path.join(base, "seine-tmp-%s" %
+                             hashlib.sha1(cache.encode()).hexdigest()[:12])
+        if not os.path.islink(short):
+            try:
+                os.symlink(cache, short)
+            except FileExistsError:
+                pass
+        return short
+
     @staticmethod
     def _podman_env():
         cache = ContainerEngine.cache("bootstraps")
         os.makedirs(cache, exist_ok=True)
-        return dict(os.environ, TMPDIR=cache)
+        return dict(os.environ, TMPDIR=ContainerEngine._short_tmpdir(cache))
 
     @staticmethod
     def _podman_cmd(cmd):

@@ -120,7 +120,7 @@ class RecordingBuilderImage:
         self.calls = []
 
     def exec(self, args, architecture=None, volumes=None, workdir=None,
-             environment=None, check=True):
+             environment=None, check=True, tty=False):
         self.calls.append(args)
         if args[0] == "dpkg-source":
             open(os.path.join(self.workdir, "linux_1-1.dsc"), "w").close()
@@ -366,7 +366,7 @@ class FakeFetch:
         self.fails = fails
 
     def exec(self, args, architecture=None, volumes=None, workdir=None,
-             environment=None, check=True):
+             environment=None, check=True, tty=False):
         if args[0] == "dpkg-source":
             open(os.path.join(volumes[0][0], "busybox_1.37.0-1.dsc"), "w").close()
             return 0
@@ -556,7 +556,7 @@ class TwoPackagesSharingASourceFetchItOnce(avocado.Test):
     def test_a_failed_prepare_still_frees_a_fetch_nothing_else_needs(self):
         class FailingPrepare(FakeFetch):
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 if args[0] == "dpkg-source":
                     raise RuntimeError("dpkg-source blew up")
                 return super().exec(args, architecture, volumes, workdir,
@@ -633,7 +633,7 @@ class FetchUpstreamPopulatesTheSharedEntry(avocado.Test):
 
         class FakeUpstream:
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 os.makedirs(os.path.join(volumes[0][0], "linux-6.12"),
                            exist_ok=True)
                 return 0
@@ -1071,7 +1071,7 @@ class ArchitectureAllIsBuiltOnce(avocado.Test):
                 self.calls = []
 
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 self.calls.append(" ".join(args))
                 return 0
 
@@ -1103,7 +1103,7 @@ class ArchitectureAllIsBuiltOnce(avocado.Test):
                 self.calls = []
 
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 self.calls.append(" ".join(args))
                 return 0
 
@@ -1234,7 +1234,7 @@ Pin-Priority: 1001
                 self.calls = []
 
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 self.calls.append(args)
                 return 0
 
@@ -1323,7 +1323,7 @@ class PercentSurvivesSbuild(avocado.Test):
                 self.calls = []
 
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 self.calls.append(args)
                 return 0
 
@@ -1365,7 +1365,7 @@ class AFailedBuildKeepsItsLog(avocado.Test):
 
         class Image:
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 # Only the build itself fails, and only after writing what
                 # sbuild would have written -- which is what has to
                 # survive.
@@ -1433,7 +1433,7 @@ class ASecondBuildReplacesTheFirst(Publishes):
 
         class Image:
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 return 0
 
         distro = {"source": "debian", "release": "trixie",
@@ -1496,7 +1496,7 @@ Checksums-Sha256:
 
         class Quiet:
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 return 0
 
         distro = {"source": "debian", "release": "trixie",
@@ -1603,7 +1603,7 @@ Checksums-Sha256:
 
         class Image:
             def exec(self, args, architecture=None, volumes=None, workdir=None,
-                     environment=None, check=True):
+                     environment=None, check=True, tty=False):
                 commands.append(" ".join(args))
                 return 0
 

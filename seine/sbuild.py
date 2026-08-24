@@ -105,10 +105,13 @@ class BuilderImage(Bootstrap):
     # cache where sbuild looks for its tarballs by default, so neither
     # mmdebstrap nor sbuild needs telling where the chroot lives; steps
     # that do not enter a chroot at all leave it out.
+    #
+    # 'tty' allocates one inside the container, for sbuild alone --
+    # see packages.py's own build() for why.
     def exec(self, args, architecture=None, volumes=None, workdir=None,
-             environment=None, check=True):
+             environment=None, check=True, tty=False):
         return ContainerEngine.run(
-            self._args(args, architecture, volumes, workdir, environment),
+            self._args(args, architecture, volumes, workdir, environment, tty),
             check=check)
 
     # As exec(), but returns what the command printed. Used for the small
@@ -117,10 +120,12 @@ class BuilderImage(Bootstrap):
     def output(self, args, architecture=None, volumes=None, workdir=None,
                environment=None):
         return ContainerEngine.check_output(
-            self._args(args, architecture, volumes, workdir, environment))
+            self._args(args, architecture, volumes, workdir, environment, False))
 
-    def _args(self, args, architecture, volumes, workdir, environment):
+    def _args(self, args, architecture, volumes, workdir, environment, tty):
         cmd = ["container", "run", "--rm"] + SBUILD_RUN_OPTIONS
+        if tty:
+            cmd += ["-t"]
         if architecture is not None:
             cmd += ["-v", "%s:/root/.cache/sbuild" %
                     ContainerEngine.chroots(self.distro["release"], architecture)]

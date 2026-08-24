@@ -1193,6 +1193,13 @@ class Builder:
         # no other use for, so point it at /dev/null: nothing in a build
         # has any business writing to a console, and the alternative is a
         # warning per invocation drowning the output that matters.
+        # Without a terminal, libc's stdio block-buffers, so the log
+        # lags well behind the build. 'stdbuf' (LD_PRELOAD) does not fix
+        # it: sbuild only forwards a short env allowlist (below) into
+        # the chroot it builds in, dropping LD_PRELOAD before
+        # dpkg-buildpackage/gcc ever see it. 'exec.tty' asks podman for
+        # a real terminal instead -- isatty() survives that boundary
+        # since it is a property of the descriptor, not the environment.
         script = "ln -sf /dev/null /dev/console; exec %s" % shlex.join(args)
 
         # Run from the output directory so sbuild drops what it built
@@ -1200,7 +1207,7 @@ class Builder:
         self.builderImage.exec(
             ["sh", "-c", script],
             architecture=self.chroot_architecture(package, architecture),
-            volumes=volumes, workdir=OUTPUT, environment=environment)
+            volumes=volumes, workdir=OUTPUT, environment=environment, tty=True)
 
     def repository(self):
         return repository(self.distro)
