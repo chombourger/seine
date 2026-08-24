@@ -23,16 +23,38 @@ playbook:
 # sets a distinctive PS1 and tells mtda about it (Console Prompt), so
 # Console Run -- otherwise waiting on mtda's own default prompt, '=> ',
 # a U-Boot one no Linux shell prints -- actually works afterwards.
+#
+# Every console_wait's own result is checked before sending the next
+# thing: found live (console.log from a real run under --outdir) that
+# a wait timing out did not stop the sequence -- it kept sending
+# characters into a console nothing was reading yet. Those don't
+# vanish: QEMU's own serial backend queues them, and they get
+# delivered once *something* next reads that console -- which, a power
+# cycle and a fresh login later, was the following test's own login:
+# prompt, receiving 'export PS1=...' as a username. Failing loudly here
+# beats corrupting a run three tests later for a reason nothing at that
+# point could see.
 test:
     - name: shared login
       keywords:
           - name: Log In
             steps:
-                - console_wait: {pattern: "login:", timeout: 120s}
+                - console_wait: {pattern: "login:", timeout: 120s, assign: GOT}
+                - should_be_true: ["${GOT}", "never reached a login prompt"]
                 - console_send: {data: "root\n"}
-                - console_wait: {pattern: "Password:", timeout: 15s}
+                - console_wait: {pattern: "Password:", timeout: 15s, assign: GOT}
+                - should_be_true: ["${GOT}", "never asked for a password"]
                 - console_send: {data: "welcome123\n"}
-                - console_wait: {pattern: "[$#] $", timeout: 15s}
+                # No wait for the shell's own first prompt here -- its
+                # exact text varies (the hostname, plus whatever MOTD
+                # precedes it) and a pattern matching it has already
+                # shown itself flaky (a real run's own console.log had
+                # it time out even though the prompt was already
+                # there). The password was already confirmed asked for
+                # above, so a short settle is enough before the one
+                # prompt that actually matters below.
+                - sleep: 2s
                 - console_send: {data: "export PS1='SEINE-PROMPT# '\n"}
-                - console_wait: {pattern: "SEINE-PROMPT# ", timeout: 15s}
+                - console_wait: {pattern: "SEINE-PROMPT# ", timeout: 15s, assign: GOT}
+                - should_be_true: ["${GOT}", "custom prompt never took effect"]
                 - console_prompt: {new_prompt: "SEINE-PROMPT# "}
