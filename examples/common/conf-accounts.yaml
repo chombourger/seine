@@ -15,3 +15,18 @@ playbook:
       tasks:
         - name: set root password
           user: name=root update_password=always password=$6$X1SbKPWJ2tkpDFZb$khtcnptnTxWEYA4qCq/SHioxz6cmw2GFnnVi7YE/kkT257HIXrTTiGDNuAnAfvG6xiXygf9XYSHZoU8JuvU4J0
+
+# 'Log In' beside the password it uses, so a change to it (a new hash
+# above) is one edit rather than a search-and-replace across every
+# board's own test suite -- any of them reaches this keyword the same
+# way they already reach the password: 'requires:'-ing this file.
+test:
+    - name: shared login
+      keywords:
+          - name: Log In
+            steps:
+                - console_wait: {pattern: "login:", timeout: 120s}
+                - console_send: {data: "root\n"}
+                - console_wait: {pattern: "Password:", timeout: 15s}
+                - console_send: {data: "welcome123\n"}
+                - console_wait: {pattern: "[$#] $", timeout: 15s}

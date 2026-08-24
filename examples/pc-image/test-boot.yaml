@@ -1,0 +1,75 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# Boots the image and checks it comes up correctly -- sequential steps,
+# variables, assertions, if/else, a polling loop, and structured error
+# handling. 'requires: conf-accounts' for 'Log In' -- named directly
+# rather than relying on main.yaml also requiring it, so this file is
+# runnable on its own; loading both (main.yaml already requires it too)
+# is fine, a fragment reached twice is tolerated the same way any
+# other 'requires:' is. See docs/testing.md for the grammar, and
+# examples/rebuild-busybox/busybox.yaml for a smaller example. Run with:
+#   seine test examples/pc-image/test-boot.yaml
+#   seine test examples/pc-image/main.yaml
+
+requires:
+    - ../common/conf-accounts
+
+test:
+    - name: boot
+      tags: [smoke, boot]
+      setup:
+          connect_target: {}
+      teardown:
+          disconnect_target: {}
+      tests:
+          - name: boots to a login prompt and identifies as Linux
+            steps:
+                - power_cycle: {settle: 2s}
+                - log_in: {}
+                - console_run: {command: "uname -s", assign: KERNEL_NAME}
+                - should_be_equal: ["${KERNEL_NAME}", Linux]
+
+          - name: architecture-specific packages match the built spec
+            steps:
+                - power_cycle: {settle: 2s}
+                - log_in: {}
+                - get_spec_value: {path: "distribution.architecture", assign: ARCH}
+                - console_run: {command: "dpkg --print-architecture", assign: DPKG_ARCH}
+                - if: "'${ARCH}' == 'amd64'"
+                  then:
+                      - should_contain: ["${DPKG_ARCH}", amd64]
+                      - console_run: {command: "dpkg -l grub-efi-amd64 2>&1", assign: GRUB_OUT}
+                      - should_contain: ["${GRUB_OUT}", "ii  grub-efi-amd64"]
+                  else:
+                      - log: {message: "not amd64 -- nothing architecture-specific to check here"}
+
+          - name: the shell prompt comes back within two minutes
+            steps:
+                - power_cycle: {settle: 2s}
+                # A polling loop: capture the console every 5s and check
+                # for a prompt, until 'timeout' runs out -- 'retry_until'
+                # is sugar for Robot's own WHILE with a limit, so a
+                # target that never gets there fails with Robot's own
+                # clear timeout message rather than hanging.
+                - retry_until: "'login:' in $SCREEN"
+                  timeout: 120s
+                  interval: 5s
+                  do:
+                      - capture_screen: {name: boot, assign: SCREEN}
+
+          - name: a failed install is reported, not fatal to the whole run
+            steps:
+                - power_cycle: {settle: 2s}
+                - log_in: {}
+                # try/except -- an install that fails (a typo'd package
+                # name, here) is caught, logged, and the test still
+                # passes; drop the 'except' and let it fail the test
+                # instead, whichever a given suite actually wants.
+                - try:
+                      - console_run: {command: "apt-get install -y does-not-exist-xyz 2>&1", assign: OUT}
+                      - should_not_contain: ["${OUT}", "Unable to locate"]
+                  except:
+                      - pattern: "*"
+                        do:
+                            - log: {message: "install failed as expected -- package doesn't exist", level: WARN}

@@ -12,6 +12,7 @@ requires:
     - ../common/pc-image
     - french
     - selinux
+    - test-boot
 
 playbook:
     - name: some great packages

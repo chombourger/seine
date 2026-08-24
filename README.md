@@ -149,6 +149,7 @@ model where what an image is built from, and why, stays legible.
 * [Kernels](#kernels)
 * [Building](#building)
 * [TUI](#tui)
+* [Testing](#testing)
 * [Software Bill of Materials](#software-bill-of-materials)
 
 ## Getting started
@@ -277,6 +278,22 @@ or the `seine-tui` package).
 
 See [docs/tui.md](docs/tui.md) for every screen, keyboard shortcut, and
 `/command`.
+
+## Testing
+
+```
+seine test SPEC.yml
+```
+
+runs `SPEC.yml`'s own `test` section against a real target driven over
+mtda -- a specification carries its tests the same way it carries its
+packages/playbook/image. Sequential steps, variables, `if`/`for`/`while`,
+`try`/`except`, reusable named keywords, setup/teardown and tags, all
+Robot Framework's own semantics under seine's own declarative YAML, with
+results a CI job can act on unambiguously. Needs the `test` extra (`pip
+install seine[test]`, or the `seine-test` package). See
+[docs/testing.md](docs/testing.md) for the step grammar, the keywords
+seine/mtda expose, and how to run one from `seine tui`.
 
 ## Software Bill of Materials
 

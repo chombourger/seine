@@ -23,3 +23,24 @@ playbook:
                 state: present
                 name:
                     - busybox
+
+# Proves the patch above actually landed on real hardware, not just
+# that the package built -- 'Log In' is defined in conf-accounts.yaml,
+# beside the password it uses, not here: this fragment says nothing
+# about how to log in, only what to check once logged in. See
+# docs/testing.md.
+test:
+    - name: busybox rebuild
+      tags: [busybox, smoke]
+      setup:
+          connect_target: {}
+      teardown:
+          disconnect_target: {}
+      tests:
+          - name: banner shows the rebuild marker
+            steps:
+                - power_cycle: {settle: 2s}
+                - log_in: {}
+                - console_send: {data: "busybox | head -1\n"}
+                - console_wait: {pattern: "rebuilt-by-seine", timeout: 15s, assign: MATCHED}
+                - should_be_true: ["${MATCHED}"]

@@ -1,8 +1,13 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+# 'conf-accounts' sets a root password -- so this image can actually be
+# logged into and tested (busybox.yaml's own 'test:' section does,
+# using the 'Log In' keyword conf-accounts.yaml defines beside the
+# password it sets).
 requires:
     - ../common/amd64
     - ../common/bookworm
     - ../common/pc-image
+    - ../common/conf-accounts
     - busybox
