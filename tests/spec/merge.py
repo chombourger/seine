@@ -1020,3 +1020,52 @@ class SettingsRememberWhichFileWroteThem(avocado.Test):
             "arch.yml")
         # Nothing wrote this one down.
         self.assertEqual(package.origin_of("extends.kernel.sha256"), None)
+
+class TheSamePlaybookEntryReachedTwiceIsNotDuplicated(avocado.Test):
+    # A fragment reached via two 'requires:' paths used to duplicate
+    # its own playbook entry once per path.
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                playbook:
+                    - name: configure user accounts
+                      priority: 900
+                      tasks:
+                          - name: set root password
+                            user: name=root password=secret
+        """)
+        build.loads("""
+                playbook:
+                    - name: configure user accounts
+                      priority: 900
+                      tasks:
+                          - name: set root password
+                            user: name=root password=secret
+        """)
+        self.assertEqual(len(build.spec["playbook"]), 1)
+        self.assertEqual(len(build.spec["playbook"][0]["tasks"]), 1)
+
+class PlaybookEntryTasksAreAddedToRatherThanSettled(avocado.Test):
+    # 'tasks:' stays one additive, order-preserving list -- not merged
+    # task-by-task -- since ansible tasks run in sequence and folding
+    # two same-named tasks into one would be a bigger behavior change
+    # than it is for an independent test case.
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                playbook:
+                    - name: configure user accounts
+                      tasks:
+                          - name: set root password
+                            user: name=root password=one
+        """)
+        build.loads("""
+                playbook:
+                    - name: configure user accounts
+                      tasks:
+                          - name: add a second user
+                            user: name=alice
+        """)
+        tasks = build.spec["playbook"][0]["tasks"]
+        self.assertEqual([t["name"] for t in tasks],
+                         ["set root password", "add a second user"])

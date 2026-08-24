@@ -647,13 +647,29 @@ class BuildCmd(Cmd):
             else:
                 self.spec["imager"] = spec["imager"]
 
-    def _append_playbooks(self, spec):
-        if "playbook" in spec:
-            if "playbook" in self.spec:
-                for playbook in spec["playbook"]:
-                    self.spec["playbook"].append(playbook)
-            elif "playbook" not in self.spec:
-                self.spec["playbook"] = spec["playbook"]
+    # Merged by name, reusing _merge_named_list()/_merge_settings(): a
+    # fragment reached twice via two 'requires:' paths (conf-accounts's
+    # own 'configure user accounts', say) used to duplicate its
+    # playbook entry once per path. 'tasks:' stays one additive list
+    # rather than merged task-by-task -- ansible tasks run in order, so
+    # folding two same-named tasks into one is a bigger behavior change
+    # than it would be for an independent list entry; only an exact
+    # repeat (the reached-twice case) is dropped.
+    #
+    # direction: asking file wins (docs/merging.md).
+    def _merge_playbooks(self, spec):
+        if "playbook" not in spec:
+            return
+        if "playbook" not in self.spec:
+            self.spec["playbook"] = spec["playbook"]
+            return
+        self._merge_named_list(self.spec["playbook"], spec["playbook"],
+                               self._name_of, self._merge_playbook_entry)
+
+    # direction: asking file wins; 'tasks' additive, not merged by name
+    # (docs/merging.md).
+    def _merge_playbook_entry(self, entry, newentry):
+        self._merge_settings(entry, newentry, appends=lambda s: s == "tasks")
 
     # Packages are merged by the source package they name, the way
     # partitions are merged by label: a file may say what to build and
@@ -1020,7 +1036,7 @@ class BuildCmd(Cmd):
         self._merge_imager(spec)
         self._merge_defaults(spec)
         self._merge_packages(spec)
-        self._append_playbooks(spec)
+        self._merge_playbooks(spec)
         if "image" in spec:
             self._merge_image(spec)
         return self.spec
