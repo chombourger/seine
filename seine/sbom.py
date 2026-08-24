@@ -27,11 +27,11 @@ def wanted(name):
     return any(name == path or (path.endswith("/") and name.startswith(path))
                for path in SBOM_INPUTS)
 
-# Every installed package's own Installed-Size (KiB), read from the
-# same var/lib/dpkg/status wanted() pulls from the tarball -- not from
-# the SBOM debsbom itself writes. Largest first. A missing or unreadable
-# tarball is an empty answer, not a crash.
-def installed_sizes(tarball):
+# Every installed package's own name/version/Installed-Size (KiB), read
+# from the same var/lib/dpkg/status wanted() pulls from the tarball --
+# not from the SBOM debsbom itself writes. Largest first. A missing or
+# unreadable tarball is an empty answer, not a crash.
+def installed_packages(tarball):
     try:
         with tarfile.open(tarball, "r") as tar:
             member = next((m for m in tar.getmembers()
@@ -43,20 +43,22 @@ def installed_sizes(tarball):
     except (OSError, tarfile.TarError):
         return []
 
-    sizes = []
+    packages = []
     for stanza in status.split("\n\n"):
-        name = kib = None
+        name = version = kib = None
         for line in stanza.splitlines():
             if line.startswith("Package:"):
                 name = line[len("Package:"):].strip()
+            elif line.startswith("Version:"):
+                version = line[len("Version:"):].strip()
             elif line.startswith("Installed-Size:"):
                 try:
                     kib = int(line[len("Installed-Size:"):].strip())
                 except ValueError:
                     kib = None
         if name and kib is not None:
-            sizes.append((name, kib))
-    return sorted(sizes, key=lambda entry: entry[1], reverse=True)
+            packages.append((name, version or "?", kib))
+    return sorted(packages, key=lambda entry: entry[2], reverse=True)
 
 # Where a previous 'seine build --sbom' of 'image_output' would have
 # left an SBOM -- present or not; a caller that only wants it if one is

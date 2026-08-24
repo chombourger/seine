@@ -41,7 +41,7 @@ read-only and run without asking:
 | `doctor` | Whether this machine has what a build needs |
 | `build-status`, `task-log` | Per-step status and one step's own log tail, of a build this session ran |
 | `packages`, `analyze`, `artifacts`, `cache` | The same information `seine --sbom`/`analyze`/`cache` give on the real command line |
-| `installed-sizes`, `sbom-diff` | dpkg's real installed-package list; two SBOMs diffed |
+| `installed-packages`, `sbom-diff` | dpkg's real installed-package list (name, version, size); two SBOMs diffed |
 | `spec-files` | Every file this build actually loaded, plus unloaded siblings worth pulling in |
 | `read` | One file this build trusts -- see [Trust model](#trust-model) below |
 | `spec-query`, `spec-dump` | A JSONPath search, or the fully merged spec tree |

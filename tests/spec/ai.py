@@ -215,7 +215,7 @@ class ToolTable(avocado.Test):
     def test_read_only_tools_work_with_no_active_spec(self):
         app = self.SeineApp()
         for name in ["overview", "plan", "packages", "analyze", "artifacts",
-                    "cache", "doctor", "installed-sizes", "issues", "build-status",
+                    "cache", "doctor", "installed-packages", "issues", "build-status",
                     "task-log", "spec-files", "read", "spec-dump", "docs", "spec-query",
                     "gist-list", "gist-show", "source-list",
                     "mtda-status", "mtda-console-read", "mtda-console-wait",
@@ -1365,9 +1365,9 @@ class ToolTable(avocado.Test):
         text = self.ai.TOOLS["sbom-diff"].run(app, {})
         self.assertIn("needs both", text)
 
-    def test_installed_sizes_needs_a_single_active_group(self):
+    def test_installed_packages_needs_a_single_active_group(self):
         app = self.SeineApp(files=[PC_IMAGE])
-        text = self.ai.TOOLS["installed-sizes"].run(app, {})
+        text = self.ai.TOOLS["installed-packages"].run(app, {})
         # A real spec but no build yet -- no tarball to read.
         self.assertIn("no tarball", text)
 
@@ -1386,14 +1386,14 @@ class ToolTable(avocado.Test):
     # 'name' searches every installed package, not just the top 30 --
     # the "is package X in my image" case this exists for, where X may
     # be far smaller than the 30th-largest package.
-    def test_installed_sizes_name_finds_a_small_package(self):
+    def test_installed_packages_name_finds_a_small_package(self):
         app = self.SeineApp(files=[PC_IMAGE])
         build = app.context.builds[0]
         build.image._tarball = self._status_tarball(
             "Package: sudo\nStatus: install ok installed\n"
             "Installed-Size: 10\nVersion: 1.9\n")
         try:
-            text = self.ai.TOOLS["installed-sizes"].run(app, {"name": "sudo"})
+            text = self.ai.TOOLS["installed-packages"].run(app, {"name": "sudo"})
         finally:
             # Avoids 'Image.__del__' trying to unlink this once
             # 'self.workdir' (the tarball's own directory) is already
@@ -1401,23 +1401,24 @@ class ToolTable(avocado.Test):
             # concern (a real build's tarball outlives the object).
             build.image._tarball = None
         self.assertIn("sudo", text)
+        self.assertIn("1.9", text)
         self.assertIn("10 KiB", text)
 
-    def test_installed_sizes_name_with_no_match_says_so(self):
+    def test_installed_packages_name_with_no_match_says_so(self):
         app = self.SeineApp(files=[PC_IMAGE])
         build = app.context.builds[0]
         build.image._tarball = self._status_tarball(
             "Package: bash\nStatus: install ok installed\n"
             "Installed-Size: 7000\nVersion: 5.2\n")
         try:
-            text = self.ai.TOOLS["installed-sizes"].run(app, {"name": "sudo"})
+            text = self.ai.TOOLS["installed-packages"].run(app, {"name": "sudo"})
         finally:
             build.image._tarball = None
         self.assertEqual(text, "no installed package matching 'sudo'")
 
     # 'name' is a regex, not a plain substring -- alternation finds
     # either of two packages in one call.
-    def test_installed_sizes_name_is_a_regex(self):
+    def test_installed_packages_name_is_a_regex(self):
         app = self.SeineApp(files=[PC_IMAGE])
         build = app.context.builds[0]
         build.image._tarball = self._status_tarball(
@@ -1428,21 +1429,21 @@ class ToolTable(avocado.Test):
             "Package: bash\nStatus: install ok installed\n"
             "Installed-Size: 7000\nVersion: 5.2\n")
         try:
-            text = self.ai.TOOLS["installed-sizes"].run(app, {"name": "sudo|doas"})
+            text = self.ai.TOOLS["installed-packages"].run(app, {"name": "sudo|doas"})
         finally:
             build.image._tarball = None
         self.assertIn("sudo", text)
         self.assertIn("doas", text)
         self.assertNotIn("bash", text)
 
-    def test_installed_sizes_name_with_bad_regex_reports_it_not_a_crash(self):
+    def test_installed_packages_name_with_bad_regex_reports_it_not_a_crash(self):
         app = self.SeineApp(files=[PC_IMAGE])
         build = app.context.builds[0]
         build.image._tarball = self._status_tarball(
             "Package: bash\nStatus: install ok installed\n"
             "Installed-Size: 7000\nVersion: 5.2\n")
         try:
-            text = self.ai.TOOLS["installed-sizes"].run(app, {"name": "("})
+            text = self.ai.TOOLS["installed-packages"].run(app, {"name": "("})
         finally:
             build.image._tarball = None
         self.assertIn("not a usable pattern", text)
@@ -1450,7 +1451,7 @@ class ToolTable(avocado.Test):
     # A real (tiny) external program configured as settings.json's
     # sbom2cve_program, exercising a real scan() call to populate the
     # cache -- the same "prove the tool reads back what /issues really
-    # left behind" choice test_installed_sizes_* above make with a real
+    # left behind" choice test_installed_packages_* above make with a real
     # tarball rather than a stand-in.
     def _write_scanned_sbom(self, build, findings):
         import stat
@@ -2756,6 +2757,30 @@ class StartBuildNotifiesTheAI(avocado.Test):
                 # show it, rather than leave the answer for the person
                 # to notice on their own.
                 self.assertIsInstance(app.screen, self.ChatScreen)
+        _run(scenario)
+
+    # /build always sets 'sbom': True; start-build claims to match it
+    # but didn't, leaving nothing for read/installed-packages to serve.
+    def test_start_build_asks_for_an_sbom_same_as_slash_build(self):
+        release = threading.Event()
+        self.Image.build = self._fast_build(failing=False, release=release)
+        sys.modules["litellm"] = fake_litellm(tool_name="start-build")
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "build my image"
+                await pilot.press("enter")
+                await pilot.pause()
+                await self._settle_to(
+                    pilot, lambda: isinstance(app.screen, self.ConfirmAction))
+                await pilot.press("enter")  # 'Yes' is highlighted first
+                await pilot.pause()
+                await self._settle_to(pilot, lambda: not app.ai_state.busy)
+                self.assertTrue(app.context.builds[0].options["sbom"])
+                release.set()
+                await self._settle_to(pilot, lambda: app.build_state.done)
         _run(scenario)
 
     # 'image.options' is the same dictionary object 'build.options' is

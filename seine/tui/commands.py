@@ -181,7 +181,7 @@ def _build(app, argv):
     if jobs is not None:
         build.options["jobs"] = jobs
     # TUI builds always write an SBOM, unlike the plain CLI's --sbom-only
-    # default -- ai.py's packages/installed_sizes tools need one to read.
+    # default -- ai.py's packages/installed-packages tools need one to read.
     build.options["sbom"] = True
     # Imported here, not at module level: breaks a real import cycle
     # (seine.tui.build -> seine.tui.base -> this module).

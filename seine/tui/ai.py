@@ -224,7 +224,7 @@ def _tool_sbom_diff(app, arguments):
 # reliable way to answer "is package X in my image": a build log names
 # the task an apt module ran under, not the packages it installed, and
 # the spec only says what's declared, not what a dependency pulled in.
-def _tool_installed_sizes(app, arguments):
+def _tool_installed_packages(app, arguments):
     build = _single_group(app)
     if build is None:
         return NO_SINGLE_GROUP
@@ -232,9 +232,9 @@ def _tool_installed_sizes(app, arguments):
     if not tarball:
         return "no tarball for this build yet -- '/build' it first"
     from seine import sbom
-    sizes = sbom.installed_sizes(tarball)
-    if len(sizes) == 0:
-        return ("no package size data available -- the tarball may "
+    packages = sbom.installed_packages(tarball)
+    if len(packages) == 0:
+        return ("no package data available -- the tarball may "
                 "already be cleaned up (it is not kept after a build "
                 "finishes unless '--keep' was used)")
     name = arguments.get("name")
@@ -244,11 +244,11 @@ def _tool_installed_sizes(app, arguments):
             regex = re.compile(name, re.IGNORECASE)
         except re.error as e:
             return "'%s' is not a usable pattern: %s" % (name, e)
-        matches = [(pkg, kib) for pkg, kib in sizes if regex.search(pkg)]
+        matches = [(pkg, version, kib) for pkg, version, kib in packages if regex.search(pkg)]
         if not matches:
             return "no installed package matching '%s'" % name
-        return "\n".join("%-40s %8d KiB" % (pkg, kib) for pkg, kib in matches)
-    lines = ["%-40s %8d KiB" % (pkg, kib) for pkg, kib in sizes[:30]]
+        return "\n".join("%-40s %-20s %8d KiB" % (pkg, version, kib) for pkg, version, kib in matches)
+    lines = ["%-40s %-20s %8d KiB" % (pkg, version, kib) for pkg, version, kib in packages[:30]]
     return "\n".join(lines)
 
 # Capped the same way task-log/spec-query are -- a real scan can easily
@@ -263,7 +263,7 @@ ISSUES_MAX_ROWS = 50
 # always-available read tool. read_cache() only ever reads back what
 # '/issues' (or 'seine issues') already scanned and cached -- 'name'/
 # 'min_urgency' then narrow that cached list the same way
-# installed-sizes' own 'name' does.
+# installed-packages' own 'name' does.
 def _tool_issues(app, arguments):
     build = _single_group(app)
     if build is None:
@@ -1122,6 +1122,9 @@ def _tool_side_unload(app, arguments):
 # reset() clears it), so a race with an early finished_ok() can't miss it.
 def _start_ai_build(app, build, packages_only, target):
     from seine.tui.build import start_build
+    # Same as '/build' (seine/tui/commands.py) -- installed-packages and
+    # read's own SBOM lookup both need one to have been produced.
+    build.options["sbom"] = True
     start_build(app, app.build_state, build,
                 packages_only=packages_only, target=target)
     app.build_state.notify_ai = True
@@ -1573,20 +1576,21 @@ TOOLS = {t.name: t for t in [
                         "new": {"type": "string", "description": "path to the newer SPDX file"}},
          "required": ["old", "new"]},
         False, _tool_sbom_diff),
-    Tool("installed-sizes", "The active build's installed packages -- "
-        "the largest 30 by 'Installed-Size' with no 'name', or every "
-        "package matching 'name' (a regex, case-insensitive, e.g. "
-        "'sudo' or 'sudo|doas' or '^lib') regardless of size. Reads "
-        "dpkg's own record of what is actually installed -- the "
-        "reliable way to answer 'is package X in my image', unlike a "
-        "build log (task names, not package names) or the spec "
+    Tool("installed-packages", "The active build's installed packages -- "
+        "name, version, and size -- the largest 30 by 'Installed-Size' "
+        "with no 'name', or every package matching 'name' (a regex, "
+        "case-insensitive, e.g. 'sudo' or 'sudo|doas' or '^lib') "
+        "regardless of size. Reads dpkg's own record of what is "
+        "actually installed -- the reliable way to answer 'is package "
+        "X in my image' and 'which version of X got installed', unlike "
+        "a build log (task names, not package names) or the spec "
         "(declared, not necessarily installed).",
         {"type": "object",
          "properties": {"name": {"type": "string",
                                  "description": "a regex to match package names "
                                                 "against, instead of the top 30"}},
          "required": []},
-        False, _tool_installed_sizes),
+        False, _tool_installed_packages),
     Tool("issues", "Known CVEs against the active build's own SBOM, "
         "read from whatever '/issues' (the TUI screen) or 'seine "
         "issues' (the command line) already scanned and cached -- "
@@ -1595,7 +1599,7 @@ TOOLS = {t.name: t for t in [
         "database, both real network activity. Answers 'nothing "
         "cached yet' if neither has been run for this build. 'name' "
         "narrows to a package (a regex, case-insensitive, same as "
-        "installed-sizes' own 'name'); 'min_urgency' drops anything "
+        "installed-packages' own 'name'); 'min_urgency' drops anything "
         "less severe than it -- one of high, medium, low, unimportant, "
         "end-of-life, not-yet-assigned (the default: everything "
         "cached). The urgency shown is Debian's own triage label, not "
