@@ -28,7 +28,10 @@ test:
                 - power_cycle: {settle: 2s}
                 - log_in: {}
                 - console_run: {command: "uname -s", assign: KERNEL_NAME}
-                - should_be_equal: ["${KERNEL_NAME}", Linux]
+                # Contains, not equals: raw console output carries
+                # whatever the shell itself printed around it (here,
+                # bash's own bracketed-paste-mode escape codes).
+                - should_contain: ["${KERNEL_NAME}", Linux]
 
           - name: architecture-specific packages match the built spec
             steps:

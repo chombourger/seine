@@ -126,16 +126,21 @@ class TargetLibrary:
         from seine.tui import target
         target.console_send(self.context, data, raw=True)
 
-    # Relies on the mtda agent's own configured shell prompt
-    # ('mtda-cli console prompt') to know a command finished -- against
-    # an agent whose prompt doesn't match what this image actually
-    # shows, it never returns. 'Console Send' + 'Console Wait' below is
-    # the lower-level pair that doesn't depend on that configuration.
+    # Waits for mtda's configured prompt to know a command finished --
+    # its default ('=> ') rarely matches a real shell. 'Console Prompt'
+    # below fixes that; 'Console Send' + 'Console Wait' never depend on
+    # it at all.
     @keyword("Console Run")
     def console_run(self, command):
         """Runs 'command' on the console and returns what it printed."""
         from seine.tui import target
         return target.console_run(self.context, command)
+
+    @keyword("Console Prompt")
+    def console_prompt(self, new_prompt=None):
+        """Sets (or, with no argument, reads back) the prompt 'Console Run' waits for."""
+        from seine.tui import target
+        return target.console_prompt(self.context, new_prompt)
 
     # Truthy once 'pattern' appears, falsy on timeout -- not the matched
     # text (mtda's own protocol, not a seine choice; use 'Capture Screen'/

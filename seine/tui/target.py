@@ -249,6 +249,14 @@ def console_send(app, data, raw=True):
 def console_run(app, cmd):
     return get_client(app).console_run(cmd)
 
+# What console_run() blocks on -- get (new_prompt=None) reads mtda's
+# current setting, which rarely matches a real shell's PS1 (its own
+# default is '=> ', a U-Boot prompt). seine.testing's 'Log In' keyword
+# sets both together after login, which is what makes console_run
+# usable afterwards.
+def console_prompt(app, new_prompt=None):
+    return get_client(app).console_prompt(newPrompt=new_prompt)
+
 # Read-only, ungated for the AI's own tool (ai.py): the model has to be
 # able to see what a target is doing, not just poke it blind with send/run.
 def console_dump(app):

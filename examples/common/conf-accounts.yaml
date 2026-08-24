@@ -19,7 +19,10 @@ playbook:
 # 'Log In' beside the password it uses, so a change to it (a new hash
 # above) is one edit rather than a search-and-replace across every
 # board's own test suite -- any of them reaches this keyword the same
-# way they already reach the password: 'requires:'-ing this file.
+# way they already reach the password: 'requires:'-ing this file. Also
+# sets a distinctive PS1 and tells mtda about it (Console Prompt), so
+# Console Run -- otherwise waiting on mtda's own default prompt, '=> ',
+# a U-Boot one no Linux shell prints -- actually works afterwards.
 test:
     - name: shared login
       keywords:
@@ -30,3 +33,6 @@ test:
                 - console_wait: {pattern: "Password:", timeout: 15s}
                 - console_send: {data: "welcome123\n"}
                 - console_wait: {pattern: "[$#] $", timeout: 15s}
+                - console_send: {data: "export PS1='SEINE-PROMPT# '\n"}
+                - console_wait: {pattern: "SEINE-PROMPT# ", timeout: 15s}
+                - console_prompt: {new_prompt: "SEINE-PROMPT# "}

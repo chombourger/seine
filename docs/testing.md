@@ -252,9 +252,12 @@ Every seine/mtda action is a keyword, ready with no `library:` needed.
 `seine.tui.target`, the same functions `/target` itself calls:
 `Connect Target [agent]`, `Disconnect Target`, `Power On`/`Power Off`/
 `Power Toggle`/`Power Cycle [settle]`, `USB Port PORT STATE`,
-`Console Send DATA`, `Console Run COMMAND` (needs the mtda agent's own
-configured shell prompt to match what the image actually shows --
-`Console Send` + `Console Wait` don't), `Console Wait PATTERN [TIMEOUT]`
+`Console Send DATA`, `Console Run COMMAND` (waits for mtda's configured
+prompt to know a command finished -- its default, `=> `, is a U-Boot
+prompt, so it needs a real one set first; `Console Prompt
+[NEW_PROMPT]` sets it, `Log In` (examples/common/conf-accounts.yaml)
+already does after login. `Console Send` + `Console Wait` don't depend
+on it at all), `Console Wait PATTERN [TIMEOUT]`
 (truthy once `PATTERN` appears, falsy on timeout -- not the matched
 text, that's mtda's own protocol; read the console with `Console Tail`/
 `Console Dump`/`Capture Screen` instead), `Console Dump`/`Console Tail`,
