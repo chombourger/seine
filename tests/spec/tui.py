@@ -2122,6 +2122,58 @@ class BuildScreenIntegration(avocado.Test):
                               _content(status))
         _run(scenario)
 
+# seine.testing.runner.run_spec() is patched out below the same way
+# Image.build is above BuildScreenIntegration -- this isn't about
+# proving Robot Framework runs correctly (tests/spec/testing.py's own
+# job), only that '/test' wires TestState up to TextualReporter
+# correctly. It didn't: TextualReporter calls its sink's
+# 'task_started'/'task_finished' (seine/tui/reporter.py, the same
+# names BuildState uses), and TestState first shipped with
+# 'started'/'finished' instead -- invisible to every test that called
+# runner.run_spec() directly or exercised TestState's own methods by
+# name, only caught by actually running '/test' end to end.
+class TestScreenIntegration(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.testing import runner
+            from seine.tui.app import SeineApp, TestScreen
+        self.runner = runner
+        self.SeineApp = SeineApp
+        self.TestScreen = TestScreen
+        self.real_run_spec = runner.run_spec
+        self.addCleanup(setattr, runner, "run_spec", self.real_run_spec)
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
+    def test_test_command_runs_to_completion(self):
+        def fast_run_spec(files, spec=None, tags=None, outdir=None,
+                          reporter=None, dryrun=False):
+            reporter.started("suite.one")
+            reporter.finished("suite.one", failed=False)
+            outcome = self.runner.TestOutcome("suite.one", "suite", "PASS", "", [], 0.01)
+            return self.runner.SuiteResult([outcome], "/dev/null")
+        self.runner.run_spec = fast_run_spec
+
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/test"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.TestScreen)
+                for _ in range(50):
+                    if not app.test_state.running:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertTrue(app.test_state.done)
+                self.assertFalse(app.test_state.error)
+                self.assertEqual(app.test_state.rows["suite.one"]["state"], "done")
+        _run(scenario)
+
 # A real traceback, its frame identity fabricated via CodeType.replace()
 # (co_name/co_filename are otherwise read-only) -- proves the check
 # without needing a live MarkdownFence race to trigger it

@@ -484,6 +484,51 @@ def _target(app, argv):
     else:
         raise CommandError("unknown /target verb '%s' -- '/help' lists them" % verb)
 
+def _test(app, argv):
+    """run the active specification's own tests against a real target
+
+    Runs the active specification's own 'test:' section (see
+    docs/testing.md) -- a specification carries its tests the same way
+    it carries its packages/playbook/image, so there is nothing else to
+    point this at. '--tags=TAG,...' runs only tests carrying at least
+    one of them. Typing '/test' again while one is already running just
+    switches to watching it. Cancelling a running test isn't wired up
+    yet -- '/cancel' only stops a build.
+    """
+    from seine.testing import available
+    if not available():
+        raise CommandError(
+            "robotframework is not installed -- 'seine test' is disabled "
+            "(pip install seine[test], or the seine-test package)")
+    try:
+        opts, args = getopt.getopt(argv, "", ["tags="])
+    except getopt.GetoptError as e:
+        raise CommandError(str(e))
+    tags = []
+    for o, a in opts:
+        if o == "--tags":
+            tags += [t.strip() for t in a.split(",") if t.strip()]
+    if len(args) > 0:
+        _use(app, args)
+    if not app.context.active:
+        raise CommandError("no active specification -- '/use SPEC' first")
+    if app.test_state.running:
+        app.show("test")
+        return
+    if len(app.context.builds) != 1:
+        raise CommandError(
+            "test needs exactly one active group -- multi-group specs "
+            "('/use a -- b') aren't driven from the TUI yet")
+    build = app.context.builds[0]
+
+    from seine.tui.testing import start_test
+    try:
+        start_test(app, app.test_state, build.loaded_files, spec=build.spec,
+                  tags=tags or None)
+    except RuntimeError as e:
+        raise CommandError(str(e))
+    app.show("test")
+
 def _quit(app, argv):
     """leave the TUI"""
     app.exit()
@@ -518,6 +563,8 @@ REGISTRY = {
                 "storage host|target|write IMAGE|snapshot|rollback|"
                 "console ...|status]",
                 *_doc(_target)),
+        Command("test",      _test,      "[--tags=TAG,...] [SPEC...]",
+                *_doc(_test)),
         Command("analyze",  _analyze,  "[SPEC...]",                *_doc(_analyze)),
         Command("cache",    _cache,    "",                         *_doc(_cache)),
         Command("doctor",   _doctor,   "",                         *_doc(_doctor)),

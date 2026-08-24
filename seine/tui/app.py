@@ -27,6 +27,7 @@ from seine.tui.render import (render_analyze, render_artifacts, render_cache,
                               render_plan)
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
+from seine.tui.testing import TestState
 
 class OverviewScreen(BaseScreen):
     # Not reported from SeineApp.on_mount(): push_screen() schedules this
@@ -74,11 +75,28 @@ class DiffScreen(BaseScreen):
             "no diff yet -- '/diff OLD.spdx.json NEW.spdx.json'\n")
         self.query_one("#body", Static).update(text)
 
+# A live view over app.test_state, the same "own tick, redraw #body"
+# shape BuildScreen's own #tasklist uses -- simpler, since a test run
+# has no per-step log to tail, only pass/fail rows.
+class TestScreen(BaseScreen):
+    def update_body(self):
+        self.query_one("#body", Static).update(self.app.test_state.render())
+
+    def on_mount(self):
+        super().on_mount()
+        self._timer = self.set_interval(1.0, self.update_body)
+
+    def on_unmount(self):
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            timer.stop()
+
 SCREENS = {"overview": OverviewScreen, "plan": PlanScreen, "build": BuildScreen,
           "artifacts": ArtifactsScreen, "filesystem": FilesystemScreen,
           "packages": PackagesScreen, "analyze": AnalyzeScreen,
           "cache": CacheScreen, "doctor": DoctorScreen, "diff": DiffScreen,
-          "issues": IssuesScreen, "chat": ChatScreen, "target": TargetScreen}
+          "issues": IssuesScreen, "chat": ChatScreen, "target": TargetScreen,
+          "test": TestScreen}
 
 # Offers the same command registry through Ctrl+P. Selecting one fills the
 # prompt and focuses it rather than running it -- a second, deliberate
@@ -156,6 +174,7 @@ class SeineApp(App):
         self.fs_state = FilesystemState()
         self.ai_state = ai.AIState()
         self.target_state = TargetState()
+        self.test_state = TestState()
         self.diff_text = None
         # Set by commands.py's own _issues() right before app.show("issues")
         # -- IssuesScreen.update_body() reads these back, the same
