@@ -368,6 +368,26 @@ test:
         self.assertIn(("started", "builtin only.sequential steps and variables"), events)
         self.assertIn(("finished", "builtin only.if else branches", False), events)
 
+    # End to end, through a real run_spec() call: 'Get Spec Value' is
+    # ImageLibrary's own, needs no mtda, and is 'interesting' enough to
+    # land in interactions.json -- proves the listener is actually
+    # wired into suite.run(), not just unit-tested against fake data.
+    def test_interactions_json_is_written(self):
+        spec = _write(self.workdir, "gsv.yaml", MINIMAL_IMAGE + """
+test:
+  - name: x
+    tests:
+      - name: t1
+        steps: [{get_spec_value: {path: "distribution.architecture"}}]
+""")
+        import json
+        self.runner.run_spec([spec], outdir=self.workdir)
+        with open(os.path.join(self.workdir, "interactions.json")) as f:
+            data = json.load(f)
+        self.assertEqual(data["console_log"], None)  # no console ever connected
+        names = [e["keyword"] for e in data["interactions"]]
+        self.assertIn("Get Spec Value", names)
+
 class TestCommandLine(avocado.Test):
     def setUp(self):
         with _test_extra_required(self):
@@ -454,6 +474,66 @@ class RunContext(avocado.Test):
         with self.ctx.RunContext() as context:
             context.call_from_thread(seen.append, "x")
         self.assertEqual(seen, ["x"])
+
+    # start_keyword()/end_keyword() are Robot's own listener API --
+    # constructed here without a real Robot run, close enough to what
+    # Robot actually hands a listener for this filter to be worth
+    # testing on its own.
+    class _FakeKeywordData:
+        KEYWORD = "KEYWORD"
+        def __init__(self, type_="KEYWORD", args=()):
+            self.type = type_
+            self.args = args
+
+    class _FakeKeywordResult:
+        def __init__(self, libname, kwname, status="PASS"):
+            self.libname = libname
+            self.kwname = kwname
+            self.status = status
+
+    def test_an_interesting_keyword_is_recorded(self):
+        with self.ctx.RunContext(outdir=self.workdir) as context:
+            data = self._FakeKeywordData(args=("x",))
+            result = self._FakeKeywordResult(
+                "seine.testing.library.target.TargetLibrary", "Power Cycle")
+            context.start_keyword(data, result)
+            context.end_keyword(data, result)
+        self.assertEqual(len(context.interactions), 1)
+        entry = context.interactions[0]
+        self.assertEqual(entry["keyword"], "Power Cycle")
+        self.assertEqual(entry["args"], ["x"])
+        self.assertEqual(entry["status"], "PASS")
+
+    def test_an_uninteresting_keyword_is_not_recorded(self):
+        with self.ctx.RunContext(outdir=self.workdir) as context:
+            data = self._FakeKeywordData()
+            result = self._FakeKeywordResult("BuiltIn", "Log")
+            context.start_keyword(data, result)
+            context.end_keyword(data, result)
+        self.assertEqual(context.interactions, [])
+
+    # record_artifact() attaches to whichever keyword call is currently
+    # open -- the exact "did we send a keypress before this snapshot"
+    # question a flat file list can't answer on its own.
+    def test_record_artifact_attaches_to_the_open_keyword(self):
+        with self.ctx.RunContext(outdir=self.workdir) as context:
+            data = self._FakeKeywordData()
+            result = self._FakeKeywordResult(
+                "seine.testing.library.observation.ObservationLibrary", "Capture Screen Image")
+            context.start_keyword(data, result)
+            context.record_artifact("video-snapshot", os.path.join(self.workdir, "f.jpg"))
+            context.end_keyword(data, result)
+        self.assertEqual(len(context.interactions), 1)
+        entry = context.interactions[0]
+        self.assertEqual(entry["keyword"], "Capture Screen Image")
+        self.assertEqual(entry["artifact_kind"], "video-snapshot")
+        self.assertEqual(entry["artifact_path"], "f.jpg")
+
+    def test_record_artifact_with_nothing_open_stands_alone(self):
+        with self.ctx.RunContext(outdir=self.workdir) as context:
+            context.record_artifact("screen", os.path.join(self.workdir, "f.txt"))
+        self.assertEqual(len(context.interactions), 1)
+        self.assertIsNone(context.interactions[0]["keyword"])
 
 class ImageLibraryTests(avocado.Test):
     def setUp(self):

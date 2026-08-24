@@ -57,8 +57,10 @@ class ObservationLibrary:
         if name:
             self.captures[name] = text
             if self.context.outdir:
-                with open(self._artifact_path(name, "txt"), "w") as f:
+                path = self._artifact_path(name, "txt")
+                with open(path, "w") as f:
                     f.write(text)
+                self.context.record_artifact("screen", path)
         return text
 
     @keyword("Screen Should Contain")
@@ -98,6 +100,8 @@ class ObservationLibrary:
         with open(path, "wb") as f:
             f.write(data)
         self.images[name] = path
+        if self.context.outdir:
+            self.context.record_artifact("video-snapshot", path)
         return path
 
     @keyword("Classify Screen")

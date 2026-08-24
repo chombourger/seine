@@ -133,6 +133,25 @@ def run_spec(files, tags=None, outdir=None, reporter=None, dryrun=False, spec=No
         output_xml = os.path.join(outdir, "output.xml")
         suite.run(output=output_xml, report=None, log=None,
                  stdout=open(os.devnull, "w"), dryrun=dryrun,
-                 listener=[_Listener(reporter, outcomes)])
+                 listener=[_Listener(reporter, outcomes), context])
+
+        _write_interactions(context)
 
     return SuiteResult(outcomes, output_xml)
+
+# One JSON file naming every real-hardware action and artifact this run
+# made, in order -- so a person (or a CI job) has one place to start a
+# post-mortem from without already knowing which test produced which
+# screenshot, or that a console.log even exists. Robot's own output.xml
+# already has the full keyword-by-keyword trace; this doesn't repeat
+# it, only what output.xml has no notion of.
+def _write_interactions(context):
+    import json
+    path = os.path.join(context.outdir, "interactions.json")
+    console_log = context.console_log_path
+    with open(path, "w") as f:
+        json.dump({
+            "console_log": (os.path.basename(console_log)
+                            if console_log and os.path.isfile(console_log) else None),
+            "interactions": context.interactions,
+        }, f, indent=2)

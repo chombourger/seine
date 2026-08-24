@@ -92,11 +92,15 @@ only if every test that ran passed; 1 if any failed; 2 if SPEC has no
             sys.stderr.write("error: %s\n" % e)
             sys.exit(2)
 
-        print("output under %s" % os.path.dirname(result.output_xml))
+        outdir = os.path.dirname(result.output_xml)
+        print("output under %s" % outdir)
         for t in result.tests:
             mark = "PASS" if t.status == "PASS" else ("SKIP" if t.status == "SKIP" else "FAIL")
             print("  %-4s %s" % (mark, t.name))
             if t.failed and t.message:
                 print("        %s" % t.message)
         print(result.summary())
+        if not result.ok:
+            print("see %s/console.log and %s/interactions.json for what led up to it"
+                 % (outdir, outdir))
         sys.exit(0 if result.ok else 1)

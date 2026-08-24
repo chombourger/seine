@@ -1458,6 +1458,10 @@ def _tool_run_test(app, arguments):
     for t in result.tests:
         if t.failed:
             lines.append("  FAIL %s: %s" % (t.name, t.message))
+    if not result.ok:
+        outdir = os.path.dirname(result.output_xml)
+        lines.append("see %s/console.log and %s/interactions.json for what "
+                     "led up to it (bash/read can open either)" % (outdir, outdir))
     return "\n".join(lines)
 
 # Dry run only -- Robot resolves every keyword and checks its arguments

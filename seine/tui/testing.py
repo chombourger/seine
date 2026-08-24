@@ -101,9 +101,13 @@ class TestState:
             if outcome is not None and outcome.failed and outcome.message:
                 lines.append("    %s" % outcome.message)
         if self.result is not None:
+            outdir = os.path.dirname(self.result.output_xml)
             lines.append("")
             lines.append(self.result.summary())
-            lines.append("output under %s" % os.path.dirname(self.result.output_xml))
+            lines.append("output under %s" % outdir)
+            if not self.result.ok:
+                lines.append("see %s/console.log and %s/interactions.json "
+                            "for what led up to it" % (outdir, outdir))
         return "\n".join(lines) + "\n"
 
 # Mirrors start_build()'s own shape: a worker thread, a Reporter crossing

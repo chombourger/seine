@@ -170,6 +170,9 @@ def disconnect(app):
             client.stop()
         except Exception:
             pass
+    adapter = getattr(app, "_target_console", None)
+    if adapter is not None:
+        adapter.close()
     app._target_client = None
     app._target_console = None
     if hasattr(app, "target_state"):
@@ -481,6 +484,15 @@ class ConsoleAdapter:
     def __init__(self, app):
         import pyte
         self.app = app
+        # Raw console capture, for the same post-mortem reason
+        # seine.tasks captures a build step's own output to a file --
+        # opt-in via 'console_log_path' (seine.testing.context.
+        # RunContext sets it; the interactive '/target' screen never
+        # does, so this stays a no-op there). Append: several connects
+        # in one run (a test reconnecting per test, say) share one
+        # continuous transcript rather than overwriting each other.
+        log_path = getattr(app, "console_log_path", None)
+        self._log = open(log_path, "ab") if log_path else None
         self.screen = pyte.Screen(CONSOLE_COLUMNS, CONSOLE_LINES)
         # pyte defaults to DECAWM (auto-wrap) on, matching a real
         # vt100. Real VGA/BIOS text mode clips at the screen edge
@@ -502,10 +514,18 @@ class ConsoleAdapter:
             data = data.encode("utf-8")
         self.stream.feed(data)
         self.dirty = True
+        if self._log is not None:
+            self._log.write(data)
+            self._log.flush()
 
     def on_event(self, event):
         self.app.target_state.on_event(event)
         self.app.call_from_thread(self.app.refresh_indicators)
+
+    def close(self):
+        if self._log is not None:
+            self._log.close()
+            self._log = None
 
 # pyte gives one Char per cell (fg/bg as an ANSI name or a bare hex
 # triplet for 256/true-color) -- mapped straight to a Rich Style per
