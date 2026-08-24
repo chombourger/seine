@@ -33,6 +33,24 @@ def _content(widget):
         return widget._content
     return getattr(widget, "_Static__content", "")
 
+# '#chatlog' mounts one widget per row now (Static for everything but a
+# finished assistant reply, which is a real 'Markdown' widget) rather
+# than writing lines into a 'RichLog' -- this flattens it back into the
+# same (text, style) pairs the old 'RichLog.lines' gave tests, so the
+# assertions below didn't have to change shape, just how they're built.
+# A 'Markdown' row's style always reads as None: nothing here needs to
+# tell a rendered reply's own inline styles apart, only find it by text.
+def _chat_rows(log):
+    from textual.widgets import Markdown
+    rows = []
+    for widget in log.children:
+        if isinstance(widget, Markdown):
+            rows.append((widget._markdown or "", None))
+        else:
+            content = _content(widget)
+            rows.append((str(content), getattr(content, "style", None)))
+    return rows
+
 # The three env vars ('SEINE_LLM_MODEL' etc.) are process-global state,
 # same as any other 'SEINE_*' override elsewhere in this suite -- popped
 # in every 'setUp()' below, not just where a test sets its own, so a
@@ -1684,7 +1702,7 @@ class TheLoop(avocado.Test):
     def test_messages_are_colour_coded_and_blank_line_separated(self):
         sys.modules["litellm"] = fake_litellm(tool_name="doctor")
         async def scenario():
-            from textual.widgets import RichLog
+            from textual.containers import VerticalScroll
             app = self.SeineApp()
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
@@ -1692,9 +1710,8 @@ class TheLoop(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 await self._settle(app, pilot)
-                log = app.screen.query_one("#chatlog", RichLog)
-                rows = [(line.text, line._segments[0].style if line._segments else None)
-                       for line in log.lines]
+                log = app.screen.query_one("#chatlog", VerticalScroll)
+                rows = _chat_rows(log)
                 by_text = {text: style for text, style in rows}
                 self.assertIn("dim", str(by_text["| is this machine ready?"]))
                 self.assertNotIn("dim", str(by_text.get("final answer", "")))
@@ -1718,7 +1735,7 @@ class TheLoop(avocado.Test):
     # fast to ever observe this in-between state.
     def test_pending_tool_call_shows_its_own_row_in_the_log(self):
         async def scenario():
-            from textual.widgets import RichLog
+            from textual.containers import VerticalScroll
             app = self.SeineApp()
             async with app.run_test() as pilot:
                 app.show("chat")
@@ -1730,16 +1747,17 @@ class TheLoop(avocado.Test):
                 ]
                 app.ai_state.changed()
                 await pilot.pause()
-                log = app.screen.query_one("#chatlog", RichLog)
-                texts = [str(line) for line in log.lines]
-                joined = "\n".join(texts)
+                log = app.screen.query_one("#chatlog", VerticalScroll)
+                rows = _chat_rows(log)
+                joined = "\n".join(text for text, _ in rows)
                 self.assertIn("spec-update", joined)
                 self.assertIn("Working…", joined)
-                # No '@click' meta -- there's nothing to expand yet.
-                for line in log.lines:
-                    for segment in line._segments:
-                        if segment.style is not None:
-                            self.assertNotIn("@click", str(segment.style.meta))
+                # No '@click' meta -- there's nothing to expand yet. A
+                # plain-string style (e.g. "dim") never carries meta at
+                # all, only a real 'Style(meta=...)' object can.
+                for _, style in rows:
+                    if hasattr(style, "meta"):
+                        self.assertNotIn("@click", str(style.meta))
         _run(scenario)
 
     def test_draft_shows_a_trailing_cursor_and_reclaims_space_when_done(self):
@@ -1851,7 +1869,7 @@ class TheLoop(avocado.Test):
     def test_clicking_a_tool_row_expands_and_collapses_its_result(self):
         sys.modules["litellm"] = fake_litellm(tool_name="doctor")
         async def scenario():
-            from textual.widgets import RichLog
+            from textual.containers import VerticalScroll
             app = self.SeineApp()
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
@@ -1864,31 +1882,38 @@ class TheLoop(avocado.Test):
                                 if m["role"] == "tool"][0]
                 call_id = tool_message["tool_call_id"]
                 first_line = "    " + tool_message["content"].split("\n")[0]
-                log = screen.query_one("#chatlog", RichLog)
+                log = screen.query_one("#chatlog", VerticalScroll)
 
+                # The expanded result is one Static holding the whole
+                # multi-line string, not split into one row per line the
+                # way 'RichLog.write()' used to -- checked as a substring
+                # of the joined transcript rather than exact row membership.
                 def texts():
-                    return [line.text for line in log.lines]
+                    return [text for text, _ in _chat_rows(log)]
 
-                self.assertNotIn(first_line, texts())
+                def transcript():
+                    return "\n".join(texts())
+
+                self.assertNotIn(first_line, transcript())
                 screen.action_toggle_tool(call_id)
                 await pilot.pause()
                 self.assertIn("▾ 🔧 doctor", texts())
-                self.assertIn(first_line, texts())
+                self.assertIn(first_line, transcript())
                 screen.action_toggle_tool(call_id)
                 await pilot.pause()
                 self.assertIn("▸ 🔧 doctor", texts())
-                self.assertNotIn(first_line, texts())
+                self.assertNotIn(first_line, transcript())
         _run(scenario)
 
     # A real mouse click, not calling 'action_toggle_tool' directly like
     # the test above -- this is the one that actually exercises the
-    # '@click' style-meta dispatch (a click landing on '#chatlog', an
-    # ordinary 'RichLog', not this 'Screen', resolves the action against
+    # '@click' style-meta dispatch (a click landing on the row's own
+    # 'Static' widget, not this 'Screen', resolves the action against
     # whichever of the two the meta string names).
     def test_clicking_a_tool_row_in_the_chatlog_expands_it(self):
         sys.modules["litellm"] = fake_litellm(tool_name="doctor")
         async def scenario():
-            from textual.widgets import RichLog
+            from textual.containers import VerticalScroll
             app = self.SeineApp()
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
@@ -1896,12 +1921,12 @@ class TheLoop(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 await self._settle(app, pilot)
-                log = app.screen.query_one("#chatlog", RichLog)
-                row = next(i for i, line in enumerate(log.lines)
-                          if line.text.endswith("🔧 doctor"))
-                await pilot.click("#chatlog", offset=(2, row))
+                log = app.screen.query_one("#chatlog", VerticalScroll)
+                row = next(widget for widget in log.children
+                          if str(_content(widget)).endswith("🔧 doctor"))
+                await pilot.click(row)
                 await pilot.pause()
-                texts = [line.text for line in log.lines]
+                texts = [text for text, _ in _chat_rows(log)]
                 self.assertIn("▾ 🔧 doctor", texts)
         _run(scenario)
 
@@ -1946,7 +1971,7 @@ class TheLoop(avocado.Test):
     def test_reopening_chat_replays_the_transcript(self):
         sys.modules["litellm"] = fake_litellm(tool_name="doctor")
         async def scenario():
-            from textual.widgets import RichLog
+            from textual.containers import VerticalScroll
             app = self.SeineApp()
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
@@ -1962,10 +1987,10 @@ class TheLoop(avocado.Test):
                 prompt.value = "/chat"
                 await pilot.press("enter")
                 await pilot.pause()
-                log = app.screen.query_one("#chatlog", RichLog)
-                text = "\n".join(str(line) for line in log.lines)
-                self.assertIn("is this machine ready?", text)
-                self.assertIn("final answer", text)
+                log = app.screen.query_one("#chatlog", VerticalScroll)
+                transcript = "\n".join(text for text, _ in _chat_rows(log))
+                self.assertIn("is this machine ready?", transcript)
+                self.assertIn("final answer", transcript)
         _run(scenario)
 
     # A gated tool opens 'ConfirmAction'; approving it runs the real

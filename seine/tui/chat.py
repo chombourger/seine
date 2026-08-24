@@ -10,8 +10,8 @@ import time
 
 from rich.style import Style
 from rich.text import Text
-from textual.containers import Horizontal, Vertical
-from textual.widgets import ProgressBar, RichLog, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Markdown, ProgressBar, Static
 
 from seine.progress import SPINNER, elapsed
 from seine.tui import ai
@@ -72,7 +72,7 @@ class ChatScreen(BaseScreen):
         )
         yield Horizontal(
             Vertical(
-                RichLog(id="chatlog", markup=False, wrap=True, max_lines=4000),
+                VerticalScroll(id="chatlog"),
                 # Directly under the transcript, not a separate row
                 # spanning #stats too -- a reply-in-progress reads as
                 # the next line of the same conversation.
@@ -111,16 +111,20 @@ class ChatScreen(BaseScreen):
         self.set_interval(0.5, self._tick_working)
 
     # The one place #chatlog is written -- called on every messages/
-    # errors change and on a tool row click. RichLog can only append
-    # whole rows, so a full rebuild is the only way a tool call's row
-    # can flip between collapsed/expanded after the fact.
+    # errors change and on a tool row click. Rebuilt whole (remove_children
+    # + remount) rather than patched, so a tool call's row can flip
+    # between collapsed/expanded after the fact.
     #
-    # A person's line writes dim with a leading '| '; the model's words
-    # write plain; a tool call is one collapsed icon+name row, wired to
-    # action_toggle_tool via a Rich @click meta so clicking it expands
-    # the raw result in place.
+    # A person's line and tool-call rows are plain Static/Text -- dim,
+    # raw, never markdown-parsed (including expanded tool output, which
+    # is arbitrary command text, not prose). Only a model's own finished
+    # reply is a Markdown widget: it's the one thing here actually meant
+    # to be read as markdown. While that reply is still streaming it
+    # lives in #draft instead, as plain text -- swapping it in as
+    # Markdown only once the parser has the whole, well-formed string
+    # avoids re-parsing (and flickering on) broken mid-token syntax.
     #
-    # One blank line between groups, never trailing after the last one
+    # One blank spacer between groups, never trailing after the last one
     # -- it butts straight up against #draft so a streaming reply reads
     # as the next line of the same log.
     #
@@ -128,8 +132,8 @@ class ChatScreen(BaseScreen):
     # row too, "— Working…" instead of the expand arrow, so a person can
     # tell which tool is running rather than just seeing a generic spinner.
     def _rebuild_log(self):
-        log = self.query_one("#chatlog", RichLog)
-        log.clear()
+        log = self.query_one("#chatlog", VerticalScroll)
+        log.remove_children()
         messages = self.app.ai_state.messages
         tool_names = {}
         for message in messages:
@@ -141,25 +145,24 @@ class ChatScreen(BaseScreen):
         for message in messages:
             role = message.get("role")
             if role == "user":
-                groups.append([Text("| %s" % message.get("content", "").strip(), style="dim")])
+                groups.append([Static(Text("| %s" % message.get("content", "").strip(),
+                                           style="dim"), markup=False)])
             elif role == "assistant":
-                lines = []
+                widgets = []
                 # '.strip()': a reasoning model's own 'content' routinely
                 # starts (sometimes ends) with a blank line or two of its
                 # own -- seen live, repeatedly, against a real endpoint
-                # ('"\n\nFour."') -- 'RichLog.write()' splits embedded
-                # newlines into their own rows, so an unstripped string
-                # silently reintroduces the exact defensive-blank-line
-                # look the grouping above exists to avoid.
+                # ('"\n\nFour."').
                 content = (message.get("content") or "").strip()
                 if content:
-                    lines.append(content)
+                    widgets.append(Markdown(content))
                 for call in message.get("tool_calls") or []:
                     if call["id"] not in resolved:
                         name = call.get("function", {}).get("name", "?")
-                        lines.append(Text("🔧 %s — Working…" % name, style="dim"))
-                if lines:
-                    groups.append(lines)
+                        widgets.append(Static(Text("🔧 %s — Working…" % name, style="dim"),
+                                              markup=False))
+                if widgets:
+                    groups.append(widgets)
             elif role == "tool":
                 call_id = message.get("tool_call_id")
                 name = tool_names.get(call_id, "?")
@@ -167,19 +170,19 @@ class ChatScreen(BaseScreen):
                 arrow = "▾" if expanded else "▸"
                 style = Style(dim=True,
                              meta={"@click": "screen.toggle_tool(%r)" % call_id})
-                lines = [Text("%s 🔧 %s" % (arrow, name), style=style)]
+                widgets = [Static(Text("%s 🔧 %s" % (arrow, name), style=style), markup=False)]
                 if expanded:
                     result = (message.get("content") or "").strip()
-                    lines.append(Text("    %s" % result, style="dim"))
-                groups.append(lines)
+                    widgets.append(Static(Text("    %s" % result, style="dim"), markup=False))
+                groups.append(widgets)
         for error in self.app.ai_state.errors:
-            groups.append([Text("error: %s" % error, style="bold red")])
+            groups.append([Static(Text("error: %s" % error, style="bold red"), markup=False)])
 
         for index, group in enumerate(groups):
             if index > 0:
-                log.write("")
-            for line in group:
-                log.write(line)
+                log.mount(Static(""))
+            log.mount_all(group)
+        self.call_after_refresh(lambda: log.scroll_end(animate=False))
 
     def action_toggle_tool(self, call_id):
         if call_id in self._expanded:

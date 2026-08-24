@@ -11,6 +11,7 @@ import subprocess
 
 from textual import command
 from textual.app import App
+from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from seine.tui import ai, commands
@@ -230,6 +231,40 @@ class SeineApp(App):
         with self.suspend():
             result = subprocess.run(argv)
         self.say("$ %s  -> exit %d" % (cmdline or shell, result.returncode))
+
+    # Textualize/textual#5525 (proposed, closed without merging -- still
+    # unfixed as of textual 2.1.2, the version this pins): a fenced code
+    # block's own MarkdownFence widget watches 'self.app.theme' with
+    # 'init=True', which can fire _retheme() -- and its
+    # 'get_child_by_type(Static)' -- before compose() has actually
+    # mounted that Static, raising NoMatches. Hit live rendering a chat
+    # reply with several fenced blocks (seine/tui/chat.py's own
+    # Markdown(content) use). Not seine's bug to fix (a vendored
+    # dependency file), and 'App._handle_exception()' always exits the
+    # whole session otherwise -- losing a live chat/build over a code
+    # fence that just won't re-theme this once is a worse outcome than
+    # logging it and moving on. Every other exception still panics as
+    # normal: only this exact, identified race is swallowed.
+    def _handle_exception(self, error):
+        if _is_markdown_retheme_race(error):
+            self.log.warning("ignored a known textual race in "
+                             "MarkdownFence._retheme (textual#5525): %s" % error)
+            return
+        super()._handle_exception(error)
+
+# Split out from _handle_exception() so the identification itself is
+# testable without a live MarkdownFence race to trigger it -- a
+# synthetic traceback with the same frame identity proves the check.
+def _is_markdown_retheme_race(error):
+    if not isinstance(error, NoMatches):
+        return False
+    tb = error.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if code.co_name == "_retheme" and code.co_filename.endswith("_markdown.py"):
+            return True
+        tb = tb.tb_next
+    return False
 
 def run(files=None):
     SeineApp(files).run()

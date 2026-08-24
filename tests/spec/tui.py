@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 
 path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
@@ -1905,6 +1906,95 @@ class BuildScreenIntegration(avocado.Test):
                 self.assertIn("no active specification",
                               _content(status))
         _run(scenario)
+
+# A real traceback, its frame identity fabricated via CodeType.replace()
+# (co_name/co_filename are otherwise read-only) -- proves the check
+# without needing a live MarkdownFence race to trigger it
+# (Textualize/textual#5525, closed without merging).
+def _traceback_from(co_name, co_filename):
+    def _inner():
+        raise RuntimeError("boom")
+    code = _inner.__code__.replace(co_name=co_name, co_filename=co_filename)
+    fn = types.FunctionType(code, globals())
+    try:
+        fn()
+    except RuntimeError as e:
+        return e.__traceback__
+
+class MarkdownRethemeRaceDetection(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import _is_markdown_retheme_race
+        self._is_markdown_retheme_race = _is_markdown_retheme_race
+
+    def test_matches_the_known_race(self):
+        from textual.css.query import NoMatches
+        error = NoMatches("boom")
+        error.__traceback__ = _traceback_from(
+            "_retheme", "/x/textual/widgets/_markdown.py")
+        self.assertTrue(self._is_markdown_retheme_race(error))
+
+    def test_a_different_function_in_the_same_file_does_not_match(self):
+        from textual.css.query import NoMatches
+        error = NoMatches("boom")
+        error.__traceback__ = _traceback_from(
+            "_on_mount", "/x/textual/widgets/_markdown.py")
+        self.assertFalse(self._is_markdown_retheme_race(error))
+
+    def test_retheme_in_a_different_file_does_not_match(self):
+        from textual.css.query import NoMatches
+        error = NoMatches("boom")
+        error.__traceback__ = _traceback_from("_retheme", "/x/seine/tui/chat.py")
+        self.assertFalse(self._is_markdown_retheme_race(error))
+
+    # Only NoMatches is ever swallowed -- some other exception raised
+    # from the very same frame is still a real bug, not this race.
+    def test_a_different_exception_type_does_not_match(self):
+        error = RuntimeError("boom")
+        error.__traceback__ = _traceback_from(
+            "_retheme", "/x/textual/widgets/_markdown.py")
+        self.assertFalse(self._is_markdown_retheme_race(error))
+
+class MarkdownRethemeRaceIsSwallowed(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+        self.SeineApp = SeineApp
+
+    def test_the_known_race_does_not_reach_apps_own_handler(self):
+        from textual.app import App
+        from textual.css.query import NoMatches
+        app = self.SeineApp()
+        called = []
+        real = App._handle_exception
+        App._handle_exception = lambda self, error: called.append(error)
+        try:
+            error = NoMatches("boom")
+            error.__traceback__ = _traceback_from(
+                "_retheme", "/x/textual/widgets/_markdown.py")
+            app._handle_exception(error)
+        finally:
+            App._handle_exception = real
+        self.assertEqual(called, [])
+
+    def test_any_other_exception_still_reaches_apps_own_handler(self):
+        from textual.app import App
+        app = self.SeineApp()
+        called = []
+        real = App._handle_exception
+        App._handle_exception = lambda self, error: called.append(error)
+        try:
+            error = ValueError("a real bug")
+            app._handle_exception(error)
+        finally:
+            App._handle_exception = real
+        self.assertEqual(called, [error])
 
 if __name__ == "__main__":
     avocado.main()
