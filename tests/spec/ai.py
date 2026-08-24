@@ -1560,7 +1560,7 @@ def fake_litellm(tool_name=None, tool_arguments="{}", captured_messages=None):
     calls = {"n": 0}
 
     def completion(model, api_base, api_key, messages, tools, tool_choice,
-                   stream, stream_options):
+                   stream, stream_options, timeout):
         calls["n"] += 1
         if captured_messages is not None:
             captured_messages.append(messages)

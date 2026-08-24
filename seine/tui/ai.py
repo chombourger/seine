@@ -1847,10 +1847,20 @@ def _run(app):
     try:
         while True:
             full = [{"role": "system", "content": _system_prompt() + _live_status(app)}] + state.messages
+            # 'timeout' is a per-read stall bound (httpx measures it from
+            # each socket read, not from request start), not a total-
+            # reply budget -- a live stream keeps resetting it. Without
+            # it, a backend that stops sending mid-stream (seen live:
+            # Ollama Cloud dropping a request server-side without
+            # closing the connection) hangs this whole thread, and with
+            # it #draft/#chatcol's spinner, forever -- caught below as
+            # just another 'except Exception', same as any other
+            # request failure.
             stream = litellm.completion(model=model, api_base=api_base, api_key=api_key,
                                         messages=full, tools=TOOL_SCHEMAS,
                                         tool_choice="auto", stream=True,
-                                        stream_options={"include_usage": True})
+                                        stream_options={"include_usage": True},
+                                        timeout=120)
             chunks = []
             streaming = False
             for chunk in stream:
