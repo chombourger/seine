@@ -57,10 +57,22 @@ class TargetLibrary:
     # actually lose power, then on. 'settle' is a duration string
     # ('2s' default), not a fixed sleep hidden from the test author: a
     # board with capacitors that hold power longer names its own.
+    #
+    # Clears mtda's own server-side console buffer right after 'off',
+    # while nothing can print anything new yet: a real run's own
+    # interactions.json showed a *second* Power Cycle's 'Console Wait
+    # login:' matching in ~2s, far too fast for a real boot -- it was
+    # still seeing the previous cycle's own 'login:', never consumed by
+    # anyone since the earlier test only read the local screen (Capture
+    # Screen), which does not drain this buffer. The Password: wait 15s
+    # later then timed out for real, against a boot that had barely
+    # started.
     @keyword("Power Cycle")
     def power_cycle(self, settle="2s"):
         import time
+        from seine.tui import target
         self._power("off")
+        target.console_clear(self.context)
         time.sleep(_seconds(settle))
         self._power("on")
 

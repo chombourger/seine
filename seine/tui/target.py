@@ -260,6 +260,15 @@ def console_run(app, cmd):
 def console_prompt(app, new_prompt=None):
     return get_client(app).console_prompt(newPrompt=new_prompt)
 
+# Drops mtda's own server-side read buffer -- console_wait/console_run
+# match against whatever accumulated there, including text from before
+# whoever is waiting now even started (a previous boot's own 'login:',
+# say). seine.testing.library.target.power_cycle() calls this right
+# after powering off, while nothing can add anything new yet, so
+# whatever wait comes next only matches this cycle's own output.
+def console_clear(app):
+    return get_client(app).console_clear()
+
 # Read-only, ungated for the AI's own tool (ai.py): the model has to be
 # able to see what a target is doing, not just poke it blind with send/run.
 def console_dump(app):
