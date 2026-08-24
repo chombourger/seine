@@ -53,6 +53,7 @@ GROUP_SBOM = "SBOM (seine.sbom)"
 GROUP_STORAGE = "Storage (seine.utils.ContainerEngine.build_dir)"
 GROUP_AI = "Optional AI integration (seine.tui.ai)"
 GROUP_TARGET = "Optional remote target (seine.tui.target)"
+GROUP_TESTING = "Optional test automation (seine.testing)"
 
 def check_podman():
     return _binary(GROUP_ENGINE, "podman")
@@ -80,6 +81,14 @@ def check_mtda():
     return Check(GROUP_TARGET, "python3-mtda",
                 "ok" if found else "warn",
                 "importable" if found else "not importable, '/target' disabled")
+
+# 'seine test' is optional the same way '/target' is: a note, not an
+# error, since most builds never drive real hardware.
+def check_robotframework():
+    found = importlib.util.find_spec("robot") is not None
+    return Check(GROUP_TESTING, "robotframework",
+                "ok" if found else "warn",
+                "importable" if found else "not importable, 'seine test' disabled")
 
 def check_kvm():
     path = "/dev/kvm"
@@ -174,7 +183,7 @@ def run(options=None, pull=False):
              check_guestfs(), check_kvm()] + check_hypervisors() + [
              check_ansible_playbook(), check_podman_collection(),
              check_gnupg(), check_sign_key(options),
-             check_storage(), check_mtda()]
+             check_storage(), check_mtda(), check_robotframework()]
     llm = check_llm()
     if llm is not None:
         checks.append(llm)

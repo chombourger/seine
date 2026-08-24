@@ -1069,3 +1069,185 @@ class PlaybookEntryTasksAreAddedToRatherThanSettled(avocado.Test):
         tasks = build.spec["playbook"][0]["tasks"]
         self.assertEqual([t["name"] for t in tasks],
                          ["set root password", "add a second user"])
+
+class TheSameTestEntryReachedTwiceIsNotDuplicated(avocado.Test):
+    # The bug this whole block guards against: a shared fragment's own
+    # 'test:' entry, reached via two 'requires:' paths (so loaded
+    # twice), used to show up as two -- or, with a third path, three --
+    # duplicate entries instead of one.
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: shared login
+                      keywords:
+                          - name: Log In
+                            steps: ["Log Message  hi"]
+        """)
+        build.loads("""
+                test:
+                    - name: shared login
+                      keywords:
+                          - name: Log In
+                            steps: ["Log Message  hi"]
+        """)
+        self.assertEqual(len(build.spec["test"]), 1)
+
+class TestEntriesAreAmendedByName(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: boot
+                      keywords:
+                          - name: Log In
+                            steps: ["Log Message  hi"]
+        """)
+        build.loads("""
+                test:
+                    - name: boot
+                      tags: [smoke]
+                      setup:
+                          connect_target: {}
+        """)
+        entry = build.spec["test"][0]
+        self.assertEqual(entry["tags"], ["smoke"])
+        self.assertEqual(entry["setup"], {"connect_target": {}})
+
+class ATestEntrysExistingFieldWins(avocado.Test):
+    # Mirrors PackagesAreMergedByName: what was said first stands.
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: boot
+                      setup:
+                          connect_target: {label: primary}
+        """)
+        build.loads("""
+                test:
+                    - name: boot
+                      setup:
+                          connect_target: {label: secondary}
+        """)
+        self.assertEqual(build.spec["test"][0]["setup"],
+                         {"connect_target": {"label": "primary"}})
+
+class ConflictingKeywordsOfTheSameNameAreRefused(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: boot
+                      keywords:
+                          - name: Log In
+                            steps: ["Log Message  one"]
+        """)
+        self.assertRaises(ValueError, build.loads, """
+                test:
+                    - name: boot
+                      keywords:
+                          - name: Log In
+                            steps: ["Log Message  two"]
+        """)
+
+class TestCasesAreAmendedByName(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: boot
+                      tests:
+                          - name: boots up
+                            steps: ["Log Message  hi"]
+        """)
+        build.loads("""
+                test:
+                    - name: boot
+                      tests:
+                          - name: boots up
+                            tags: [smoke]
+        """)
+        cases = build.spec["test"][0]["tests"]
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0]["tags"], ["smoke"])
+        self.assertEqual(cases[0]["steps"], ["Log Message  hi"])
+
+class ConflictingTestCaseStepsAreRefused(avocado.Test):
+    # Unlike an entry's own scalar settings (first-loaded wins), a case
+    # name colliding with genuinely different 'steps:' is more likely an
+    # authoring accident than deliberate composition, so it is refused
+    # rather than silently keeping the first-loaded steps.
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: boot
+                      tests:
+                          - name: boots up
+                            steps: ["Log Message  one"]
+        """)
+        self.assertRaises(ValueError, build.loads, """
+                test:
+                    - name: boot
+                      tests:
+                          - name: boots up
+                            steps: ["Log Message  two"]
+        """)
+
+class TestEntryLibraryAndTagsAreAddedToRatherThanSettled(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: boot
+                      tags: [smoke]
+                      library: [my.pkg.LibraryOne]
+        """)
+        build.loads("""
+                test:
+                    - name: boot
+                      tags: [regression]
+                      library: [my.pkg.LibraryTwo]
+        """)
+        entry = build.spec["test"][0]
+        self.assertEqual(entry["tags"], ["smoke", "regression"])
+        self.assertEqual(entry["library"],
+                         ["my.pkg.LibraryOne", "my.pkg.LibraryTwo"])
+
+class TestEntryVariablesAreAddedToRatherThanSettled(avocado.Test):
+    # A regression test for a real pitfall found while designing this:
+    # 'variables' is a flat name -> scalar dict, not nested like
+    # 'derived-flavours', and must not be routed through _added()'s
+    # dict-merge branch, which assumes a nested dict-of-dicts shape and
+    # would raise on a flat one.
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: boot
+                      variables: {TIMEOUT: "30s"}
+        """)
+        build.loads("""
+                test:
+                    - name: boot
+                      variables: {TIMEOUT: "60s", RETRIES: "3"}
+        """)
+        self.assertEqual(build.spec["test"][0]["variables"],
+                         {"TIMEOUT": "30s", "RETRIES": "3"})
+
+class TestEntriesWithDifferentNamesAreNotMerged(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                test:
+                    - name: boot
+                      tags: [smoke]
+        """)
+        build.loads("""
+                test:
+                    - name: rebuild-busybox
+                      tags: [smoke]
+        """)
+        self.assertEqual([t["name"] for t in build.spec["test"]],
+                         ["boot", "rebuild-busybox"])

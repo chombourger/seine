@@ -54,5 +54,10 @@ setup(
         # The optional AI chat, seine/tui/ai.py -- never a dependency of
         # 'tui' itself, only of the one module that imports it.
         'ai': ['litellm', 'jsonpath-ng', 'ruamel.yaml'],
+        # 'seine test' (seine/testing/) -- unlike mtda (a system package,
+        # never a pip dependency: see seine/tui/target.py's own header
+        # comment), robotframework is pure Python and has no reason not
+        # to be an ordinary extra.
+        'test': ['robotframework'],
     },
 )

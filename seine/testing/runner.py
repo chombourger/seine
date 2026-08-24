@@ -1,0 +1,123 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# Loads 'files' the same way 'seine build' does (BuildCmd -- 'requires:',
+# '[[ ]]' variables, several files on one command line, all of it), reads
+# the merged specification's own 'test:' section, and runs it. Reports
+# the outcome two ways: through the same seine.reporter.Reporter every
+# build already reports through (progress.Display on the command line,
+# TextualReporter in the TUI -- neither needed a line of new code to work
+# with tests), and as Robot's own output.xml, kept for anyone wanting
+# Robot's richer log.html/rebot tooling rather than seine's own summary.
+
+import os
+import time
+
+from seine.testing import context as ctx
+from seine.testing import loader
+
+# Shared by 'seine test', '/test', and the AI chat's 'run-test' tool --
+# the same logs root a multi-group build's own logs land under
+# (multiconfig.py's own _logs()), one timestamped directory per run.
+def default_outdir():
+    from seine.utils import ContainerEngine
+    base = os.path.join(ContainerEngine.logs_root(), "tests")
+    return os.path.join(base, time.strftime("%Y%m%d-%H%M%S", time.gmtime()))
+
+class TestOutcome:
+    def __init__(self, name, suite, status, message, tags, elapsed):
+        self.name = name
+        self.suite = suite
+        self.status = status    # "PASS" / "FAIL" / "SKIP"
+        self.message = message
+        self.tags = tags
+        self.elapsed = elapsed
+
+    @property
+    def failed(self):
+        return self.status == "FAIL"
+
+class SuiteResult:
+    def __init__(self, tests, output_xml):
+        self.tests = tests
+        self.output_xml = output_xml
+
+    @property
+    def ok(self):
+        return all(not t.failed for t in self.tests)
+
+    def summary(self):
+        passed = sum(1 for t in self.tests if t.status == "PASS")
+        failed = sum(1 for t in self.tests if t.status == "FAIL")
+        skipped = sum(1 for t in self.tests if t.status == "SKIP")
+        return "%d test%s, %d passed, %d failed, %d skipped" % (
+            len(self.tests), "" if len(self.tests) == 1 else "s", passed, failed, skipped)
+
+# Bridges Robot's own listener callbacks onto seine.reporter.Reporter --
+# 'started(name)'/'finished(name, failed=)' per test (not per keyword: a
+# test is the unit a build's own Task already reports at), 'say(text)'
+# for anything else worth a line while it runs.
+class _Listener:
+    def __init__(self, reporter, outcomes):
+        self.reporter = reporter
+        self.outcomes = outcomes
+        self._started = {}
+
+    def start_test(self, data, result):
+        name = "%s.%s" % (result.parent.name, data.name)
+        self._started[id(data)] = time.time()
+        if self.reporter:
+            self.reporter.started(name)
+
+    def end_test(self, data, result):
+        name = "%s.%s" % (result.parent.name, data.name)
+        started = self._started.pop(id(data), None)
+        elapsed = time.time() - started if started else None
+        self.outcomes.append(TestOutcome(
+            name, result.parent.name, result.status, result.message,
+            list(result.tags), elapsed))
+        if self.reporter:
+            self.reporter.finished(name, failed=(result.status == "FAIL"))
+
+    def log_message(self, message):
+        if self.reporter and message.level in ("FAIL", "WARN"):
+            self.reporter.say(message.message)
+
+class NoTests(ValueError):
+    pass
+
+# load_all() only, not .parse(): the latter also resolves partitions
+# and requires a valid 'image:' section for that, which a fragment
+# contributing only a 'test:' entry has no reason to carry.
+# 'requires:'/'[[ ]]' are both already resolved by load_all() alone;
+# 'Build Image' (ImageLibrary) runs its own full parse() when needed.
+def _load_spec(files):
+    from seine.build import BuildCmd
+    build = BuildCmd()
+    build.options = dict(build.options, ansible_library=[])
+    return build.load_all(files)
+
+def run_spec(files, tags=None, outdir=None, reporter=None, dryrun=False, spec=None):
+    if outdir is None:
+        outdir = default_outdir()
+    os.makedirs(outdir, exist_ok=True)
+
+    if spec is None:
+        spec = _load_spec(files)
+    entries = spec.get("test") or []
+    if not entries:
+        raise NoTests(
+            "%s has no 'test:' section -- nothing to run" % " ".join(files))
+
+    with ctx.RunContext(spec=spec, spec_files=files, outdir=outdir) as context:
+        suite = loader.compile(entries, context)
+        if tags:
+            suite.filter(included_tags=list(tags))
+
+        outcomes = []
+        output_xml = os.path.join(outdir, "output.xml")
+        suite.run(output=output_xml, report=None, log=None,
+                 stdout=open(os.devnull, "w"), dryrun=dryrun,
+                 listener=[_Listener(reporter, outcomes)])
+
+    return SuiteResult(outcomes, output_xml)

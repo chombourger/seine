@@ -671,6 +671,81 @@ class BuildCmd(Cmd):
     def _merge_playbook_entry(self, entry, newentry):
         self._merge_settings(entry, newentry, appends=lambda s: s == "tasks")
 
+    # A suite belongs beside whatever it tests -- the rebuild a
+    # 'packages:' entry describes, the config a 'playbook:' task sets --
+    # so it is composed across 'requires:' fragments the way 'packages:'
+    # is: an entry named the same as one already loaded is merged into
+    # it rather than duplicated, since a fragment reached twice via two
+    # 'requires:' paths (the ordinary way of sharing one) would
+    # otherwise show up twice. Two fragments naming their own, different
+    # concern is still the point, not a conflict -- only a shared name
+    # amends rather than duplicates. See seine.testing for what a
+    # 'test:' entry holds and how it runs.
+    #
+    # direction: asking file wins (docs/merging.md).
+    def _merge_tests(self, spec):
+        if "test" not in spec:
+            return
+        if "test" not in self.spec:
+            self.spec["test"] = spec["test"]
+            return
+        self._merge_named_list(self.spec["test"], spec["test"],
+                               self._name_of, self._merge_test_entry)
+
+    # direction: asking file wins; 'tests'/'keywords' merge by name
+    # below, 'library'/'tags'/'variables' additive (docs/merging.md).
+    def _merge_test_entry(self, entry, newentry):
+        skip = set()
+        if "tests" in newentry and type(entry.get("tests")) == type([]):
+            self._merge_named_list(entry["tests"], newentry["tests"],
+                                   self._name_of, self._merge_test_case)
+            skip.add("tests")
+        if "keywords" in newentry and type(entry.get("keywords")) == type([]):
+            self._merge_named_list(entry["keywords"], newentry["keywords"],
+                                   self._name_of, self._merge_keyword)
+            skip.add("keywords")
+        if "variables" in newentry and type(entry.get("variables")) == type({}):
+            for name, value in newentry["variables"].items():
+                entry["variables"].setdefault(name, value)
+            skip.add("variables")
+        self._merge_settings(entry, newentry,
+                             appends=lambda s: s in ("library", "tags"), skip=skip)
+
+    # A case name colliding with genuinely different 'steps:' is more
+    # likely an authoring accident than deliberate composition -- raised
+    # rather than silently keeping the first-loaded steps, the same
+    # equality-or-error rule _merge_keyword() applies.
+    #
+    # direction: asking file wins for settings; 'steps' is
+    # identity-or-error, never silently overridden (docs/merging.md).
+    def _merge_test_case(self, case, newcase):
+        if "steps" in newcase and "steps" in case and case["steps"] != newcase["steps"]:
+            raise ValueError(
+                "test case '%s' is defined differently by two 'test:' "
+                "entries -- give one of them a different name if they "
+                "are meant to be two cases" % case.get("name"))
+        self._merge_settings(case, newcase, appends=lambda s: s == "tags",
+                             skip=("steps",) if "steps" in case else ())
+
+    # Two fragments can define the same keyword, reached twice via two
+    # 'requires:' paths -- tolerated if identical, the same rule
+    # seine.testing.loader.compile() applies across differently-named
+    # entries (which this has no visibility into: only keywords merged
+    # within the same 'test:' entry name are compared here). A real
+    # mismatch is caught here at load time instead of only surfacing
+    # when 'seine test' runs.
+    #
+    # direction: identity-or-error -- never silently overrides
+    # (docs/merging.md).
+    def _merge_keyword(self, keyword, newkeyword):
+        plain = {k: v for k, v in keyword.items() if k != BuildCmd.ORIGINS}
+        newplain = {k: v for k, v in newkeyword.items() if k != BuildCmd.ORIGINS}
+        if plain != newplain:
+            raise ValueError(
+                "keyword '%s' is defined differently by two 'test:' "
+                "entries -- give one of them a different name if they "
+                "are meant to be two keywords" % plain.get("name"))
+
     # Packages are merged by the source package they name, the way
     # partitions are merged by label: a file may say what to build and
     # another how, without either having to restate the other.
@@ -687,7 +762,9 @@ class BuildCmd(Cmd):
     # Named-entry merge, generic over what "named" means: an entry from
     # 'new' matching one already in 'existing' (by name_of()) is folded
     # into it with merge_entry() instead of duplicating it; one with no
-    # match is appended. What began as 'packages:''s own loop.
+    # match is appended. What began as 'packages:''s own loop -- also
+    # what 'test:' entries and their own 'tests:' cases merge by name
+    # with (see BuildCmd._merge_tests()).
     #
     # direction: set by the caller's merge_entry -- this helper has none
     # of its own (see docs/merging.md).
@@ -1037,6 +1114,7 @@ class BuildCmd(Cmd):
         self._merge_defaults(spec)
         self._merge_packages(spec)
         self._merge_playbooks(spec)
+        self._merge_tests(spec)
         if "image" in spec:
             self._merge_image(spec)
         return self.spec

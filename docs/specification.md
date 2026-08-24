@@ -7,6 +7,7 @@ of the following sections:
  * packages
  * playbook
  * image
+ * test
 
 The specification may be broken down into smaller files to ease maintenance and
 readability. This can be done using `requires` as shown below:
@@ -1013,4 +1014,19 @@ more specifically:
 | size      | no       | Size of the partition                    |
 | type      | no       | File-system type (e.g. `ext4`)           |
 | where     | yes      | Where to mount the volume file-system    |
+
+### test
+
+A specification carries its own tests the same way it carries its
+`packages`/`playbook`/`image`: `test` is a list of entries, composed
+across `requires` -- two files each naming their own suite is the
+ordinary case, not a conflict. An entry named the same as one already
+loaded is merged into it instead of duplicated, the same way `packages`
+are merged by name (see [`packages`](#packages)): cases inside its own
+`tests` are merged the same way, by their own `name`. Each entry runs
+against a real target over [mtda](https://github.com/siemens/mtda),
+with `if`/`for`/`while`/`try`, reusable named keywords and assertions
+built on [Robot Framework](https://robotframework.org/). See
+[docs/testing.md](testing.md) for the full step grammar, the keywords
+available, and `seine test`/`seine tui`'s own `/test`.
 

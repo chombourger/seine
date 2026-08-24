@@ -63,6 +63,7 @@ whole project. The ones in use are:
 | `sbuild`       | The buildd chroot packages are rebuilt in             |
 | `spec`         | The specification files, and how they are loaded      |
 | `target`       | Driving real hardware through mtda: `/target`, `seine.tui.target` |
+| `testing`      | Test suites and their execution: `seine test`, `seine.testing` |
 | `tui`          | The terminal UI, `seine tui`                          |
 | `utils`        | Shared helpers: the container engine, apt sources     |
 

@@ -13,6 +13,7 @@ from seine.gists import GistCmd
 from seine.progress import interactive
 from seine.secscan import IssuesCmd
 from seine.sources import SourceCmd
+from seine.testing.cmd import TestCmd
 
 # Deliberately doesn't import seine.tui (and hence textual) at module
 # level -- only once "tui" is the command actually given.
@@ -278,6 +279,7 @@ COMMANDS = {
     "inspect": (InspectCmd, "browse a finished image, read-only"),
     "doctor": (DoctorCmd, "say whether this machine has what a build needs"),
     "diff":   (DiffCmd, "diff a specification, or two SBOMs, package by package"),
+    "test":   (TestCmd, "run a test suite against a real target (needs the 'test' extra)"),
     "tui":    (TuiCmd, "open the interactive TUI (needs the 'tui' extra)"),
 }
 
