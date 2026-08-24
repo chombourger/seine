@@ -42,7 +42,11 @@ test:
                 - if: "'${ARCH}' == 'amd64'"
                   then:
                       - should_contain: ["${DPKG_ARCH}", amd64]
-                      - console_run: {command: "dpkg -l grub-efi-amd64 2>&1", assign: GRUB_OUT}
+                      # '| cat': dpkg -l pages long output by default,
+                      # which on a real console just sits at its own
+                      # '--More--' prompt forever -- Console Run then
+                      # never sees the shell's own prompt again either.
+                      - console_run: {command: "dpkg -l grub-efi-amd64 2>&1 | cat", assign: GRUB_OUT}
                       - should_contain: ["${GRUB_OUT}", "ii  grub-efi-amd64"]
                   else:
                       - log: {message: "not amd64 -- nothing architecture-specific to check here"}
@@ -50,11 +54,17 @@ test:
           - name: the shell prompt comes back within two minutes
             steps:
                 - power_cycle: {settle: 2s}
+                # 'retry_until's own condition is checked before the
+                # loop's first iteration too (it's sugar for Robot's own
+                # WHILE), so a variable the loop body assigns -- '$SCREEN'
+                # here -- needs a value before that first check, or it
+                # fails with "Variable '$SCREEN' not found" rather than
+                # running the loop at all.
+                - set: {name: SCREEN, value: ""}
                 # A polling loop: capture the console every 5s and check
-                # for a prompt, until 'timeout' runs out -- 'retry_until'
-                # is sugar for Robot's own WHILE with a limit, so a
-                # target that never gets there fails with Robot's own
-                # clear timeout message rather than hanging.
+                # for a prompt, until 'timeout' runs out -- a target that
+                # never gets there fails with Robot's own clear timeout
+                # message rather than hanging.
                 - retry_until: "'login:' in $SCREEN"
                   timeout: 120s
                   interval: 5s

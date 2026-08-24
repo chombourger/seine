@@ -184,8 +184,13 @@ separated, for a one-off call needing nothing fancier) or one of:
 * **`while`** (Robot's own polling primitive, `limit` a duration string
   it fails with a clear message past rather than spin forever) and
   **`retry_until`** (sugar over it -- `timeout`/`interval` instead of
-  writing the `not (...)`/`Sleep` yourself):
+  writing the `not (...)`/`Sleep` yourself). The condition is checked
+  *before* the first iteration too, same as Robot's own `WHILE` --
+  a variable the loop body only assigns (`SCREEN` below) needs a value
+  set before the loop, or that first check fails with "Variable
+  '$SCREEN' not found" instead of running the loop at all:
   ```yaml
+  - set: {name: SCREEN, value: ""}
   - retry_until: "'login:' in $SCREEN"
     timeout: 120s
     interval: 5s
@@ -257,7 +262,11 @@ prompt to know a command finished -- its default, `=> `, is a U-Boot
 prompt, so it needs a real one set first; `Console Prompt
 [NEW_PROMPT]` sets it, `Log In` (examples/common/conf-accounts.yaml)
 already does after login. `Console Send` + `Console Wait` don't depend
-on it at all), `Console Wait PATTERN [TIMEOUT]`
+on it at all. A command that pages its own output -- `dpkg -l` past a
+terminal's height, say -- never returns either, for the same reason: it
+is genuinely still running, sitting at its own `--More--` prompt, not
+the shell's; pipe it through `| cat` the way any non-interactive use of
+a pager-backed tool has to), `Console Wait PATTERN [TIMEOUT]`
 (truthy once `PATTERN` appears, falsy on timeout -- not the matched
 text, that's mtda's own protocol; read the console with `Console Tail`/
 `Console Dump`/`Capture Screen` instead), `Console Dump`/`Console Tail`,
