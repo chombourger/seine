@@ -667,20 +667,60 @@ class BuildCmd(Cmd):
     # A setting already there wins, as it does for partitions: 'requires'
     # loads what a file asked for after the file itself, so the
     # specification reaching for a fragment is the one that overrides it.
+    #
+    # Named-entry merge, generic over what "named" means: an entry from
+    # 'new' matching one already in 'existing' (by name_of()) is folded
+    # into it with merge_entry() instead of duplicating it; one with no
+    # match is appended. What began as 'packages:''s own loop.
+    #
+    # direction: set by the caller's merge_entry -- this helper has none
+    # of its own (see docs/merging.md).
+    def _merge_named_list(self, existing, new, name_of, merge_entry):
+        for entry in new:
+            name = name_of(entry)
+            match = [e for e in existing if name is not None and name_of(e) == name]
+            if len(match) == 0:
+                existing.append(entry)
+            else:
+                merge_entry(match[0], entry)
+
+    # One entry's settings, first-loaded-wins for anything already
+    # present, unless appends(setting) says the two should add together
+    # instead (see _added()). 'skip' is whatever the caller already
+    # merged its own way (a nested named list, say).
+    #
+    # direction: asking file wins -- every caller of this (packages,
+    # playbook, test) inherits it (see docs/merging.md).
+    def _merge_settings(self, entry, newentry, appends=lambda setting: False, skip=()):
+        for setting in newentry:
+            if setting == BuildCmd.ORIGINS or setting in skip:
+                continue
+            if appends(setting) and setting in entry:
+                entry[setting] = self._added(entry[setting], newentry[setting])
+                self._take_origin(entry, newentry, setting)
+            elif setting not in entry:
+                entry[setting] = newentry[setting]
+                self._take_origin(entry, newentry, setting)
+
+    # The name_of() every _merge_named_list() caller that matches by a
+    # plain 'name' field can share -- packages matches by source package
+    # name instead (its own callback), but playbook/test entries and any
+    # future named-list section need nothing more than this.
+    def _name_of(self, entry):
+        if type(entry) != type({}):
+            return None
+        name = entry.get("name")
+        return name if type(name) == type("") else None
+
+    # direction: asking file wins (docs/merging.md).
     def _merge_packages(self, spec):
         if "packages" not in spec:
             return
         if "packages" not in self.spec:
             self.spec["packages"] = spec["packages"]
             return
-        for package in spec["packages"]:
-            name = self._package_name(package)
-            existing = [p for p in self.spec["packages"]
-                        if self._package_name(p) == name]
-            if name is None or len(existing) == 0:
-                self.spec["packages"].append(package)
-            else:
-                self._merge_package(existing[0], package)
+        self._merge_named_list(self.spec["packages"], spec["packages"],
+                               self._package_name, self._merge_package)
 
     # A package entry under 'defaults' describes a package without asking
     # for it to be built: it is what an architecture file needs to say
@@ -780,16 +820,15 @@ class BuildCmd(Cmd):
                 if type(kernel) != type("") or "://" in kernel
                 or kernel in built]
 
+    # direction: asking file wins, 'extends:' recurses the same way
+    # (docs/merging.md).
     def _merge_package(self, package, newpackage):
-        for setting in newpackage:
-            if setting == BuildCmd.ORIGINS:
-                continue
-            if setting == "extends" and type(package.get(setting)) == type({}):
-                self._merge_extends(package[setting], newpackage[setting],
-                                    package, newpackage)
-            elif setting not in package:
-                package[setting] = newpackage[setting]
-                self._take_origin(package, newpackage, setting)
+        skip = set()
+        if "extends" in newpackage and type(package.get("extends")) == type({}):
+            self._merge_extends(package["extends"], newpackage["extends"],
+                                package, newpackage)
+            skip.add("extends")
+        self._merge_settings(package, newpackage, skip=skip)
 
     # A setting and the file that wrote it move together. Taking a setting
     # whole takes what is under it: copying an 'extends' block no file had
