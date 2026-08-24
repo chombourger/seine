@@ -552,6 +552,11 @@ class ToolTable(avocado.Test):
         text = self.ai.TOOLS["docs"].run(app, {"name": "sources.txt"})
         self.assertIn("[SOURCES]", text)
 
+    # Lives in run-test's own always-sent description, not only
+    # testing.txt, since a "run tests" request has no reason to fetch it.
+    def test_run_test_description_warns_it_does_not_write_the_image(self):
+        self.assertIn("mtda-write-image", self.ai.TOOLS["run-test"].description)
+
     def test_docs_says_when_neither_location_has_it(self):
         real_docs_dir = self.ai._docs_dir
         real_prompt_dir = self.ai.PROMPT_DOCS_DIR

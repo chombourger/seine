@@ -2047,7 +2047,18 @@ TOOLS = {t.name: t for t in [
         "keep suites CI-sized rather than ones with a very long poll. "
         "Real hardware actions (power, console, keyboard/mouse) run as "
         "the suite dictates, which is why this is gated rather than "
-        "ungated like a read tool.",
+        "ungated like a read tool. This never writes an image to the "
+        "target itself -- every test boots whatever is already on its "
+        "shared storage, unrelated to whichever build most recently "
+        "finished. REQUIRED before calling this after a build or spec "
+        "change: confirm the target's storage already holds *this* "
+        "build's own image -- this session wrote it with "
+        "'mtda-write-image' (image path from 'artifacts'), or the "
+        "person says it's already there. Neither true yet? Offer "
+        "'mtda-write-image' first and wait for that approval -- do not "
+        "call run-test against an image you cannot confirm is current, "
+        "and do not report a pass as evidence about content just built "
+        "or changed if that write never happened.",
         {"type": "object",
          "properties": {"files": {"type": "array", "items": {"type": "string"},
                                   "description": "spec file(s) to load instead "
