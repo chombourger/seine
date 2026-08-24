@@ -42,14 +42,17 @@ class LoadingIsTolerant(ASettingsFile):
         current = settings.load(self.path())
         self.assertEqual(current["jobs"], 4)
         self.assertEqual(current["theme"], settings.DEFAULTS["theme"])
+        self.assertIsNone(current["sbom2cve_program"])
 
 class SavingRoundTrips(ASettingsFile):
     def test_a_saved_value_reads_back(self):
         current = settings.load(self.path())
         current["jobs"] = 4
         current["startup_commands"] = ["/plan"]
+        current["sbom2cve_program"] = "/usr/local/bin/my-scanner"
         settings.save(current, self.path())
-        expected = dict(settings.DEFAULTS, jobs=4, startup_commands=["/plan"])
+        expected = dict(settings.DEFAULTS, jobs=4, startup_commands=["/plan"],
+                        sbom2cve_program="/usr/local/bin/my-scanner")
         self.assertEqual(settings.load(self.path()), expected)
 
     # A key this version doesn't know about (a future 'llm', say) is

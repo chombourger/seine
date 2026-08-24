@@ -11,8 +11,11 @@ import os
 
 # Every default is "do nothing different" -- None means no override.
 # llm_model unset means the AI chat (seine/tui/ai.py) is off.
+# sbom2cve_program unset means seine/secscan.py runs debsbom's own
+# container image rather than an external scanner.
 DEFAULTS = {"jobs": None, "theme": None, "startup_commands": [],
-           "llm_model": None, "llm_api_base": None}
+           "llm_model": None, "llm_api_base": None,
+           "sbom2cve_program": None}
 
 def default_path():
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
