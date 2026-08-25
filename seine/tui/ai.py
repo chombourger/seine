@@ -1171,7 +1171,9 @@ def _tool_start_build(app, arguments):
     if build is None:
         return NO_SINGLE_GROUP
     packages_only = bool(arguments.get("packages_only", False))
-    target = arguments.get("target")
+    # A model sending "" rather than omitting 'target' would otherwise
+    # reach build.image.tasks() as a real, invalid task name.
+    target = arguments.get("target") or None
     try:
         # start_build() touches Indicators, so it crosses back through
         # call_from_thread, same boundary TextualReporter crosses. An
