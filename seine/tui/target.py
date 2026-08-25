@@ -16,6 +16,14 @@ import time
 
 _available = None
 
+# 'app' here is duck-typed, not always a real SeineApp -- tests/spec/
+# target.py's own Actions class exercises this module against a bare
+# types.SimpleNamespace(), which has no '_socket_send' at all.
+def _socket_send(app, event):
+    send = getattr(app, "_socket_send", None)
+    if send is not None:
+        send(event)
+
 # A real import, not importlib.util.find_spec: proves mtda.client
 # actually loads (catches a broken system install), not just that it is
 # on the path. Cached after the first call -- this only needs to run
@@ -131,6 +139,8 @@ def _connect(app, host=None):
     history = getattr(app, "history", None)
     if history is not None:
         history.side_load(HISTORY_GROUP)
+    _socket_send(app, {"type": "target_connected",
+                       "agent": state.agent if state is not None else None})
     return client
 
 # Lazily dialled: whichever side (typed command or AI tool call) touches
@@ -230,7 +240,9 @@ def usb(app, port, state):
 # --- Storage ---
 
 def storage_to_host(app):
-    return get_client(app).storage_to_host()
+    result = get_client(app).storage_to_host()
+    _socket_send(app, {"type": "target_storage_on_host"})
+    return result
 
 def storage_to_target(app):
     return get_client(app).storage_to_target()
@@ -244,6 +256,7 @@ def write_image(app, path):
     client = get_client(app)
     client.storage_write_image(path)
     client.storage_to_target()
+    _socket_send(app, {"type": "target_storage_write_completed", "path": path})
 
 def snapshot(app):
     return get_client(app).storage_commit()

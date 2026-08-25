@@ -33,6 +33,9 @@ class TestState:
         # apart from one still going, and clear #tail instead of
         # appending to what a previous run already left there.
         self.run_id = 0
+        # Set by SeineApp.__init__, same shape as BuildState's own
+        # on_finished -- fired from finished_ok()/finished_failed() below.
+        self.on_finished = None
 
     @property
     def running(self):
@@ -79,11 +82,15 @@ class TestState:
         self.result = result
         self.error = not result.ok
         self.message = result.summary()
+        if self.on_finished:
+            self.on_finished()
 
     def finished_failed(self, text):
         self.done = True
         self.error = True
         self.message = text
+        if self.on_finished:
+            self.on_finished()
 
     # A failed row's own message goes right under it, the same reason
     # the CLI and the AI chat's own 'run-test' tool both print it beside

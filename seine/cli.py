@@ -21,11 +21,17 @@ class TuiCmd(Cmd):
     NAME = "tui"
     USAGE = """
 Usage:
-  seine tui [SPEC...] [-- SPEC...]...
+  seine tui [--interaction-socket=PATH] [SPEC...] [-- SPEC...]...
 
 Opens the interactive TUI, optionally starting with SPEC as the active
 specification -- the same grouping 'seine build' takes. Needs the 'tui'
 extra (pip install seine[tui], or the seine-tui package).
+
+--interaction-socket=PATH opens a UNIX domain socket for driving and
+observing the TUI from another process: newline-delimited JSON in both
+directions, commands in ("input"/"ai_input"), events out (a build or
+test finishing, a screen switch, a gated tool's approval dialog opening/
+resolving, a spec file being written, ...).
 """
 
     def main(self, argv):

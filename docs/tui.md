@@ -175,6 +175,40 @@ was underneath. `←`/`→` switch between two tabs:
    prompt with that command, ready to type on; `Esc` goes back to the
    list rather than closing Help outright.
 
+### External control
+
+`seine tui --interaction-socket PATH [SPEC...]` opens a UNIX domain socket
+alongside the normal terminal UI -- for driving and observing the TUI from
+another process (a test driver, a scripted demo) instead of screen-scraping
+a pty. Newline-delimited JSON, one object per line, in both directions.
+
+Sent to the socket:
+
+ * `{"type": "input", "text": "..."}` -- types `text` into the real prompt,
+   character by character, then submits it (same as a person typing and
+   hitting Enter).
+ * `{"type": "ai_input", "prompt": "..."}` -- forwards `prompt` straight to
+   the AI chat, without going through the prompt widget at all.
+
+Received from the socket, as things happen -- a driver watches for these
+instead of polling rendered text:
+
+ * `{"type": "ai_message", "content": "..."}` -- a finished assistant reply.
+ * `{"type": "ai_turn_finished"}` -- the AI chat's own turn is fully done
+   (every message and gated tool call in it), the real end of "Working…".
+ * `{"type": "confirm_shown", "tool", "description", "arguments", "preview"}`
+   -- a gated tool's approval dialog opened (`preview` is the diff text for
+   `spec-update`/`spec-create`, `null` otherwise).
+ * `{"type": "confirm_resolved", "tool", "approved"}` -- that dialog closed.
+ * `{"type": "spec_written", "path"}` -- `spec-update`/`spec-create`
+   actually wrote `path` to disk.
+ * `{"type": "build_finished", "error", "message"}` / `{"type":
+   "test_finished", "error", "message"}` -- `/build` / `/test` finished.
+ * `{"type": "screen_changed", "screen"}` -- `/command` switched screens.
+ * `{"type": "target_connected", "agent"}` / `{"type":
+   "target_storage_on_host"}` / `{"type": "target_storage_write_completed",
+   "path"}` -- `/target` actions completing.
+
 ### Other screenshots
 
 <table>

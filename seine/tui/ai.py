@@ -32,6 +32,14 @@ from seine import settings
 from seine.utils import ContainerEngine
 from seine.utils import redact, redactions
 
+# Same duck-typing as seine.tui.target's own _socket_send(): 'app' here
+# is not always a real SeineApp (see MtdaTools's stand-in app in
+# tests/spec/ai.py, which has no '_socket_send' at all).
+def _socket_send(app, event):
+    send = getattr(app, "_socket_send", None)
+    if send is not None:
+        send(event)
+
 # SEINE_LLM_MODEL/SEINE_LLM_API_BASE override the settings.json values,
 # same as SEINE_CACHE_DIR does elsewhere. SEINE_LLM_API_KEY has no
 # settings.json field at all -- it is the only source, always.
@@ -751,6 +759,7 @@ def _tool_spec_update(app, arguments):
     with open(temporary, "w") as f:
         f.write(plan.new_text)
     os.replace(temporary, plan.path)
+    _socket_send(app, {"type": "spec_written", "path": plan.path})
     reload_error = _reload_and_highlight(app)
     if reload_error:
         return ("updated %s, but the active spec failed to reload: %s -- "
@@ -834,6 +843,7 @@ def _tool_spec_create(app, arguments):
     with open(temporary, "w") as f:
         f.write(plan.new_text)
     os.replace(temporary, plan.path)
+    _socket_send(app, {"type": "spec_written", "path": plan.path})
     return "wrote %s" % arguments.get("path")
 
 # 'gist-list' reads no active spec -- a gist lives outside any one
@@ -2258,11 +2268,16 @@ def confirm(app, tool, arguments, preview):
     def resolved(approved):
         answer["approved"] = approved
         event.set()
+        _socket_send(app, {"type": "confirm_resolved", "tool": tool.name,
+                           "approved": approved})
 
     def open_modal():
         app.push_screen(ConfirmAction(tool, arguments, preview, resolved))
 
     app.call_from_thread(open_modal)
+    _socket_send(app, {"type": "confirm_shown", "tool": tool.name,
+                       "description": tool.description, "arguments": arguments,
+                       "preview": preview})
     worker = get_current_worker()
     while not event.wait(timeout=0.2):
         if worker.is_cancelled:
@@ -2325,6 +2340,9 @@ class AIState:
         self.on_delta = None       # (text) -> None: one more fragment
         self.on_delta_done = None  # () -> None: the streaming reply is over
         self.on_stats = None       # () -> None: token counters/context changed
+        # --- Interaction-socket integration ---
+        self._last_sent_index = -1  # index of last assistant message sent via socket
+        self.app = None  # back-reference to SeineApp, set by SeineApp.__init__
 
     def reset(self):
         self.messages = []
@@ -2374,6 +2392,19 @@ class AIState:
     def changed(self):
         self._persist()
         self._notify(self.on_change)
+        # Notify the UI to emit any new assistant messages over the socket.
+        if getattr(self, "app", None) is not None:
+            self.app._socket_send_ai_messages()
+
+    # Finished assistant replies added since the last _mark_sent() --
+    # read by SeineApp._socket_send_ai_messages() after every changed().
+    def _new_assistant_messages(self):
+        start = self._last_sent_index + 1
+        return [m for m in self.messages[start:] if m.get("role") == "assistant"]
+
+    def _mark_sent(self):
+        self._last_sent_index = len(self.messages) - 1
+
 
     # One JSON file per conversation, rewritten whole on every change,
     # same atomic-write shape as settings.save(), under
@@ -2542,3 +2573,7 @@ def _run(app):
         app.call_from_thread(state.changed)
     finally:
         state.busy = False
+        # The one true "turn is done" signal -- every message/tool-call
+        # round trip within the turn has already run by the time this
+        # fires, gated tool calls included.
+        app._socket_send({"type": "ai_turn_finished"})

@@ -6,8 +6,12 @@
 # and a '!' shell escape. Everything is read from the engine on open --
 # no separate TUI model, beyond build_state which outlives its screen.
 
+import asyncio
 import os
 import subprocess
+import socket
+import threading
+import json
 
 from textual import command
 from textual.app import App
@@ -202,7 +206,7 @@ class SeineApp(App):
     }
     """
 
-    def __init__(self, files=None):
+    def __init__(self, files=None, interaction_socket=None):
         super().__init__()
         self.context = Context()
         self.history = History()
@@ -213,8 +217,12 @@ class SeineApp(App):
         self.build_state.on_finished = self._build_finished
         self.fs_state = FilesystemState()
         self.ai_state = ai.AIState()
+        # Give AIState a back-reference to the app so it can trigger socket
+        # notifications (assistant messages) without importing ``app`` here.
+        self.ai_state.app = self
         self.target_state = TargetState()
         self.test_state = TestState()
+        self.test_state.on_finished = self._test_finished
         self.diff_text = None
         # Set by commands.py's own _issues() right before app.show("issues")
         # -- IssuesScreen.update_body() reads these back, the same
@@ -231,6 +239,157 @@ class SeineApp(App):
                 self.context.use(files)
             except (OSError, ValueError) as e:
                 self._startup_error = str(e)
+        # -----------------------------------------------------------------
+        # Interaction socket handling -- optional, enabled when the CLI passes
+        # ``--interaction-socket``. The socket is created (overwriting any stale
+        # file) and a background thread is started to accept connections.
+        # Clients send JSON messages terminated by a newline. Incoming messages
+        # are dispatched via ``_handle_socket_message``.
+        # -----------------------------------------------------------------
+        self._socket_path = interaction_socket
+        self._socket_clients: list[socket.socket] = []
+        self._socket_lock = threading.Lock()
+        if self._socket_path:
+            self._start_socket_server()
+
+    # Interaction-socket helpers -- only reachable when --interaction-socket
+    # is passed. They run in background threads and marshal UI actions via
+    # self.call_from_thread().
+    def _start_socket_server(self) -> None:
+        """Create the UNIX socket and launch the acceptor thread.
+
+        The socket file is removed if it already exists. A daemon thread runs
+        ``_socket_accept_loop`` which spawns a per-connection handler.
+        """
+        path = self._socket_path
+        if not path:
+            return
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(path)
+        server.listen()
+        self._socket_server = server
+        threading.Thread(target=self._socket_accept_loop, daemon=True).start()
+
+    def _socket_accept_loop(self) -> None:
+        """Accept connections and spin a handler thread for each client."""
+        server: socket.socket = getattr(self, "_socket_server", None)
+        if server is None:
+            return
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                break
+            with self._socket_lock:
+                self._socket_clients.append(conn)
+            threading.Thread(target=self._socket_client_handler, args=(conn,), daemon=True).start()
+
+    def _socket_client_handler(self, conn: socket.socket) -> None:
+        """Read newline-delimited JSON messages from *conn*.
+
+        Each line is parsed as JSON and handed to ``_handle_socket_message``.
+        The connection is closed on any error or when the client disconnects.
+        """
+        with conn:
+            buffer = b""
+            while True:
+                try:
+                    data = conn.recv(4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                buffer += data
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    if not line:
+                        continue
+                    try:
+                        message = json.loads(line.decode())
+                    except json.JSONDecodeError:
+                        continue
+                    self._handle_socket_message(message)
+        # Clean up client list.
+        with self._socket_lock:
+            if conn in self._socket_clients:
+                self._socket_clients.remove(conn)
+
+    def _handle_socket_message(self, msg: dict) -> None:
+        """Dispatch a JSON message received from an external client.
+
+        Supported ``type`` values:
+        * ``"input"`` -- simulate a user typing. ``msg["text"]`` is the string
+          to type. The TUI will clear the current prompt, feed each character
+          with a tiny delay (to emulate typing) and finally send an ``Enter``.
+        * ``"ai_input"`` -- forward a prompt directly to the AI chat (equivalent
+          to the user typing a line that does not start with ``/``). ``msg["prompt"]``
+          contains the text.
+        """
+        t = msg.get("type")
+        if t == "input":
+            text = msg.get("text", "")
+            if not isinstance(text, str):
+                return
+            # type_and_submit() itself already runs on the app's own thread
+            # (invoked below via call_from_thread) -- awaiting action_submit()
+            # directly here, rather than a second call_from_thread(), since
+            # that call only works from a thread other than the app's own.
+            async def type_and_submit():
+                try:
+                    prompt = self.screen.query_one(Prompt)
+                except NoMatches:
+                    return
+                prompt.value = ""
+                prompt.cursor_position = 0
+                for ch in text:
+                    prompt.value += ch
+                    prompt.cursor_position = len(prompt.value)
+                    await asyncio.sleep(0.02)
+                await prompt.action_submit()
+            self.call_from_thread(type_and_submit)
+        elif t == "ai_input":
+            p = msg.get("prompt")
+            if isinstance(p, str):
+                self.call_from_thread(ai.ask, self, p)
+
+    def _socket_send(self, data: dict) -> None:
+        """Broadcast a JSON message to all connected socket clients.
+
+        ``data`` is serialized with ``json.dumps`` and terminated by a newline.
+        Clients that raise an exception on send are removed from the list.
+        """
+        if not hasattr(self, "_socket_clients"):
+            return
+        raw = (json.dumps(data) + "\n").encode()
+        with self._socket_lock:
+            dead = []
+            for client in self._socket_clients:
+                try:
+                    client.sendall(raw)
+                except OSError:
+                    dead.append(client)
+            for client in dead:
+                try:
+                    client.close()
+                finally:
+                    self._socket_clients.remove(client)
+
+    def _socket_send_ai_messages(self) -> None:
+        """Emit any new assistant messages that have not yet been sent.
+
+        Called from ``AIState.changed`` after persisting. Only finished
+        assistant replies (role == "assistant") are sent -- intermediate
+        streaming chunks are omitted.
+        """
+        msgs = self.ai_state._new_assistant_messages()
+        for msg in msgs:
+            self._socket_send({"type": "ai_message", "content": msg.get("content", "")})
+        self.ai_state._mark_sent()
 
     # Nothing to build without a spec, so a bare 'seine tui' opens on
     # Doctor rather than an empty Overview.
@@ -272,6 +431,9 @@ class SeineApp(App):
             self.screen.query_one(TargetIndicator).refresh_text()
 
     def _build_finished(self):
+        self._socket_send({"type": "build_finished",
+                           "error": self.build_state.error,
+                           "message": self.build_state.message})
         self.refresh_indicators()
         if isinstance(self.screen, BuildScreen):
             self.screen.update_body()
@@ -289,10 +451,16 @@ class SeineApp(App):
                 self.show("chat")
             ai.notify_build_finished(self)
 
+    def _test_finished(self):
+        self._socket_send({"type": "test_finished",
+                           "error": self.test_state.error,
+                           "message": self.test_state.message})
+
     def show(self, name):
         target = SCREENS[name]
         if type(self.screen) is not target:
             self.switch_screen(target())
+            self._socket_send({"type": "screen_changed", "screen": name})
         else:
             self.screen.refresh_data()
 
@@ -339,5 +507,38 @@ def _is_markdown_retheme_race(error):
         tb = tb.tb_next
     return False
 
-def run(files=None):
-    SeineApp(files).run()
+def run(argv=None):
+    """Entry point for the TUI.
+
+    ``argv`` is a list of command-line arguments as passed from the CLI.
+    It may contain ``--interaction-socket`` (or ``--interaction-socket=PATH``)
+    followed by zero or more specification files. The socket argument is
+    stripped from the list before the remaining items are treated as spec
+    files.
+    """
+    # Basic manual parsing -- we avoid pulling in ``argparse`` to keep the
+    # import surface small and to stay consistent with the rest of the CLI
+    # which does manual ``getopt`` parsing.
+    spec_files: list[str] = []
+    socket_path: str | None = None
+    if argv:
+        it = iter(argv)
+        for arg in it:
+            if arg.startswith("--interaction-socket"):
+                # ``--socket=PATH`` or ``--socket PATH``
+                if arg == "--interaction-socket":
+                    try:
+                        socket_path = next(it)
+                    except StopIteration:
+                        raise ValueError("--interaction-socket requires a path")
+                else:
+                    # ``--interaction-socket=PATH``
+                    _, _, path = arg.partition("=")
+                    if not path:
+                        raise ValueError("--interaction-socket requires a path")
+                    socket_path = path
+                continue
+            spec_files.append(arg)
+    # ``SeineApp`` now accepts an optional ``interaction_socket`` argument.
+    SeineApp(files=spec_files or None, interaction_socket=socket_path).run()
+
