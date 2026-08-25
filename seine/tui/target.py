@@ -110,6 +110,18 @@ def _connect(app, host=None):
         state.session = client.session()
     if remote:
         adapter = ConsoleAdapter(app)
+        # Prime from mtda's buffer before console_remote() starts the live
+        # EVT stream -- Subscribe() is forward-only, so without this a
+        # long-idle target shows a blank pane. Runs first so nothing races
+        # the live feed; best-effort since a failed dump isn't worth
+        # failing the whole connect over.
+        try:
+            dump = client.console_dump()
+        except Exception:
+            dump = None
+        if dump:
+            adapter.print(dump)
+        app._target_console_primed = bool(dump)
         client.console_remote(remote, adapter)
         app._target_console = adapter
     app._target_client = client

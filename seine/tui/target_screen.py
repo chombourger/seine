@@ -226,6 +226,16 @@ class TargetScreen(BaseScreen):
             return
         self.app.call_from_thread(self._redraw_console)
         self.app.call_from_thread(self._redraw_status)
+        if getattr(self.app, "_target_console_primed", False):
+            self.app.call_from_thread(self._warn_console_primed)
+
+    # Same transient #status.warning ConsolePane.on_focus() uses for raw
+    # keystrokes -- dump() is a snapshot, not a full redraw, so a
+    # full-screen app can look partial/stale until it next repaints itself.
+    def _warn_console_primed(self):
+        self.say("console shows buffered history from mtda -- may be "
+                 "stale or partial for full-screen apps", warning=True)
+        self.set_timer(2.5, lambda: self.say(""))
 
     def update_body(self):
         self._redraw_console()
