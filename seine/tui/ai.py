@@ -273,9 +273,7 @@ def _tool_issues(app, arguments):
     findings = secscan.read_cache(path) if os.path.isfile(path) else None
     if findings is None:
         return ("no CVE scan cached yet for this build's own SBOM -- "
-                "'/issues' scans it first (a container run or an "
-                "external program with '--update-db', not something "
-                "this tool triggers on its own)")
+                "call 'issues-scan' to run one")
     try:
         findings = secscan.filter_findings(
             findings, package=arguments.get("name"), min_urgency=arguments.get("min_urgency"))
@@ -290,6 +288,43 @@ def _tool_issues(app, arguments):
         text += ("\n... (%d more -- narrow with 'name' or 'min_urgency')"
                  % (len(findings) - ISSUES_MAX_ROWS))
     return text
+
+# The scan 'issues' above can only read back -- gated like 'source-pull',
+# for the same reason 'issues' stays read-only (a container run, or the
+# configured external program, downloading a security-tracker database:
+# real network activity a person should confirm).
+def _issues_scan_preview(app, arguments):
+    build = _single_group(app)
+    if build is None:
+        return Preview(False, NO_SINGLE_GROUP)
+    from seine import sbom
+    path = sbom.output_path(build.image._output)
+    if not os.path.isfile(path):
+        return Preview(False, "no SBOM for this build yet -- a "
+                       "'packages_only' build never writes one either "
+                       "([SBOM-NEEDS-ROOTFS]); 'start-build' without it "
+                       "does")
+    return Preview(True, "would run a real CVE scan (a container, or "
+                   "the configured external program) against this "
+                   "build's own SBOM")
+
+def _tool_issues_scan(app, arguments):
+    build = _single_group(app)
+    if build is None:
+        return NO_SINGLE_GROUP
+    import subprocess
+    from seine import sbom, secscan
+    path = sbom.output_path(build.image._output)
+    if not os.path.isfile(path):
+        return "no SBOM for this build yet"
+    release = build.spec["distribution"]["release"]
+    rescan = bool(arguments.get("rescan", False))
+    try:
+        findings = secscan.scan(path, distro=release, rescan=rescan)
+    except (OSError, subprocess.CalledProcessError) as e:
+        return "scan failed: %s" % e
+    return ("scan complete -- %d finding(s) now cached, 'issues' to "
+            "read them" % len(findings))
 
 # The three below read a build's own loaded files back via BuildCmd.
 # loaded_files/dump_file() (seine/build.py, general capability, nothing
@@ -1592,12 +1627,13 @@ TOOLS = {t.name: t for t in [
          "required": []},
         False, _tool_installed_packages),
     Tool("issues", "Known CVEs against the active build's own SBOM, "
-        "read from whatever '/issues' (the TUI screen) or 'seine "
-        "issues' (the command line) already scanned and cached -- "
-        "never scans on its own, since that means a container run or "
-        "an external program downloading a fresh security-tracker "
-        "database, both real network activity. Answers 'nothing "
-        "cached yet' if neither has been run for this build. 'name' "
+        "read from whatever '/issues' (the TUI screen), 'seine issues' "
+        "(the command line), or 'issues-scan' (below) already scanned "
+        "and cached -- never scans on its own, since that means a "
+        "container run or an external program downloading a fresh "
+        "security-tracker database, both real network activity. Answers "
+        "'nothing cached yet' if none of those has run for this build -- "
+        "call 'issues-scan' to fix that. 'name' "
         "narrows to a package (a regex, case-insensitive, same as "
         "installed-packages' own 'name'); 'min_urgency' drops anything "
         "less severe than it -- one of high, medium, low, unimportant, "
@@ -1618,6 +1654,20 @@ TOOLS = {t.name: t for t in [
                                                       "or not-yet-assigned"}},
          "required": []},
         False, _tool_issues),
+    Tool("issues-scan", "Run a real CVE scan against the active build's "
+        "own SBOM -- the same thing '/issues' or 'seine issues' does, so "
+        "'issues' above has something to read. A real container run (or "
+        "the configured external program) with '--update-db', real "
+        "network activity a person reviews first. Refused if this build "
+        "has no SBOM yet ([SBOM-NEEDS-ROOTFS]). 'rescan' forces a fresh "
+        "scan even if the cached one is still fresh for this SBOM.",
+        {"type": "object",
+         "properties": {"rescan": {"type": "boolean",
+                                   "description": "force a fresh scan even "
+                                                  "if the cache is still "
+                                                  "fresh"}},
+         "required": []},
+        True, _tool_issues_scan, _issues_scan_preview),
     Tool("spec-files", "Every file the active specification actually "
         "loaded, in load order -- the only paths spec-update will "
         "accept. Also lists, separately, any '*.yml'/'*.yaml' sitting "

@@ -207,7 +207,7 @@ class ToolTable(avocado.Test):
                                  "spec-update", "spec-create",
                                  "side-load", "side-unload",
                                  "gist-create", "gist-delete",
-                                 "source-pull", "source-rm",
+                                 "source-pull", "source-rm", "issues-scan",
                                  "mtda-power", "mtda-usb", "mtda-storage", "mtda-write-image",
                                  "mtda-snapshot", "mtda-rollback",
                                  "mtda-console-send", "mtda-console-run", "run-test"})
