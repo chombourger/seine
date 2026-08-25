@@ -1193,6 +1193,14 @@ def _tool_cancel_build(app, arguments):
     tasks.interrupt()
     return "cancelling -- waiting for running steps to finish"
 
+# Refuses before ConfirmAction ever opens when there is nothing to
+# cancel -- without this, confirming "cancel the build?" against an
+# already-finished build only then reveals there was nothing running.
+def _cancel_build_preview(app, arguments):
+    if not app.build_state.running:
+        return Preview(False, "no build is running")
+    return Preview(True, "would cancel the running build")
+
 # Read-only outbound fetch, restricted to a small whitelist of trusted
 # domains -- the ai-tool equivalent of source-pull/bash reading real
 # upstream state instead of training data, but for a page rather than a
@@ -1787,7 +1795,10 @@ TOOLS = {t.name: t for t in [
                                    "description": "a task name (e.g. "
                                                   "'deploy:linux') to "
                                                   "build, plus whatever "
-                                                  "it needs"},
+                                                  "it needs; omit to "
+                                                  "build everything, no "
+                                                  "other value needed for "
+                                                  "that"},
                         "packages_only": {"type": "boolean",
                                           "description": "stop after the "
                                                          "'packages:' section "
@@ -1796,7 +1807,8 @@ TOOLS = {t.name: t for t in [
          "required": []},
         True, _tool_start_build),
     Tool("cancel-build", "Cancel the running build -- the same thing "
-        "'/cancel' does.", _no_args(), True, _tool_cancel_build),
+        "'/cancel' does.", _no_args(), True, _tool_cancel_build,
+        _cancel_build_preview),
     Tool("spec-update", "Change one node in a loaded spec file. 'at' is a "
         "JSONPath naming exactly one node -- reuse the expression "
         "spec-query already gave you for it, don't guess a fresh one. "
