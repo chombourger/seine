@@ -61,6 +61,10 @@ every argument each one takes):
  * **Issues** -- known CVEs against the active build's own SBOM (`seine
    issues` on the command line, [Vulnerability scanning](building.md#vulnerability-scanning)):
    a findings table beside summary stats.
+ * **Remote Target** -- power, console, storage and USB control for a
+   real device over mtda (github.com/siemens/mtda).
+ * **Test** -- runs the active specification's own `test:` section
+   (Robot Framework) against a real target reached the same way.
 
 ### Composing with `/side-load`
 
@@ -101,6 +105,42 @@ or (once Ansible's own stdout says so) the exact play and task while the
 target's own playbook runs:
 
 ![Build screen: the spec tree live-tracking a running Ansible task, matching the log tail](images/tui-build.gif)
+
+### Driving a real target
+
+`/target` opens a live console + status pane for a device reached through
+mtda -- the same connection `/test` (below) uses under the hood. No spec
+tree here, unlike every other screen: this one has nothing to do with a
+specification. `/target connect [AGENT]` reaches one (a bare `/target`
+just switches to the screen); `/target write IMAGE` flashes a built image
+onto its shared storage; `on`/`off`/`toggle`, `usb PORT on|off|toggle`,
+`snapshot`/`rollback` drive the rest. Two ways to type at the target: the
+same prompt every other screen has (a non-'/' line goes straight to the
+console instead of AI chat), or `Tab` onto the console pane itself for
+raw keystrokes -- arrows, Ctrl combos, Esc -- the only way to catch
+something like a PC's own "press Esc for setup" window in time:
+
+![Remote Target screen: console pane and live power/storage status, connected over mtda](images/tui-target.svg)
+
+Nothing here works without mtda installed (`seine doctor` reports it);
+see [docs/testing.md](testing.md) for how `/test` drives the same
+connection automatically.
+
+### Testing on a real target
+
+`/test [--tags=TAG,...]` runs the active specification's own `test:`
+section (see [docs/testing.md](testing.md)) -- Robot Framework driven
+through the same seine/mtda keywords `/target` exposes by hand:
+power-cycling, logging in, running a console command, polling for a
+prompt. The cockpit mirrors `/build`'s own: a per-test task list beside a
+growing output tail, the spec tree auto-expanding to highlight exactly
+which test is running right now:
+
+![Test screen: the spec tree tracking a running Robot Framework test, matching the output tail](images/tui-test.gif)
+
+A failed test's own message surfaces right under its row, not only in
+the final summary -- the same reason a failure needs to be visible
+without scrolling back. `/cancel` doesn't reach a running test yet.
 
 ### Browsing a built image
 
