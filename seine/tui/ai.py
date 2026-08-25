@@ -1605,7 +1605,8 @@ TOOLS = {t.name: t for t in [
         "cached). The urgency shown is Debian's own triage label, not "
         "a CVSS score -- the scan itself carries no numeric severity "
         "at all; ask about a specific CVE's CVSS/EPSS with 'web-fetch' "
-        "against opencve.io instead ([CVE-SEVERITY]).",
+        "against opencve.io instead ([CVE-SEVERITY]). A 'packages_only' "
+        "build never populates this cache at all ([SBOM-NEEDS-ROOTFS]).",
         {"type": "object",
          "properties": {"name": {"type": "string",
                                  "description": "a regex to match package names "
@@ -1729,7 +1730,8 @@ TOOLS = {t.name: t for t in [
         "'packages:' section builds instead, without assembling a root "
         "file-system or writing an image -- use it only when several "
         "rebuilt packages need proving at once, or the exact task name "
-        "isn't known yet. Give one or the other, not both.",
+        "isn't known yet. Give one or the other, not both. Not a way to "
+        "get an SBOM or CVE picture on its own ([SBOM-NEEDS-ROOTFS]).",
         {"type": "object",
          "properties": {"target": {"type": "string",
                                    "description": "a task name (e.g. "
