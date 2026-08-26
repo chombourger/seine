@@ -729,6 +729,84 @@ name of its flavour, so one entry cannot describe two; list the
 architectures as separate packages, each with the flavour that
 architecture has.
 
+### vendor
+
+`packages:` rebuilds what a specification changes; `vendor:` is for
+everything else it depends on -- directly or by way of a build
+dependency -- that seine never touches but a rebuild years from now
+still needs, once the feed it came from may no longer be there.
+`seine vendor` resolves each entry's full build-dependency closure and
+fetches it, binaries and sources both, into a signed apt repository of
+its own:
+
+```
+vendor:
+    - name: openssl
+    - name: busybox
+      suite: [bookworm, trixie]
+    - name: libfoo
+      suite: bookworm
+      arch: [armhf]
+      version: ">=1.2"
+```
+
+A flat list, like `packages:`, mergeable across the files a
+specification is composed of and merged by name the same way: a file
+naming `libfoo` again adds to what an earlier one already said about it
+rather than describing a second `libfoo`.
+
+Entries are keyed by the **source** package name; `seine vendor` works
+out which binaries that source produces (and what those in turn
+build-depend on) itself -- keying this by a binary package name instead
+would leave that resolution to be spelled out by hand for every source.
+
+`suite:`/`arch:` each take one name or a list of them; missing, an entry
+applies to every suite the specification's `vendor:` section asks for (or
+its own release, when nothing asks for another) and every architecture
+asked of it. A named suite has to be one of `distribution: feeds:`'s own
+-- `seine vendor` reads a suite's packages from the same feed a build
+would.
+
+`version:` pins what is vendored, either exactly (`"1.2-3"`) or with a
+comparison (`">=1.2"`, `"<=1.2"`, `"=1.2"`, `">>1.2"`, `"<<1.2"`), the
+same operators `apt_preferences(5)` uses. Unset, whatever the suite's own
+feed currently resolves to is taken.
+
+A build dependency already provided by the buildd chroot a real rebuild
+would use is left out on its own -- vendoring it would only repeat what
+that chroot's own reproducibility already covers. `vendor-exclude:`, a
+flat list of source package names beside `vendor:`, is the escape hatch
+for what the automatic dedup cannot know about: a build-profile-only
+dependency (documentation, tests) nobody wants vendored.
+
+```
+vendor-exclude:
+    - texlive-latex-base
+```
+
+Resolving is frozen: once `seine vendor` has decided a source's version,
+an ordinary run keeps it rather than asking the suite's feed again --
+what apt would resolve today is not necessarily what it resolved when
+the version was first pinned, and a specification's vendor should not
+drift underneath it between two runs that changed nothing. `seine vendor
+--refresh` asks for a new resolve; `--refresh=NAME` scopes that to one
+source package, keeping every other one exactly as it was.
+
+Signed the same way `packages:`'s own repository is (see
+[Signing](#signing) above), with its own, independent key --
+`--vendor-sign-key`/`SEINE_VENDOR_SIGN_KEY` -- since a package `vendor:`
+pulled in was never built or audited by seine, unlike a `packages:`
+rebuild.
+
+Kept under its own `vendor` cache, one repository per suite; `seine
+cache clear vendor`/`seine cache clear --older-than ... vendor` apply to
+it exactly as they do to any other cache. See `seine vendor --help` for
+the rest of its options.
+
+Building a repository is one thing; reading from it instead of the
+network is another -- see [`apt-pull-mode: offline`](#apt-pull-mode-offline)
+below.
+
 ### imager
 
 Producing the disk image (partitioning, formatting, installing the boot

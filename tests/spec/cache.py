@@ -850,7 +850,7 @@ class AVendorArtifactGoesWithItsKey(Caches):
         self.repository = os.path.join(self.paths["vendor"], "bookworm")
         os.makedirs(self.repository, exist_ok=True)
         for name in ["libssl3_3.0.11-1_amd64.deb", "openssl_3.0.11-1.dsc",
-                    "openssl_3.0.11.orig.tar.xz", "Packages"]:
+                    "openssl_3.0.11.orig.tar.xz"]:
             open(os.path.join(self.repository, name), "w").close()
 
     def aged(self, key, days):
@@ -864,7 +864,6 @@ class AVendorArtifactGoesWithItsKey(Caches):
         self.run_cmd(["clear", "--older-than", "30d"])
         self.assertFalse(os.path.isfile(
             os.path.join(self.repository, "libssl3_3.0.11-1_amd64.deb")))
-        self.assertFalse(os.path.isfile(os.path.join(self.repository, "Packages")))
 
     def test_a_source_artifact_takes_every_file_it_named(self):
         self.aged("bookworm_openssl_source_-_3.0.11-1", 40)
@@ -880,6 +879,16 @@ class AVendorArtifactGoesWithItsKey(Caches):
         self.run_cmd(["clear", "--older-than", "30d"])
         self.assertFalse(os.path.isfile(
             os.path.join(self.repository, "libssl3_3.0.11-1_amd64.deb")))
+
+    # An 'Architecture: all' binary is keyed by whichever arch it was
+    # resolved for, but the file apt actually wrote is named after its
+    # own architecture -- 'all' -- not that one.
+    def test_an_architecture_all_binary_is_named_after_all_not_the_key(self):
+        open(os.path.join(self.repository, "dh-acc_2.3-3_all.deb"), "w").close()
+        self.aged("bookworm_dh-acc_dh-acc_amd64_2.3-3", 40)
+        self.run_cmd(["clear", "--older-than", "30d"])
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.repository, "dh-acc_2.3-3_all.deb")))
 
 class ASpanOfTime(avocado.Test):
     def test(self):

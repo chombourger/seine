@@ -11,39 +11,7 @@ from seine.utils     import ContainerEngine
 from seine.utils     import apt_sources
 from seine.utils     import locked
 from seine.utils     import BUILDER_KIND
-
-# Rebuilding source packages happens under sbuild's "unshare" backend, the
-# one Debian's own buildds use: it needs no schroot, no daemon and no root,
-# just user namespaces. Running it inside one of our podman containers means
-# nesting a user namespace inside podman's own, which needs four things that
-# a plain 'podman run' does not give us -- each of them found by hitting the
-# failure it causes:
-#
-#  * the container has to run as root (uid 0, i.e. the unprivileged user
-#    seine runs as). A non-root container user cannot use newuidmap at all:
-#    every write to uid_map comes back EPERM, even with the setuid bit
-#    intact and CAP_SETUID added to the container.
-#
-#  * /etc/subuid and /etc/subgid have to cover 65534. apt drops privileges
-#    to _apt/nobody inside the chroot and setgroups(65534) fails with
-#    EINVAL when that id falls outside the mapped range, which shows up as
-#    an unexplained 'apt-get update' failure.
-#
-#  * CAP_SYS_ADMIN, because sbuild-usernsexec calls sethostname() and
-#    podman's default capability set does not include it.
-#
-#  * an unmasked /proc: podman covers several paths under /proc, and the
-#    kernel refuses to mount a fresh procfs inside a nested user namespace
-#    while the parent's procfs has submounts hiding parts of it.
-#
-# The result is a container more privileged than the others seine builds,
-# though still an unprivileged one in the kernel's eyes -- uid 0 in it is
-# the user seine runs as, so what it can reach is that user's own files,
-# not the machine's. It is used only to build packages.
-SBUILD_RUN_OPTIONS = [
-    "--cap-add=sys_admin",
-    "--security-opt", "unmask=ALL",
-]
+from seine.utils     import PRIVILEGED_RUN_OPTIONS
 
 # Where the repository of rebuilt packages is mounted, both in the builder
 # container and -- through sbuild's own bind mount -- inside the chroot it
@@ -123,7 +91,7 @@ class BuilderImage(Bootstrap):
             self._args(args, architecture, volumes, workdir, environment, False))
 
     def _args(self, args, architecture, volumes, workdir, environment, tty):
-        cmd = ["container", "run", "--rm"] + SBUILD_RUN_OPTIONS
+        cmd = ["container", "run", "--rm"] + PRIVILEGED_RUN_OPTIONS
         if tty:
             cmd += ["-t"]
         if architecture is not None:

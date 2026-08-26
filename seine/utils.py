@@ -56,6 +56,16 @@ def distribution(spec):
         distro["architecture"] = "amd64"
     if "uri" not in distro:
         distro["uri"] = "http://ftp.debian.org/debian"
+    # Build profiles/options for Build-Depends evaluation (DEB_BUILD_PROFILES
+    # / DEB_BUILD_OPTIONS). Optional, defaults to no extra profiles.
+    for key in ("build-options", "build-profiles"):
+        if key in distro:
+            val = distro[key]
+            if isinstance(val, str):
+                val = [val]
+            if not isinstance(val, list) or any(not isinstance(v, str) for v in val):
+                raise ValueError("'%s' shall be a string or list of strings" % key)
+            distro[key] = val
     spec["distribution"] = distro
 
     # Validated here rather than when a bootstrap first reads them, so a
@@ -237,6 +247,40 @@ ROOTFS_KIND = "rootfs"        # what mmdebstrap made of the archive
 IMAGER_KIND = "imager"        # the kernel libguestfs boots, and its appliance
 TRANSPORT_KIND = "transport"  # a baseline plus what ansible needs
 SOURCE_KIND = "source"        # host-arch, dpkg-dev -- where sources are pulled
+
+# Building an sbuild chroot (mmdebstrap) or a source package inside one
+# (sbuild's "unshare" backend, the one Debian's own buildds use) needs no
+# schroot, no daemon and no root, just user namespaces -- but nesting one
+# inside podman's own needs four things a plain 'podman run' does not
+# give us, each found by hitting the failure it causes:
+#
+#  * the container has to run as root (uid 0, i.e. the unprivileged user
+#    seine runs as). A non-root container user cannot use newuidmap at all:
+#    every write to uid_map comes back EPERM, even with the setuid bit
+#    intact and CAP_SETUID added to the container.
+#
+#  * /etc/subuid and /etc/subgid have to cover 65534. apt drops privileges
+#    to _apt/nobody inside the chroot and setgroups(65534) fails with
+#    EINVAL when that id falls outside the mapped range, which shows up as
+#    an unexplained 'apt-get update' failure.
+#
+#  * CAP_SYS_ADMIN, because sbuild-usernsexec calls sethostname() and
+#    podman's default capability set does not include it.
+#
+#  * an unmasked /proc: podman covers several paths under /proc, and the
+#    kernel refuses to mount a fresh procfs inside a nested user namespace
+#    while the parent's procfs has submounts hiding parts of it.
+#
+# The result is a container more privileged than the others seine builds,
+# though still an unprivileged one in the kernel's eyes -- uid 0 in it is
+# the user seine runs as, so what it can reach is that user's own files,
+# not the machine's. Used by seine/sbuild.py's BuilderImage (both to make
+# a chroot and to build in one) and by seine/vendor.py's resolver (to make
+# the chroot its base_chroot() reads).
+PRIVILEGED_RUN_OPTIONS = [
+    "--cap-add=sys_admin",
+    "--security-opt", "unmask=ALL",
+]
 
 # A process group of its own for whatever cmd is (podman, ansible-playbook):
 # Ctrl-C goes to the terminal's process group, so the key asking seine to

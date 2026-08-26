@@ -23,11 +23,16 @@ from seine.utils import apt_sources, base_feed, feeds
 # defaulted so it holds however the suite was invoked; the tests that
 # build images for real pass their own to the seine they run.
 os.environ["SEINE_CACHE_DIR"] = tempfile.mkdtemp(prefix="seine-tests-")
+# vendor.deploy_repository() is a directory the same way, under deploy/
+# rather than cache/ -- same reasoning, same fix.
+os.environ["SEINE_DEPLOY_DIR"] = tempfile.mkdtemp(prefix="seine-tests-deploy-")
 # And no key either: what a build signs with is read from the environment,
 # so a developer who signs their own builds would otherwise run a
 # different suite than everyone else.
 os.environ.pop("SEINE_SIGN_KEY", None)
 atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"],
+                ignore_errors=True)
+atexit.register(shutil.rmtree, os.environ["SEINE_DEPLOY_DIR"],
                 ignore_errors=True)
 
 DISTRO = {"source": "debian", "release": "bookworm", "architecture": "amd64",
@@ -86,6 +91,61 @@ class SourcesAreAskedForAndDeclared(avocado.Test):
                          ["deb http://example.com/debian bookworm main",
                           "deb-src http://example.com/debian bookworm main",
                           "deb http://example.com/debian vendor main"])
+
+class OfflineFeedsReadFromTheLocalVendorInstead(avocado.Test):
+    def test(self):
+        from seine.utils import vendor_mountpoint, offline_suites
+        offline = dict(distro([
+            {"suite": "bookworm"},
+            {"suite": "bookworm-security",
+             "uri": "http://security.debian.org/debian-security"},
+        ]), **{"apt-pull-mode": "offline"})
+        self.assertEqual(apt_sources(offline, sources=True, offline=True), [
+            "deb [trusted=yes] file:%s bookworm main" % vendor_mountpoint("bookworm"),
+            "deb [trusted=yes] file:%s bookworm extra" % vendor_mountpoint("bookworm"),
+            "deb-src [trusted=yes] file:%s bookworm main" % vendor_mountpoint("bookworm"),
+            "deb-src [trusted=yes] file:%s bookworm extra" % vendor_mountpoint("bookworm"),
+            "deb [trusted=yes] file:%s bookworm-security main" % vendor_mountpoint("bookworm-security"),
+            "deb [trusted=yes] file:%s bookworm-security extra" % vendor_mountpoint("bookworm-security"),
+            "deb-src [trusted=yes] file:%s bookworm-security main" % vendor_mountpoint("bookworm-security"),
+            "deb-src [trusted=yes] file:%s bookworm-security extra" % vendor_mountpoint("bookworm-security"),
+        ])
+        self.assertEqual(offline_suites(offline),
+                         ["bookworm", "bookworm-security"])
+        self.assertEqual(offline_suites(DISTRO), [])
+
+    # A signed vendor is verified rather than trusted outright -- the whole
+    # point of signing one is a rebuild on another machine, years later,
+    # being able to tell its packages were not tampered with since.
+    def test_a_signed_vendor_is_verified_not_trusted(self):
+        from seine import vendor
+        from seine.utils import vendor_mountpoint
+        where = vendor.deploy_repository("bookworm")
+        for name in ["InRelease", "ABCD1234.gpg"]:
+            open(os.path.join(where, name), "w").close()
+        try:
+            offline = dict(distro([{"suite": "bookworm"}]),
+                           **{"apt-pull-mode": "offline"})
+            self.assertEqual(apt_sources(offline, offline=True), [
+                "deb [signed-by=%s/ABCD1234.gpg] file:%s bookworm main"
+                % (vendor_mountpoint("bookworm"), vendor_mountpoint("bookworm")),
+                "deb [signed-by=%s/ABCD1234.gpg] file:%s bookworm extra"
+                % (vendor_mountpoint("bookworm"), vendor_mountpoint("bookworm")),
+            ])
+        finally:
+            shutil.rmtree(where, ignore_errors=True)
+
+    # apt_sources() backs every container that ever calls apt, including
+    # the ones 'seine vendor' itself uses to populate that very
+    # repository -- so going offline has to be an explicit ask, never
+    # inferred from the distro dict alone, or a specification combining
+    # 'vendor:' with 'apt-pull-mode: offline' would have the resolve/fetch
+    # containers try to read a repository that has nothing in it yet.
+    def test_offline_is_never_inferred_from_the_distro_alone(self):
+        offline = dict(distro([{"suite": "bookworm"}]),
+                       **{"apt-pull-mode": "offline"})
+        self.assertEqual(apt_sources(offline),
+                         ["deb http://example.com/debian bookworm main"])
 
 class MalformedFeedsAreRejected(avocado.Test):
     def test(self):
@@ -254,6 +314,97 @@ class ExtraFeedsAreAppliedBeforePlaybooksRun(avocado.Test):
         from seine import ansible_runner
         made = self.script([{"suite": "bookworm"}, {"suite": "bookworm-security"}])
         self.assertIn(ansible_runner.FEEDS_LIST, made)
+
+class TargetBootstrapStaysOnlineRegardlessOfOfflineMode(avocado.Test):
+    def test(self):
+        # TargetBootstrap's own mmdebstrap step has nothing bind-mounted
+        # for it to read a local vendor from -- 'apt-pull-mode: offline'
+        # is documented as never reaching it (docs/specification.md), and
+        # this is what keeps it that way now that apt_sources() itself
+        # will not go offline unless a caller explicitly asks.
+        from seine.bootstrap import HostBootstrap, TargetBootstrap
+        spec = dict(distro([{"suite": "bookworm"}]),
+                   **{"apt-pull-mode": "offline"})
+        target = TargetBootstrap(spec, {})
+        target.hostBootstrap = HostBootstrap(spec, {})
+        self.assertIn("http://example.com/debian bookworm main",
+                      target.dockerfile())
+        self.assertNotIn("vendor-repo", target.dockerfile())
+
+class RestoringOnlineFeedsUndoesGoingOffline(avocado.Test):
+    def test(self):
+        from seine.ansible_runner import AnsibleContainerRunner, FEEDS_LIST
+
+        written = []
+        class Runner(AnsibleContainerRunner):
+            def _exec(self, args, check=True):
+                written.append(args[-1])
+        spec = dict(distro([{"suite": "bookworm"},
+                            {"suite": "bookworm-security"}]),
+                   **{"apt-pull-mode": "offline"})
+        runner = Runner(None, spec, {})
+        runner._restore_online_feeds()
+        made = "".join(written)
+        self.assertIn("rm -f %s" % FEEDS_LIST, made)
+        self.assertIn("http://example.com/debian bookworm main", made)
+        self.assertIn("http://example.com/debian bookworm-security main", made)
+        self.assertNotIn("vendor-repo", made)
+
+    def test_nothing_runs_online(self):
+        from seine.ansible_runner import AnsibleContainerRunner
+
+        written = []
+        class Runner(AnsibleContainerRunner):
+            def _exec(self, args, check=True):
+                written.append(args[-1])
+        runner = Runner(None, distro([{"suite": "bookworm"}]), {})
+        runner._restore_online_feeds()
+        self.assertEqual(written, [])
+
+class OfflineFeedsReplaceWhatTargetBootstrapBaked(avocado.Test):
+    def script(self, feed_list):
+        from seine.ansible_runner import AnsibleContainerRunner
+
+        written = []
+        class Runner(AnsibleContainerRunner):
+            def _exec(self, args, check=True):
+                written.append(args[-1])
+        spec = dict(distro(feed_list), **{"apt-pull-mode": "offline"})
+        runner = Runner(None, spec, {})
+        runner._configure_feeds()
+        return "".join(written)
+
+    def test_a_single_feed_is_still_rewritten(self):
+        # Unlike the online case, one feed is not "nothing to do": the
+        # baked-in sources.list still points at the network, and this is
+        # what stops it being read at all.
+        made = self.script([{"suite": "bookworm"}])
+        self.assertIn("file:/vendor-repo/bookworm", made)
+
+    def test_the_baked_in_sources_are_removed_first(self):
+        made = self.script([{"suite": "bookworm"}])
+        self.assertIn("rm -f /etc/apt/sources.list", made)
+
+    def test_every_feed_is_covered_not_only_the_extra_ones(self):
+        made = self.script([{"suite": "bookworm"}, {"suite": "bookworm-security"}])
+        self.assertIn("file:/vendor-repo/bookworm-security", made)
+        self.assertIn("file:/vendor-repo/bookworm ", made)
+
+class VendorRepositoriesAreMountedWhenOffline(avocado.Test):
+    def test(self):
+        from seine import vendor
+        from seine.ansible_runner import AnsibleContainerRunner
+        spec = dict(distro([{"suite": "bookworm"}]), **{"apt-pull-mode": "offline"})
+        runner = AnsibleContainerRunner(None, spec, {})
+        volumes = " ".join(runner._volumes())
+        self.assertIn(vendor.deploy_repository("bookworm"), volumes)
+        self.assertIn("/vendor-repo/bookworm:ro", volumes)
+
+    def test_nothing_is_mounted_online(self):
+        from seine.ansible_runner import AnsibleContainerRunner
+        runner = AnsibleContainerRunner(None, distro([{"suite": "bookworm"}]), {})
+        volumes = runner._volumes()
+        self.assertNotIn("vendor-repo", " ".join(volumes))
 
 class TargetBootstrapBootstrapsFromTheBaseFeedAlone(avocado.Test):
     def dockerfile(self, feed_list):

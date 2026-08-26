@@ -7,6 +7,8 @@ import tempfile
 import yaml
 
 from seine                      import packages
+from seine                      import signing
+from seine.bootstrap            import HostBootstrap
 from seine.transport_bootstrap import TransportBootstrap
 from seine import tasks
 from seine.utils                import ContainerEngine
@@ -85,7 +87,43 @@ class AnsibleContainerRunner:
         if packages.has_packages(self.distro):
             volumes += ["-v", "%s:%s" % (packages.repository(self.distro),
                                          packages.REPOSITORY)]
+        # 'vendor:'s own *delivered* repositories, one per suite this
+        # went offline for -- read-only, since nothing running inside
+        # the target has any business adding to a vendor. Not
+        # vendor.repository(suite) (the cache of raw fetched files,
+        # which carries no pool/dists of its own) -- see
+        # _refresh_vendor_deploy(), which rebuilds this before run()
+        # ever gets here.
+        from seine import vendor
+        for suite in offline_suites(self.distro):
+            volumes += ["-v", "%s:%s:ro" % (vendor.deploy_repository(suite),
+                                            vendor_mountpoint(suite))]
         return volumes
+
+    # Rebuilds every offline suite's *delivered* vendor repository
+    # (deploy_repository(suite)) fresh, right before it is mounted --
+    # rather than trusting a 'seine vendor' run to have left it standing
+    # in deploy/, which this project's own workflow wipes between
+    # builds, and which 'seine build' never repopulates on its own.
+    # Safe to do unconditionally: vendor.index() only ever hardlinks
+    # files repository(suite) (the cache) already has and runs apt-
+    # ftparchive/gpg over them -- no network call anywhere in it, as
+    # long as the resolver/builder podman image it stands its container
+    # on is itself already cached from that same prior 'seine vendor'
+    # run (the same precondition an offline build already has on its
+    # chroot/package caches).
+    def _refresh_vendor_deploy(self):
+        from seine import vendor
+        suites = offline_suites(self.distro)
+        if len(suites) == 0:
+            return
+        hostBootstrap = HostBootstrap(self.distro, self.options)
+        hostBootstrap.create()
+        signer = signing.vendor_signer(self.options)
+        for suite in suites:
+            builder = vendor._builder_for(self.distro, suite, self.options,
+                                          hostBootstrap)
+            vendor.index(builder, suite, signer)
 
     # The cache into apt's own archives directory, so what another build
     # already fetched is not fetched again.
@@ -129,6 +167,8 @@ class AnsibleContainerRunner:
     # then 'container rm' it) for build_tarball() to pick up. On failure,
     # the container is torn down here since there's nothing left to export.
     def run(self, playbooks):
+        self._refresh_vendor_deploy()
+
         transport = TransportBootstrap(self.baseline, self.distro, self.options)
         transport.create()
 
@@ -163,7 +203,7 @@ class AnsibleContainerRunner:
         run = []
         for playbook in playbooks:
             playbook = dict(playbook)
-            # INITRD=No mirrors the old in-container 'RUN INITRD=No
+            # INITRD=No vendors the old in-container 'RUN INITRD=No
             # ansible-playbook ...' -- individual package installs skip
             # their own initramfs regen, _finalize() does one pass instead.
             playbook["environment"] = {"INITRD": "No"}

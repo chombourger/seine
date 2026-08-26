@@ -66,6 +66,7 @@ whole project. The ones in use are:
 | `testing`      | Test suites and their execution: `seine test`, `seine.testing` |
 | `tui`          | The terminal UI, `seine tui`                          |
 | `utils`        | Shared helpers: the container engine, apt sources     |
+| `vendor`       | The `vendor` section and `seine vendor`               |
 
 ### Summary
 

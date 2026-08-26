@@ -394,8 +394,14 @@ class CacheCmd(Cmd):
             # name otherwise.
             suite, source, name, arch, version = key.split("_", 4)
             where = os.path.join(CACHES["vendor"](), suite)
-            # The epoch a version may start with is not in the filename
-            # apt gave it -- '1:1.2-3' downloads as '..._1.2-3...'.
+            # A source's own .dsc/.orig.tar.* never carry an epoch in
+            # their filename, per Debian Policy ch-binary.html#
+            # uniqueness-of-version-numbers -- '1:1.2-3' downloads as
+            # '..._1.2-3...'. A binary's own .deb is different: apt keeps
+            # the epoch, ':' escaped as '%3a' -- '1:1.2-3' downloads as
+            # '..._1%3a1.2-3...' (see vendor.py's own _binary_filename()).
+            # 'stripped' is the source-side name; the binary branch below
+            # builds its own encoded name straight from 'version'.
             stripped = version.split(":", 1)[-1]
             if os.path.isdir(where):
                 if name == "source":
@@ -412,18 +418,32 @@ class CacheCmd(Cmd):
                             if os.path.isfile(path):
                                 os.unlink(path)
                 else:
-                    path = os.path.join(where, "%s_%s_%s.deb"
-                                        % (name, stripped, arch))
-                    if os.path.isfile(path):
-                        os.unlink(path)
-            # Made from what is there; the next 'seine vendor' run writes
-            # one that matches what this just removed.
-            for derived in ["Packages", "Packages.gz", "Sources", "Sources.gz",
-                            "Release", "Release.gpg", "InRelease",
-                            ".vendor-packages.db"]:
-                path = os.path.join(where, derived)
-                if os.path.isfile(path):
-                    os.unlink(path)
+                    # An 'Architecture: all' binary is still evicted by
+                    # a key naming the arch it was resolved for, but apt
+                    # names the file it fetched after the package's own
+                    # architecture -- 'all', never that one (see
+                    # vendor.py's own _binary_already_fetched()) -- so
+                    # both names are tried. Each is also tried under both
+                    # epoch spellings -- '%3a'-escaped (what a real
+                    # 'apt-get download' actually writes) and the plain
+                    # stripped one (an older fetch, or some apt that
+                    # names it differently) -- the same fallback
+                    # vendor.py's own _binary_already_fetched() uses, so a
+                    # file this doesn't recognize is never silently left
+                    # behind uncleaned.
+                    for candidate in (arch, "all"):
+                        for encoded in (version.replace(":", "%3a"), stripped):
+                            path = os.path.join(
+                                where, "%s_%s_%s.deb" % (name, encoded, candidate))
+                            if os.path.isfile(path):
+                                os.unlink(path)
+            # Nothing derived to clean up alongside it: the cache holds
+            # only ever these flat fetched files -- the repository built
+            # from them (pool/, dists/, Release, signatures) lives
+            # entirely in deploy/ instead (see vendor.py's own
+            # deploy_repository()/index()), rebuilt from scratch by the
+            # next 'seine vendor' or 'seine build' run regardless of
+            # what this just removed.
         elif kind == cache_index.PACKAGE:
             release, _, rest = key.partition("/")
             architecture, _, source = rest.partition("/")

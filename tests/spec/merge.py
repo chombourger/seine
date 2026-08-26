@@ -454,6 +454,83 @@ class DifferentPackagesAreLeftApart(avocado.Test):
         self.assertEqual(packages[1]["source"],
                          "git://example.com/linux.git;rev=deadbeef")
 
+class VendorEntriesAreMergedByName(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                vendor:
+                    - name: openssl
+        """)
+        build.loads("""
+                vendor:
+                    - name: openssl
+                      arch: [armhf]
+                    - name: zlib
+        """)
+        entries = build.spec["vendor"]
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["name"], "openssl")
+        self.assertEqual(entries[0]["arch"], ["armhf"])
+        self.assertEqual(entries[1]["name"], "zlib")
+
+class VendorEntrySettingsAreFirstLoadedWins(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                vendor:
+                    - name: openssl
+                      version: ">=1.2"
+        """)
+        # A fragment naming the same entry again cannot override what the
+        # file asking for it already pinned.
+        build.loads("""
+                vendor:
+                    - name: openssl
+                      version: ">=1.3"
+        """)
+        self.assertEqual(build.spec["vendor"][0]["version"], ">=1.2")
+
+class VendorExcludeIsAdditive(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("vendor-exclude: [gcc-12]")
+        build.loads("vendor-exclude: [gcc-12, texlive]")
+        self.assertEqual(build.spec["vendor-exclude"], ["gcc-12", "texlive"])
+
+# Unlike every other 'distribution:' setting (last-loaded wins),
+# 'architectures:' is additive and deduplicated, the same as
+# 'vendor-exclude:' above -- so a specification composing
+# examples/common/amd64.yaml and .../arm64.yaml (each naming its own
+# one) ends up with both, not whichever was required last.
+# 'architecture' itself (singular) still overwrites.
+class DistributionArchitecturesIsAdditive(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    architecture: amd64
+                    architectures:
+                        - amd64
+        """)
+        build.loads("""
+                distribution:
+                    architecture: arm64
+                    architectures:
+                        - arm64
+        """)
+        self.assertEqual(build.spec["distribution"]["architecture"], "arm64")
+        self.assertEqual(build.spec["distribution"]["architectures"],
+                         ["amd64", "arm64"])
+
+        # Naming the same architecture again does not duplicate it.
+        build.loads("""
+                distribution:
+                    architectures:
+                        - arm64
+        """)
+        self.assertEqual(build.spec["distribution"]["architectures"],
+                         ["amd64", "arm64"])
+
 class FilesAreResolvedAgainstTheFileThatListedThem(avocado.Test):
     def test(self):
         build = BuildCmd()
@@ -1115,7 +1192,7 @@ class TestEntriesAreAmendedByName(avocado.Test):
         self.assertEqual(entry["setup"], {"connect_target": {}})
 
 class ATestEntrysExistingFieldWins(avocado.Test):
-    # Mirrors PackagesAreMergedByName: what was said first stands.
+    # Vendors PackagesAreMergedByName: what was said first stands.
     def test(self):
         build = BuildCmd()
         build.loads("""

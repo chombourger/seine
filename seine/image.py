@@ -76,6 +76,13 @@ class Image:
         # specification is parsed rather than once the build reaches it.
         self.packages = packages.parse(spec)
 
+        # And so is 'vendor:', for the same reason -- 'seine build' never
+        # acts on it, but a specification with a typo in it should not
+        # wait for 'seine vendor' to say so.
+        from seine import vendor
+        vendor.suites(vendor.parse(spec), distro)
+        vendor.exclusions(spec)
+
         # And so is this: whether a source has anything vouching for it is
         # knowable without fetching it, so a specification that asked for
         # hashes and has none is told now rather than after a download.

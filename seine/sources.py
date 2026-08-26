@@ -45,8 +45,9 @@ class SourceBootstrap(Bootstrap):
         # out for the same reason.
         return os.path.join("source", self.distro["source"], self.distro["release"])
 
-    # No SBUILD_RUN_OPTIONS: unlike BuilderImage, nothing here runs sbuild
-    # or needs a nested user namespace, just apt-get/dpkg-source.
+    # No PRIVILEGED_RUN_OPTIONS: unlike BuilderImage, nothing here runs
+    # sbuild or mmdebstrap, or needs a nested user namespace, just
+    # apt-get/dpkg-source.
     # run_captured() so a caller running from the AI chat's worker
     # thread gets (returncode, output) back instead of apt's progress
     # output hitting the terminal raw.

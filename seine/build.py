@@ -820,6 +820,37 @@ class BuildCmd(Cmd):
         self._merge_named_list(self.spec["packages"], spec["packages"],
                                self._package_name, self._merge_package)
 
+    # Merged by the source package name, the same as 'packages' -- a
+    # board file naming an architecture a base file's entry did not, say.
+    #
+    # direction: asking file wins (docs/merging.md).
+    def _merge_vendor(self, spec):
+        if "vendor" not in spec:
+            return
+        if "vendor" not in self.spec:
+            self.spec["vendor"] = spec["vendor"]
+            return
+        self._merge_named_list(self.spec["vendor"], spec["vendor"],
+                               self._vendor_name, self._merge_settings)
+
+    def _vendor_name(self, entry):
+        if type(entry) != type({}):
+            return None
+        name = entry.get("name")
+        return name if type(name) == type("") else None
+
+    # Additive, deduplicated -- the same reasoning as 'redact': the file
+    # that knows a build-dep is not worth vendoring is rarely the file a
+    # vendor run is started from.
+    #
+    # direction: additive, deduplicated -- order doesn't matter
+    # (docs/merging.md).
+    def _merge_vendor_exclude(self, spec):
+        for name in spec.get("vendor-exclude") or []:
+            excluded = self.spec.setdefault("vendor-exclude", [])
+            if name not in excluded:
+                excluded.append(name)
+
     # A package entry under 'defaults' describes a package without asking
     # for it to be built: it is what an architecture file needs to say
     # which kernel flavour is meant without conjuring a kernel rebuild into
@@ -1135,6 +1166,8 @@ class BuildCmd(Cmd):
         self._merge_imager(spec)
         self._merge_defaults(spec)
         self._merge_packages(spec)
+        self._merge_vendor(spec)
+        self._merge_vendor_exclude(spec)
         self._merge_playbooks(spec)
         self._merge_tests(spec)
         if "image" in spec:
