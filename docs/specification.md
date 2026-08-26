@@ -235,6 +235,38 @@ bytes for a timestamp for ever, so nothing there can go stale.
 
 When multiple YAML files are parsed, the last parsed value will be used.
 
+#### apt-pull-mode: offline
+
+```
+apt-pull-mode: offline
+```
+
+Switches every feed from its network `uri` to the local repository
+[`seine vendor`](#vendor) built for its suite, so that installing what a
+specification asks for -- the target's own `apt` tasks, in its running
+container -- touches no network at all. `packages: false` is not a thing
+to say here: `apt-pull-mode` is a distribution-wide toggle, the same
+scope `distribution`'s other settings have, not a per-feed one.
+
+It does not reach the host and target bootstraps' own minimal package
+sets, or the buildd chroot packages are rebuilt in: what mirrors those is
+a full-suite snapshot (see [Building from a snapshot](#building-from-a-snapshot)
+above), not `vendor:`, which deliberately excludes anything the buildd
+chroot already provides. `apt-pull-mode: offline` is for what a
+specification's own playbooks and packages install once that chroot (or
+bootstrap) is standing -- exactly what `vendor:`'s own build-dependency
+closure covers.
+
+Offline for the length of that installing alone: what ships in the image
+is rewritten back to the real feeds before it is exported, the same
+`sources.list.d` entry an online build would have left, so the device it
+ends up on can still reach the network on its own -- a path that only
+ever existed on the machine that built it would otherwise break the
+first `apt-get update` the device itself runs.
+
+`seine vendor` has to have already built a suite's repository before a
+build asks for it offline; nothing here builds one on demand.
+
 ### defaults
 
 An entry under `packages` means *build this*. `defaults` holds package

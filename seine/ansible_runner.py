@@ -15,6 +15,8 @@ from seine.utils                import ContainerEngine
 from seine.utils                import spawn_own_pgroup
 from seine.utils                import apt_sources
 from seine.utils                import feeds
+from seine.utils                import vendor_mountpoint
+from seine.utils                import offline_suites
 
 # Where the downloads cache is mounted, which is deliberately not apt's own
 # archives directory.
@@ -152,14 +154,46 @@ class AnsibleContainerRunner:
                     'done; true' % {"from": ARCHIVES, "to": DOWNLOADS}], check=False)
 
     # Every feed but base_feed() -- see TargetBootstrap.create() for why
-    # those aren't baked in. Nothing to do for the common case of one feed.
+    # those aren't baked in. Nothing to do for the common case of one
+    # feed, unless this went offline: base_feed() is baked into the
+    # image pointing at the network same as ever (vendor:'s own repository
+    # never covers the minimal set TargetBootstrap bootstraps from -- see
+    # docs/specification.md's own 'vendor' section), so what apt reads
+    # from here on has to be replaced outright rather than added to, or
+    # the baked-in entry would still reach for the network right beside
+    # the one just written for it.
     def _configure_feeds(self):
-        extra = feeds(self.distro)[1:]
+        every = feeds(self.distro)
+        offline = self.distro.get("apt-pull-mode") == "offline"
+        extra = every if offline else every[1:]
         if len(extra) == 0:
             return
-        lines = apt_sources(self.distro, sources=True, entries=extra)
-        script = "".join("echo '%s' >> %s; " % (line, FEEDS_LIST)
-                         for line in lines)
+        lines = apt_sources(self.distro, sources=True, entries=extra,
+                            offline=offline)
+        script = ""
+        if offline:
+            script += ("rm -f /etc/apt/sources.list "
+                      "/etc/apt/sources.list.d/*.sources "
+                      "/etc/apt/sources.list.d/*.list; ")
+        script += "".join("echo '%s' >> %s; " % (line, FEEDS_LIST)
+                          for line in lines)
+        self._exec(["sh", "-c", script])
+
+    # 'apt-pull-mode: offline' above replaced every feed -- base_feed()
+    # included -- with the local vendor for the length of this run alone.
+    # What ships has to read from the real feeds like any other image, or
+    # the first 'apt-get update' the device itself ever runs fails
+    # reaching for a container path that only ever existed on the machine
+    # that built it. Rewritten fresh rather than restored from a backup:
+    # _configure_feeds() deleted the base feed TargetBootstrap baked in
+    # along with everything else, going offline, so there is nothing left
+    # to put back other than by asking apt_sources() again.
+    def _restore_online_feeds(self):
+        if self.distro.get("apt-pull-mode") != "offline":
+            return
+        lines = apt_sources(self.distro, sources=True, entries=feeds(self.distro))
+        script = "rm -f %s; " % FEEDS_LIST
+        script += "".join("echo '%s' >> %s; " % (line, FEEDS_LIST) for line in lines)
         self._exec(["sh", "-c", script])
 
     # Creates the target container, runs 'playbooks' against it and leaves
@@ -188,6 +222,7 @@ class AnsibleContainerRunner:
             self._exec(["apt-get", "update", "-qqy"])
             self._run_playbooks(playbooks)
             self._save_downloads()
+            self._restore_online_feeds()
             self._finalize()
         except:
             ContainerEngine.discard(self.cid, force=True, failed=True)

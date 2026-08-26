@@ -153,15 +153,71 @@ def base_feed(distro):
 # An expired feed says so in the entry rather than in an apt.conf.d
 # fragment: these lines reach every container a build talks to an archive
 # from, and the option stays scoped to the feed that asked for it.
-def apt_sources(distro, sources=False, entries=None):
+#
+# 'offline' is an explicit opt-in, never inferred from
+# 'distro.get("apt-pull-mode")' here: this one function backs every
+# container that ever calls apt -- the host/target bootstraps, the
+# sbuild-capable builder 'packages:' rebuilds in, and that same builder
+# reused by 'seine vendor' itself to *populate* the local repository this
+# would otherwise point a resolve/fetch container back at. Only
+# seine/ansible_runner.py's own feed configuration for the running target
+# container -- what 'apt-pull-mode: offline' actually means, installing
+# what the specification asks for without reaching the network -- passes
+# it.
+def apt_sources(distro, sources=False, entries=None, offline=False):
     lines = []
     for feed in entries if entries is not None else feeds(distro):
+        if offline:
+            lines += _offline_feed(feed, sources)
+            continue
         feed = dict(feed, options="" if feed["valid_until"]
                                     else "[check-valid-until=no] ")
         lines.append("deb %(options)s%(uri)s %(suite)s %(components)s" % feed)
         if sources and feed["sources"]:
             lines.append("deb-src %(options)s%(uri)s %(suite)s %(components)s" % feed)
     return lines
+
+# Where a suite's vendor repository is reached from inside a container,
+# once 'apt-pull-mode: offline' has turned a feed into one -- bind-mounted
+# there by whoever calls apt_sources(), the same way 'packages:'s own
+# repository is mounted at sbuild.py's REPOSITORY. One mountpoint per
+# suite, since two feeds going offline in the same container each need
+# their own tree: a single shared path could only ever hold one of them.
+VENDOR_MOUNTPOINT = "/vendor-repo"
+
+def vendor_mountpoint(suite):
+    return "%s/%s" % (VENDOR_MOUNTPOINT, suite)
+
+# A feed rewritten to read from its own suite's local vendor instead of
+# the network. Verified with 'signed-by' when the vendor carries a key --
+# 'seine vendor --vendor-sign-key' signed it precisely so a rebuild years
+# from now, on another machine, can still tell its packages were not
+# tampered with on the way -- and trusted outright, the way 'packages:'s
+# own unsigned repository is, only when it was never signed at all.
+def _offline_feed(feed, sources):
+    from seine import vendor
+    where = vendor_mountpoint(feed["suite"])
+    keyring = vendor.keyring(feed["suite"])
+    options = ("[signed-by=%s/%s]" % (where, keyring) if keyring is not None
+              else "[trusted=yes]")
+    # main/extra always present, even if one is empty
+    lines = ["deb %s file:%s %s main" % (options, where, feed["suite"]),
+             "deb %s file:%s %s extra" % (options, where, feed["suite"])]
+    if sources:
+        lines.append("deb-src %s file:%s %s main" % (options, where, feed["suite"]))
+        lines.append("deb-src %s file:%s %s extra" % (options, where, feed["suite"]))
+    return lines
+
+# The suites a set of feeds would read from offline -- what a caller
+# building the podman command around apt_sources() has to bind-mount,
+# without re-deriving it from the same feeds a second time. Empty unless
+# 'apt-pull-mode: offline' is actually set, so a caller can bind-mount
+# unconditionally on what this returns.
+def offline_suites(distro, entries=None):
+    if distro.get("apt-pull-mode") != "offline":
+        return []
+    return sorted({feed["suite"] for feed
+                  in (entries if entries is not None else feeds(distro))})
 
 # One build at a time for the things two builds share.
 #
