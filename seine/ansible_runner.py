@@ -238,9 +238,8 @@ class AnsibleContainerRunner:
         run = []
         for playbook in playbooks:
             playbook = dict(playbook)
-            # INITRD=No vendors the old in-container 'RUN INITRD=No
-            # ansible-playbook ...' -- individual package installs skip
-            # their own initramfs regen, _finalize() does one pass instead.
+            # Individual package installs skip their own initramfs regen,
+            # _finalize() does one pass instead.
             playbook["environment"] = {"INITRD": "No"}
             run.append(playbook)
 
