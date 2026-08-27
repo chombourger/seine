@@ -145,13 +145,50 @@ def run_spec(files, tags=None, outdir=None, reporter=None, dryrun=False, spec=No
 # screenshot, or that a console.log even exists. Robot's own output.xml
 # already has the full keyword-by-keyword trace; this doesn't repeat
 # it, only what output.xml has no notion of.
+def _ensure_console_cast(context, path=None):
+    cast = path or getattr(context, "console_cast_path", None)
+    if not cast:
+        return
+    if os.path.isfile(cast):
+        return
+    import json as _json
+    import time as _time
+    from seine.tui.target import CONSOLE_COLUMNS, CONSOLE_LINES
+    header = {
+        "version": 2,
+        "width": CONSOLE_COLUMNS,
+        "height": CONSOLE_LINES,
+        "timestamp": int(_time.time()),
+        "env": {"TERM": "xterm-256color"},
+    }
+    with open(cast, "w", encoding="utf-8") as f:
+        _json.dump(header, f)
+        f.write("\n")
+
+
 def _write_interactions(context):
     import json
+    _ensure_console_cast(context)
+    # Write a header-only cast for every per-test file that has none yet,
+    # so a CI job sees one .cast per test even for a quiet run.
+    for name in list(getattr(context, "console_casts", {}).keys()):
+        cast = context.console_casts[name]
+        if cast:
+            _ensure_console_cast(context, cast)
     path = os.path.join(context.outdir, "interactions.json")
     console_log = context.console_log_path
+    console_cast = getattr(context, "console_cast_path", None)
+    console_casts = getattr(context, "console_casts", {}) or {}
+    # Basename map for JSON -- keeps interactions.json portable
+    cast_map = {k: os.path.basename(v)
+                for k, v in console_casts.items()
+                if v and os.path.isfile(v)}
     with open(path, "w") as f:
         json.dump({
             "console_log": (os.path.basename(console_log)
                             if console_log and os.path.isfile(console_log) else None),
+            "console_cast": (os.path.basename(console_cast)
+                             if console_cast and os.path.isfile(console_cast) else None),
+            "console_casts": cast_map,
             "interactions": context.interactions,
         }, f, indent=2)

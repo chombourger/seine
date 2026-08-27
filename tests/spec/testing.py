@@ -580,5 +580,376 @@ class ObservationLibraryTests(avocado.Test):
             with self.assertRaises(NotImplementedError):
                 lib.classify_screen()
 
+class ConsoleCastPaths(avocado.Test):
+    def setUp(self):
+        with _test_extra_required(self):
+            from seine.testing import context as ctx
+            self.ctx = ctx
+
+    def test_runcontext_has_console_cast_next_to_console_log(self):
+        with self.ctx.RunContext(outdir=self.workdir) as context:
+            self.assertEqual(context.console_cast_path,
+                             os.path.join(self.workdir, "console.cast"))
+            self.assertEqual(context.console_log_path,
+                             os.path.join(self.workdir, "console.log"))
+
+    def test_runcontext_without_outdir_has_no_cast(self):
+        with self.ctx.RunContext() as context:
+            self.assertIsNone(context.console_cast_path)
+            self.assertIsNone(context.console_log_path)
+
+    def test_cast_header_only_when_no_console_traffic(self):
+        spec = _write(self.workdir, "spec.yaml", MINIMAL_IMAGE + """
+test:
+  - name: x
+    tests:
+      - name: t
+        steps: [{log: {message: hi}}]
+""")
+        from seine.testing import runner
+        runner.run_spec([spec], outdir=self.workdir)
+        cast = os.path.join(self.workdir, "console.cast")
+        self.assertTrue(os.path.isfile(cast))
+        with open(cast, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        import json as _json
+        header = _json.loads(lines[0])
+        self.assertEqual(header["version"], 2)
+        self.assertEqual(header["width"], 80)
+        self.assertEqual(header["height"], 40)
+        self.assertIn("timestamp", header)
+        self.assertEqual(header["env"]["TERM"], "xterm-256color")
+        # no events, only header
+        self.assertEqual(len(lines), 1)
+        # console.log was never written
+        self.assertFalse(os.path.isfile(os.path.join(self.workdir, "console.log")))
+
+class ConsoleCastWiring(avocado.Test):
+    def setUp(self):
+        with _test_extra_required(self):
+            from seine.testing import context as ctx
+            from seine.testing import runner as _runner
+            from seine.tui import target as _target
+            self.ctx = ctx
+            self.runner = _runner
+            self.target = _target
+
+    def test_run_spec_creates_cast_and_references_it_in_interactions(self):
+        spec = _write(self.workdir, "spec.yaml", MINIMAL_IMAGE + """
+test:
+  - name: x
+    tests:
+      - name: t
+        steps: [{get_spec_value: {path: "distribution.architecture"}}]
+""")
+        import json
+        self.runner.run_spec([spec], outdir=self.workdir)
+        with open(os.path.join(self.workdir, "interactions.json")) as f:
+            data = json.load(f)
+        # header-only cast is still present, referenced by basename
+        self.assertEqual(data["console_cast"], "console.cast")
+        self.assertTrue(os.path.isfile(os.path.join(self.workdir, "console.cast")))
+        # no bytes ever arrived, so console.log stays absent
+        self.assertIsNone(data["console_log"])
+
+    def test_run_spec_lists_existing_console_log_and_cast(self):
+        spec = _write(self.workdir, "spec.yaml", MINIMAL_IMAGE + """
+test:
+  - name: x
+    tests:
+      - name: t
+        steps: [{log: {message: hi}}]
+""")
+        # pre-seed a console.log to prove interactions.json lists it only
+        # when it actually exists on disk, same gate console_cast uses
+        open(os.path.join(self.workdir, "console.log"), "wb").write(b"hello\n")
+        import json
+        self.runner.run_spec([spec], outdir=self.workdir)
+        with open(os.path.join(self.workdir, "interactions.json")) as f:
+            data = json.load(f)
+        self.assertEqual(data["console_log"], "console.log")
+        self.assertEqual(data["console_cast"], "console.cast")
+
+    def _read_cast(self, path):
+        import json as _json
+        with open(path, encoding="utf-8") as f:
+            raw = f.read().splitlines()
+        header = _json.loads(raw[0])
+        events = [_json.loads(l) for l in raw[1:]]
+        return header, events
+
+    def test_console_adapter_writes_bytes_and_str(self):
+        import time as _time
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            adapter = self.target.ConsoleAdapter(ctx)
+            adapter.print(b"hello\r\n")
+            _time.sleep(0.01)
+            adapter.print("world\r\n")
+            adapter.close()
+        header, events = self._read_cast(os.path.join(self.workdir, "console.cast"))
+        self.assertEqual(header["width"], self.target.CONSOLE_COLUMNS)
+        self.assertEqual(header["height"], self.target.CONSOLE_LINES)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0][1], "o")
+        self.assertEqual(events[0][2], "hello\r\n")
+        self.assertEqual(events[1][2], "world\r\n")
+        # elapsed is monotonic
+        self.assertGreaterEqual(events[1][0], events[0][0])
+        self.assertGreaterEqual(events[0][0], 0)
+
+    def test_console_adapter_preserves_ansi_escapes(self):
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            adapter = self.target.ConsoleAdapter(ctx)
+            adapter.print(b"\x1b[31mRed\x1b[m\r\n")
+            adapter.close()
+        _, events = self._read_cast(os.path.join(self.workdir, "console.cast"))
+        self.assertEqual(events[0][2], "\x1b[31mRed\x1b[m\r\n")
+
+    def test_console_adapter_appends_across_reconnects_without_duplicate_header(self):
+        import time as _time
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            a1 = self.target.ConsoleAdapter(ctx)
+            a1.print(b"first\r\n")
+            a1.close()
+            # second connect in same run
+            a2 = self.target.ConsoleAdapter(ctx)
+            _time.sleep(0.02)
+            a2.print(b"second\r\n")
+            a2.close()
+        import json as _json
+        with open(os.path.join(self.workdir, "console.cast"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        header = _json.loads(lines[0])
+        events = [_json.loads(l) for l in lines[1:]]
+        # exactly one header even after two adapters
+        self.assertEqual(len([l for l in lines
+                              if isinstance(_json.loads(l), dict)
+                              and _json.loads(l).get("version") == 2]), 1)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0][2], "first\r\n")
+        self.assertEqual(events[1][2], "second\r\n")
+        # second elapsed is relative to first header's timestamp, not zero
+        self.assertGreater(events[1][0], events[0][0])
+        # raw console.log contains both chunks contiguously
+        self.assertEqual(open(os.path.join(self.workdir, "console.log"), "rb").read(),
+                         b"first\r\nsecond\r\n")
+
+    def test_ensure_is_idempotent(self):
+        import json as _json
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            adapter = self.target.ConsoleAdapter(ctx)
+            adapter.print(b"hi\r\n")
+            adapter.close()
+        # runner's helper must not clobber existing file
+        self.runner._ensure_console_cast(ctx)
+        self.runner._ensure_console_cast(ctx)
+        header, events = self._read_cast(os.path.join(self.workdir, "console.cast"))
+        self.assertEqual(len(events), 1)
+        # ensure on a fresh context with no prior file creates header-only
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out")
+            os.makedirs(out)
+            with self.ctx.RunContext(outdir=out) as ctx2:
+                self.runner._ensure_console_cast(ctx2)
+            with open(os.path.join(out, "console.cast"), encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(_json.loads(lines[0])["version"], 2)
+
+class ConsoleCastCLI(avocado.Test):
+    def setUp(self):
+        with _test_extra_required(self):
+            import robot  # noqa: F401
+
+    def test_cli_creates_cast_next_to_logs(self):
+        spec = _write(self.workdir, "spec.yaml", BUILTIN_ONLY_SPEC)
+        outdir = os.path.join(self.workdir, "out")
+        run = seine("test", "--outdir=%s" % outdir, spec)
+        # BUILTIN_ONLY_SPEC has one failing test, so exit 1 is expected
+        self.assertEqual(run.returncode, 1)
+        self.assertTrue(os.path.isfile(os.path.join(outdir, "console.cast")))
+        self.assertTrue(os.path.isfile(os.path.join(outdir, "interactions.json")))
+        import json
+        with open(os.path.join(outdir, "interactions.json")) as f:
+            data = json.load(f)
+        self.assertEqual(data["console_cast"], "console.cast")
+        with open(os.path.join(outdir, "console.cast"), encoding="utf-8") as f:
+            header = json.loads(f.readline())
+        self.assertEqual(header["version"], 2)
+        self.assertEqual(header["width"], 80)
+        self.assertEqual(header["height"], 40)
+
+    def test_cli_dry_run_still_creates_cast(self):
+        spec = _write(self.workdir, "power.yaml", MINIMAL_IMAGE + """
+test:
+  - name: power
+    tests:
+      - name: t
+        steps: [{power_cycle: {}}]
+""")
+        outdir = os.path.join(self.workdir, "out")
+        run = seine("test", "--outdir=%s" % outdir, "--dry-run", spec)
+        self.assertEqual(run.returncode, 0)
+        self.assertTrue(os.path.isfile(os.path.join(outdir, "console.cast")))
+
+class ConsoleCastPerTest(avocado.Test):
+    def setUp(self):
+        with _test_extra_required(self):
+            from seine.testing import context as ctx
+            from seine.testing import runner as _runner
+            from seine.tui import target as _target
+            self.ctx = ctx
+            self.runner = _runner
+            self.target = _target
+
+    def _read_cast(self, path):
+        import json as _json
+        with open(path, encoding="utf-8") as f:
+            raw = f.read().splitlines()
+        header = _json.loads(raw[0])
+        events = [_json.loads(l) for l in raw[1:]]
+        return header, events
+
+    def test_each_test_gets_its_own_cast_file(self):
+        spec = _write(self.workdir, "spec.yaml", MINIMAL_IMAGE + """
+test:
+  - name: suiteA
+    tests:
+      - name: alpha
+        steps: [{log: {message: hi}}]
+      - name: beta
+        steps: [{log: {message: hi}}]
+""")
+        import json
+        self.runner.run_spec([spec], outdir=self.workdir)
+        # one global plus one per test
+        self.assertTrue(os.path.isfile(os.path.join(self.workdir, "console.cast")))
+        self.assertTrue(os.path.isfile(os.path.join(self.workdir, "suiteA.alpha.cast")))
+        self.assertTrue(os.path.isfile(os.path.join(self.workdir, "suiteA.beta.cast")))
+        with open(os.path.join(self.workdir, "interactions.json")) as f:
+            data = json.load(f)
+        self.assertEqual(data["console_cast"], "console.cast")
+        self.assertEqual(data["console_casts"]["suiteA.alpha"], "suiteA.alpha.cast")
+        self.assertEqual(data["console_casts"]["suiteA.beta"], "suiteA.beta.cast")
+        # header-only per-test casts when no console bytes arrived
+        for name in ["suiteA.alpha", "suiteA.beta"]:
+            with open(os.path.join(self.workdir, "%s.cast" % name), encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(json.loads(lines[0])["version"], 2)
+
+    def test_per_test_cast_is_isolated(self):
+        import time as _time
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            # simulate two tests sequentially, each with its own console output
+            ctx.start_test(
+                type("D", (), {"name": "alpha", "type": "TEST"})(),
+                type("R", (), {"parent": type("P", (), {"name": "suiteA"})()})())
+            a = self.target.ConsoleAdapter(ctx)
+            a.print(b"for alpha\r\n")
+            _time.sleep(0.01)
+            a.close()
+            ctx.end_test(
+                type("D", (), {"name": "alpha"})(),
+                type("R", (), {"parent": type("P", (), {"name": "suiteA"})()})())
+            ctx.start_test(
+                type("D", (), {"name": "beta", "type": "TEST"})(),
+                type("R", (), {"parent": type("P", (), {"name": "suiteA"})()})())
+            b = self.target.ConsoleAdapter(ctx)
+            b.print(b"for beta\r\n")
+            b.close()
+            ctx.end_test(
+                type("D", (), {"name": "beta"})(),
+                type("R", (), {"parent": type("P", (), {"name": "suiteA"})()})())
+        _, ev_alpha = self._read_cast(os.path.join(self.workdir, "suiteA.alpha.cast"))
+        _, ev_beta = self._read_cast(os.path.join(self.workdir, "suiteA.beta.cast"))
+        _, ev_global = self._read_cast(os.path.join(self.workdir, "console.cast"))
+        self.assertEqual(len(ev_alpha), 1)
+        self.assertEqual(ev_alpha[0][2], "for alpha\r\n")
+        self.assertEqual(len(ev_beta), 1)
+        self.assertEqual(ev_beta[0][2], "for beta\r\n")
+        # global contains both
+        self.assertEqual(len(ev_global), 2)
+        self.assertEqual([e[2] for e in ev_global], ["for alpha\r\n", "for beta\r\n"])
+
+    def test_adapter_routes_to_current_test_and_global(self):
+        import time as _time
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            ctx.start_test(
+                type("D", (), {"name": "t", "type": "TEST"})(),
+                type("R", (), {"parent": type("P", (), {"name": "x"})()})())
+            adapter = self.target.ConsoleAdapter(ctx)
+            adapter.print(b"hello from t\r\n")
+            adapter.close()
+            ctx.end_test(type("D", (), {"name": "t"})(),
+                         type("R", (), {"parent": type("P", (), {"name": "x"})()})())
+            # output outside any test goes only to global
+            adapter2 = self.target.ConsoleAdapter(ctx)
+            adapter2.print(b"outside\r\n")
+            adapter2.close()
+        _, ev_test = self._read_cast(os.path.join(self.workdir, "x.t.cast"))
+        _, ev_global = self._read_cast(os.path.join(self.workdir, "console.cast"))
+        self.assertEqual(ev_test[0][2], "hello from t\r\n")
+        self.assertEqual(len(ev_test), 1)
+        self.assertEqual([e[2] for e in ev_global],
+                         ["hello from t\r\n", "outside\r\n"])
+
+    # ConsoleAdapter.print() runs on mtda's own background thread while
+    # start_test()/end_test() run on Robot's -- a byte routed by reading
+    # current_test outside a shared lock could land against a test that
+    # is mid-transition. Proven here by holding RunContext's own lock
+    # across a print() call from another thread: the write must not
+    # happen until the lock is released.
+    def test_print_is_serialized_against_a_test_transition(self):
+        import threading
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            ctx.start_test(
+                type("D", (), {"name": "t", "type": "TEST"})(),
+                type("R", (), {"parent": type("P", (), {"name": "x"})()})())
+            adapter = self.target.ConsoleAdapter(ctx)
+            ctx._console_lock.acquire()
+            wrote = threading.Event()
+            def do_print():
+                adapter.print(b"late\r\n")
+                wrote.set()
+            th = threading.Thread(target=do_print)
+            th.start()
+            try:
+                # print() must be blocked on the lock -- give it a
+                # generous window to prove it does NOT write meanwhile.
+                self.assertFalse(wrote.wait(timeout=0.3))
+            finally:
+                ctx._console_lock.release()
+            self.assertTrue(wrote.wait(timeout=5))
+            th.join()
+            adapter.close()
+            ctx.end_test(type("D", (), {"name": "t"})(),
+                         type("R", (), {"parent": type("P", (), {"name": "x"})()})())
+        _, events = self._read_cast(os.path.join(self.workdir, "x.t.cast"))
+        self.assertEqual(events[0][2], "late\r\n")
+
+    def test_cli_creates_one_cast_per_test(self):
+        spec = _write(self.workdir, "spec.yaml", MINIMAL_IMAGE + """
+test:
+  - name: s
+    tests:
+      - name: one
+        steps: [{log: {message: hi}}]
+      - name: two
+        steps: [{log: {message: hi}}]
+""")
+        outdir = os.path.join(self.workdir, "out")
+        run = seine("test", "--outdir=%s" % outdir, spec)
+        self.assertEqual(run.returncode, 0)
+        self.assertTrue(os.path.isfile(os.path.join(outdir, "console.cast")))
+        self.assertTrue(os.path.isfile(os.path.join(outdir, "s.one.cast")))
+        self.assertTrue(os.path.isfile(os.path.join(outdir, "s.two.cast")))
+        import json
+        with open(os.path.join(outdir, "interactions.json")) as f:
+            data = json.load(f)
+        self.assertEqual(data["console_casts"]["s.one"], "s.one.cast")
+        self.assertEqual(data["console_casts"]["s.two"], "s.two.cast")
+
 if __name__ == "__main__":
     avocado.main()

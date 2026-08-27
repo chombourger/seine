@@ -101,6 +101,6 @@ only if every test that ran passed; 1 if any failed; 2 if SPEC has no
                 print("        %s" % t.message)
         print(result.summary())
         if not result.ok:
-            print("see %s/console.log and %s/interactions.json for what led up to it"
-                 % (outdir, outdir))
+            print("see %s/console.log (%s/console.cast) and %s/interactions.json for what led up to it"
+                 % (outdir, outdir, outdir))
         sys.exit(0 if result.ok else 1)

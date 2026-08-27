@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import re
+import threading
 import time
 
 from seine.testing.loader import DEFAULT_LIBRARIES as _INTERESTING_LIBS
@@ -52,7 +54,21 @@ class RunContext:
         # run, appended across however many connect/disconnect cycles
         # a suite's own per-test setup/teardown makes.
         self.console_log_path = os.path.join(outdir, "console.log") if outdir else None
+        # Asciinema v2 recording of the same stream -- replayable evidence
+        # next to console.log (see seine.tui.target.ConsoleAdapter).
+        self.console_cast_path = os.path.join(outdir, "console.cast") if outdir else None
+        # One cast per test (see start_test()) -- supporting evidence that
+        # stays scoped to a single test rather than the whole run.
+        self.console_casts = {}
         self.current_test = None
+        # Held around every current_test transition and every read of it
+        # from ConsoleAdapter.print() (mtda's own background thread) --
+        # closes the race where a console byte arrives mid-transition and
+        # gets routed by a torn read of current_test/console_casts. Does
+        # not (cannot) resolve which test a byte straddling the real
+        # hardware boundary truly belongs to -- see record_artifact()'s
+        # own comment on that gap.
+        self._console_lock = threading.Lock()
         # One entry per 'interesting' keyword call, in order -- a
         # timeline, not a lookup table. 'record_artifact()' attaches a
         # file (a screenshot, say) to the entry for the keyword call
@@ -76,12 +92,43 @@ class RunContext:
         entry["artifact_kind"] = kind
         entry["artifact_path"] = os.path.relpath(path, self.outdir) if self.outdir else path
 
+    def _cast_path_for(self, test_name):
+        safe = re.sub(r'[^A-Za-z0-9._-]', '_', test_name)
+        return os.path.join(self.outdir, "%s.cast" % safe) if self.outdir else None
+
+    def _ensure_cast_for_test(self, test_name):
+        if not self.outdir or not test_name:
+            return
+        if test_name in self.console_casts:
+            return
+        path = self._cast_path_for(test_name)
+        self.console_casts[test_name] = path
+        if os.path.isfile(path):
+            return
+        # Header-only cast so the file exists even when no console
+        # bytes ever arrived during this test.
+        import json as _json
+        from seine.tui.target import CONSOLE_COLUMNS, CONSOLE_LINES
+        header = {
+            "version": 2,
+            "width": CONSOLE_COLUMNS,
+            "height": CONSOLE_LINES,
+            "timestamp": int(time.time()),
+            "env": {"TERM": "xterm-256color"},
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump(header, f)
+            f.write("\n")
+
     # Robot listener API -- see this class's own header comment.
     def start_test(self, data, result):
-        self.current_test = "%s.%s" % (result.parent.name, data.name)
+        with self._console_lock:
+            self.current_test = "%s.%s" % (result.parent.name, data.name)
+            self._ensure_cast_for_test(self.current_test)
 
     def end_test(self, data, result):
-        self.current_test = None
+        with self._console_lock:
+            self.current_test = None
 
     def start_keyword(self, data, result):
         if data.type != data.KEYWORD or getattr(result, "libname", None) not in _INTERESTING_LIBS:

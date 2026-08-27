@@ -113,8 +113,8 @@ class TestState:
             lines.append(self.result.summary())
             lines.append("output under %s" % outdir)
             if not self.result.ok:
-                lines.append("see %s/console.log and %s/interactions.json "
-                            "for what led up to it" % (outdir, outdir))
+                lines.append("see %s/console.log (%s/console.cast) and %s/interactions.json "
+                            "for what led up to it" % (outdir, outdir, outdir))
         return "\n".join(lines) + "\n"
 
 # Mirrors start_build()'s own shape: a worker thread, a Reporter crossing

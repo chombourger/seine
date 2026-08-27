@@ -11,6 +11,8 @@
 # the console pane (ConsoleAdapter) -- '/target' is unavailable without
 # either module.
 
+import contextlib
+import json
 import re
 import time
 
@@ -519,6 +521,60 @@ def _get_byte_stream_class():
         _ByteStream = _ByteStreamImpl
     return _ByteStream
 
+# Asciinema v2 writer for the same console stream -- one JSON header
+# plus [elapsed, "o", data] lines, replayable with `asciinema play`.
+# Only used when RunContext provides console_cast_path (same opt-in as
+# console.log); interactive /target never sets it so this stays a no-op
+# there. Created once per adapter, appended across reconnects.
+class _AsciinemaWriter:
+    def __init__(self, path):
+        self.path = path
+        self._start = time.time()
+        header = {
+            "version": 2,
+            "width": CONSOLE_COLUMNS,
+            "height": CONSOLE_LINES,
+            "timestamp": int(self._start),
+            "env": {"TERM": "xterm-256color"},
+        }
+        # Truncate on first open of this run; later reconnects append.
+        # If the file already exists (a previous connect in the same run
+        # already wrote the header), keep it and reuse its start time so
+        # elapsed stays relative to the run's first byte.
+        import os as _os
+        if _os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    first = f.readline()
+                    data = json.loads(first) if first else {}
+                    ts = data.get("timestamp")
+                    if isinstance(ts, (int, float)):
+                        self._start = float(ts)
+            except Exception:
+                pass
+            self._fh = open(path, "a", encoding="utf-8")
+        else:
+            self._fh = open(path, "w", encoding="utf-8")
+            json.dump(header, self._fh)
+            self._fh.write("\n")
+            self._fh.flush()
+
+    def write(self, data: bytes):
+        elapsed = time.time() - self._start
+        text = data.decode("utf-8", "replace") if isinstance(data, (bytes, bytearray)) else str(data)
+        line = json.dumps([elapsed, "o", text], ensure_ascii=False)
+        self._fh.write(line + "\n")
+        self._fh.flush()
+
+    def close(self):
+        if getattr(self, "_fh", None) is not None:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+
+
 # The duck-typed 'screen' object mtda's RemoteConsole/ConsoleOutput
 # actually calls: print(data) for raw console bytes (ConsoleOutput.
 # write() -> print() -> screen.print(), output.py), on_event(event) for
@@ -538,6 +594,18 @@ class ConsoleAdapter:
         # continuous transcript rather than overwriting each other.
         log_path = getattr(app, "console_log_path", None)
         self._log = open(log_path, "ab") if log_path else None
+        cast_path = getattr(app, "console_cast_path", None)
+        self._cast = _AsciinemaWriter(cast_path) if cast_path else None
+        # One writer per test (RunContext creates the header file on
+        # start_test); the global writer above stays for the whole run.
+        self._casts = {}
+        self._casts_lock = None
+        # Only needed when writes come from mtda's background thread
+        try:
+            import threading as _thr
+            self._casts_lock = _thr.Lock()
+        except Exception:
+            pass
         self.screen = pyte.Screen(CONSOLE_COLUMNS, CONSOLE_LINES)
         # pyte defaults to DECAWM (auto-wrap) on, matching a real
         # vt100. Real VGA/BIOS text mode clips at the screen edge
@@ -554,6 +622,52 @@ class ConsoleAdapter:
         # same "poll, don't push" precedent BuildScreen's tail uses.
         self.dirty = False
 
+    def _cast_for_test(self, test_name):
+        if not test_name:
+            return None
+        # Fast path without lock -- single-threaded setup phase.
+        w = self._casts.get(test_name)
+        if w is not None:
+            return w
+        # RunContext already created the header file; resolve its path
+        # via the context helper when available, otherwise fall back to
+        # a sanitized name next to the global cast.
+        path = None
+        getter = getattr(self.app, "_cast_path_for", None)
+        if callable(getter):
+            try:
+                path = getter(test_name)
+            except Exception:
+                path = None
+        if path is None:
+            import re as _re, os as _os
+            safe = _re.sub(r'[^A-Za-z0-9._-]', '_', test_name)
+            base = getattr(self.app, "console_cast_path", None)
+            if base:
+                path = _os.path.join(_os.path.dirname(base), "%s.cast" % safe)
+        if not path:
+            return None
+        # Ensure RunContext's own bookkeeping knows about this cast.
+        try:
+            if hasattr(self.app, "console_casts") and test_name not in self.app.console_casts:
+                self.app.console_casts[test_name] = path
+        except Exception:
+            pass
+        w = _AsciinemaWriter(path)
+        # Keep per-test writers ordered by test start -- close() will flush all.
+        if self._casts_lock is not None:
+            with self._casts_lock:
+                # Re-check under lock.
+                if test_name not in self._casts:
+                    self._casts[test_name] = w
+                else:
+                    # Another thread won -- discard duplicate and reuse.
+                    w.close()
+                    w = self._casts[test_name]
+        else:
+            self._casts[test_name] = w
+        return w
+
     def print(self, data):
         if isinstance(data, str):
             data = data.encode("utf-8")
@@ -562,6 +676,26 @@ class ConsoleAdapter:
         if self._log is not None:
             self._log.write(data)
             self._log.flush()
+        # Per-test cast (if a test is currently running) plus the global
+        # run cast -- the per-test file is scoped evidence for that one
+        # test, the global one is the whole run for `asciinema play`
+        # on the entire console transcript. Read/routed under the same
+        # lock RunContext.start_test()/end_test() hold while switching
+        # current_test, so a byte from this (mtda's own background)
+        # thread never sees a torn transition -- see context.py's own
+        # comment on _console_lock.
+        lock = getattr(self.app, "_console_lock", None)
+        with lock if lock is not None else contextlib.nullcontext():
+            test = getattr(self.app, "current_test", None)
+            if test:
+                try:
+                    w = self._cast_for_test(test)
+                    if w is not None:
+                        w.write(data)
+                except Exception:
+                    pass
+        if self._cast is not None:
+            self._cast.write(data)
 
     def on_event(self, event):
         self.app.target_state.on_event(event)
@@ -571,6 +705,16 @@ class ConsoleAdapter:
         if self._log is not None:
             self._log.close()
             self._log = None
+        if self._cast is not None:
+            self._cast.close()
+            self._cast = None
+        for w in list(getattr(self, "_casts", {}).values()):
+            try:
+                w.close()
+            except Exception:
+                pass
+        if hasattr(self, "_casts"):
+            self._casts.clear()
 
 # pyte gives one Char per cell (fg/bg as an ANSI name or a bare hex
 # triplet for 256/true-color) -- mapped straight to a Rich Style per
