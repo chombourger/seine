@@ -9,6 +9,8 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
+from tests.spec.native_image import native_image
+
 def seine(*args):
     return subprocess.run([sys.executable, "./seine.py"] + list(args),
                           cwd=path_to_sources, capture_output=True, text=True)
@@ -46,13 +48,13 @@ class WhatSeineCanBeAskedToDo(avocado.Test):
             self.assertEqual(run.returncode, 0)
             self.assertIn("Usage:", run.stdout)
 
-PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
+NATIVE_IMAGE = native_image()
 
 # 'seine validate': everything 'seine build' does before touching a
 # container, and nothing else.
 class ValidatingASpecification(avocado.Test):
     def test_a_real_spec_is_valid(self):
-        run = seine("validate", PC_IMAGE)
+        run = seine("validate", NATIVE_IMAGE)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("valid", run.stdout)
 
@@ -84,7 +86,7 @@ class ValidatingASpecification(avocado.Test):
     def test_validating_does_not_touch_the_cache(self):
         cache = os.path.join(self.workdir, "cache")
         env = dict(os.environ, SEINE_CACHE_DIR=cache)
-        subprocess.run([sys.executable, "./seine.py", "validate", PC_IMAGE],
+        subprocess.run([sys.executable, "./seine.py", "validate", NATIVE_IMAGE],
                        cwd=path_to_sources, capture_output=True, text=True, env=env)
         self.assertFalse(os.path.isdir(os.path.join(cache, "plans")))
 
@@ -116,7 +118,7 @@ class TheDoctor(avocado.Test):
 class Diffing(avocado.Test):
     def test_a_specification_with_nothing_built_yet_still_prints(self):
         env = dict(os.environ, SEINE_CACHE_DIR=os.path.join(self.workdir, "cache"))
-        run = subprocess.run([sys.executable, "./seine.py", "diff", PC_IMAGE],
+        run = subprocess.run([sys.executable, "./seine.py", "diff", NATIVE_IMAGE],
                              cwd=path_to_sources, capture_output=True, text=True, env=env)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("distribution:", run.stdout)

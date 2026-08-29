@@ -41,6 +41,9 @@ def _content(widget):
         return widget._content
     return getattr(widget, "_Static__content", "")
 
+from tests.spec.native_image import native_image
+
+NATIVE_IMAGE = native_image()
 PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
 
 # A minimal vendor-only specification -- no 'image:' section at all, the
@@ -191,7 +194,7 @@ class Rendering(avocado.Test):
     # a second computation of what a build would do.
     def test_plan_matches_image_plan(self):
         context = self.Context()
-        context.use([PC_IMAGE])
+        context.use([NATIVE_IMAGE])
         text = self.render_plan(context)
         self.assertIn("would build", text)
         self.assertIn("steps:", text)
@@ -216,7 +219,7 @@ class ArtifactsRendering(avocado.Test):
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["SEINE_DEPLOY_DIR"] = os.path.join(self.workdir, "deploy")
         context = self.Context()
-        context.use([PC_IMAGE])
+        context.use([NATIVE_IMAGE])
         text = self.render_artifacts(context)
         self.assertIn("nothing built here yet", text)
 
@@ -225,7 +228,7 @@ class ArtifactsRendering(avocado.Test):
         deploy = os.path.join(self.workdir, "deploy")
         os.environ["SEINE_DEPLOY_DIR"] = deploy
         context = self.Context()
-        context.use([PC_IMAGE])
+        context.use([NATIVE_IMAGE])
         release = context.builds[0].spec["distribution"]["release"]
         os.makedirs(os.path.join(deploy, release), exist_ok=True)
         with open(os.path.join(deploy, release, "pc-image.img"), "wb") as f:
@@ -256,7 +259,7 @@ class PackagesRendering(avocado.Test):
 
     def test_a_spec_with_no_packages_section_says_none(self):
         context = self.Context()
-        context.use([PC_IMAGE])
+        context.use([NATIVE_IMAGE])
         text = self.render_packages(context)
         self.assertIn("REBUILT FROM SOURCE", text)
         self.assertIn("none", text)
@@ -421,14 +424,14 @@ class AnalyzeCacheDoctorRendering(avocado.Test):
 
     def test_analyze_with_no_recorded_run_says_so(self):
         context = self.Context()
-        context.use([PC_IMAGE])
+        context.use([NATIVE_IMAGE])
         text = self.render_analyze(context)
         self.assertIn("no recorded run", text)
 
     def test_analyze_reads_back_a_real_record(self):
         from seine import analyze, tasks
         context = self.Context()
-        context.use([PC_IMAGE])
+        context.use([NATIVE_IMAGE])
         digest = analyze.spec_digest(context.builds[0].spec)
         step = tasks.Task("rootfs", lambda: None)
         step.started, step.ended, step.failed = 0.0, 30.0, False
@@ -482,7 +485,7 @@ class VendorRendering(avocado.Test):
 
     def test_no_vendor_section_says_so(self):
         context = self.Context()
-        context.use([PC_IMAGE])
+        context.use([NATIVE_IMAGE])
         self.assertIn("no 'vendor:' section", self.render_vendor(context))
 
     def test_no_manifest_yet_says_so(self):
@@ -824,7 +827,7 @@ class App(avocado.Test):
 
     def test_startup_with_a_spec_lands_on_overview(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test():
                 self.assertIsNone(app._startup_error)
                 self.assertTrue(app.context.active)
@@ -855,7 +858,7 @@ class App(avocado.Test):
 
     def test_artifacts_command_switches_screen(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/artifacts"
@@ -866,7 +869,7 @@ class App(avocado.Test):
 
     def test_packages_command_switches_screen(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/packages"
@@ -877,7 +880,7 @@ class App(avocado.Test):
 
     def test_analyze_command_switches_screen(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/analyze"
@@ -956,7 +959,7 @@ class App(avocado.Test):
     # silently ignored, and not run either.
     def test_a_command_without_a_leading_slash_is_refused(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "plan"
@@ -972,7 +975,7 @@ class App(avocado.Test):
     def test_palette_fills_the_prompt_with_a_leading_slash(self):
         from seine.tui.app import RegistryProvider
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test():
                 provider = RegistryProvider(app.screen)
                 provider._fill("plan")()
@@ -1087,7 +1090,7 @@ class App(avocado.Test):
 
     def test_plan_command_switches_screen_and_back(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/plan"
@@ -1104,7 +1107,7 @@ class App(avocado.Test):
 
     def test_unknown_command_is_shown_inline_not_raised(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/bogus"
@@ -1119,7 +1122,7 @@ class App(avocado.Test):
     # 'MarkupError' from inside 'say()' itself.
     def test_an_error_containing_brackets_still_renders(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test():
                 message = ("CalledProcessError: Command "
                           "'['podman', '--root', 'x']' returned non-zero "
@@ -1132,7 +1135,7 @@ class App(avocado.Test):
 
     def test_history_recalls_previous_commands_on_up(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/nope"
@@ -1148,7 +1151,7 @@ class App(avocado.Test):
     # having typed it from scratch.
     def test_an_unmodified_recall_does_not_duplicate_in_history(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/nope"
@@ -1176,7 +1179,7 @@ class App(avocado.Test):
     def test_bang_runs_a_real_shell_command_via_suspend(self):
         async def scenario():
             import seine.tui.app as tui_app
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             calls = []
 
             @contextlib.contextmanager
@@ -1291,7 +1294,7 @@ class App(avocado.Test):
             current = settings.load()
             current["startup_commands"] = ["/doctor"]
             settings.save(current)
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.DoctorScreen)
@@ -1319,7 +1322,7 @@ class BuildFollowsVendorScreen(avocado.Test):
 
     def test_a_vendor_task_starting_switches_to_the_vendor_screen(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("build")
                 await pilot.pause()
@@ -1330,7 +1333,7 @@ class BuildFollowsVendorScreen(avocado.Test):
 
     def test_the_vendor_task_finishing_switches_back_to_build(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("build")
                 await pilot.pause()
@@ -1343,7 +1346,7 @@ class BuildFollowsVendorScreen(avocado.Test):
 
     def test_a_manual_screen_change_is_left_alone(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("build")
                 await pilot.pause()
@@ -1360,7 +1363,7 @@ class BuildFollowsVendorScreen(avocado.Test):
 
     def test_a_build_with_no_vendor_stage_never_switches(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("build")
                 await pilot.pause()
@@ -1409,7 +1412,7 @@ class SettingsScreenIntegration(avocado.Test):
 
     def test_opens_over_whatever_screen_was_there_and_escape_returns(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 await self._open(pilot, app)
                 self.assertIsInstance(app.screen, self.SettingsScreen)
@@ -1853,7 +1856,7 @@ class BuildStateBehaviour(avocado.Test):
         self.BuildState = BuildState
         from seine.tui.context import Context
         context = Context()
-        context.use([PC_IMAGE])
+        context.use([NATIVE_IMAGE])
         self.build = context.builds[0]
 
     def test_reset_lists_every_step_as_pending(self):
@@ -2116,7 +2119,7 @@ class BuildScreenIntegration(avocado.Test):
         self.Image.build = fast_build
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/build"
@@ -2143,7 +2146,7 @@ class BuildScreenIntegration(avocado.Test):
         self.Image.build = fast_build
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 self.assertFalse(app.context.builds[0].options["sbom"])
                 prompt = app.screen.query_one("#prompt")
@@ -2168,7 +2171,7 @@ class BuildScreenIntegration(avocado.Test):
         self.Image.build = failing_build
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/build"
@@ -2200,7 +2203,7 @@ class BuildScreenIntegration(avocado.Test):
         self.Image.build = gated_build
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/build"
@@ -2260,7 +2263,7 @@ class BuildScreenIntegration(avocado.Test):
         self.Image.build = gated_build
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 # In a finally: run_test()'s teardown joins the worker
                 # thread, and a failed assertion would otherwise leave it
@@ -2319,7 +2322,7 @@ class BuildScreenIntegration(avocado.Test):
         self.Image.build = gated_build
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/build"
@@ -2499,7 +2502,8 @@ class VendorScreenIntegration(avocado.Test):
         _write_vendor_only_spec(self.fragment)
 
     def test_vendor_command_runs_to_completion(self):
-        def fast_run(cmd_self, distro, entries, exclude, wanted, refresh, display=None):
+        def fast_run(cmd_self, distro, entries, exclude, wanted, refresh,
+                    archs=None, extra_archs=(), display=None):
             display.started("resolve:bookworm")
             display.finished("resolve:bookworm", failed=False)
             display.say("vendored 1 source package(s) for bookworm")
@@ -2534,7 +2538,8 @@ class VendorScreenIntegration(avocado.Test):
     def test_vendor_runs_verbose_so_the_log_tail_has_something_to_show(self):
         import time as clock
         seen = {}
-        def fast_run(cmd_self, distro, entries, exclude, wanted, refresh, display=None):
+        def fast_run(cmd_self, distro, entries, exclude, wanted, refresh,
+                    archs=None, extra_archs=(), display=None):
             seen["verbose"] = cmd_self.options.get("verbose")
             # A no-op fake finishing instantly races the Vendor screen's
             # own async mount (app.show("vendor") right after this
@@ -2559,7 +2564,7 @@ class VendorScreenIntegration(avocado.Test):
 
     def test_vendor_refuses_without_a_vendor_section(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/vendor"
@@ -2587,7 +2592,7 @@ class VendorScreenIntegration(avocado.Test):
 
     def test_build_refuses_while_a_vendor_is_running(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.vendor_state.worker = self._FakeWorker()
                 prompt = app.screen.query_one("#prompt")
@@ -2696,7 +2701,7 @@ class TestScreenIntegration(avocado.Test):
         self.runner.run_spec = fast_run_spec
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/test"
@@ -2725,7 +2730,7 @@ class TestScreenIntegration(avocado.Test):
         self.runner.run_spec = fast_run_spec
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/test"
@@ -2818,7 +2823,7 @@ class TestScreenIntegration(avocado.Test):
         self.runner.run_spec = fast_run_spec
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/test"

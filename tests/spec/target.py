@@ -12,9 +12,10 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
-
 from seine.tui import target
+from tests.spec.native_image import native_image
+
+NATIVE_IMAGE = native_image()
 
 def _run(scenario):
     asyncio.run(scenario())
@@ -884,7 +885,7 @@ class TargetScreenIntegration(avocado.Test):
 
     def test_slash_target_switches_screens_and_renders_both_panes(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/target"
@@ -923,7 +924,7 @@ class TargetScreenIntegration(avocado.Test):
         sys.modules["mtda.client"].Client = lambda host=None: client
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test(size=(100, 20)) as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -948,7 +949,7 @@ class TargetScreenIntegration(avocado.Test):
     def test_console_pane_is_a_tab_stop(self):
         from seine.tui.target_screen import ConsolePane
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -968,7 +969,7 @@ class TargetScreenIntegration(avocado.Test):
         sys.modules["mtda.client"].Client = lambda host=None: client
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -987,7 +988,7 @@ class TargetScreenIntegration(avocado.Test):
 
     def test_a_freeform_line_here_sends_to_the_console_not_ai_chat(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1009,7 +1010,7 @@ class TargetScreenIntegration(avocado.Test):
     # same as everywhere else.
     def test_a_freeform_console_line_is_recallable_but_never_persisted(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1036,7 +1037,7 @@ class TargetScreenIntegration(avocado.Test):
     # agent's console session.
     def test_disconnecting_drops_the_consoles_recall(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1063,7 +1064,7 @@ class TargetScreenIntegration(avocado.Test):
 
     def test_clicking_power_toggles_directly_no_confirmation(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1089,7 +1090,7 @@ class TargetScreenIntegration(avocado.Test):
     # squeezed down to nothing.
     def test_clicking_the_power_token_in_the_status_pane_toggles_it(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test(size=(140, 45)) as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1122,7 +1123,7 @@ class TargetScreenIntegration(avocado.Test):
     # that.
     def test_clicking_the_storage_icon_in_the_status_pane_toggles_it(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test(size=(140, 45)) as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1146,7 +1147,7 @@ class TargetScreenIntegration(avocado.Test):
     # EVT but nothing ever refreshed it again once writing stopped.
     def test_footer_chip_clears_once_a_write_finishes(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1163,7 +1164,7 @@ class TargetScreenIntegration(avocado.Test):
 
     def test_console_border_shows_uptime_while_on_clears_once_off(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1183,7 +1184,7 @@ class TargetScreenIntegration(avocado.Test):
     # prompted this test).
     def test_a_redraw_crash_is_reported_not_fatal(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1206,7 +1207,7 @@ class TargetScreenIntegration(avocado.Test):
     def test_no_default_agent_and_no_prior_client_does_not_auto_connect(self):
         os.environ.pop("MTDA_REMOTE", None)
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1222,7 +1223,7 @@ class TargetScreenIntegration(avocado.Test):
     def test_target_connect_command_dials_and_switches_screens(self):
         os.environ.pop("MTDA_REMOTE", None)
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 self.assertNotIsInstance(app.screen, self.TargetScreen)
                 prompt = app.screen.query_one("#prompt")
@@ -1240,7 +1241,7 @@ class TargetScreenIntegration(avocado.Test):
 
     def test_target_connect_with_an_agent_forwards_the_host(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/target connect 192.0.2.5:1234"
@@ -1255,7 +1256,7 @@ class TargetScreenIntegration(avocado.Test):
 
     def test_target_disconnect_clears_the_client_and_shows_the_hint_again(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1344,7 +1345,7 @@ class ConsolePaneRawMode(avocado.Test):
     # confirming every keystroke individually would be unusable.
     def test_focusing_the_pane_enables_raw_mode_immediately(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1358,7 +1359,7 @@ class ConsolePaneRawMode(avocado.Test):
     # the couple of seconds it's given.
     def test_focusing_shows_a_transient_warning_then_clears_it(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1375,7 +1376,7 @@ class ConsolePaneRawMode(avocado.Test):
 
     def test_escape_reaches_the_target_once_raw_mode_is_on(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()
@@ -1392,7 +1393,7 @@ class ConsolePaneRawMode(avocado.Test):
 
     def test_blurring_turns_raw_mode_off(self):
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 app.show("target")
                 await pilot.pause()

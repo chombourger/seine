@@ -20,6 +20,9 @@ sys.path.append(path_to_sources)
 os.environ.setdefault("SEINE_CACHE_DIR", tempfile.mkdtemp(prefix="seine-ai-tests-"))
 os.chdir(tempfile.mkdtemp(prefix="seine-ai-tests-cwd-"))
 
+from tests.spec.native_image import native_image
+
+NATIVE_IMAGE = native_image()
 PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
 REBUILD_BUSYBOX = os.path.join(path_to_sources, "examples", "rebuild-busybox", "main.yaml")
 
@@ -225,12 +228,12 @@ class ToolTable(avocado.Test):
             self.assertGreater(len(text), 0)
 
     def test_spec_files_lists_what_was_loaded(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         text = self.ai.TOOLS["spec-files"].run(app, {})
         for loaded in build.loaded_files:
             self.assertIn(loaded, text)
-        self.assertIn(os.path.realpath(PC_IMAGE), text)
+        self.assertIn(os.path.realpath(NATIVE_IMAGE), text)
 
     # 'examples/common/' has more '*.yaml' than 'pc-image' actually
     # 'requires:' (arm64.yaml, rpi4-image.yaml, ... -- other boards'
@@ -255,11 +258,11 @@ class ToolTable(avocado.Test):
     # sibling of pc-image/ and common/ under examples/. The AI missed
     # this fragment for exactly that reason before this fix.
     def test_spec_files_lists_yaml_from_cousin_directories_too(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         text = self.ai.TOOLS["spec-files"].run(app, {})
         kernel = os.path.realpath(os.path.join(
-            os.path.dirname(PC_IMAGE), "..", "linux-6.18", "kernel.yml"))
+            os.path.dirname(NATIVE_IMAGE), "..", "linux-6.18", "kernel.yml"))
         self.assertNotIn(kernel, build.loaded_files)
         self.assertIn(kernel, text)
 
@@ -290,7 +293,7 @@ class ToolTable(avocado.Test):
         self.assertIn("install utilities", text)
 
     def test_read_refuses_a_path_that_was_not_loaded(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["read"].run(app, {"path": "/etc/shadow"})
         self.assertIn("not one of this build's own loaded files", text)
 
@@ -299,9 +302,9 @@ class ToolTable(avocado.Test):
     # still readable, so the AI can inspect it before suggesting
     # 'requires:' rather than guessing at its contents.
     def test_read_works_on_an_unloaded_sibling_spec_files_listed(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         kernel = os.path.realpath(os.path.join(
-            os.path.dirname(PC_IMAGE), "..", "linux-6.18", "kernel.yml"))
+            os.path.dirname(NATIVE_IMAGE), "..", "linux-6.18", "kernel.yml"))
         text = self.ai.TOOLS["read"].run(app, {"path": kernel})
         self.assertIn("cdn.kernel.org", text)
 
@@ -352,7 +355,7 @@ class ToolTable(avocado.Test):
     # guaranteed to be this build's own, not an unrelated file that
     # happens to sit on disk.
     def test_read_reaches_the_active_builds_own_sbom(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         build.options["sbom"] = True
         from seine.sbom import SBOM
@@ -365,7 +368,7 @@ class ToolTable(avocado.Test):
         self.assertEqual(text, '{"packages": []}')
 
     def test_read_does_not_reach_an_sbom_when_none_would_be_produced(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         from seine.sbom import SBOM
         sbom_path = SBOM(build.spec["distribution"], dict(build.options, sbom=True))\
@@ -429,7 +432,7 @@ class ToolTable(avocado.Test):
         self.assertIn("of %d" % total, text)
 
     def test_spec_dump_returns_a_requested_line_range(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         full = build.dump(build.spec).splitlines()
         text = self.ai.TOOLS["spec-dump"].run(app, {"start": 2, "end": 3})
@@ -438,7 +441,7 @@ class ToolTable(avocado.Test):
         self.assertEqual(body, "\n".join(full[1:3]))
 
     def test_spec_dump_says_when_start_is_past_the_end(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["spec-dump"].run(app, {"start": 999999})
         self.assertIn("past the end", text)
 
@@ -446,7 +449,7 @@ class ToolTable(avocado.Test):
     # back whole -- the whole reason for chunking is to bound one
     # reply's size regardless of what the model asks for.
     def test_spec_dump_clamps_a_range_wider_than_the_chunk_cap(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["spec-dump"].run(
             app, {"start": 1, "end": 1000000})
         header = text.splitlines()[0]
@@ -572,9 +575,9 @@ class ToolTable(avocado.Test):
     # spec-query, given an explicit 'path', shares read's wider
     # boundary -- the same unloaded sibling is queryable directly.
     def test_spec_query_works_on_an_unloaded_sibling_given_an_explicit_path(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         kernel = os.path.realpath(os.path.join(
-            os.path.dirname(PC_IMAGE), "..", "linux-6.18", "kernel.yml"))
+            os.path.dirname(NATIVE_IMAGE), "..", "linux-6.18", "kernel.yml"))
         text = self.ai.TOOLS["spec-query"].run(
             app, {"path": kernel, "expression": "$..source"})
         self.assertIn("apt://linux", text)
@@ -586,7 +589,7 @@ class ToolTable(avocado.Test):
     # only linux-6.18/kernel.yml has it in these fixtures) must not
     # surface in a search that never named it.
     def test_spec_query_without_a_path_does_not_search_unloaded_siblings(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["spec-query"].run(
             app, {"expression": "$..upstream"})
         self.assertNotIn("cdn.kernel.org", text)
@@ -602,16 +605,16 @@ class ToolTable(avocado.Test):
         self.assertIn("install utilities", text)
 
     def test_spec_query_with_no_matches_says_so_not_nothing(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["spec-query"].run(
-            app, {"path": PC_IMAGE, "expression": "$.nothing_named_this"})
+            app, {"path": NATIVE_IMAGE, "expression": "$.nothing_named_this"})
         self.assertTrue(text.startswith("no matches"))
         self.assertIn("$..apt", text)
 
     def test_spec_query_reports_a_bad_expression_not_a_crash(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["spec-query"].run(
-            app, {"path": PC_IMAGE, "expression": "not a jsonpath expression((("})
+            app, {"path": NATIVE_IMAGE, "expression": "not a jsonpath expression((("})
         self.assertIn("not a usable JSONPath expression", text)
 
     # 'path' left out -- searches every file 'spec-files' would list,
@@ -1015,7 +1018,7 @@ class ToolTable(avocado.Test):
 
     def test_source_pull_then_list_then_rm(self):
         self._fake_source_pull()
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
 
         preview = self.ai.TOOLS["source-pull"].preview(app, {"package": "bash"})
         self.assertTrue(preview.ok)
@@ -1039,7 +1042,7 @@ class ToolTable(avocado.Test):
 
     def test_source_pull_refuses_an_already_pulled_name(self):
         self._fake_source_pull()
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         self.ai.TOOLS["source-pull"].run(app, {"package": "bash"})
         preview = self.ai.TOOLS["source-pull"].preview(app, {"package": "bash"})
         self.assertFalse(preview.ok)
@@ -1072,13 +1075,13 @@ class ToolTable(avocado.Test):
 
     def test_bash_runs_and_returns_the_output(self):
         self._fake_bash("hello\n")
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["bash"].run(app, {"command": "echo hello"})
         self.assertEqual(text, "hello")
 
     def test_bash_reports_a_bad_cwd_rather_than_crash(self):
         self._fake_bash()
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["bash"].run(
             app, {"command": "true", "cwd": "does-not-exist"})
         self.assertIn("could not run", text)
@@ -1371,7 +1374,7 @@ class ToolTable(avocado.Test):
         self.assertIn("needs both", text)
 
     def test_installed_packages_needs_a_single_active_group(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["installed-packages"].run(app, {})
         # A real spec but no build yet -- no tarball to read.
         self.assertIn("no tarball", text)
@@ -1392,7 +1395,7 @@ class ToolTable(avocado.Test):
     # the "is package X in my image" case this exists for, where X may
     # be far smaller than the 30th-largest package.
     def test_installed_packages_name_finds_a_small_package(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         build.image._tarball = self._status_tarball(
             "Package: sudo\nStatus: install ok installed\n"
@@ -1410,7 +1413,7 @@ class ToolTable(avocado.Test):
         self.assertIn("10 KiB", text)
 
     def test_installed_packages_name_with_no_match_says_so(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         build.image._tarball = self._status_tarball(
             "Package: bash\nStatus: install ok installed\n"
@@ -1424,7 +1427,7 @@ class ToolTable(avocado.Test):
     # 'name' is a regex, not a plain substring -- alternation finds
     # either of two packages in one call.
     def test_installed_packages_name_is_a_regex(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         build.image._tarball = self._status_tarball(
             "Package: sudo\nStatus: install ok installed\n"
@@ -1442,7 +1445,7 @@ class ToolTable(avocado.Test):
         self.assertNotIn("bash", text)
 
     def test_installed_packages_name_with_bad_regex_reports_it_not_a_crash(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         build.image._tarball = self._status_tarball(
             "Package: bash\nStatus: install ok installed\n"
@@ -1479,13 +1482,13 @@ class ToolTable(avocado.Test):
         return sbom_path
 
     def test_issues_needs_a_single_active_group(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         text = self.ai.TOOLS["issues"].run(app, {})
         # A real spec but no scan cached yet.
         self.assertIn("no CVE scan cached", text)
 
     def test_issues_reads_back_a_cached_scan(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         self._write_scanned_sbom(build, [
             {"package": "libssl@3.0", "vulnerability":
@@ -1496,7 +1499,7 @@ class ToolTable(avocado.Test):
         self.assertIn("high", text)
 
     def test_issues_name_narrows_to_a_package(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         self._write_scanned_sbom(build, [
             {"package": "libssl@3.0", "vulnerability":
@@ -1508,7 +1511,7 @@ class ToolTable(avocado.Test):
         self.assertNotIn("CVE-2", text)
 
     def test_issues_min_urgency_drops_less_severe_findings(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         self._write_scanned_sbom(build, [
             {"package": "libssl@3.0", "vulnerability":
@@ -1520,7 +1523,7 @@ class ToolTable(avocado.Test):
         self.assertNotIn("CVE-2", text)
 
     def test_issues_bad_min_urgency_reports_it_not_a_crash(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         self._write_scanned_sbom(build, [
             {"package": "libssl@3.0", "vulnerability":
@@ -1529,7 +1532,7 @@ class ToolTable(avocado.Test):
         self.assertIn("must be one of", text)
 
     def test_issues_caps_a_large_result_with_a_hint_to_narrow(self):
-        app = self.SeineApp(files=[PC_IMAGE])
+        app = self.SeineApp(files=[NATIVE_IMAGE])
         build = app.context.builds[0]
         findings = [{"package": "linux@6.1", "vulnerability":
                     {"id": "CVE-%d" % i, "status": "open", "urgency": "low"}}
@@ -2728,7 +2731,7 @@ class StartBuildNotifiesTheAI(avocado.Test):
         sys.modules["litellm"] = fake_litellm(tool_name="start-build")
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "build my image"
@@ -2772,7 +2775,7 @@ class StartBuildNotifiesTheAI(avocado.Test):
         sys.modules["litellm"] = fake_litellm(tool_name="start-build")
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "build my image"
@@ -2804,7 +2807,7 @@ class StartBuildNotifiesTheAI(avocado.Test):
             tool_name="start-build", tool_arguments='{"packages_only": true}')
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             apps.append(app)
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
@@ -2884,7 +2887,7 @@ class StartBuildNotifiesTheAI(avocado.Test):
             tool_arguments='{"target": "no-such-task"}')
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "build just the frobnicator"
@@ -2909,7 +2912,7 @@ class StartBuildNotifiesTheAI(avocado.Test):
         sys.modules["litellm"] = fake_litellm(tool_name="start-build")
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "build my image"
@@ -2942,7 +2945,7 @@ class StartBuildNotifiesTheAI(avocado.Test):
         sys.modules["litellm"] = fake_litellm(tool_name="start-build")
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "build my image"
@@ -2973,7 +2976,7 @@ class StartBuildNotifiesTheAI(avocado.Test):
         self.Image.build = self._fast_build(failing=False, release=already_released)
 
         async def scenario():
-            app = self.SeineApp(files=[PC_IMAGE])
+            app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/build"

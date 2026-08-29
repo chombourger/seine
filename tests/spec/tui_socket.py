@@ -35,7 +35,9 @@ for _var in ("SEINE_LLM_MODEL", "SEINE_LLM_API_BASE", "SEINE_LLM_API_KEY"):
 # test here builds a real SeineApp.
 os.chdir(tempfile.mkdtemp(prefix="seine-tui-socket-tests-cwd-"))
 
-PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
+from tests.spec.native_image import native_image
+
+NATIVE_IMAGE = native_image()
 
 @contextlib.contextmanager
 def _tui_required(test):
@@ -345,7 +347,7 @@ class SocketAppEvents(avocado.Test):
 
         async def scenario():
             path = _socket_path()
-            app = self.SeineApp(files=[PC_IMAGE], interaction_socket=path)
+            app = self.SeineApp(files=[NATIVE_IMAGE], interaction_socket=path)
             async with app.run_test() as pilot:
                 conn = _connect(path)
                 self.addCleanup(conn.close)
@@ -366,7 +368,7 @@ class SocketAppEvents(avocado.Test):
     def test_screen_changed_emits_an_event(self):
         async def scenario():
             path = _socket_path()
-            app = self.SeineApp(files=[PC_IMAGE], interaction_socket=path)
+            app = self.SeineApp(files=[NATIVE_IMAGE], interaction_socket=path)
             async with app.run_test() as pilot:
                 conn = _connect(path)
                 self.addCleanup(conn.close)
@@ -384,7 +386,7 @@ class SocketAppEvents(avocado.Test):
     def test_re_showing_the_same_screen_emits_nothing(self):
         async def scenario():
             path = _socket_path()
-            app = self.SeineApp(files=[PC_IMAGE], interaction_socket=path)
+            app = self.SeineApp(files=[NATIVE_IMAGE], interaction_socket=path)
             async with app.run_test() as pilot:
                 conn = _connect(path)
                 self.addCleanup(conn.close)
@@ -454,7 +456,7 @@ class SocketTargetEvents(avocado.Test):
     def test_connect_emits_target_connected(self):
         async def scenario():
             path = _socket_path()
-            app = self.SeineApp(files=[PC_IMAGE], interaction_socket=path)
+            app = self.SeineApp(files=[NATIVE_IMAGE], interaction_socket=path)
             async with app.run_test() as pilot:
                 conn = _connect(path)
                 self.addCleanup(conn.close)
@@ -467,7 +469,7 @@ class SocketTargetEvents(avocado.Test):
     def test_storage_to_host_emits_an_event(self):
         async def scenario():
             path = _socket_path()
-            app = self.SeineApp(files=[PC_IMAGE], interaction_socket=path)
+            app = self.SeineApp(files=[NATIVE_IMAGE], interaction_socket=path)
             async with app.run_test() as pilot:
                 self.target.connect(app)
                 conn = _connect(path)
@@ -481,7 +483,7 @@ class SocketTargetEvents(avocado.Test):
     def test_write_image_emits_target_storage_write_completed(self):
         async def scenario():
             path = _socket_path()
-            app = self.SeineApp(files=[PC_IMAGE], interaction_socket=path)
+            app = self.SeineApp(files=[NATIVE_IMAGE], interaction_socket=path)
             async with app.run_test() as pilot:
                 self.target.connect(app)
                 conn = _connect(path)

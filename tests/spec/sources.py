@@ -15,11 +15,12 @@ sys.path.append(path_to_sources)
 from seine import sources
 from seine.sources import SourceCmd
 from seine.utils import ContainerEngine, HOST_ARCH
+from tests.spec.native_image import native_image
 
 DISTRO = {"source": "debian", "release": "bookworm", "architecture": HOST_ARCH,
          "uri": "http://ftp.debian.org/debian"}
 
-PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
+NATIVE_IMAGE = native_image()
 
 class Workbench(avocado.Test):
     def setUp(self):
@@ -318,7 +319,7 @@ class Cli(avocado.Test):
         try:
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                SourceCmd().main(["pull", "bash", PC_IMAGE])
+                SourceCmd().main(["pull", "bash", NATIVE_IMAGE])
         finally:
             sources.SourceBootstrap = saved
         self.assertIn("pulled bash", out.getvalue())
