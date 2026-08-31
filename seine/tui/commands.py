@@ -429,12 +429,12 @@ def _target(app, argv):
     switches to the screen, with no automatic connect (unless one is
     already live, or $MTDA_REMOTE names a default agent) -- 'connect'
     below is how to actually reach one. Everything here also works
-    typed from anywhere else. Nothing here works without mtda installed
-    on this system.
+    typed from anywhere else. Nothing here works without mtda and pyte
+    installed -- run '/doctor' to check.
     """
     from seine.tui import target
     if not target.available():
-        raise CommandError("mtda is not installed on this system -- '/target' is disabled")
+        raise CommandError("mtda or pyte not installed -- '/target' is disabled (run '/doctor' to check)")
 
     if not argv:
         app.show("target")

@@ -5,11 +5,11 @@
 # (github.com/siemens/mtda), a gRPC service already exposing
 # power/storage/USB/console control. mtda is a system package (like
 # python3-guestfs), never a pip dependency of seine -- see
-# doctor.check_mtda() for the install-time report; available() below is
-# the runtime gate '/target' and its AI tools check before doing
-# anything. pyte (setup.py's 'tui' extra) is only imported inside
-# ConsoleAdapter below, not here -- everything above it works without
-# pyte installed, same lazy-import discipline as mtda.client itself.
+# doctor.check_mtda()/check_pyte() for the install-time report;
+# available() below is the runtime gate '/target' and its AI tools check
+# before doing anything. pyte (setup.py's 'tui' extra) is required for
+# the console pane (ConsoleAdapter) -- '/target' is unavailable without
+# either module.
 
 import re
 import time
@@ -24,15 +24,17 @@ def _socket_send(app, event):
     if send is not None:
         send(event)
 
-# A real import, not importlib.util.find_spec: proves mtda.client
-# actually loads (catches a broken system install), not just that it is
+# Real imports, not importlib.util.find_spec: proves mtda.client and
+# pyte actually load (catches a broken install), not just that they are
 # on the path. Cached after the first call -- this only needs to run
-# once per process.
+# once per process. '/target' needs both: mtda for the device link and
+# pyte for the console pane.
 def available():
     global _available
     if _available is None:
         try:
             import mtda.client  # noqa: F401
+            import pyte  # noqa: F401
             _available = True
         except Exception:
             _available = False
@@ -115,7 +117,16 @@ def _connect(app, host=None):
     state = getattr(app, "target_state", None)
     if state is not None:
         state.agent = remote if remote else "Local"
-        state.session = client.session()
+        session = client.session()
+        # agent_info() echoes back the server-resolved session id, e.g.
+        # "cert:alice[my-session]" when the agent binds identity to a
+        # verified client certificate -- falls back to the plain
+        # client-side tag.
+        try:
+            resolved = client.agent_info().get("session")
+        except Exception:
+            resolved = None
+        state.session = resolved or session
     if remote:
         adapter = ConsoleAdapter(app)
         # Prime from mtda's buffer before console_remote() starts the live
@@ -150,7 +161,7 @@ def _connect(app, host=None):
 # agent on top of this implicit one.
 def get_client(app):
     if not available():
-        raise Unavailable("mtda is not installed on this system")
+        raise Unavailable("mtda or pyte not installed -- '/target' is disabled (run '/doctor' to check)")
     client = getattr(app, "_target_client", None)
     if client is None:
         client = _connect(app)
@@ -162,7 +173,7 @@ def get_client(app):
 # just "connect if not already".
 def connect(app, host=None):
     if not available():
-        raise Unavailable("mtda is not installed on this system")
+        raise Unavailable("mtda or pyte not installed -- '/target' is disabled (run '/doctor' to check)")
     disconnect(app)
     return _connect(app, host)
 

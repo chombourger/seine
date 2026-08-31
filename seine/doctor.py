@@ -75,12 +75,19 @@ def check_guestfs():
                 "importable" if found else "not importable")
 
 # A note, not an error: '/target' and its AI tools are an optional
-# feature, unlike guestfs which every real build needs.
+# feature, unlike guestfs which every real build needs. Both mtda and
+# pyte are required -- either missing disables '/target'.
 def check_mtda():
     found = importlib.util.find_spec("mtda.client") is not None
     return Check(GROUP_TARGET, "python3-mtda",
                 "ok" if found else "warn",
-                "importable" if found else "not importable, '/target' disabled")
+                "importable" if found else "not met\n  ! /target disabled")
+
+def check_pyte():
+    found = importlib.util.find_spec("pyte") is not None
+    return Check(GROUP_TARGET, "pyte",
+                "ok" if found else "warn",
+                "importable" if found else "not met\n  ! /target disabled")
 
 # 'seine test' is optional the same way '/target' is: a note, not an
 # error, since most builds never drive real hardware.
@@ -178,12 +185,22 @@ def check_llm():
 
 # Cheap and offline by default; 'pull' opts into the one check that
 # touches the network for real.
+def _target_checks():
+    mtda = check_mtda()
+    pyte = check_pyte()
+    if mtda.status == "warn" and pyte.status == "warn":
+        # Both missing -> single coalesced warning instead of two
+        # identical '! /target disabled' lines.
+        return [Check(GROUP_TARGET, "python3-mtda, pyte", "warn",
+                      "not met\n  ! /target disabled")]
+    return [mtda, pyte]
+
 def run(options=None, pull=False):
     checks = [check_podman(), check_crun(), check_passt(),
              check_guestfs(), check_kvm()] + check_hypervisors() + [
              check_ansible_playbook(), check_podman_collection(),
              check_gnupg(), check_sign_key(options),
-             check_storage(), check_mtda(), check_robotframework()]
+             check_storage()] + _target_checks() + [check_robotframework()]
     llm = check_llm()
     if llm is not None:
         checks.append(llm)

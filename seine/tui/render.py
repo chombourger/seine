@@ -211,8 +211,16 @@ def render_cache(matching=None):
                                              matching=pattern))
 
 def render_doctor(pull=False):
+    import re
+
+    from rich.text import Text
+
     from seine import doctor
-    return doctor.render(doctor.run(pull=pull))
+    raw = doctor.render(doctor.run(pull=pull))
+    text = Text(raw)
+    for m in re.finditer(r"  ! ", raw):
+        text.stylize("dark_orange", m.start() + 2, m.start() + 3)
+    return text
 
 # ChatScreen's one-line #body: which spec the ai.py tools act on, and
 # whether the AI chat is even configured.
