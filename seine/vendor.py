@@ -244,6 +244,38 @@ def deploy_repository(suite):
 def is_deployed(release):
     return os.path.isfile(os.path.join(deploy_repository(release), "Packages"))
 
+# The build context name HostBootstrap/TransportBootstrap bind their own
+# vendor repository in under, once 'apt-pull-mode: offline' has them
+# reading from it: 'podman build' cannot bind-mount an arbitrary host
+# path into a RUN instruction the way 'container run -v' can, so it goes
+# in as a named '--build-context' instead, read back out with 'RUN
+# --mount=type=bind,from=<name>'.
+BUILD_CONTEXT = "vendor-repo"
+
+# What a Dockerfile-baked apt-get needs to read 'release's vendor
+# repository at build time: raises up front, in plain language, rather
+# than letting an empty mount fail obscurely inside the 'apt-get update'
+# that would otherwise be the first thing to notice.
+def offline_build_context(release):
+    if not is_deployed(release):
+        raise ValueError(
+            "apt-pull-mode: offline needs a vendor repository for '%s' "
+            "-- run 'seine vendor' first" % release)
+    return deploy_repository(release)
+
+# The digest HostBootstrap/TransportBootstrap fold into their own
+# Dockerfile text when going offline -- 'podman build' caches an image
+# by that text alone, never by what a bind-mounted directory actually
+# holds (see BuilderImage._sources()'s own comment on the same trap), so
+# without this a vendor refresh that changes what apt would install
+# would never invalidate the cached image. None when 'apt-pull-mode' is
+# not offline, so a caller can pass this through unconditionally.
+def offline_dockerfile_digest(spec, distro):
+    if distro.get("apt-pull-mode") != "offline":
+        return None
+    release = distro["release"]
+    return manifest_digest(distro, parse(spec), exclusions(spec), release)
+
 # The distribution a suite's own container session bootstraps and reads
 # apt sources from: the same source/architecture/uri as the specification
 # as a whole, but feeds narrowed to this suite's own 'release:' (see
@@ -691,7 +723,7 @@ class VendorResolver:
         release = next((f.get("release", f["suite"]) for f in feeds(self.distro)
                         if f["suite"] == self.suite), self.suite)
         _suiteBootstrap = HostBootstrap(
-            dict(self.suite_distro, release=release), self.options)
+            dict(self.suite_distro, release=release), self.options, force_online=True)
         _suiteBootstrap.create()
         builder = VendorResolverImage(self.suite_distro, self.options)
         builder.create(_suiteBootstrap)
@@ -1557,7 +1589,7 @@ class VendorCmd(Cmd):
     # rather than keeping a manifest frozen before it was asked for.
     def _run(self, distro, entries, exclude, wanted, refresh, archs=None,
              extra_archs=(), display=None):
-        hostBootstrap = HostBootstrap(distro, self.options)
+        hostBootstrap = HostBootstrap(distro, self.options, force_online=True)
 
         # Which suites need a fresh resolve: every one of them when
         # '--refresh' was given with no name, one already-frozen entry

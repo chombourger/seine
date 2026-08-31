@@ -1096,7 +1096,7 @@ class RefreshWithANameMergesTheGraphTheSameWay(avocado.Test):
 # frozen has to build it itself, or the fetch/index containers standing
 # on it fail the moment podman's own image storage does not already have
 # it (a plain 'seine cache clear images' is all that takes).
-class HostBootstrapIsBuiltEvenWhenNothingIsStale(avocado.Test):
+class VendorBootstrapIsBuiltEvenWhenNothingIsStale(avocado.Test):
     def distro(self):
         return {"source": "debian", "release": "bookworm", "architecture": "amd64",
                "uri": "http://example.com/debian",
@@ -1114,7 +1114,7 @@ class HostBootstrapIsBuiltEvenWhenNothingIsStale(avocado.Test):
 
         created = {"n": 0}
         class FakeHostBootstrap:
-            def __init__(self, distro, options):
+            def __init__(self, distro, options, force_online=False):
                 pass
             def create(self):
                 created["n"] += 1
@@ -1237,7 +1237,7 @@ class AChangedSpecReresolvesWithoutRefresh(avocado.Test):
             return []
 
         class FakeHostBootstrap:
-            def __init__(self, distro, options):
+            def __init__(self, distro, options, force_online=False):
                 pass
             def create(self):
                 pass

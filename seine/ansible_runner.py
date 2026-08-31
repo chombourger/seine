@@ -60,11 +60,15 @@ FEEDS_LIST = "/etc/apt/sources.list.d/seine-feeds.list"
 # target container, and it is autoremoved again once the playbooks are
 # done, same as AnsibleBootstrap's ansible install was before it.
 class AnsibleContainerRunner:
-    def __init__(self, baseline, distro, options, verbose=False):
+    # 'vendor_digest' is offline_dockerfile_digest()'s return, passed
+    # straight through to TransportBootstrap -- see its own comment on
+    # why it has to be folded into the Dockerfile text.
+    def __init__(self, baseline, distro, options, verbose=False, vendor_digest=None):
         self.baseline = baseline
         self.distro = distro
         self.options = options
         self.verbose = verbose
+        self.vendor_digest = vendor_digest
         self.cid = None
 
     def _exec(self, args, check=True):
@@ -189,7 +193,8 @@ class AnsibleContainerRunner:
     # then 'container rm' it) for build_tarball() to pick up. On failure,
     # the container is torn down here since there's nothing left to export.
     def run(self, playbooks):
-        transport = TransportBootstrap(self.baseline, self.distro, self.options)
+        transport = TransportBootstrap(self.baseline, self.distro, self.options,
+                                       vendor_digest=self.vendor_digest)
         transport.create()
 
         self.cid = ContainerEngine.check_output(

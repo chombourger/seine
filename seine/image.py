@@ -155,11 +155,14 @@ class Image:
         return spec
 
     def rootfs(self):
+        from seine import vendor
         if self._from is None:
             self._from = self.targetBootstrap.name
 
+        distro = self.spec["distribution"]
         runner = AnsibleContainerRunner(
-            self._from, self.spec["distribution"], self.options, verbose=self._verbose)
+            self._from, distro, self.options, verbose=self._verbose,
+            vendor_digest=vendor.offline_dockerfile_digest(self.spec, distro))
         self._cid = runner.run(self.spec["playbook"])
 
     # What was exported is a root file-system, rather than whatever came out
@@ -291,12 +294,17 @@ class Image:
         cmd = vendor.VendorCmd()
         cmd.options = dict(cmd.options, jobs=self.options.get("jobs", 1),
                            verbose=self.options.get("verbose", False))
+        # No 'needs=["bootstrap-host"]': this task bootstraps its own
+        # force_online=True HostBootstrap (see bootstrap.py's own comment
+        # on why that is a distinct, always-online image), so it never
+        # touches whatever 'bootstrap-host' builds -- and once that can
+        # itself depend on 'vendor' finishing first (shared_tasks(),
+        # below), a dependency back the other way would be a cycle.
         return Task("vendor",
                     functools.partial(cmd._run, distro, entries, exclude,
                                       wanted, False,
                                       archs=[distro["architecture"]],
-                                      extra_archs=extra_archs),
-                    needs=["bootstrap-host"])
+                                      extra_archs=extra_archs))
 
     # The host bootstrap and the packages built in a chroot of it -- the
     # half of a build several specifications can share when they agree on
@@ -304,14 +312,25 @@ class Image:
     # several images together passes its own 'hostBootstrap' and the union
     # of every image's 'requested' packages; left unset, this builds its own.
     def shared_tasks(self, hostBootstrap=None, requested=None):
+        from seine import vendor
         distro = self.spec["distribution"]
-        self.hostBootstrap = (hostBootstrap if hostBootstrap is not None
-                              else HostBootstrap(distro, self.options))
+        if hostBootstrap is not None:
+            self.hostBootstrap = hostBootstrap
+        else:
+            vendor_digest = vendor.offline_dockerfile_digest(self.spec, distro)
+            self.hostBootstrap = HostBootstrap(distro, self.options,
+                                               vendor_digest=vendor_digest)
         vendor_task = self._vendor_task(distro)
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options),
             redactions(self.spec))
-        shared = [self.hostBootstrap.task()]
+        # 'bootstrap-host' waits on 'vendor' finishing first exactly
+        # when going offline actually needs a fresh vendor run: without
+        # this, HostBootstrap's own apt-get (now itself vendor-backed
+        # when offline) would look for a repository the 'vendor' task
+        # below exists to build, and find nothing there yet.
+        shared = [self.hostBootstrap.task(
+            needs=["vendor"] if vendor_task is not None else None)]
         if vendor_task is not None:
             shared.append(vendor_task)
         return shared + builder.tasks(

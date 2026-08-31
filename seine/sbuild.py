@@ -9,6 +9,7 @@ from seine.bootstrap   import Bootstrap
 from seine.cache_index import CHROOT, Index, say, since
 from seine.utils     import ContainerEngine
 from seine.utils     import apt_sources
+from seine.utils     import apt_sources_dockerfile
 from seine.utils     import feeds
 from seine.utils     import locked
 from seine.utils     import offline_suites
@@ -71,11 +72,7 @@ class BuilderImage(Bootstrap):
         offline = set(offline_suites(self.distro))
         online = [feed for feed in feeds(self.distro)
                  if feed["suite"] not in offline]
-        sources = apt_sources(self.distro, sources=True, entries=online)
-        if len(sources) == 0:
-            return "true"
-        return " && ".join(
-            "echo '%s' >> /etc/apt/sources.list.d/seine.list" % s for s in sources)
+        return apt_sources_dockerfile(self.distro, online, sources=True)
 
     # No architecture in the name: this image is always of the host's own
     # architecture, and it is the chroot inside it that carries the target's.

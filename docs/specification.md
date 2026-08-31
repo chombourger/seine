@@ -253,21 +253,43 @@ apt-pull-mode: offline
 Switches every feed from its network `uri` to the local repository
 [`seine vendor`](#vendor) built for its suite, so that reaching for a
 package touches no network at all: the target's own `apt` tasks in its
-running container, `apt://` fetching a package's own source, and a
-buildd chroot resolving what it build-depends on -- everywhere `packages:`
-and a specification's own playbooks would otherwise reach the network are
-covered alike. `packages: false` is not a thing to say here:
-`apt-pull-mode` is a distribution-wide toggle, the same scope
-`distribution`'s other settings have, not a per-feed one.
+running container, `apt://` fetching a package's own source, a buildd
+chroot resolving what it build-depends on, and the small apt-get every
+build's own host bootstrap -- and, for a `baseline:` playbook, its
+transport bootstrap -- runs to install its own tooling (`arch-test`,
+`mmdebstrap`, `qemu-user-static`, `python3-apt`...) are covered alike.
+`packages: false` is not a thing to say here: `apt-pull-mode` is a
+distribution-wide toggle, the same scope `distribution`'s other
+settings have, not a per-feed one.
 
-It does not reach the host and target bootstraps' own minimal package
-sets: what mirrors those is a full-suite snapshot (see
+The host and transport bootstraps read the repository at `podman build`
+time rather than mounting it into an already-running container the way
+everything else above does, so unlike those, an image built from it is
+cached by its own Dockerfile text alone -- reading whatever the
+repository held the moment it was built, not whatever it holds now. The
+repository's own resolved manifest digest is folded into that text for
+exactly this reason, so a vendor refresh that changes what apt would
+install rebuilds the cached image rather than leaving it stale. Neither
+image ever ships or is thrown away the way a buildd chroot is: once
+built this way it stays offline-configured on the machine that built
+it, which is fine -- it is a build tool, never the device's own root
+file-system, and is rebuilt in place the next time its own digest moves.
+Asking for this before any `seine vendor` has ever built a repository
+for the release fails outright, in plain language, rather than partway
+through an `apt-get update` with nothing to read.
+
+It does not reach the target bootstrap's own minimal package set: what
+mirrors that is a full-suite snapshot (see
 [Building from a snapshot](#building-from-a-snapshot) above), not
 `vendor:`, which deliberately excludes anything a buildd chroot already
 provides by itself -- exactly what `vendor:`'s own build-dependency
 closure covers. Nor does it reach `seine vendor`'s own resolve and fetch
 containers: those are what fills this repository in the first place, and
-going offline there would have them read one with nothing in it yet.
+going offline there would have them read one with nothing in it yet --
+they bootstrap from their own, permanently-online image instead (kept
+distinct from the host bootstrap above precisely so that populating a
+repository for the first time never has to wait on one already
+existing).
 
 Offline for the length of that alone: what ships in the image is
 rewritten back to the real feeds before it is exported, the same

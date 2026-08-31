@@ -14,9 +14,12 @@ from seine.utils import INPUTS_LABEL
 from seine.utils import KIND_LABEL
 from seine.utils import ROOTFS_KIND
 from seine.utils import apt_sources
+from seine.utils import apt_sources_dockerfile
 from seine.utils import base_feed
+from seine.utils import feed_digest
 from seine.utils import locked
 from seine.utils import TOOLING_KIND
+from seine.utils import vendor_mountpoint
 
 class Bootstrap(ABC):
     # What this image is, as the label every image carries. Said by each
@@ -128,19 +131,65 @@ class Bootstrap(ABC):
     name = property(getName, setName)
 
 class HostBootstrap(Bootstrap):
+    # 'vendor_digest' is offline_dockerfile_digest()'s return: folded
+    # into the Dockerfile text so a vendor refresh invalidates the
+    # cached image (see create()'s own comment). None when the caller
+    # never computed one -- every test construction, and anything not
+    # going offline, which never reads it.
+    # 'force_online' is vendor.py's own resolve/fetch pipeline: it builds
+    # this same image before it can do anything, so it must never itself
+    # go looking for a repository it exists to fill. Named apart from a
+    # plain HostBootstrap (defaultName() below) so the two never thrash
+    # one another's cached tag when 'apt-pull-mode: offline' makes them
+    # genuinely different images.
+    def __init__(self, distro, options, vendor_digest=None, force_online=False):
+        self.vendor_digest = vendor_digest
+        self.force_online = force_online
+        super().__init__(distro, options)
+
     # The one step everything else waits for: the image every container
-    # seine builds is made from.
-    def task(self):
-        return Task("bootstrap-host", self.create)
+    # seine builds is made from. 'needs' lets a caller make this wait on
+    # 'vendor' first -- see Image.shared_tasks()'s own comment on why
+    # that edge has to point this way round when going offline.
+    def task(self, needs=None):
+        return Task("bootstrap-host", self.create, needs=needs)
+
+    def _offline(self):
+        return False if self.force_online else \
+               self.distro.get("apt-pull-mode") == "offline"
 
     def create(self):
+        build_options = ["--squash"]
+        mount = ""
+        digest_comment = ""
+        if self._offline():
+            from seine import vendor
+            release = self.distro["release"]
+            where = vendor.offline_build_context(release)
+            build_options += ["--build-context",
+                              "%s=%s" % (vendor.BUILD_CONTEXT, where)]
+            mount = "--mount=type=bind,from=%s,target=%s,ro" % (
+                vendor.BUILD_CONTEXT, vendor_mountpoint(release))
+            digest_comment = "# vendor digest: %s" % self.vendor_digest
         return self.build(HOST_BOOTSTRAP_SCRIPT.format(
             self.distro["source"],
             self.distro["release"],
-            "apt-{}".format(self.distro["release"])), options=["--squash"])
+            "apt-{}".format(self.distro["release"]),
+            self._sources(),
+            mount,
+            digest_comment), options=build_options)
+
+    # base_feed() alone, the same reasoning as TargetBootstrap's own
+    # dockerfile(): these packages need nothing from backports or
+    # -security, and a second feed would only cost this image its
+    # sharing with specifications that differ there.
+    def _sources(self):
+        return apt_sources_dockerfile(self.distro, [base_feed(self.distro)],
+                                      offline=self._offline())
 
     def defaultName(self):
-        return os.path.join("bootstrap", self.distro["source"], self.distro["release"], "all")
+        return os.path.join("bootstrap", self.distro["source"], self.distro["release"],
+                            "vendor" if self.force_online else "all")
 
 class TargetBootstrap(Bootstrap):
     # The root file-system itself, which is what an export leaves behind.
@@ -174,22 +223,21 @@ class TargetBootstrap(Bootstrap):
             "mmdebstrap-{}".format(self.distro["release"]))
 
     def defaultName(self):
-        # base_feed()'s uri/components live nowhere else in the name, so two
-        # specifications differing only there would collide on this tag.
-        # Digested rather than spelled out: a URI belongs in a log, not a path.
-        feed = hashlib.sha256(repr(sorted(base_feed(self.distro).items()))
-                              .encode()).hexdigest()[:8]
         return os.path.join(
                 "bootstrap",
                 self.distro["source"],
                 self.distro["release"],
                 self.distro["architecture"],
-                feed)
+                feed_digest(self.distro))
 
 HOST_BOOTSTRAP_SCRIPT = """
 FROM {0}:{1} AS base
-RUN --mount=type=cache,target=/var/cache/apt/archives,id={2},sharing=locked \
+{5}
+RUN --mount=type=cache,target=/var/cache/apt/archives,id={2},sharing=locked {4} \
      rm -f /etc/apt/apt.conf.d/docker-clean &&    \
+     rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \
+           /etc/apt/sources.list.d/*.list &&      \
+     {3} &&                                       \
      apt-get update -qqy &&                       \
      apt-get install -qqy --no-install-recommends \
          arch-test debian-archive-keyring gpg     \

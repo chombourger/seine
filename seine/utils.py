@@ -183,6 +183,33 @@ def apt_sources(distro, sources=False, entries=None, offline=False):
             lines.append("deb-src %(options)s%(uri)s %(suite)s %(components)s" % feed)
     return lines
 
+# Where an image built by a Dockerfile RUN instruction writes the feeds
+# it bakes in -- kept apart from FEEDS_LIST (ansible_runner.py), which
+# names the same thing for a container reconfigured after it is already
+# running, not while it is being built.
+DOCKERFILE_SOURCES_LIST = "/etc/apt/sources.list.d/seine.list"
+
+# The '&&'-joined shell fragment a Dockerfile RUN instruction chains
+# ahead of its own 'apt-get update': writes 'entries' into a fresh
+# sources.list.d file so the image reads the specification's own feed
+# instead of whatever the base image happened to ship with. 'true' when
+# there is nothing to add, so a caller can chain it unconditionally
+# rather than special-case an empty list.
+def apt_sources_dockerfile(distro, entries, sources=False, offline=False):
+    lines = apt_sources(distro, sources=sources, entries=entries, offline=offline)
+    if len(lines) == 0:
+        return "true"
+    return " && ".join("echo '%s' >> %s" % (line, DOCKERFILE_SOURCES_LIST)
+                       for line in lines)
+
+# base_feed()'s uri/components, folded into a short tag: TargetBootstrap
+# and TransportBootstrap both bake base_feed() into a Dockerfile without
+# spelling it out anywhere else in their name, so two specifications
+# differing only there would otherwise collide on one image tag.
+def feed_digest(distro):
+    return hashlib.sha256(
+        repr(sorted(base_feed(distro).items())).encode()).hexdigest()[:8]
+
 # Where a suite's vendor repository is reached from inside a container,
 # once 'apt-pull-mode: offline' has turned a feed into one -- bind-mounted
 # there by whoever calls apt_sources(), the same way 'packages:'s own
