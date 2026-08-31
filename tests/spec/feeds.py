@@ -191,6 +191,22 @@ class UnknownFeedSettingIsRejected(avocado.Test):
         except ValueError:
             pass
 
+# 'release:' groups a pocket back to the base release it belongs to,
+# unset defaulting to the feed's own suite -- what 'seine vendor' reads
+# to know which feeds a suite's own resolver may see (vendor.py's
+# feeds_for_suite()), never guessed from the suite's own name.
+class FeedsCarryTheirOwnRelease(avocado.Test):
+    def test(self):
+        parsed = feeds(distro([
+            {"suite": "bookworm"},
+            {"suite": "bookworm-security", "release": "bookworm"},
+        ]))
+        self.assertEqual([f["release"] for f in parsed], ["bookworm", "bookworm"])
+
+    def test_unset_defaults_to_its_own_suite(self):
+        parsed = feeds(distro([{"suite": "bookworm-backports"}]))
+        self.assertEqual(parsed[0]["release"], "bookworm-backports")
+
 class RebuiltWhenAFeedMoves(avocado.Test):
     def stamp(self, feeds):
         from seine.build    import BuildCmd

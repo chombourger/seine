@@ -3,14 +3,14 @@
 
 requires:
     - debian
+    - debian-feeds
 
 distribution:
     release: bookworm
-    # One feed of its own, on top of the ones every release has.
-    #
-    # Backports is here for what it carries the packaging of rather than
-    # for anything it installs: it is NotAutomatic, so no package moves
-    # to it on its own, and a specification that wants one asks for it by
-    # version. examples/linux-6.18/bookworm.yml is such a case.
+    # One feed of its own, on top of the ones debian-feeds already
+    # covers. Backports carries packaging rather than anything installed
+    # by default: NotAutomatic, so a spec asks for it by version
+    # (examples/linux-6.18/bookworm.yml).
     feeds:
         - suite: bookworm-backports
+          release: bookworm

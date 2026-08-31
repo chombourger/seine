@@ -3,6 +3,7 @@
 
 requires:
     - debian
+    - debian-feeds
 
 distribution:
     release: trixie

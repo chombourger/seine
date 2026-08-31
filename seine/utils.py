@@ -91,6 +91,17 @@ def distribution(spec):
 # 'valid-until: false' is for archives meant to stay expired -- a
 # snapshot.debian.org timestamp, or a frozen mirror -- which apt would
 # otherwise refuse.
+#
+# 'release:' groups a pocket with the release it belongs to -- unset, a
+# feed is its own, single-member group. A base feed needs nothing (its
+# own 'suite' already names its release); one of its pockets
+# ('trixie-security', 'bookworm-backports') names the base explicitly
+# (examples/common/debian.yaml's own template does, for every feed but
+# the base one). Never guessed from the suite's name -- 'oldstable-
+# security' or a snapshot-tagged suite would defeat any naming
+# convention, and a wrong guess would silently leak one release's
+# packages into another's build-dependency closure (seine vendor's own
+# feeds_for_suite() is what this exists for -- see its own comment).
 def feeds(distro):
     entries = distro.get("feeds")
     if entries is None:
@@ -105,15 +116,16 @@ def feeds(distro):
         if "suite" not in entry:
             raise ValueError("feed #%d has no 'suite' specified!" % (index + 1))
         for setting in entry:
-            if setting not in ["components", "sources", "suite", "uri",
-                               "valid-until"]:
+            if setting not in ["components", "release", "sources", "suite",
+                               "uri", "valid-until"]:
                 raise ValueError(
                     "feed #%d ('%s') has no '%s' setting, expected one of "
-                    "components, sources, suite, uri, valid-until"
+                    "components, release, sources, suite, uri, valid-until"
                     % (index + 1, entry["suite"], setting))
         parsed.append({
             "uri":         entry.get("uri", distro["uri"]),
             "suite":       entry["suite"],
+            "release":     entry.get("release", entry["suite"]),
             # A distribution-wide default, so a file needing a component --
             # firmware for a board, say -- says so once without naming the
             # suites. A feed saying otherwise still decides for itself.

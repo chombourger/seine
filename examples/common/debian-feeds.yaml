@@ -1,0 +1,22 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# Every feed a Debian release needs: the release itself, its updates, and
+# its security suite, per release. Requirable on its own -- 'seine vendor'
+# wants feeds without debian.yaml's playbook, which bookworm.yaml and
+# trixie.yaml also require for that reason rather than folding this in
+# themselves.
+distribution:
+    feeds:
+        - suite: bookworm
+        - suite: bookworm-updates
+          release: bookworm
+        - suite: bookworm-security
+          release: bookworm
+          uri: http://security.debian.org/debian-security
+        - suite: trixie
+        - suite: trixie-updates
+          release: trixie
+        - suite: trixie-security
+          release: trixie
+          uri: http://security.debian.org/debian-security
