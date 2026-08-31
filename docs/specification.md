@@ -889,6 +889,63 @@ drift underneath it between two runs that changed nothing. `seine vendor
 --refresh` asks for a new resolve; `--refresh=NAME` scopes that to one
 source package, keeping every other one exactly as it was.
 
+A specification file, `foo.yaml`, pairs with a committed lock file,
+`foo.lock.yaml`, if one sits beside it -- loaded automatically, no field
+asks for it. A suite the lock names is trusted outright and never
+resolved at all, unless the specification's own `vendor:` section has
+changed since the lock was last written, in which case `seine vendor`
+refuses rather than silently drifting back to whatever the suite's feed
+resolves to today -- the entire point of a committed lock is that two
+checkouts of the same specification vendor the exact same thing,
+regardless of what has changed in the archive between them. A lock
+file's own `vendor:` is a resolved manifest -- suite by suite, source by
+source, with the sha256 of every file fetched for it -- rather than a
+list of entries, and is never written by hand. It carries only what
+must be true of the outside world (versions, binaries, files and their
+hashes), never seine's own bookkeeping about what it decided to do with
+them (which source counts as directly asked for, which build
+dependency pulled another source in) -- that stays in the machine-local
+cache manifest instead, which `seine vendor` keeps in full:
+
+```
+seine vendor --refresh foo.yaml
+```
+
+(re)writes `foo.lock.yaml`, whether or not one existed before --
+bootstrapping a new lock is just the first `--refresh`, same command as
+updating an existing one; `git add foo.lock.yaml` if it should be
+tracked. Both `--refresh` and `--check` below need exactly one
+specification file, to know which lock they are about.
+
+`seine vendor --check foo.yaml` resolves fresh and reports whether it
+still matches `foo.lock.yaml`'s own `vendor:` entries, without writing
+anything either way -- non-zero on drift. This is what a scheduled CI
+job would run to catch the archive moving under an unchanged version,
+which the lock's own digest (everything `manifest_digest()` covers:
+entries, excludes, feeds, build-profiles/options) cannot see by itself.
+
+Debian's own archive keeps only the current version of a package, not
+its history, so a lock pinning an older one can outlive the live feed's
+own copy of it. `--refresh` checks every file it fetches against
+[snapshot.debian.org](https://snapshot.debian.org/)'s own machine
+API, and, on a match, records its own sha1 for the file (`vendor:`'s
+own `snapshot`/`binary_snapshot`, beside `file_hashes`/`binary_hashes`
+-- the sha1 alone, not the download URL built from it, since the
+filename is already known and the constant
+`https://snapshot.debian.org/file/` prefix repeated per file would
+otherwise be a fifth of a real generated lock's own size) -- nothing
+is recorded, and `--refresh` still succeeds, when snapshot.debian.org
+has never indexed that exact name/version/checksum at all. An
+ordinary `seine vendor` (no `--refresh`) never queries
+snapshot.debian.org itself: it only reads the sha1 already on the
+lock, and, when one is there, rebuilds the download URL and fetches
+straight from it -- no apt, no container, since it is a plain,
+permanent HTTPS download -- verifying the bytes against the lock's own
+hash and refusing them outright on any mismatch, never falling back to
+the live feed. Nothing changes for a source still served by the live
+suite: the recorded sha1 only matters once apt itself can no longer
+produce the pinned version.
+
 Signed the same way `packages:`'s own repository is (see
 [Signing](#signing) above), with its own, independent key --
 `--vendor-sign-key`/`SEINE_VENDOR_SIGN_KEY` -- since a package `vendor:`

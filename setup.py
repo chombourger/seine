@@ -38,6 +38,10 @@ setup(
         'pyyaml>=3.12',
         'ansible-core>=2.15',
         'jinja2>=3.0',
+        # seine/snapshot.py's own snapshot.debian.org client, used by
+        # 'seine vendor --refresh' to find an archive URI for a source
+        # or binary the live feed has since moved past.
+        'requests',
     ],
     extras_require={
         # rich<14: textual 2.1.2's own 'Style.meta' caches its dict via

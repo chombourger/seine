@@ -19,7 +19,7 @@ from seine.cmd        import Cmd
 from seine.partition  import PartitionHandler
 from seine.tasks      import Interrupted
 from seine.utils      import ContainerEngine, digest, distribution, locked
-from seine.utils      import redact, redactions
+from seine.utils      import lock_sibling, redact, redactions
 
 # Specifications are rendered before they are parsed, so that one file can
 # say what is true of several architectures or releases instead of being
@@ -355,11 +355,23 @@ class BuildCmd(Cmd):
     # Every file the command names, probed before any of them is loaded:
     # what one asks for may be set by another further along the line, and
     # 'seine build' takes as many of them as a user cares to compose.
+    #
+    # A named file's own lock sibling (lock_sibling(), 'foo.yaml' ->
+    # 'foo.lock.yaml') is spliced in right after it, before the next
+    # named file -- kas-style auto-discovery, not a 'requires:' of the
+    # file's own. Expanded once, up front, so the probe pass and the real
+    # load below walk the exact same list.
     def load_all(self, yaml_files):
+        expanded = []
         for yaml_file in yaml_files:
+            expanded.append(yaml_file)
+            lock = lock_sibling(yaml_file)
+            if lock is not None and os.path.isfile(lock):
+                expanded.append(lock)
+        for yaml_file in expanded:
             self._probe(yaml_file, check=False)
         self._check_names(self._prober._names if self._prober else [])
-        for yaml_file in yaml_files:
+        for yaml_file in expanded:
             self.load(yaml_file)
         return self.spec
 
@@ -843,13 +855,26 @@ class BuildCmd(Cmd):
     # board file naming an architecture a base file's entry did not, say.
     #
     # direction: asking file wins (docs/merging.md).
+    # 'vendor:' is a list of asks in an ordinary file -- merged below, by
+    # name, the way every other named list is. In a lock file it is
+    # instead a dict, keyed by suite, of what a resolve already froze
+    # (see seine/vendor.py's own manifest shape) -- told apart by type()
+    # since the two are never the same shape, and kept out of
+    # self.spec["vendor"] itself so every existing reader of it (starting
+    # with vendor.py's own parse()) keeps seeing a plain list of asks.
+    # Last suite entry loaded wins, matching a lock file being the whole
+    # truth for the suites it names.
     def _merge_vendor(self, spec):
         if "vendor" not in spec:
             return
-        if "vendor" not in self.spec:
-            self.spec["vendor"] = spec["vendor"]
+        incoming = spec["vendor"]
+        if type(incoming) == type({}):
+            self.spec.setdefault("_vendor_lock", {}).update(incoming)
             return
-        self._merge_named_list(self.spec["vendor"], spec["vendor"],
+        if "vendor" not in self.spec:
+            self.spec["vendor"] = incoming
+            return
+        self._merge_named_list(self.spec["vendor"], incoming,
                                self._vendor_name, self._merge_settings)
 
     def _vendor_name(self, entry):

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import yaml
 
 from seine.bootstrap    import Bootstrap, HostBootstrap
 from seine.cache_index  import VENDOR, Index, say
@@ -20,10 +21,11 @@ from seine.cmd          import Cmd
 from seine.sbuild       import BuilderImage, SbuildChroot
 from seine.tasks        import Task
 from seine.utils        import ContainerEngine, feeds, apt_sources
-from seine.utils        import locked
+from seine.utils        import locked, lock_sibling
 from seine.utils        import PRIVILEGED_RUN_OPTIONS
 from seine import settings
 from seine import signing
+from seine import snapshot
 from seine import tasks as task_runner
 
 # One entry of the 'vendor:' section: a source package to vendor, plus the
@@ -861,6 +863,286 @@ def save_manifest(suite, manifest):
         json.dump(manifest, f, indent=1, sort_keys=True)
     os.replace(temporary, path)
 
+# ---------------------------------------------------------------------
+# The committed lock file: 'vendor:' as a dict (suite -> {digest,
+# sources}) rather than a list of asks -- see seine/build.py's own
+# '_merge_vendor()', which is what folds a '<spec>.lock.yaml' loaded by
+# 'BuildCmd.load_all()' into 'spec["_vendor_lock"]' rather than
+# 'spec["vendor"]' itself. Content-wise the same shape as the cache
+# manifest above, since it exists to freeze exactly what that already
+# freezes -- just checked into git instead of living under
+# ContainerEngine.cache().
+# ---------------------------------------------------------------------
+
+# One suite's own frozen entry out of a loaded lock file, or None if
+# either no lock was loaded at all or it says nothing about this suite.
+def lock_manifest(spec, suite):
+    return (spec.get("_vendor_lock") or {}).get(suite)
+
+# The external-only view of a suite's resolved sources a committed lock
+# actually needs: version/binaries/files (plus, once the caller adds
+# it, their sha256). The cache manifest (save_manifest()) keeps 'fresh'
+# exactly as resolve() produced it -- this narrowing is for the lock
+# alone, not a change to what seine's own working data carries:
+#
+# - 'direct' is redundant the moment it would be written anywhere:
+#   index() (see its own comment) recomputes exactly this, fresh, from
+#   'entries' and the gocode BFS every time it runs, so nothing here is
+#   information a serialized copy would preserve that a reader could
+#   not already work out for itself.
+# - 'build_dep_bins' is real, load-bearing data for that same BFS --
+#   dropping it does cost something, an offline-only checkout of the
+#   lock (no cache, no resolver) cannot run gocode promotion and falls
+#   back to classifying by direct-ask membership alone. Left out anyway:
+#   it is internal bookkeeping about how seine classifies what it
+#   fetched, not an external fact about a dependency, and a committed
+#   lock's job is only the latter -- what to fetch and how to know it
+#   has not changed. The cache manifest still carries it in full, so an
+#   ordinary '--refresh' (which writes both) keeps promoting correctly
+#   right after.
+def _lock_sources(sources):
+    return {name: {k: v for k, v in entry.items()
+                   if k not in ("direct", "build_dep_bins")}
+           for name, entry in sources.items()}
+
+# Every file a fetched source's own entry names, hashed off what is
+# actually sitting in the suite's cache directory -- the lock's own
+# no-deviation guarantee: a version can legally be re-uploaded with
+# different bytes, which pinning the version string alone would not
+# catch. Missing files (nothing fetched this run touched, or a
+# check-mode resolve that never fetched at all) are silently left out
+# rather than raising -- a lock written before a suite's files ever
+# landed on disk is still useful for every field but this one.
+def _file_hashes(suite, entry):
+    where = repository(suite)
+    hashes = {}
+    for fname in entry.get("files", []):
+        try:
+            with open(os.path.join(where, fname), "rb") as f:
+                hashes[fname] = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            pass
+    return hashes
+
+# A source's own binaries, hashed the same way -- each looked up via
+# _binary_file_path(), the same lookup _binary_has_gocode() itself
+# uses: there is no 'files' list for a binary the way a source has one,
+# only its name/arch/version, so which candidate filename is actually
+# on disk has to be found rather than assumed.
+def _binary_hashes(suite, entry):
+    where = repository(suite)
+    hashes = {}
+    for binpkg, per_arch in entry.get("binaries", {}).items():
+        for arch, version in per_arch.items():
+            path = _binary_file_path(where, binpkg, arch, version)
+            if path is None:
+                continue
+            with open(path, "rb") as f:
+                hashes.setdefault(binpkg, {})[arch] = \
+                    hashlib.sha256(f.read()).hexdigest()
+    return hashes
+
+def _local_sha1(path):
+    with open(path, "rb") as f:
+        return hashlib.sha1(f.read()).hexdigest()
+
+# A source's own snapshot.debian.org lookup, cached on the exact
+# artifact key fetch_source() already touches (the same one
+# has_gocode's own metadata rides on) -- 'suite:vendor's own scale is
+# thousands of sources per refresh, most of them unchanged from the
+# last one, and asking a shared, small public mirror about every one
+# of them again on every '--refresh' is both slow and a poor way to
+# treat it. Keyed by version like every other artifact key here, so a
+# version bump is a fresh key and an automatic cache miss -- nothing
+# to invalidate by hand.
+#
+# Only ever grown, never pruned by this function: 'cached' starts as
+# whatever an earlier refresh already found, gains whatever this one
+# newly finds, and is written back whole. Holds sha1 alone, not a url
+# -- see _enrich_for_lock()'s own comment on why the lock itself never
+# stores one either -- so a cache entry that no longer matches the
+# file's own current local sha1 (should not happen for an unchanged
+# version, but costs nothing to guard, and is a plain dict comparison,
+# no network) is treated as a miss rather than blindly trusted.
+#
+# A *miss* is never cached, unlike a match: snapshot.debian.org indexes
+# a freshly uploaded version with some lag, and caching "not found"
+# forever would mean a later refresh, run once the mirror has caught
+# up, never noticing -- the whole point of asking again.
+def _cached_local_matches(key, local_hashes):
+    cached = dict((Index().get(VENDOR, key) or {}).get("snapshot_files") or {})
+    missing = [f for f, h in local_hashes.items() if cached.get(f) != h]
+    return cached, missing
+
+def _save_source_snapshot_cache(key, cached):
+    if cached:
+        try:
+            Index().patch(VENDOR, key, {"snapshot_files": cached})
+        except Exception:
+            pass
+
+# Writes the committed lock file at 'path' -- 'suites' is the whole
+# document's worth (every suite this spec's 'vendor:' section knows
+# about, not just the ones a scoped '--refresh'/'--suite' run touched),
+# so a run narrowed to one suite never drops what an earlier run froze
+# for another.
+#
+# A source's own file folds its sha256 and its own snapshot.debian.org
+# sha1 together the same way a binary's own does (see
+# _compress_binaries()'s own comment below): a bare sha256 string, or
+# 'sha256:sha1' when a snapshot was found. 'file_hashes'/'snapshot' drop
+# out entirely, and 'files' becomes a {filename: value} mapping instead
+# of a bare list plus two side dicts each repeating every filename a
+# second and third time -- no version to diverge on here (a source's own
+# files are inherently pinned to the one version its entry already
+# names), so this never needs a binary's own small mapping either.
+def _compress_files(sources):
+    compressed = {}
+    for name, entry in sources.items():
+        entry = dict(entry)
+        files = entry.pop("files", None)
+        hashes = entry.pop("file_hashes", None)
+        snaps = entry.pop("snapshot", None)
+        if files:
+            merged = {}
+            for fname in files:
+                h = (hashes or {}).get(fname)
+                s = (snaps or {}).get(fname)
+                merged[fname] = "%s:%s" % (h, s) if s else h
+            entry["files"] = merged
+        compressed[name] = entry
+    return compressed
+
+def _expand_files(sources):
+    expanded = {}
+    for name, entry in sources.items():
+        entry = dict(entry)
+        files = entry.get("files")
+        if files:
+            names, hashes, snaps = [], {}, {}
+            for fname, value in files.items():
+                names.append(fname)
+                if value is None:
+                    hashes[fname] = None
+                else:
+                    h, sep, s = value.partition(":")
+                    hashes[fname] = h
+                    if sep:
+                        snaps[fname] = s
+            entry["files"] = names
+            entry["file_hashes"] = hashes
+            if snaps:
+                entry["snapshot"] = snaps
+        expanded[name] = entry
+    return expanded
+
+# A binary's own entry folds its hash, its version and its own
+# snapshot.debian.org sha1 together into one value, dropping the
+# separate 'binary_hashes'/'binary_snapshot' dicts entirely: a bare
+# 'sha256' string when the version is identical to its own source's and
+# no snapshot was found, 'sha256:sha1' the same way when one was (a
+# sha256 is 64 hex chars and a sha1 is 40 -- never ambiguous), or,
+# only for the genuine divergence (a binNMU, '+b1' say) or the rarer
+# case of that also lacking a snapshot hit, a small mapping instead.
+# Kept per architecture, not per binary package: a binNMU can in
+# principle complete on one architecture before another, and a snapshot
+# hit is a fact about one exact .deb, not the package as a whole.
+#
+# Both this and _compress_files()/_expand_files() above apply at the
+# lock's own read/write boundary alone (save_lock()/load_lock()) so
+# nothing else in this module (fetch_tasks(), index(), _binary_hashes(),
+# _file_hashes()...) ever has to know an entry's own 'files'/'binaries'
+# might be either shape -- VendorCmd.main() calls both expansions a
+# second time, for the *other* way a lock's data reaches here:
+# BuildCmd's own generic YAML/jinja loader (spec["_vendor_lock"]), which
+# never passes through load_lock() at all.
+def _compress_binaries(sources):
+    compressed = {}
+    for name, entry in sources.items():
+        entry = dict(entry)
+        binaries = entry.pop("binaries", None)
+        hashes = entry.pop("binary_hashes", None)
+        snaps = entry.pop("binary_snapshot", None)
+        if binaries:
+            merged = {}
+            for binpkg, per_arch in binaries.items():
+                per_hash = (hashes or {}).get(binpkg, {})
+                per_snap = (snaps or {}).get(binpkg, {})
+                merged[binpkg] = {}
+                for arch, version in per_arch.items():
+                    h = per_hash.get(arch)
+                    s = per_snap.get(arch)
+                    if version == entry["version"]:
+                        merged[binpkg][arch] = "%s:%s" % (h, s) if s else h
+                    else:
+                        value = {"hash": h, "version": version}
+                        if s:
+                            value["snapshot"] = s
+                        merged[binpkg][arch] = value
+            entry["binaries"] = merged
+        compressed[name] = entry
+    return compressed
+
+def _expand_binaries(sources):
+    expanded = {}
+    for name, entry in sources.items():
+        entry = dict(entry)
+        binaries = entry.get("binaries")
+        if binaries:
+            plain, hashes, snaps = {}, {}, {}
+            for binpkg, per_arch in binaries.items():
+                plain[binpkg] = {}
+                hashes[binpkg] = {}
+                for arch, value in per_arch.items():
+                    if isinstance(value, dict):
+                        plain[binpkg][arch] = value["version"]
+                        hashes[binpkg][arch] = value.get("hash")
+                        if value.get("snapshot"):
+                            snaps.setdefault(binpkg, {})[arch] = value["snapshot"]
+                    else:
+                        plain[binpkg][arch] = entry["version"]
+                        # A binary missing its own local hash (never
+                        # fetched, or a '--check' resolve with nothing
+                        # on disk) writes bare 'None' through here --
+                        # only an actual string is ever ':'-joined with
+                        # a snapshot sha1.
+                        if value is None:
+                            hashes[binpkg][arch] = None
+                        else:
+                            h, sep, s = value.partition(":")
+                            hashes[binpkg][arch] = h
+                            if sep:
+                                snaps.setdefault(binpkg, {})[arch] = s
+            entry["binaries"] = plain
+            entry["binary_hashes"] = hashes
+            if snaps:
+                entry["binary_snapshot"] = snaps
+        expanded[name] = entry
+    return expanded
+
+def save_lock(path, suites):
+    temporary = "%s.new" % path
+    compact = {suite: dict(doc, sources=_compress_binaries(
+                  _compress_files(doc.get("sources", {}))))
+              for suite, doc in suites.items()}
+    with open(temporary, "w") as f:
+        yaml.safe_dump({"vendor": compact}, f, sort_keys=True,
+                       default_flow_style=False)
+    os.replace(temporary, path)
+
+# The lock file's own 'vendor:' dict, read directly rather than through
+# 'BuildCmd' -- for whoever wants to inspect a lock on its own (tests,
+# 'seine vendor-why', a future 'seine vendor --list-lock') without
+# templating a whole specification around it. Always expanded (see
+# _expand_binaries()'s own comment) -- a caller of this never sees the
+# lock's own on-disk compression trick.
+def load_lock(path):
+    with open(path) as f:
+        data = (yaml.safe_load(f) or {}).get("vendor", {})
+    return {suite: dict(doc, sources=_expand_binaries(
+               _expand_files(doc.get("sources", {}))))
+           for suite, doc in data.items()}
+
 # Everything about a suite's 'vendor:' section that would change what a
 # resolve decides, folded into one digest and kept beside the frozen
 # manifest -- the same idea as packages.py's own build stamp
@@ -966,6 +1248,44 @@ def _binary_already_fetched(where, binpkg, arch, version):
                 return True
     return False
 
+# Every (binpkg, arch, version) a source's own 'binaries' names, sorted
+# for the same stable-task-order reason tasks.py's own 'ordered()'
+# already cares about, and skipping any (binpkg, arch) already in
+# 'seen' -- the same pair can legitimately be reachable from more than
+# one source's own entry in one suite (build-dep closures overlap; a
+# real example, found live: 'ecj', reachable from more than one source
+# in the same suite, crashed fetch_tasks()'s and _enrich_for_lock()'s
+# own task lists with "duplicate task" before each grew this same
+# guard by hand). 'seen' is mutated as it goes -- the one set threaded
+# through every source in a suite's own manifest, by the caller.
+# 'archs', when given, narrows which architectures are even considered
+# *before* marking one seen, so a source visited again for an
+# architecture this call was not asked about still gets a chance at it.
+def _dedup_binaries(entry, seen, archs=None):
+    for binpkg, per_arch in sorted(entry.get("binaries", {}).items()):
+        for arch, version in sorted(per_arch.items()):
+            if archs is not None and arch not in archs:
+                continue
+            key = (binpkg, arch)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield binpkg, arch, version
+
+# Whichever of the four candidates (both epoch spellings, the binary's
+# own architecture and 'all' -- see _binary_already_fetched() above) is
+# actually sitting in 'where', or None. The one place that search is
+# spelled out; _binary_has_gocode()/_binary_hashes()/the snapshot lookup
+# in _enrich_for_lock() all just want the path, not the search.
+def _binary_file_path(where, binpkg, arch, version):
+    for candidate in (arch, "all"):
+        for name in (_binary_filename(binpkg, candidate, version),
+                     _binary_filename_legacy(binpkg, candidate, version)):
+            path = os.path.join(where, name)
+            if os.path.isfile(path):
+                return path
+    return None
+
 def _deb_has_gocode(deb_path):
     try:
         result = subprocess.run(
@@ -976,13 +1296,8 @@ def _deb_has_gocode(deb_path):
         return False
 
 def _binary_has_gocode(where, binpkg, arch, version):
-    for candidate in (arch, "all"):
-        for name in (_binary_filename(binpkg, candidate, version),
-                     _binary_filename_legacy(binpkg, candidate, version)):
-            deb = os.path.join(where, name)
-            if os.path.isfile(deb):
-                return _deb_has_gocode(deb)
-    return False
+    deb = _binary_file_path(where, binpkg, arch, version)
+    return deb is not None and _deb_has_gocode(deb)
 
 def _index_has_gocode(bin_key):
     entry = Index().get(VENDOR, bin_key)
@@ -997,8 +1312,57 @@ def _index_has_gocode(bin_key):
 def _lists_volume(suite):
     return (ContainerEngine.downloads_lists(suite), "/var/lib/apt/lists")
 
-def fetch_source(builder, suite, source, version):
+# A file downloaded from a recorded snapshot sha1 must turn out to be
+# exactly the bytes the lock already expects (its own 'file_hashes'/
+# 'binary_hashes'), or this refuses it outright and removes what was
+# written -- a mismatch here means either snapshot.debian.org served
+# something other than what '--refresh' verified, or the lock itself
+# was hand-edited, and either way trusting the file silently would
+# defeat the entire reason a hash was recorded in the first place. No
+# retry, no falling back to apt: 'snapshot_hashes'/'expected_hash' are
+# only ever set from a trusted lock (see fetch_tasks()'s own comment),
+# so apt was never going to have this exact version anyway.
+def _snapshot_fetch(sess, url, dest, expected):
+    digest = snapshot.download(sess, url, dest)
+    if expected is not None and digest != expected:
+        os.remove(dest)
+        raise ValueError(
+            "vendor: '%s' from snapshot.debian.org does not match the "
+            "lock's own sha256 -- refusing it" % os.path.basename(dest))
+
+# 'snapshot_hashes' ({filename: sha1}) is set only for a source whose
+# entry (in a trusted lock) already recorded one -- '--refresh' put it
+# there because the live feed no longer served this exact version (see
+# _enrich_for_lock()). When set, every one of the source's own files is
+# downloaded directly, apt never touched at all: there would be nothing
+# for apt to resolve the pinned version against anyway (see
+# VendorCmd._run()'s own comment on why a locked suite is never
+# resolved), and a plain HTTPS download needs neither a builder
+# container nor a populated apt index. The sha1 (not a url -- see
+# _enrich_for_lock()'s own comment on why the lock never stores one)
+# and the filename already in hand are all snapshot.file_url() needs.
+# 'expected_hashes' is the lock's own 'file_hashes', checked file by
+# file.
+def fetch_source(builder, suite, source, version, snapshot_hashes=None,
+                 expected_hashes=None, options=None):
+    # 'options' defaults to the real builder's own -- only a pure
+    # snapshot.debian.org fetch (see fetch_tasks()'s own comment) ever
+    # passes 'builder=None', and then only because it already has
+    # 'options' of its own to give: a plain HTTPS download needs no
+    # container, so nothing ever built one for it.
+    options = options if options is not None else builder.options
     where = repository(suite)
+    if snapshot_hashes:
+        with locked(where, shared=True):
+            sess = snapshot.session()
+            for fname, sha1 in snapshot_hashes.items():
+                url = snapshot.file_url(sha1, fname)
+                _snapshot_fetch(sess, url, os.path.join(where, fname),
+                               (expected_hashes or {}).get(fname))
+        key = _artifact_key(suite, source, "source", None, version)
+        Index().made(VENDOR, key)
+        say(options, "vendor source %s made (snapshot.debian.org)" % key)
+        return
     with locked(where, shared=True):
         # 'src:', not a bare name: apt-get prefers a *binary* package of
         # the same name over a source one when both exist -- see
@@ -1023,10 +1387,31 @@ def fetch_source(builder, suite, source, version):
                 raise
     key = _artifact_key(suite, source, "source", None, version)
     Index().made(VENDOR, key)
-    say(builder.options, "vendor source %s made" % key)
+    say(options, "vendor source %s made" % key)
 
-def fetch_binary(builder, suite, binpkg, arch, version):
+# The same, for one binary -- 'snapshot_sha1'/'expected_hash' are the
+# lock's own 'binary_snapshot'/'binary_hashes' entries for this
+# binpkg/arch, singular rather than a dict: a binary is one file, never
+# several the way a source's own '.dsc'/'.orig.tar.*'/'.debian.tar.*'
+# are. The url snapshot.file_url() builds from the sha1 needs the
+# binary's own canonical filename, which _binary_filename() already
+# knows how to spell (the modern epoch escaping apt itself writes --
+# see its own comment).
+def fetch_binary(builder, suite, binpkg, arch, version, snapshot_sha1=None,
+                 expected_hash=None, options=None):
+    options = options if options is not None else builder.options
     where = repository(suite)
+    if snapshot_sha1:
+        with locked(where, shared=True):
+            fname = _binary_filename(binpkg, arch, version)
+            dest = os.path.join(where, fname)
+            url = snapshot.file_url(snapshot_sha1, fname)
+            _snapshot_fetch(snapshot.session(), url, dest, expected_hash)
+        key = _artifact_key(suite, binpkg, binpkg, arch, version)
+        has = _binary_has_gocode(where, binpkg, arch, version)
+        Index().made(VENDOR, key, metadata={"has_gocode": has})
+        say(options, "vendor binary %s made (snapshot.debian.org)" % key)
+        return
     with locked(where, shared=True):
         builder.exec(["apt-get", "-o", "APT::Architectures::=%s" % arch] + _APT_SANDBOX_OPTS +
                      ["download", "-qq", "%s:%s=%s" % (binpkg, arch, version)],
@@ -1035,7 +1420,7 @@ def fetch_binary(builder, suite, binpkg, arch, version):
     key = _artifact_key(suite, binpkg, binpkg, arch, version)
     has = _binary_has_gocode(where, binpkg, arch, version)
     Index().made(VENDOR, key, metadata={"has_gocode": has})
-    say(builder.options, "vendor binary %s made" % key)
+    say(options, "vendor binary %s made" % key)
 
 # ---------------------------------------------------------------------
 # Indexing and signing: identical in shape to Builder.index()
@@ -1104,24 +1489,41 @@ def _link_fetched(fetched, where, component, name):
 # Builds the *delivered* repository -- pool/, dists/, the flat compat
 # Packages/Sources, Release and its signature -- entirely under
 # deploy_repository(suite), out of what fetch_source()/fetch_binary()
-# already fetched into repository(suite) (the cache) and the frozen
-# manifest beside it. Nothing is read from, or written to, the cache
+# already fetched into repository(suite) (the cache) and the resolved
+# 'sources' handed in. Nothing is read from, or written to, the cache
 # beyond that: cache holds only ever the flat, durable fetched files,
 # never a pool/dists view of its own -- see repository()'s and
 # deploy_repository()'s own comments for why the two are kept apart.
 #
+# 'sources'/'direct' are the caller's own -- VendorCmd._run()'s
+# 'manifests[suite]' (whether freshly resolved, read from the cache
+# manifest, or trusted outright from a committed lock) and the names
+# 'entries_for(entries, suite)' asks for directly. Not read off disk
+# here: an earlier version called load_manifest(suite) itself, which
+# silently indexed nothing for a suite served entirely from a lock with
+# no cache manifest of its own on this machine (a fresh checkout, say)
+# -- fetch_tasks() already took its manifest as an argument; index()
+# now does too, for the same reason.
+#
 # Rebuilt from scratch every call, never incrementally: a source or
-# binary's main-vs-extra classification is decided here, fresh from the
-# manifest, every time -- not migrated file-by-file from wherever a
-# previous run put it. That is what lets classification change freely
-# between two runs (a different spec, or the closure resolving
-# differently) without a "promotion" step to patch it up after the
-# fact, and it is cheap enough to always do outright: no network call
-# anywhere in this function, only hardlinking files already on disk and
-# running apt-ftparchive/gpg -- called by index_tasks() as part of a
-# build's own 'vendor' task, which 'rootfs' waits on (image.py's own
-# task graph) rather than reindexing again itself.
-def index(builder, suite, signer):
+# binary's main-vs-extra classification is decided here, fresh, every
+# time -- not migrated file-by-file from wherever a previous run put
+# it, and never persisted back onto 'sources' either (an earlier
+# version wrote a promoted source's own "direct: true" back into the
+# cache manifest -- redundant: 'direct' is nothing a source's own
+# resolve couldn't already tell you from 'entries' plus which of its
+# build-deps carry gocode, both read fresh below, so keeping a copy of
+# the answer in every serialized manifest/lock only gave a hand-edited
+# file something to disagree with). That is also what lets
+# classification change freely between two runs (a different spec, or
+# the closure resolving differently) without a "promotion" step to
+# patch up afterwards, and it is cheap enough to always do outright: no
+# network call anywhere in this function, only hardlinking files
+# already on disk and running apt-ftparchive/gpg -- called by
+# index_tasks() as part of a build's own 'vendor' task, which 'rootfs'
+# waits on (image.py's own task graph) rather than reindexing again
+# itself.
+def index(builder, suite, signer, sources, direct):
     fetched = repository(suite)
     where = deploy_repository(suite)
     with locked(fetched):
@@ -1135,12 +1537,9 @@ def index(builder, suite, signer):
             os.makedirs(os.path.join(where, "dists", suite, comp, "binary-amd64"), exist_ok=True)
             os.makedirs(os.path.join(where, "dists", suite, comp, "source"), exist_ok=True)
 
-        manifest_doc = load_manifest(suite)
-        manifest = manifest_doc.get("sources", {})
-
         # Build binpkg -> (owning source, per_arch version dict)
         bin_owner = {}
-        for src, ent in manifest.items():
+        for src, ent in sources.items():
             for binpkg, per_arch in ent.get("binaries", {}).items():
                 bin_owner[binpkg] = (src, per_arch)
 
@@ -1174,31 +1573,30 @@ def index(builder, suite, signer):
                     return True
             return False
 
-        # BFS closure over build_dep_bins seeded from already-direct sources
-        closure = set()
-        queue = collections.deque(src for src, ent in manifest.items() if ent.get("direct"))
+        # BFS closure over build_dep_bins seeded from the directly-asked
+        # names -- 'direct' is 'entries_for(entries, suite)' names, not a
+        # stored flag (see this function's own comment above).
+        direct_names = set(direct) & set(sources)
+        promoted = set()
+        queue = collections.deque(direct_names)
         seen_queue = set(queue)
         while queue:
             src = queue.popleft()
-            for binpkg in manifest[src].get("build_dep_bins", []):
+            for binpkg in sources[src].get("build_dep_bins", []):
                 if not bin_has_gocode(binpkg):
                     continue
                 target, _ = bin_owner.get(binpkg, (None, None))
-                if target is None or target in closure or manifest[target].get("direct"):
+                if (target is None or target in promoted or
+                        target in direct_names):
                     continue
-                closure.add(target)
+                promoted.add(target)
                 if target not in seen_queue:
                     seen_queue.add(target)
                     queue.append(target)
 
-        if closure:
-            for src in closure:
-                manifest[src]["direct"] = True
-            manifest_doc["sources"] = manifest
-            save_manifest(suite, manifest_doc)
-
-        for source, entry in sorted(manifest.items()):
-            component = "main" if entry.get("direct") else "extra"
+        main_names = direct_names | promoted
+        for source, entry in sorted(sources.items()):
+            component = "main" if source in main_names else "extra"
             _link_fetched(fetched, where, component, source)
             for binpkg in entry.get("binaries", {}):
                 _link_fetched(fetched, where, component, binpkg)
@@ -1302,38 +1700,50 @@ def fetch_tasks(distro, suite, manifest, options, hostBootstrap, archs=None):
             Index().hit(VENDOR, src_key)
             say(options, "vendor source %s reused" % src_key)
         else:
+            # A source whose entry already carries a 'snapshot' (only
+            # ever set by '--refresh', into a committed lock -- see
+            # _enrich_for_lock()) is fetched straight from
+            # snapshot.debian.org, no builder/container at all: apt was
+            # never going to have this exact version anyway (that is
+            # the entire reason '--refresh' recorded it), and a plain
+            # HTTPS download needs neither one. '_builder_for()' -- the
+            # actual bootstrap/image-build chain -- is why this stays a
+            # lambda rather than a plain call: it must not run at all
+            # on this path, only inside the other one's body.
+            snap = entry.get("snapshot")
+            hashes = entry.get("file_hashes")
             tasks.append(Task(
                 "fetch-src:%s:%s" % (suite, source),
-                lambda distro=distro, suite=suite, source=source, version=version:
-                    fetch_source(_builder_for(distro, suite, options, hostBootstrap),
-                                suite, source, version)))
-        for binpkg, per_arch in sorted(entry["binaries"].items()):
-            for arch, binver in sorted(per_arch.items()):
-                if archs is not None and arch not in archs:
-                    continue
-                key = (binpkg, arch)
-                if key in seen_bins:
-                    continue
-                seen_bins.add(key)
-                bin_key = _artifact_key(suite, binpkg, binpkg, arch, binver)
-                if _binary_already_fetched(where, binpkg, arch, binver):
-                    cached = _index_has_gocode(bin_key)
-                    if cached is None:
-                        has = _binary_has_gocode(where, binpkg, arch, binver)
-                        try:
-                            Index().patch(VENDOR, bin_key, {"has_gocode": has})
-                        except Exception:
-                            pass
-                    else:
-                        Index().hit(VENDOR, bin_key)
-                    say(options, "vendor binary %s reused" % bin_key)
-                    continue
-                tasks.append(Task(
-                    "fetch-bin:%s:%s:%s" % (suite, binpkg, arch),
-                    lambda distro=distro, suite=suite, binpkg=binpkg, arch=arch,
-                           binver=binver:
-                        fetch_binary(_builder_for(distro, suite, options, hostBootstrap),
-                                    suite, binpkg, arch, binver)))
+                lambda distro=distro, suite=suite, source=source, version=version,
+                       snap=snap, hashes=hashes:
+                    fetch_source(
+                        None if snap else _builder_for(distro, suite, options, hostBootstrap),
+                        suite, source, version, snapshot_hashes=snap,
+                        expected_hashes=hashes, options=options)))
+        for binpkg, arch, binver in _dedup_binaries(entry, seen_bins, archs):
+            bin_key = _artifact_key(suite, binpkg, binpkg, arch, binver)
+            if _binary_already_fetched(where, binpkg, arch, binver):
+                cached = _index_has_gocode(bin_key)
+                if cached is None:
+                    has = _binary_has_gocode(where, binpkg, arch, binver)
+                    try:
+                        Index().patch(VENDOR, bin_key, {"has_gocode": has})
+                    except Exception:
+                        pass
+                else:
+                    Index().hit(VENDOR, bin_key)
+                say(options, "vendor binary %s reused" % bin_key)
+                continue
+            snap = entry.get("binary_snapshot", {}).get(binpkg, {}).get(arch)
+            bin_hash = entry.get("binary_hashes", {}).get(binpkg, {}).get(arch)
+            tasks.append(Task(
+                "fetch-bin:%s:%s:%s" % (suite, binpkg, arch),
+                lambda distro=distro, suite=suite, binpkg=binpkg, arch=arch,
+                       binver=binver, snap=snap, bin_hash=bin_hash:
+                    fetch_binary(
+                        None if snap else _builder_for(distro, suite, options, hostBootstrap),
+                        suite, binpkg, arch, binver, snapshot_sha1=snap,
+                        expected_hash=bin_hash, options=options)))
     return tasks
 
 # One task per suite, run only once every one of that suite's fetches has
@@ -1341,14 +1751,21 @@ def fetch_tasks(distro, suite, manifest, options, hostBootstrap, archs=None):
 # 'needs' edge onto the fetch wave, so a failed fetch can be resubmitted
 # (see VendorCmd._run_wave()) without the index task's own 'needs' naming
 # an attempt that no longer exists under that name.
-def index_tasks(distro, suites_wanted, options, hostBootstrap, signer):
+# 'manifests'/'entries' are VendorCmd._run()'s own -- index() (see its
+# own comment) needs a suite's resolved sources explicitly, and the
+# names 'entries_for(entries, suite)' asks for directly to seed
+# main-vs-extra classification, rather than reading either off disk.
+def index_tasks(distro, suites_wanted, options, hostBootstrap, signer,
+                manifests, entries):
     tasks = []
     for suite in suites_wanted:
+        direct = {e.name for e in entries_for(entries, suite)}
         tasks.append(Task(
             "index:%s" % suite,
-            lambda distro=distro, suite=suite:
+            lambda distro=distro, suite=suite, sources=manifests[suite],
+                   direct=direct:
                 index(_builder_for(distro, suite, options, hostBootstrap),
-                     suite, signer)))
+                     suite, signer, sources, direct)))
     return tasks
 
 # ---------------------------------------------------------------------
@@ -1430,7 +1847,7 @@ MAX_ATTEMPTS = 3
 class VendorCmd(Cmd):
     NAME = "vendor"
     SHORT_OPTIONS = "dhj:v"
-    LONG_OPTIONS = ["debug", "help", "jobs=", "vendor-sign-key=",
+    LONG_OPTIONS = ["check", "debug", "help", "jobs=", "vendor-sign-key=",
                     "architecture=", "suite=", "verbose"]
 
     def __init__(self):
@@ -1471,10 +1888,13 @@ class VendorCmd(Cmd):
 
         suites_asked = []
         archs_asked = []
+        check = False
         for o, a in opts:
             if o in ("-d", "--debug"):
                 self.options["debug"] = True
                 self.options["verbose"] = True
+            elif o in ("--check"):
+                check = True
             elif o in ("-h", "--help"):
                 print(self.usage())
                 return
@@ -1502,6 +1922,20 @@ class VendorCmd(Cmd):
             sys.stderr.write("error: vendor command expects a YAML file\n")
             sys.exit(1)
 
+        # Writing a lock (a fresh '--refresh', or a '--check' comparing
+        # against one) needs exactly one physical file to know which
+        # '<file>.lock.yaml' it is about -- 'seine build's own multi-file
+        # composition has no notion of "the" file a lock belongs to (see
+        # [[seine-multiconfig-plan]]), so this is refused rather than
+        # guessed at.
+        if (refresh is not False or check) and len(args) != 1:
+            sys.stderr.write(
+                "error: %s needs exactly one specification file, to know "
+                "which '<file>.lock.yaml' to write\n"
+                % ("--refresh" if refresh is not False else "--check"))
+            sys.exit(1)
+        lock_path = lock_sibling(args[0]) if (refresh is not False or check) else None
+
         from seine.build import BuildCmd
         from seine import utils
         build = BuildCmd()
@@ -1513,6 +1947,17 @@ class VendorCmd(Cmd):
             exclude = exclusions(build.spec)
             extra_archs = extra_architectures(build.spec)
             available = named_suites(entries, distro)
+            # 'load_lock()' expands a binary's own merged hash/version
+            # and a source's own merged file hash/snapshot for their own
+            # callers -- this is the *other* way a lock's data reaches
+            # here, BuildCmd's own generic YAML/jinja loader
+            # (_merge_vendor()'s dict branch), which never goes through
+            # 'load_lock()' at all and so needs the exact same expansion
+            # applied by hand.
+            vendor_lock = {
+                suite: dict(doc, sources=_expand_binaries(
+                    _expand_files(doc.get("sources", {}))))
+                for suite, doc in (build.spec.get("_vendor_lock") or {}).items()}
         except OSError as e:
             sys.stderr.write("error: couldn't open specification file: %s\n" % e)
             sys.exit(2)
@@ -1563,7 +2008,8 @@ class VendorCmd(Cmd):
 
         try:
             sys.exit(self._run(distro, entries, exclude, wanted, refresh, archs,
-                               extra_archs))
+                               extra_archs, vendor_lock=vendor_lock,
+                               lock_path=lock_path, check=check))
         except OSError as e:
             sys.stderr.write("error: %s\n" % e)
             sys.exit(2)
@@ -1593,8 +2039,10 @@ class VendorCmd(Cmd):
     # too, so a spec newly naming one re-resolves to actually cover it
     # rather than keeping a manifest frozen before it was asked for.
     def _run(self, distro, entries, exclude, wanted, refresh, archs=None,
-             extra_archs=(), display=None):
+             extra_archs=(), display=None, vendor_lock=None, lock_path=None,
+             check=False):
         hostBootstrap = HostBootstrap(distro, self.options, force_online=True)
+        vendor_lock = vendor_lock or {}
 
         # Which suites need a fresh resolve: every one of them when
         # '--refresh' was given with no name, one already-frozen entry
@@ -1604,16 +2052,37 @@ class VendorCmd(Cmd):
         # 'vendor:' section (entries, excludes, profiles/options, feeds)
         # asks for -- see manifest_digest(). An ordinary, unchanged
         # rerun still just freezes what an earlier one resolved rather
-        # than asking apt again for it.
+        # than asking apt again for it. '--check' forces every suite
+        # stale too, the same as '--refresh' -- it needs a real resolve
+        # to compare against the lock, not whatever the cache already
+        # has lying around.
         digests = {suite: manifest_digest(distro, entries, exclude, suite,
                                           extra_archs)
                   for suite in wanted}
         stale = []
         manifests = {}
         for suite in wanted:
+            # A suite already frozen in a committed lock is never
+            # resolved at all on an ordinary run -- no resolver
+            # container, no apt: its sources are simply trusted, unless
+            # the spec's own 'vendor:' section has moved since the lock
+            # was last written, in which case this refuses outright
+            # rather than silently drifting back to whatever apt
+            # resolves today (that guarantee is the entire point of a
+            # committed lock). '--refresh'/'--check' bypass this and
+            # resolve for real, same as a suite with no lock at all.
+            locked = vendor_lock.get(suite)
+            if locked is not None and refresh is False and not check:
+                if locked.get("digest") != digests[suite]:
+                    raise ValueError(
+                        "vendor lock for '%s' is out of date with this "
+                        "specification's 'vendor:' section -- run 'seine "
+                        "vendor --refresh' to update it" % suite)
+                manifests[suite] = locked.get("sources", {})
+                continue
             document = load_manifest(suite)
             manifest = document.get("sources", {})
-            if (refresh is not False or len(manifest) == 0 or
+            if (refresh is not False or check or len(manifest) == 0 or
                     document.get("digest") != digests[suite]):
                 stale.append(suite)
             else:
@@ -1643,8 +2112,13 @@ class VendorCmd(Cmd):
                         old.get("graph", {}), graph, moved)
                     fresh = merged
                 manifests[suite] = fresh
-                save_manifest(suite, {"sources": fresh, "digest": digests[suite],
-                                      "graph": graph, "graph_version": GRAPH_VERSION})
+                # '--check' writes nothing at all, cache manifest
+                # included -- it exists purely to compare a fresh
+                # resolve against the committed lock, never to update
+                # anything on disk.
+                if not check:
+                    save_manifest(suite, {"sources": fresh, "digest": digests[suite],
+                                          "graph": graph, "graph_version": GRAPH_VERSION})
         else:
             # The resolve wave above is what builds this, as one of its
             # own tasks -- skipped entirely when every suite's manifest
@@ -1659,6 +2133,12 @@ class VendorCmd(Cmd):
             # frozen, not a rare one.
             self._run_wave([hostBootstrap.task()], retryable=False, display=display)
 
+        # '--check' stops here: comparing the freshly resolved
+        # sources/versions against the committed lock needs no fetch or
+        # index at all, and the whole point is to touch nothing on disk.
+        if check:
+            return self._report_check(vendor_lock, manifests, wanted)
+
         fetch = []
         for suite in wanted:
             fetch += fetch_tasks(distro, suite, manifests[suite], self.options,
@@ -1667,7 +2147,8 @@ class VendorCmd(Cmd):
 
         signer = signing.vendor_signer(self.options)
         self._run_wave(
-            index_tasks(distro, wanted, self.options, hostBootstrap, signer),
+            index_tasks(distro, wanted, self.options, hostBootstrap, signer,
+                       manifests, entries),
             retryable=False, display=display)
 
         for suite in wanted:
@@ -1680,7 +2161,244 @@ class VendorCmd(Cmd):
             display.say("vendored " + ", ".join(
                 "%d source package(s) for %s" % (len(manifests[suite]), suite)
                 for suite in wanted))
+
+        # '--refresh' always writes (or creates) the lock beside the one
+        # spec file it was given, whether or not one existed before --
+        # bootstrapping a new lock is just the first refresh, same
+        # command as updating an existing one (see docs). Every suite
+        # the existing lock already named is kept as-is except the ones
+        # this run actually touched ('wanted'), so a run scoped by
+        # '--suite' never drops what an earlier run froze for another.
+        if refresh is not False and lock_path is not None:
+            updated = dict(vendor_lock)
+            for suite in wanted:
+                enriched = self._enrich_for_lock(suite, manifests[suite], display=display)
+                # The cache manifest keeps the enrichment too (hashes,
+                # any snapshot.debian.org URL found) -- read-modify-write
+                # so its own 'digest'/'graph'/'graph_version' (already
+                # written, above, right after resolving) survive
+                # untouched; only 'sources' gains what this just found.
+                document = load_manifest(suite)
+                document["sources"] = enriched
+                save_manifest(suite, document)
+                updated[suite] = {"digest": digests[suite],
+                                  "sources": _lock_sources(enriched)}
+            save_lock(lock_path, updated)
+            print("wrote %s" % lock_path)
         return 0
+
+    # '--check': whether a fresh resolve of every wanted suite still
+    # matches what the committed lock says, without writing anything
+    # back either way. Compared by source name and version only --
+    # binaries/build-deps follow from a source's own version already
+    # (RESOLVE_SCRIPT resolves them together), and this is meant to
+    # answer "did the archive move under us", not to restate the whole
+    # manifest as a diff.
+    def _report_check(self, vendor_lock, manifests, wanted):
+        drifted = []
+        for suite in wanted:
+            old = (vendor_lock.get(suite) or {}).get("sources", {})
+            new = manifests[suite]
+            added = sorted(set(new) - set(old))
+            removed = sorted(set(old) - set(new))
+            changed = sorted(name for name in set(new) & set(old)
+                             if old[name].get("version") != new[name].get("version"))
+            if not (added or removed or changed):
+                print("vendor lock for '%s' matches a fresh resolve" % suite)
+                continue
+            drifted.append(suite)
+            print("vendor lock for '%s' has drifted from a fresh resolve:" % suite)
+            for name in added:
+                print("  + %s %s (not in the lock)" % (name, new[name]["version"]))
+            for name in removed:
+                print("  - %s %s (no longer resolved)" % (name, old[name].get("version")))
+            for name in changed:
+                print("  ~ %s: locked %s, resolved %s"
+                     % (name, old[name].get("version"), new[name].get("version")))
+        if drifted:
+            sys.stderr.write(
+                "error: vendor lock has drifted for %s\n" % ", ".join(drifted))
+            return 1
+        return 0
+
+    # '--refresh's own enrichment of a suite's freshly-resolved sources --
+    # the only place this runs (see seine/snapshot.py's own docstring
+    # and fetch_source()/fetch_binary()'s use of what this records).
+    # Builds exactly what both the cache manifest and the committed lock
+    # want to carry: every file's sha256 (_file_hashes()/
+    # _binary_hashes(), the lock's own no-deviation guarantee), plus --
+    # when snapshot.debian.org already knows the exact bytes apt just
+    # fetched -- its own sha1 for them ('snapshot'/'binary_snapshot'),
+    # the path a plain 'seine vendor' reaches for once the live feed has
+    # moved past this exact version.
+    #
+    # A source's own scale is thousands of packages, most with several
+    # binaries each, and a lookup is a real network round trip against a
+    # small shared public mirror -- run one at a time, this was by far
+    # the longest, least parallel stretch of a whole '--refresh' (see
+    # the prints right after 'vendored N source package(s)', which is
+    # exactly where this picks up). Every already-cached hit (see
+    # _cached_local_matches()'s own comment) is resolved on the spot,
+    # cheaply, no network and no task; only an actual miss becomes a
+    # Task, one per source (bundling all of that source's own missing
+    # files into the single API call source_files() already makes for
+    # the whole source) and one per (binpkg, version) (binary_files()
+    # already returns every architecture in one call -- see its own
+    # comment -- so archs sharing a version are batched into the same
+    # task rather than each firing an identical query) -- run through
+    # the exact same '_run_wave()' every fetch/resolve/index wave
+    # already does, so '--jobs' governs this the same way, each task's
+    # own 'made' line lands in its own log file instead of interleaving
+    # on one terminal (see tasks.py's own 'output()' docstring). A task
+    # that raises (a real request failure, not just "nothing found") is
+    # left to propagate -- '_run_wave(retryable=True)' only ever retries
+    # what it actually sees fail, so swallowing the error here the way
+    # an earlier version did meant a transient failure was recorded as
+    # a permanent "not on snapshot.debian.org" instead of being retried.
+    #
+    # 'snap_results'/'binary_snap_results' are the shared, task-body-
+    # populated results tasks.py's own 'resolve_tasks()' already uses
+    # this same way (see its own 'results' dict) -- every task writes to
+    # its own key (a source's own name; a (name, binpkg, arch) triple),
+    # never one another's, so nothing here needs a lock the way
+    # '_run_wave()'s own 'failures' list does (that one is genuinely
+    # shared across every task).
+    #
+    # Cross-checked against the sha1 snapshot.debian.org itself declares
+    # for the name/version/filename -- a metadata comparison, not a
+    # second download -- so a mismatch (some other upload sharing this
+    # exact name/version, or the two disagreeing for any other reason)
+    # is never recorded as if it were the same file: a warning, and the
+    # entry is left without a 'snapshot' of its own, exactly like
+    # snapshot.debian.org never having heard of it at all. Neither is an
+    # error -- '--refresh' still succeeds, it just has nothing to fall
+    # back to later for that one file.
+    def _enrich_for_lock(self, suite, sources, display=None):
+        where = repository(suite)
+        options = self.options
+        enriched = {}
+        snap_results = {}          # name -> {fname: sha1}
+        binary_snap_results = {}   # (name, binpkg, arch) -> sha1
+        # The same (binpkg, arch) can legitimately be reachable from
+        # more than one source's own 'binaries' entry (build-dep
+        # closures overlap) -- fetch_tasks() already dedupes fetching
+        # it twice the same way (its own 'seen_bins'); this is the
+        # same guard for the snapshot lookup, found missing live: two
+        # sources both queuing a 'snapshot-bin:<suite>:ecj:amd64' task
+        # crashed task ordering outright ("duplicate task").
+        seen_bins = set()
+        tasks = []
+
+        for name, entry in sources.items():
+            entry = dict(entry)
+            enriched[name] = entry
+            if entry.get("files"):
+                entry["file_hashes"] = _file_hashes(suite, entry)
+                src_key = _artifact_key(suite, name, "source", None, entry["version"])
+                local_hashes = {}
+                for fname in entry["files"]:
+                    path = os.path.join(where, fname)
+                    if os.path.isfile(path):
+                        local_hashes[fname] = _local_sha1(path)
+                cached, missing = _cached_local_matches(src_key, local_hashes)
+                if missing:
+                    def run(name=name, version=entry["version"], src_key=src_key,
+                            local_hashes=local_hashes, missing=missing, cached=cached):
+                        sess = snapshot.session()
+                        known = snapshot.source_files(sess, name, version)
+                        for fname in missing:
+                            local = local_hashes[fname]
+                            # Every candidate snapshot.debian.org knows
+                            # for this filename, not just the highest-
+                            # priority one -- the same name/version can
+                            # legitimately carry more than one upload
+                            # under different bytes (see source_files()'s
+                            # own comment), and only the locally fetched
+                            # hash can say which one this actually is.
+                            candidates = known.get(fname, [])
+                            if any(h == local for h, _ in candidates):
+                                cached[fname] = local
+                            elif candidates:
+                                print("warning: '%s' does not match any of "
+                                     "snapshot.debian.org's own checksums for "
+                                     "it -- not recording a snapshot URL" % fname)
+                            # else: snapshot.debian.org has never heard of
+                            # this filename at all -- not a mismatch, just
+                            # nothing to fall back to yet.
+                        _save_source_snapshot_cache(src_key, cached)
+                        snap_results[name] = {fname: h for fname, h in cached.items()
+                                              if local_hashes.get(fname) == h}
+                        say(options, "vendor snapshot %s=%s made" % (name, version))
+                    tasks.append(Task("snapshot-src:%s:%s" % (suite, name), run))
+                else:
+                    snap_results[name] = {fname: h for fname, h in cached.items()
+                                          if local_hashes.get(fname) == h}
+                    if local_hashes:
+                        say(options, "vendor snapshot %s=%s reused"
+                           % (name, entry["version"]))
+            if entry.get("binaries"):
+                entry["binary_hashes"] = _binary_hashes(suite, entry)
+                groups = {}
+                for binpkg, arch, version in _dedup_binaries(entry, seen_bins):
+                    groups.setdefault((binpkg, version), []).append(arch)
+                for (binpkg, version), archs_for in sorted(groups.items()):
+                    need = {}   # arch -> (local sha1, cache key)
+                    for arch in archs_for:
+                        path = _binary_file_path(where, binpkg, arch, version)
+                        if path is None:
+                            continue
+                        local = _local_sha1(path)
+                        bin_key = _artifact_key(suite, binpkg, binpkg, arch, version)
+                        hit = (Index().get(VENDOR, bin_key) or {}).get("snapshot_sha1")
+                        if hit == local:
+                            binary_snap_results[(name, binpkg, arch)] = local
+                            say(options, "vendor snapshot %s:%s=%s reused"
+                               % (binpkg, arch, version))
+                        else:
+                            need[arch] = (local, bin_key)
+                    if not need:
+                        continue
+                    def run(name=name, binpkg=binpkg, version=version,
+                            src_version=entry["version"], need=need):
+                        sess = snapshot.session()
+                        by_arch = snapshot.binary_files(
+                            sess, name, src_version, binpkg, version)
+                        for arch, (local, bin_key) in sorted(need.items()):
+                            candidates = by_arch.get(arch, [])
+                            if local in candidates:
+                                binary_snap_results[(name, binpkg, arch)] = local
+                                try:
+                                    Index().patch(VENDOR, bin_key,
+                                                 {"snapshot_sha1": local})
+                                except Exception:
+                                    pass
+                                say(options, "vendor snapshot %s:%s=%s made"
+                                   % (binpkg, arch, version))
+                            elif candidates:
+                                print("warning: '%s:%s' does not match any of "
+                                     "snapshot.debian.org's own checksums for it "
+                                     "-- not recording a snapshot URL"
+                                     % (binpkg, arch))
+                    tasks.append(Task(
+                        "snapshot-bin:%s:%s:%s:%d"
+                        % (suite, binpkg, version, len(tasks)), run))
+
+        self._run_wave(tasks, retryable=True, display=display)
+
+        for name, entry in enriched.items():
+            snap = snap_results.get(name)
+            if snap:
+                entry["snapshot"] = snap
+            if entry.get("binaries"):
+                binary_snap = {}
+                for binpkg, per_arch in entry["binaries"].items():
+                    for arch in per_arch:
+                        sha1 = binary_snap_results.get((name, binpkg, arch))
+                        if sha1:
+                            binary_snap.setdefault(binpkg, {})[arch] = sha1
+                if binary_snap:
+                    entry["binary_snapshot"] = binary_snap
+        return enriched
 
     # '--refresh=NAME': the freshly-resolved closure with every entry but
     # NAME put back to what the existing manifest already had -- NAME
@@ -1827,11 +2545,23 @@ Description:
   scopes that to one source package, keeping every other one frozen as
   it was.
 
+  'SPEC.yaml' pairs with a committed 'SPEC.lock.yaml' if one sits beside
+  it: loaded automatically, no field asks for it. A suite it names is
+  never resolved at all -- trusted outright, unless this specification's
+  own 'vendor:' section has changed since the lock was last written, in
+  which case this refuses rather than silently drifting. '--refresh'
+  needs exactly one SPEC and always (re)writes its lock; '--check' does
+  the same resolve but only reports whether it still matches the lock,
+  writing nothing either way -- what a CI job would run on a schedule.
+
 Usage:
-  seine vendor [-j N] [--refresh[=NAME]] [--vendor-sign-key KEY]
+  seine vendor [-j N] [--refresh[=NAME] | --check] [--vendor-sign-key KEY]
                [--suite NAME]... [--architecture NAME]... SPEC...
 
 Flags:
+  --check               resolve fresh and compare against SPEC's own
+                        lock file, without writing anything; exits
+                        non-zero on drift. Needs exactly one SPEC
   -d, --debug           print what each step decided and its full output
   -h, --help            print this message
   -j, --jobs N          fetch up to N artifacts at once (1 by default)
@@ -1841,7 +2571,9 @@ Flags:
                         'packages:' rebuilds are signed with
       --refresh[=NAME]  resolve again rather than keep the frozen
                         manifest; scoped to one source package when
-                        given a name, every one of them otherwise
+                        given a name, every one of them otherwise.
+                        Needs exactly one SPEC, whose lock file this
+                        then (re)writes
       --suite NAME      vendor only this suite; may be given more than
                         once. Every suite the specification's 'vendor:'
                         section asks for otherwise

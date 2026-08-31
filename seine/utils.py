@@ -306,6 +306,18 @@ def digest(files, length=None):
     named = "\0".join(os.path.abspath(f) for f in files)
     return hashlib.sha256(named.encode()).hexdigest()[:length]
 
+# The lock file a specification pairs with, kas style: 'foo.yaml' always
+# pairs with 'foo.lock.yaml', full stop -- no field asks for it, and a
+# file already named '*.lock.yaml' does not get a lock of its own.
+# Generic, not vendor-specific: 'BuildCmd.load_all()' auto-loads whatever
+# this names if it exists, and any top-level key a lock file carries
+# ('vendor:' today) is merged by its own existing per-key merge function.
+def lock_sibling(yaml_file):
+    base, ext = os.path.splitext(yaml_file)
+    if base.endswith(".lock"):
+        return None
+    return base + ".lock" + (ext or ".yaml")
+
 # What is printed in place of a secret, with a digest of what it stands
 # for. A constant would have a plan call a changed password no change at
 # all: the baseline it compares against is a dump too, so both sides

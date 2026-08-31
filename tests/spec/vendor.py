@@ -4,6 +4,7 @@
 
 import atexit
 import avocado
+import io
 import json
 import os
 import shutil
@@ -296,7 +297,7 @@ class SuiteFlagOnlyValidatesFeedsItNeeds(avocado.Test):
         cmd = VendorCmd()
         seen = {}
         cmd._run = lambda distro, entries, exclude, wanted, refresh, archs=None, \
-                          extra_archs=(): (
+                          extra_archs=(), **kwargs: (
             seen.update(wanted=wanted) or 0)
 
         # 'trixie' has no configured feed, but '--suite bookworm' never
@@ -333,7 +334,7 @@ class ArchitectureFlagNarrowsFetchingAlone(avocado.Test):
         cmd = VendorCmd()
         seen = {}
         cmd._run = lambda distro, entries, exclude, wanted, refresh, archs=None, \
-                          extra_archs=(): (
+                          extra_archs=(), **kwargs: (
             seen.update(archs=archs) or 0)
 
         # No '--architecture' at all: unscoped, same as before this flag
@@ -382,7 +383,7 @@ class DistributionArchitecturesWidensWhatArchitectureAccepts(avocado.Test):
         cmd = VendorCmd()
         seen = {}
         cmd._run = lambda distro, entries, exclude, wanted, refresh, archs=None, \
-                          extra_archs=(): (
+                          extra_archs=(), **kwargs: (
             seen.update(archs=archs, extra_archs=extra_archs) or 0)
 
         # 'arm64' is accepted even though no entry names it -- only
@@ -804,8 +805,9 @@ class TaskGraphShape(avocado.Test):
     def test_index_tasks_one_per_suite(self):
         from seine.bootstrap import HostBootstrap
         distro = self.distro()
+        manifests = {"bookworm": {}, "bookworm-security": {}}
         tasks = vendor.index_tasks(distro, ["bookworm", "bookworm-security"], {},
-                                   HostBootstrap(distro, {}), None)
+                                   HostBootstrap(distro, {}), None, manifests, [])
         self.assertEqual(sorted(t.name for t in tasks),
                          ["index:bookworm", "index:bookworm-security"])
 
@@ -1266,7 +1268,7 @@ class IndexRebuildsPoolFromTheCurrentManifest(avocado.Test):
             pass
 
     def test_reclassifying_a_source_moves_it_between_components(self):
-        from seine.vendor import index, save_manifest, repository, deploy_repository
+        from seine.vendor import index, repository, deploy_repository
 
         suite = "index-test-%d" % os.getpid()
         fetched = repository(suite)
@@ -1274,17 +1276,17 @@ class IndexRebuildsPoolFromTheCurrentManifest(avocado.Test):
         for name in ["openssl_3.0.11-1.dsc", "openssl_3.0.11.orig.tar.xz"]:
             open(os.path.join(fetched, name), "w").close()
         try:
-            save_manifest(suite, {"sources": {
-                "openssl": {"version": "3.0.11-1", "direct": True, "binaries": {}}}})
-            index(self.FakeBuilder(), suite, None)
+            sources = {"openssl": {"version": "3.0.11-1", "binaries": {}}}
+            index(self.FakeBuilder(), suite, None, sources, {"openssl"})
             self.assertTrue(os.path.isfile(
                 os.path.join(deployed, "pool", "main", "openssl_3.0.11-1.dsc")))
             self.assertFalse(os.path.isfile(
                 os.path.join(deployed, "pool", "extra", "openssl_3.0.11-1.dsc")))
 
-            save_manifest(suite, {"sources": {
-                "openssl": {"version": "3.0.11-1", "direct": False, "binaries": {}}}})
-            index(self.FakeBuilder(), suite, None)
+            # No longer among the directly-asked names -- classification
+            # is decided fresh from 'direct' every call, never carried
+            # over from a previous one.
+            index(self.FakeBuilder(), suite, None, sources, set())
             self.assertFalse(os.path.isfile(
                 os.path.join(deployed, "pool", "main", "openssl_3.0.11-1.dsc")))
             self.assertTrue(os.path.isfile(
@@ -1304,7 +1306,7 @@ class IndexRebuildsPoolFromTheCurrentManifest(avocado.Test):
     # outright (os.link() found the destination already there, and the
     # shutil.copy2() fallback then raised over linking a file to itself).
     def test_a_package_name_that_prefixes_a_sibling_does_not_swallow_it(self):
-        from seine.vendor import index, save_manifest, repository, deploy_repository
+        from seine.vendor import index, repository, deploy_repository
 
         suite = "index-test-%d" % os.getpid()
         fetched = repository(suite)
@@ -1313,11 +1315,11 @@ class IndexRebuildsPoolFromTheCurrentManifest(avocado.Test):
                     "lib0install-solver-ocaml-dev_2.18-1+b4_amd64.deb"]:
             open(os.path.join(fetched, name), "w").close()
         try:
-            save_manifest(suite, {"sources": {"0install-solver": {
-                "version": "2.18-1", "direct": True, "binaries": {
+            sources = {"0install-solver": {
+                "version": "2.18-1", "binaries": {
                     "lib0install-solver-ocaml": {"amd64": "2.18-1+b4"},
-                    "lib0install-solver-ocaml-dev": {"amd64": "2.18-1+b4"}}}}})
-            index(self.FakeBuilder(), suite, None)
+                    "lib0install-solver-ocaml-dev": {"amd64": "2.18-1+b4"}}}}
+            index(self.FakeBuilder(), suite, None, sources, {"0install-solver"})
             self.assertTrue(os.path.isfile(os.path.join(
                 deployed, "pool", "main",
                 "lib0install-solver-ocaml_2.18-1+b4_amd64.deb")))
@@ -1334,7 +1336,7 @@ class IndexRebuildsPoolFromTheCurrentManifest(avocado.Test):
     # its file already linked and leave it alone, not treat that as a
     # reason to fall back to copying a file onto itself.
     def test_a_source_and_a_same_named_binary_link_without_colliding(self):
-        from seine.vendor import index, save_manifest, repository, deploy_repository
+        from seine.vendor import index, repository, deploy_repository
 
         suite = "index-test-%d" % os.getpid()
         fetched = repository(suite)
@@ -1345,14 +1347,15 @@ class IndexRebuildsPoolFromTheCurrentManifest(avocado.Test):
                     "abi-compliance-checker_2.3-3_all.deb"]:
             open(os.path.join(fetched, name), "w").close()
         try:
-            save_manifest(suite, {"sources": {"abi-compliance-checker": {
-                "version": "2.3-3", "direct": True,
+            sources = {"abi-compliance-checker": {
+                "version": "2.3-3",
                 "files": ["abi-compliance-checker_2.3-3.dsc",
                          "abi-compliance-checker_2.3.orig.tar.gz",
                          "abi-compliance-checker_2.3-3.debian.tar.xz"],
                 "binaries": {
-                    "abi-compliance-checker": {"amd64": "2.3-3"}}}}})
-            index(self.FakeBuilder(), suite, None)
+                    "abi-compliance-checker": {"amd64": "2.3-3"}}}}
+            index(self.FakeBuilder(), suite, None, sources,
+                 {"abi-compliance-checker"})
             for name in ["abi-compliance-checker_2.3-3.dsc",
                         "abi-compliance-checker_2.3.orig.tar.gz",
                         "abi-compliance-checker_2.3-3.debian.tar.xz",
@@ -1399,7 +1402,7 @@ def _build_deb(name, version, where):
 # apt-ftparchive on its own, is what actually has to be asked for.
 class IndexBuildsAFlatListingCoveringBothComponents(avocado.Test):
     def test(self):
-        from seine.vendor import index, save_manifest, repository, deploy_repository
+        from seine.vendor import index, repository, deploy_repository
 
         suite = "index-real-test-%d" % os.getpid()
         fetched = repository(suite)
@@ -1407,15 +1410,15 @@ class IndexBuildsAFlatListingCoveringBothComponents(avocado.Test):
         try:
             _build_deb("mainpkg", "1.0", fetched)
             _build_deb("extrapkg", "2.0", fetched)
-            save_manifest(suite, {"sources": {
-                "mainpkg": {"version": "1.0", "direct": True,
+            sources = {
+                "mainpkg": {"version": "1.0",
                            "files": [], "binaries": {
                                "mainpkg": {"amd64": "1.0"}}},
-                "extrapkg": {"version": "2.0", "direct": False,
+                "extrapkg": {"version": "2.0",
                             "files": [], "binaries": {
                                 "extrapkg": {"amd64": "2.0"}}},
-            }})
-            index(RealShellBuilder(), suite, None)
+            }
+            index(RealShellBuilder(), suite, None, sources, {"mainpkg"})
             with open(os.path.join(deployed, "Packages")) as f:
                 flat = f.read()
             self.assertIn("Package: mainpkg", flat)
@@ -1686,3 +1689,1051 @@ class NewResolverProfileFiltering(avocado.Test):
         self.assertNotIn("foo", names2)
         self.assertIn("bar", names2)
         apt_pkg.config.set("APT::Build-Profiles", "")
+
+# ---------------------------------------------------------------------
+# The committed lock file: kas-style auto-discovery ('foo.yaml' pairs
+# with 'foo.lock.yaml'), 'vendor:' as a dict rather than a list once it
+# comes from one, and the guardrails around trusting it.
+# ---------------------------------------------------------------------
+
+class LockSiblingNaming(avocado.Test):
+    def test(self):
+        self.assertEqual(utils.lock_sibling("foo.yaml"), "foo.lock.yaml")
+        self.assertEqual(utils.lock_sibling("dir/foo.yml"), "dir/foo.lock.yml")
+        self.assertEqual(utils.lock_sibling("foo"), "foo.lock.yaml")
+        # A lock file does not get a lock of its own.
+        self.assertIsNone(utils.lock_sibling("foo.lock.yaml"))
+
+class MergeVendorDictGoesToVendorLock(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                vendor:
+                    - name: openssl
+        """)
+        build.loads("""
+                vendor:
+                    bookworm:
+                        digest: abc123
+                        sources:
+                            openssl:
+                                version: "3.0.11-1"
+        """)
+        # The declared ask is untouched -- every existing reader of
+        # 'vendor:' (parse(), exclusions(), ...) still sees a plain list.
+        self.assertEqual(build.spec["vendor"], [{"name": "openssl"}])
+        self.assertEqual(build.spec["_vendor_lock"]["bookworm"]["digest"],
+                         "abc123")
+        self.assertEqual(
+            build.spec["_vendor_lock"]["bookworm"]["sources"]["openssl"]["version"],
+            "3.0.11-1")
+
+class LoadAllSplicesSiblingLockFile(avocado.Test):
+    def test(self):
+        spec_dir = tempfile.mkdtemp(prefix="seine-tests-lock-")
+        self.addCleanup(shutil.rmtree, spec_dir, ignore_errors=True)
+        spec_path = os.path.join(spec_dir, "foo.yaml")
+        lock_path = os.path.join(spec_dir, "foo.lock.yaml")
+        with open(spec_path, "w") as f:
+            f.write("vendor:\n    - name: openssl\n")
+        with open(lock_path, "w") as f:
+            f.write("vendor:\n    bookworm:\n        digest: abc123\n"
+                    "        sources: {}\n")
+
+        build = BuildCmd()
+        build.load_all([spec_path])
+        self.assertEqual(build.spec["vendor"], [{"name": "openssl"}])
+        self.assertEqual(build.spec["_vendor_lock"]["bookworm"]["digest"],
+                         "abc123")
+
+        # No sibling: nothing extra happens, same as before this existed.
+        spec_path2 = os.path.join(spec_dir, "bare.yaml")
+        with open(spec_path2, "w") as f:
+            f.write("vendor:\n    - name: git\n")
+        build2 = BuildCmd()
+        build2.load_all([spec_path2])
+        self.assertNotIn("_vendor_lock", build2.spec)
+
+class VendorLockSuiteIsTrustedWithoutResolving(avocado.Test):
+    def distro(self):
+        return {"source": "debian", "release": "bookworm", "architecture": "amd64",
+               "uri": "http://example.com/debian",
+               "feeds": [{"suite": "bookworm"}]}
+
+    def test(self):
+        from seine.vendor import VendorCmd, manifest_digest
+
+        digest = manifest_digest(self.distro(), [], [], "bookworm")
+        locked_sources = {"openssl": {"version": "3.0.11-1", "direct": True,
+                                      "binaries": {}}}
+        vendor_lock = {"bookworm": {"digest": digest, "sources": locked_sources}}
+
+        resolve_called = []
+        def fake_resolve_tasks(*a, **k):
+            resolve_called.append(True)
+            return []
+
+        fetched = {}
+        def fake_fetch_tasks(distro, suite, manifest, options, hostBootstrap,
+                             archs=None):
+            fetched[suite] = manifest
+            return []
+
+        class FakeHostBootstrap:
+            def __init__(self, distro, options, force_online=False):
+                pass
+            def task(self):
+                return None
+
+        cmd = VendorCmd()
+        cmd.options["jobs"] = 1
+        cmd._run_wave = lambda wave_tasks, retryable, display=None: None
+        with patch("seine.vendor.HostBootstrap", FakeHostBootstrap), \
+             patch("seine.vendor.resolve_tasks", fake_resolve_tasks), \
+             patch("seine.vendor.fetch_tasks", fake_fetch_tasks), \
+             patch("seine.vendor.index_tasks", lambda *a, **k: []):
+            code = cmd._run(self.distro(), [], [], ["bookworm"], False,
+                            vendor_lock=vendor_lock)
+        self.assertEqual(code, 0)
+        self.assertEqual(resolve_called, [])
+        self.assertEqual(fetched["bookworm"], locked_sources)
+
+# The actual bug this whole refactor was found chasing: index() used to
+# call load_manifest(suite) itself, straight off the cache directory --
+# so a suite served entirely from a committed lock, on a machine that
+# never ran a real resolve for it (a fresh checkout, exactly what the
+# lock exists for), indexed an empty repository despite fetch_tasks()
+# (which does take the manifest as an argument) having fetched the
+# right files. No save_manifest() call anywhere in this test -- that is
+# the point.
+class VendorLockIndexesWithoutAnyCacheManifest(avocado.Test):
+    def distro(self):
+        return {"source": "debian", "release": "bookworm", "architecture": "amd64",
+               "uri": "http://example.com/debian",
+               "feeds": [{"suite": "bookworm"}]}
+
+    def test(self):
+        from seine.tasks import Task
+        from seine.vendor import (VendorCmd, manifest_digest, repository,
+                                  deploy_repository)
+
+        suite = "lock-index-test-%d" % os.getpid()
+        fetched = repository(suite)
+        deployed = deploy_repository(suite)
+        self.addCleanup(shutil.rmtree, fetched, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, deployed, ignore_errors=True)
+        open(os.path.join(fetched, "openssl_3.0.11-1.dsc"), "w").close()
+
+        entries = vendor.parse({"vendor": [{"name": "openssl"}]})
+        digest = manifest_digest(self.distro(), entries, [], suite)
+        locked_sources = {"openssl": {"version": "3.0.11-1", "binaries": {},
+                                      "files": ["openssl_3.0.11-1.dsc"]}}
+        vendor_lock = {suite: {"digest": digest, "sources": locked_sources}}
+
+        class FakeHostBootstrap:
+            def __init__(self, distro, options, force_online=False):
+                pass
+            def task(self):
+                return Task("bootstrap-host", lambda: None)
+
+        class FakeBuilder:
+            options = {}
+            def exec(self, args, **kwargs):
+                pass
+
+        cmd = VendorCmd()
+        cmd.options["jobs"] = 1
+        cmd._run_wave = lambda wave_tasks, retryable, display=None: [
+            t.run() for t in wave_tasks]
+        with patch("seine.vendor.HostBootstrap", FakeHostBootstrap), \
+             patch("seine.vendor._builder_for", lambda *a, **k: FakeBuilder()):
+            code = cmd._run(self.distro(), entries, [], [suite], False,
+                            vendor_lock=vendor_lock)
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.isfile(
+            os.path.join(deployed, "pool", "main", "openssl_3.0.11-1.dsc")))
+
+class VendorLockDigestMismatchRefusesOutright(avocado.Test):
+    def distro(self):
+        return {"source": "debian", "release": "bookworm", "architecture": "amd64",
+               "uri": "http://example.com/debian",
+               "feeds": [{"suite": "bookworm"}]}
+
+    def test(self):
+        from seine.vendor import VendorCmd
+
+        vendor_lock = {"bookworm": {"digest": "stale", "sources": {}}}
+
+        class FakeHostBootstrap:
+            def __init__(self, distro, options, force_online=False):
+                pass
+            def task(self):
+                return None
+
+        cmd = VendorCmd()
+        cmd.options["jobs"] = 1
+        with patch("seine.vendor.HostBootstrap", FakeHostBootstrap):
+            with self.assertRaises(ValueError) as ctx:
+                cmd._run(self.distro(), [], [], ["bookworm"], False,
+                         vendor_lock=vendor_lock)
+        self.assertIn("out of date", str(ctx.exception))
+
+class RefreshAlwaysWritesTheLockFile(avocado.Test):
+    def distro(self):
+        return {"source": "debian", "release": "bookworm", "architecture": "amd64",
+               "uri": "http://example.com/debian",
+               "feeds": [{"suite": "bookworm"}]}
+
+    def test(self):
+        from seine.vendor import VendorCmd, load_lock, load_manifest
+
+        fresh = {"openssl": {"version": "3.0.11-1", "direct": True,
+                             "binaries": {}, "files": [],
+                             "build_dep_bins": ["libssl-dev"]}}
+
+        def fake_resolve_tasks(distro, entries, suites_wanted, options,
+                              hostBootstrap, exclude, results, extra_archs=()):
+            for suite in suites_wanted:
+                results[suite] = (
+                    fresh, {"edges": [], "reverse": {},
+                           "pruned": {"base_chroot": [], "excluded": []}})
+            return []
+
+        class FakeHostBootstrap:
+            def __init__(self, distro, options, force_online=False):
+                pass
+            def task(self):
+                return None
+
+        lock_path = os.path.join(tempfile.mkdtemp(prefix="seine-tests-lock-"),
+                                 "spec.lock.yaml")
+        self.addCleanup(shutil.rmtree, os.path.dirname(lock_path),
+                        ignore_errors=True)
+
+        cmd = VendorCmd()
+        cmd.options["jobs"] = 1
+        cmd._run_wave = lambda wave_tasks, retryable, display=None: None
+        with patch("seine.vendor.HostBootstrap", FakeHostBootstrap), \
+             patch("seine.vendor.resolve_tasks", fake_resolve_tasks), \
+             patch("seine.vendor.fetch_tasks", lambda *a, **k: []), \
+             patch("seine.vendor.index_tasks", lambda *a, **k: []):
+            code = cmd._run(self.distro(), [], [], ["bookworm"], True,
+                            vendor_lock={}, lock_path=lock_path)
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.isfile(lock_path))
+        written = load_lock(lock_path)
+        locked_entry = written["bookworm"]["sources"]["openssl"]
+        self.assertEqual(locked_entry["version"], "3.0.11-1")
+        # Internal bookkeeping ('direct', 'build_dep_bins') never
+        # reaches the committed lock -- only the cache manifest, which
+        # 'seine vendor' actually needs to keep classifying/promoting
+        # correctly on its own next run, keeps them in full.
+        self.assertNotIn("direct", locked_entry)
+        self.assertNotIn("build_dep_bins", locked_entry)
+        cached_entry = load_manifest("bookworm")["sources"]["openssl"]
+        self.assertEqual(cached_entry["direct"], True)
+        self.assertEqual(cached_entry["build_dep_bins"], ["libssl-dev"])
+
+class CheckReportsDriftWithoutWritingAnything(avocado.Test):
+    def distro(self):
+        return {"source": "debian", "release": "bookworm", "architecture": "amd64",
+               "uri": "http://example.com/debian",
+               "feeds": [{"suite": "bookworm"}]}
+
+    def test(self):
+        from seine.vendor import VendorCmd
+
+        old_sources = {"openssl": {"version": "3.0.11-1"}}
+        new_sources = {"openssl": {"version": "3.0.12-1"}}
+
+        def fake_resolve_tasks(distro, entries, suites_wanted, options,
+                              hostBootstrap, exclude, results, extra_archs=()):
+            for suite in suites_wanted:
+                results[suite] = (
+                    new_sources, {"edges": [], "reverse": {},
+                                 "pruned": {"base_chroot": [], "excluded": []}})
+            return []
+
+        class FakeHostBootstrap:
+            def __init__(self, distro, options, force_online=False):
+                pass
+            def task(self):
+                return None
+
+        cmd = VendorCmd()
+        cmd.options["jobs"] = 1
+        cmd._run_wave = lambda wave_tasks, retryable, display=None: None
+        with patch("seine.vendor.HostBootstrap", FakeHostBootstrap), \
+             patch("seine.vendor.resolve_tasks", fake_resolve_tasks):
+            code = cmd._run(
+                self.distro(), [], [], ["bookworm"], False,
+                vendor_lock={"bookworm": {"digest": "whatever",
+                                          "sources": old_sources}},
+                check=True)
+        self.assertEqual(code, 1)
+
+        # A matching resolve reports clean and exits 0.
+        def fake_resolve_tasks_same(distro, entries, suites_wanted, options,
+                                    hostBootstrap, exclude, results,
+                                    extra_archs=()):
+            for suite in suites_wanted:
+                results[suite] = (
+                    old_sources, {"edges": [], "reverse": {},
+                                 "pruned": {"base_chroot": [], "excluded": []}})
+            return []
+        with patch("seine.vendor.HostBootstrap", FakeHostBootstrap), \
+             patch("seine.vendor.resolve_tasks", fake_resolve_tasks_same):
+            code = cmd._run(
+                self.distro(), [], [], ["bookworm"], False,
+                vendor_lock={"bookworm": {"digest": "whatever",
+                                          "sources": old_sources}},
+                check=True)
+        self.assertEqual(code, 0)
+
+class RefreshAndCheckNeedExactlyOneSpecFile(avocado.Test):
+    def test(self):
+        from seine.vendor import VendorCmd
+        spec_a = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False)
+        self.addCleanup(os.unlink, spec_a.name)
+        spec_a.write("vendor:\n    - name: openssl\n")
+        spec_a.close()
+        spec_b = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False)
+        self.addCleanup(os.unlink, spec_b.name)
+        spec_b.write("vendor:\n    - name: git\n")
+        spec_b.close()
+
+        cmd = VendorCmd()
+        with self.assertRaises(SystemExit) as ctx:
+            cmd.main(["--refresh", spec_a.name, spec_b.name])
+        self.assertEqual(ctx.exception.code, 1)
+
+        cmd2 = VendorCmd()
+        with self.assertRaises(SystemExit) as ctx:
+            cmd2.main(["--check", spec_a.name, spec_b.name])
+        self.assertEqual(ctx.exception.code, 1)
+
+# ---------------------------------------------------------------------
+# snapshot.debian.org: '--refresh's own enrichment (_enrich_for_lock()),
+# and the plain-vendor direct-download path it feeds
+# (fetch_source()/fetch_binary()/fetch_tasks()). seine/snapshot.py's
+# own client is covered in tests/spec/snapshot.py; these are about how
+# vendor.py uses it, so a fake session (matching that file's own) is
+# enough -- no real network here either.
+# ---------------------------------------------------------------------
+
+class _FakeSnapshotResponse:
+    def __init__(self, status_code=200, json_body=None):
+        self.status_code = status_code
+        self._json = json_body
+    def raise_for_status(self):
+        pass
+    def json(self):
+        return self._json
+
+class _FakeSnapshotSession:
+    def __init__(self, responses):
+        self.responses = responses
+        self.requested = []
+    def get(self, url, timeout=None):
+        self.requested.append(url)
+        return self.responses.get(url, _FakeSnapshotResponse(status_code=404))
+
+# A '--refresh' resolving thousands of sources spends the longest,
+# quietest stretch of its own run right here -- one network call at a
+# time against an external service, nothing else to show for it. Worth
+# a line of its own under '--verbose', same as every other
+# made/reused artifact already gets.
+# A VendorCmd whose enrichment tasks run one at a time -- 'jobs=1' plus
+# 'verbose=True' is what makes _run_wave() install a live-following
+# display (_LiveFollower), the same thing a real terminal gets, which
+# tees a task's own log file (see tasks.py's own 'output()' docstring
+# on why a task's prints go to a file, not straight to stdout, once
+# more than one can run at a time) back to sys.stdout synchronously
+# before _run_wave() returns -- so patching sys.stdout around a call
+# still sees what a task itself printed, exactly as a real '--verbose'
+# run watched live would.
+def _vendor_cmd(jobs=1, verbose=True):
+    from seine.vendor import VendorCmd
+    cmd = VendorCmd()
+    cmd.options["jobs"] = jobs
+    cmd.options["verbose"] = verbose
+    return cmd
+
+# The actual point of routing this through _run_wave() at all: '--jobs'
+# governs a snapshot.debian.org lookup wave the exact same way it
+# already governs a fetch wave. A session whose own 'get()' holds the
+# GIL-releasing 'time.sleep()' just long enough to widen the window,
+# and counts how many calls were ever in flight at once, is the
+# straightforward way to prove real concurrency rather than trust that
+# building Task objects implies it.
+class EnrichForLockRunsLookupsConcurrentlyUpToJobs(avocado.Test):
+    def test(self):
+        import threading
+        import time
+        from seine.vendor import repository
+        from seine import snapshot
+
+        suite = "enrich-concurrency-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+
+        lock = threading.Lock()
+        state = {"inflight": 0, "max_inflight": 0}
+
+        class SlowSession:
+            def get(self, url, timeout=None):
+                with lock:
+                    state["inflight"] += 1
+                    state["max_inflight"] = max(state["max_inflight"],
+                                                state["inflight"])
+                time.sleep(0.2)
+                with lock:
+                    state["inflight"] -= 1
+                return _FakeSnapshotResponse(status_code=404)
+
+        sources = {}
+        for i in range(4):
+            name = "pkg%d" % i
+            fname = "%s_1.0-1.dsc" % name
+            with open(os.path.join(where, fname), "wb") as f:
+                f.write(b"content")
+            sources[name] = {"version": "1.0-1", "binaries": {}, "files": [fname]}
+
+        cmd = _vendor_cmd(jobs=4, verbose=False)
+        with patch("seine.vendor.snapshot.session", lambda: SlowSession()):
+            cmd._enrich_for_lock(suite, sources)
+        # Four independent sources, each good for one blocking request
+        # (a 404 -- source_files() makes exactly one GET) -- run one at
+        # a time this would take >= 0.8s and never show more than one
+        # in flight; run concurrently up to 'jobs', more than one
+        # really was in flight at once.
+        self.assertGreater(state["max_inflight"], 1)
+class EnrichForLockSaysMadeOnAQueryAndReusedOnACacheHit(avocado.Test):
+    def test(self):
+        import hashlib
+        from seine.vendor import repository
+        from seine import snapshot
+
+        suite = "enrich-verbose-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        content = b"dsc content"
+        fname = "openssl_3.0.11-1.dsc"
+        with open(os.path.join(where, fname), "wb") as f:
+            f.write(content)
+        local_sha1 = hashlib.sha1(content).hexdigest()
+
+        url = snapshot.BASE_URL + "/mr/package/openssl/3.0.11-1/srcfiles?fileinfo=1"
+        body = {"result": [{"hash": local_sha1}],
+               "fileinfo": {local_sha1: [
+                   {"name": fname, "archive_name": "debian", "path": "/x",
+                    "size": len(content), "first_seen": "20260101T000000Z"}]}}
+        sess = _FakeSnapshotSession({url: _FakeSnapshotResponse(json_body=body)})
+        sources = {"openssl": {"version": "3.0.11-1", "binaries": {},
+                               "files": [fname]}}
+
+        cmd = _vendor_cmd()
+        with patch("seine.vendor.snapshot.session", lambda: sess), \
+             patch("sys.stdout", new=io.StringIO()) as out:
+            cmd._enrich_for_lock(suite, sources)
+        self.assertIn("vendor snapshot openssl=3.0.11-1 made", out.getvalue())
+
+        # Same source again, now cached -- no network call needed (the
+        # 404-everything session proves it, same trick
+        # EnrichForLockCachesAMatchAndNeverAsksSnapshotAgain uses), and
+        # the line says so instead of staying silent about it. This one
+        # is printed synchronously in the pre-pass, before any task
+        # ever runs, so it needs none of the live-follow machinery
+        # above to reach stdout.
+        quiet_sess = _FakeSnapshotSession({})
+        with patch("seine.vendor.snapshot.session", lambda: quiet_sess), \
+             patch("sys.stdout", new=io.StringIO()) as out:
+            cmd._enrich_for_lock(suite, sources)
+        self.assertEqual(quiet_sess.requested, [])
+        self.assertIn("vendor snapshot openssl=3.0.11-1 reused", out.getvalue())
+
+        # Quiet without '--verbose', same as every other say() call --
+        # a different, not-yet-cached source (still a real lookup, not
+        # a cache hit that would have said nothing regardless), also a
+        # match, so the only other thing this could print (the
+        # mismatch warning, deliberately unconditional -- see this
+        # function's own body) never fires either.
+        fname2 = "bash_5.2-1.dsc"
+        with open(os.path.join(where, fname2), "wb") as f:
+            f.write(content)
+        url2 = snapshot.BASE_URL + "/mr/package/bash/5.2-1/srcfiles?fileinfo=1"
+        sess.responses[url2] = _FakeSnapshotResponse(json_body={
+            "result": [{"hash": local_sha1}],
+            "fileinfo": {local_sha1: [
+                {"name": fname2, "archive_name": "debian", "path": "/x",
+                 "size": len(content), "first_seen": "20260101T000000Z"}]}})
+        sources2 = {"bash": {"version": "5.2-1", "binaries": {},
+                             "files": [fname2]}}
+        quiet_cmd = _vendor_cmd(verbose=False)
+        with patch("seine.vendor.snapshot.session", lambda: sess), \
+             patch("sys.stdout", new=io.StringIO()) as out:
+            quiet_cmd._enrich_for_lock(suite, sources2)
+        self.assertEqual(out.getvalue(), "")
+
+    # A binary's own version churns (binNMUs) far more than its
+    # source's, so its cache misses far more too under real archive
+    # movement -- not a caching bug, but indistinguishable from one
+    # without a 'made' line to say a real query actually happened, on
+    # a specific binpkg:arch=version rather than the whole source.
+    def test_binaries_get_their_own_made_and_reused_lines(self):
+        import hashlib
+        from seine.vendor import repository
+        from seine import snapshot
+
+        suite = "enrich-verbose-binary-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        content = b"deb bytes"
+        deb_name = "libssl3_3.0.11-1_amd64.deb"
+        with open(os.path.join(where, deb_name), "wb") as f:
+            f.write(content)
+        local_sha1 = hashlib.sha1(content).hexdigest()
+
+        url = (snapshot.BASE_URL +
+              "/mr/package/openssl/3.0.11-1/binfiles/libssl3/3.0.11-1?fileinfo=1")
+        body = {"result": [{"hash": local_sha1, "architecture": "amd64"}],
+               "fileinfo": {local_sha1: [
+                   {"name": deb_name, "archive_name": "debian", "path": "/x",
+                    "size": len(content), "first_seen": "20260101T000000Z"}]}}
+        sess = _FakeSnapshotSession({url: _FakeSnapshotResponse(json_body=body)})
+        sources = {"openssl": {"version": "3.0.11-1", "files": [],
+                               "binaries": {"libssl3": {"amd64": "3.0.11-1"}}}}
+
+        cmd = _vendor_cmd()
+        with patch("seine.vendor.snapshot.session", lambda: sess), \
+             patch("sys.stdout", new=io.StringIO()) as out:
+            cmd._enrich_for_lock(suite, sources)
+        self.assertIn("vendor snapshot libssl3:amd64=3.0.11-1 made", out.getvalue())
+
+        quiet_sess = _FakeSnapshotSession({})
+        with patch("seine.vendor.snapshot.session", lambda: quiet_sess), \
+             patch("sys.stdout", new=io.StringIO()) as out:
+            cmd._enrich_for_lock(suite, sources)
+        self.assertEqual(quiet_sess.requested, [])
+        self.assertIn("vendor snapshot libssl3:amd64=3.0.11-1 reused", out.getvalue())
+
+class EnrichForLockRecordsASnapshotUrlOnHashMatch(avocado.Test):
+    def test(self):
+        import hashlib
+        from seine.vendor import repository
+        from seine import snapshot
+
+        suite = "enrich-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        content = b"dsc content"
+        fname = "openssl_3.0.11-1.dsc"
+        with open(os.path.join(where, fname), "wb") as f:
+            f.write(content)
+        local_sha1 = hashlib.sha1(content).hexdigest()
+
+        url = snapshot.BASE_URL + "/mr/package/openssl/3.0.11-1/srcfiles?fileinfo=1"
+        body = {"result": [{"hash": local_sha1}],
+               "fileinfo": {local_sha1: [
+                   {"name": fname, "archive_name": "debian", "path": "/x",
+                    "size": len(content), "first_seen": "20260101T000000Z"}]}}
+        sess = _FakeSnapshotSession({url: _FakeSnapshotResponse(json_body=body)})
+
+        sources = {"openssl": {"version": "3.0.11-1", "binaries": {},
+                               "files": [fname]}}
+        with patch("seine.vendor.snapshot.session", lambda: sess):
+            enriched = _vendor_cmd()._enrich_for_lock(suite, sources)
+        # sha1 alone, not the url built from it -- see _enrich_for_lock()'s
+        # own comment on why the lock never stores one.
+        self.assertEqual(enriched["openssl"]["snapshot"], {fname: local_sha1})
+        self.assertEqual(enriched["openssl"]["file_hashes"][fname],
+                         hashlib.sha256(content).hexdigest())
+
+# The actual point of caching a match on the same artifact key
+# fetch_source() already uses: a second '--refresh' of a suite whose
+# packages have not moved must not ask snapshot.debian.org about every
+# one of them again. Proven here by handing the second run a session
+# that 404s everything -- if it were actually queried, the recorded
+# 'snapshot' entry would vanish, not survive.
+class EnrichForLockCachesAMatchAndNeverAsksSnapshotAgain(avocado.Test):
+    def test(self):
+        import hashlib
+        from seine.vendor import repository
+        from seine import snapshot
+
+        suite = "enrich-cache-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        content = b"dsc content"
+        fname = "openssl_3.0.11-1.dsc"
+        with open(os.path.join(where, fname), "wb") as f:
+            f.write(content)
+        local_sha1 = hashlib.sha1(content).hexdigest()
+
+        url = snapshot.BASE_URL + "/mr/package/openssl/3.0.11-1/srcfiles?fileinfo=1"
+        body = {"result": [{"hash": local_sha1}],
+               "fileinfo": {local_sha1: [
+                   {"name": fname, "archive_name": "debian", "path": "/x",
+                    "size": len(content), "first_seen": "20260101T000000Z"}]}}
+        sources = {"openssl": {"version": "3.0.11-1", "binaries": {},
+                               "files": [fname]}}
+
+        cmd = _vendor_cmd()
+        first = _FakeSnapshotSession({url: _FakeSnapshotResponse(json_body=body)})
+        with patch("seine.vendor.snapshot.session", lambda: first):
+            cmd._enrich_for_lock(suite, sources)
+        self.assertEqual(len(first.requested), 1)
+
+        second = _FakeSnapshotSession({})
+        with patch("seine.vendor.snapshot.session", lambda: second):
+            enriched = cmd._enrich_for_lock(suite, sources)
+        self.assertEqual(second.requested, [])
+        self.assertEqual(enriched["openssl"]["snapshot"], {fname: local_sha1})
+
+# The other half of the same guarantee: a miss (snapshot.debian.org
+# has never heard of this name/version) is asked again on every run,
+# never cached -- a freshly uploaded version lags behind snapshot's own
+# indexing, and caching "not found" forever would mean a later refresh,
+# run once the mirror has caught up, never noticing.
+class EnrichForLockNeverCachesAMiss(avocado.Test):
+    def test(self):
+        from seine.vendor import repository
+
+        suite = "enrich-nocache-miss-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        fname = "openssl_3.0.11-1.dsc"
+        with open(os.path.join(where, fname), "wb") as f:
+            f.write(b"content")
+        sources = {"openssl": {"version": "3.0.11-1", "binaries": {},
+                               "files": [fname]}}
+
+        cmd = _vendor_cmd()
+        first = _FakeSnapshotSession({})
+        with patch("seine.vendor.snapshot.session", lambda: first):
+            cmd._enrich_for_lock(suite, sources)
+        self.assertEqual(len(first.requested), 1)
+
+        second = _FakeSnapshotSession({})
+        with patch("seine.vendor.snapshot.session", lambda: second):
+            cmd._enrich_for_lock(suite, sources)
+        self.assertEqual(len(second.requested), 1)
+
+# The cross-check this whole enrichment exists for: snapshot.debian.org
+# knowing *a* file under this exact name/version is not enough -- its
+# own declared checksum has to actually match what apt just fetched, or
+# recording the URL would let a later plain 'seine vendor' silently pull
+# different bytes than the ones '--refresh' verified.
+class EnrichForLockSkipsOnHashMismatch(avocado.Test):
+    def test(self):
+        import hashlib
+        from seine.vendor import repository
+        from seine import snapshot
+
+        suite = "enrich-mismatch-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        fname = "openssl_3.0.11-1.dsc"
+        with open(os.path.join(where, fname), "wb") as f:
+            f.write(b"local content")
+
+        url = snapshot.BASE_URL + "/mr/package/openssl/3.0.11-1/srcfiles?fileinfo=1"
+        other_sha1 = hashlib.sha1(b"different content").hexdigest()
+        body = {"result": [{"hash": other_sha1}],
+               "fileinfo": {other_sha1: [
+                   {"name": fname, "archive_name": "debian", "path": "/x",
+                    "size": 1, "first_seen": "20260101T000000Z"}]}}
+        sess = _FakeSnapshotSession({url: _FakeSnapshotResponse(json_body=body)})
+
+        sources = {"openssl": {"version": "3.0.11-1", "binaries": {},
+                               "files": [fname]}}
+        with patch("seine.vendor.snapshot.session", lambda: sess):
+            enriched = _vendor_cmd()._enrich_for_lock(suite, sources)
+        self.assertNotIn("snapshot", enriched["openssl"])
+        # The hash still gets recorded -- only the snapshot URL is
+        # withheld, not the lock's own no-deviation guarantee.
+        self.assertIn(fname, enriched["openssl"]["file_hashes"])
+
+# The real bug this guards: snapshot.debian.org can carry more than one
+# upload under the exact same name/version (a maintainer re-uploading
+# without a version bump -- 'golang-github-grpc-ecosystem-go-grpc-
+# middleware_1.3.0-1' is a real example, found live). An earlier
+# version of source_files() collapsed those down to one candidate
+# before _enrich_for_lock() ever compared a hash, so whichever upload
+# was actually fetched only matched by chance -- this checks every
+# candidate snapshot.debian.org names for the filename, not just the
+# first.
+class EnrichForLockChecksEveryCandidateNotJustTheFirst(avocado.Test):
+    def test(self):
+        import hashlib
+        from seine.vendor import repository
+        from seine import snapshot
+
+        suite = "enrich-multi-upload-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        fname = "golang-foo_1.0-1.dsc"
+        actual_content = b"the upload apt actually fetched this time"
+        with open(os.path.join(where, fname), "wb") as f:
+            f.write(actual_content)
+        actual_sha1 = hashlib.sha1(actual_content).hexdigest()
+        other_sha1 = hashlib.sha1(b"an earlier, different upload").hexdigest()
+
+        url = snapshot.BASE_URL + "/mr/package/golang-foo/1.0-1/srcfiles?fileinfo=1"
+        body = {"result": [{"hash": other_sha1}, {"hash": actual_sha1}],
+               "fileinfo": {
+                   # Both entries share 'archive_name: debian' -- two
+                   # real uploads under the same version, not two
+                   # archives, so ARCHIVE_ORDER cannot pick between
+                   # them; only the actual local content can.
+                   other_sha1: [{"name": fname, "archive_name": "debian",
+                                "path": "/x", "size": 1,
+                                "first_seen": "20220101T000000Z"}],
+                   actual_sha1: [{"name": fname, "archive_name": "debian",
+                                 "path": "/x", "size": 1,
+                                 "first_seen": "20220201T000000Z"}]}}
+        sess = _FakeSnapshotSession({url: _FakeSnapshotResponse(json_body=body)})
+
+        sources = {"golang-foo": {"version": "1.0-1", "binaries": {},
+                                  "files": [fname]}}
+        with patch("seine.vendor.snapshot.session", lambda: sess):
+            enriched = _vendor_cmd()._enrich_for_lock(suite, sources)
+        self.assertEqual(enriched["golang-foo"]["snapshot"][fname], actual_sha1)
+
+# Not an error, matching seine/snapshot.py's own docstring: '--refresh'
+# still succeeds, this source just has nothing to fall back to later.
+class EnrichForLockSkipsWhenSnapshotHasNothing(avocado.Test):
+    def test(self):
+        from seine.vendor import repository
+
+        suite = "enrich-404-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        fname = "openssl_3.0.11-1.dsc"
+        with open(os.path.join(where, fname), "wb") as f:
+            f.write(b"content")
+        sess = _FakeSnapshotSession({})
+
+        sources = {"openssl": {"version": "3.0.11-1", "binaries": {},
+                               "files": [fname]}}
+        with patch("seine.vendor.snapshot.session", lambda: sess):
+            enriched = _vendor_cmd()._enrich_for_lock(suite, sources)
+        self.assertNotIn("snapshot", enriched["openssl"])
+        self.assertIn(fname, enriched["openssl"]["file_hashes"])
+
+# The real bug this guards: two sources in the same suite's manifest
+# can each name the same (binpkg, arch) in their own 'binaries' dict
+# (build-dep closures overlap -- 'ecj' is a real example found live),
+# and before _dedup_binaries() existed, _enrich_for_lock() queued a
+# 'snapshot-bin:<suite>:ecj:amd64' task for each of them, which
+# task_runner.run()'s own tasks.ordered() rejects outright
+# ("duplicate task"). This must not raise, and must only query
+# snapshot.debian.org once for the pair.
+class EnrichForLockDedupsABinaryReachableFromTwoSources(avocado.Test):
+    def test(self):
+        from seine.vendor import repository
+
+        suite = "enrich-dedup-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        deb_name = "ecj_1.0-1_amd64.deb"
+        with open(os.path.join(where, deb_name), "wb") as f:
+            f.write(b"deb bytes")
+        sess = _FakeSnapshotSession({})
+
+        sources = {
+            "a": {"version": "1.0-1", "files": [],
+                 "binaries": {"ecj": {"amd64": "1.0-1"}}},
+            "b": {"version": "2.0-1", "files": [],
+                 "binaries": {"ecj": {"amd64": "1.0-1"}}},
+        }
+        with patch("seine.vendor.snapshot.session", lambda: sess):
+            enriched = _vendor_cmd()._enrich_for_lock(suite, sources)
+        binfiles_requests = [u for u in sess.requested if "/binfiles/" in u]
+        self.assertEqual(len(binfiles_requests), 1)
+        self.assertIn("a", enriched)
+        self.assertIn("b", enriched)
+
+# Same real bug, on fetch_tasks()'s own copy of the dedup (it builds
+# its fetch queue independently of _enrich_for_lock() -- see this
+# module's own comment on 'seen_bins'/'queued_bins' above).
+class FetchTasksDedupsABinaryReachableFromTwoSources(avocado.Test):
+    def test(self):
+        from seine.bootstrap import HostBootstrap
+        distro = {"source": "debian", "release": "bookworm", "architecture": "amd64",
+                 "uri": "http://example.com/debian",
+                 "feeds": [{"suite": "bookworm"}]}
+        manifest = {
+            "a": {"version": "1.0-1", "files": [],
+                 "binaries": {"ecj": {"amd64": "1.0-1"}}},
+            "b": {"version": "2.0-1", "files": [],
+                 "binaries": {"ecj": {"amd64": "1.0-1"}}},
+        }
+        tasks = vendor.fetch_tasks(distro, "bookworm", manifest, {},
+                                   HostBootstrap(distro, {}))
+        names = [t.name for t in tasks]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len([n for n in names if n.startswith("fetch-bin:")]), 1)
+
+class FetchSourceUsesSnapshotDirectlyWhenRecorded(avocado.Test):
+    def test(self):
+        import hashlib
+        from seine.vendor import fetch_source, repository
+
+        suite = "fetch-snapshot-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+        content = b"dsc bytes"
+        expected = hashlib.sha256(content).hexdigest()
+
+        def fake_download(sess, url, dest):
+            with open(dest, "wb") as f:
+                f.write(content)
+            return hashlib.sha256(content).hexdigest()
+
+        with patch("seine.vendor.snapshot.download", fake_download):
+            fetch_source(None, suite, "openssl", "3.0.11-1",
+                        snapshot_hashes={"openssl_3.0.11-1.dsc": "abc123"},
+                        expected_hashes={"openssl_3.0.11-1.dsc": expected},
+                        options={})
+        with open(os.path.join(where, "openssl_3.0.11-1.dsc"), "rb") as f:
+            self.assertEqual(f.read(), content)
+
+# The hard-error/no-fallback guarantee: a snapshot download that does
+# not match the lock's own recorded hash is refused outright, and the
+# bad file is not left behind for a later run to trust by accident.
+class FetchSourceRefusesAMismatchedSnapshotFile(avocado.Test):
+    def test(self):
+        from seine.vendor import fetch_source, repository
+
+        suite = "fetch-snapshot-mismatch-test-%d" % os.getpid()
+        where = repository(suite)
+        self.addCleanup(shutil.rmtree, where, ignore_errors=True)
+
+        def fake_download(sess, url, dest):
+            with open(dest, "wb") as f:
+                f.write(b"wrong bytes")
+            return "not-the-expected-hash"
+
+        with patch("seine.vendor.snapshot.download", fake_download):
+            with self.assertRaises(ValueError):
+                fetch_source(None, suite, "openssl", "3.0.11-1",
+                            snapshot_hashes={"openssl_3.0.11-1.dsc": "abc123"},
+                            expected_hashes={"openssl_3.0.11-1.dsc": "expected-hash"},
+                            options={})
+        self.assertFalse(os.path.isfile(os.path.join(where, "openssl_3.0.11-1.dsc")))
+
+# The actual point of routing a locked source's fetch through
+# snapshot.debian.org at all: no builder/container, ever, on this path
+# -- apt was never going to have this exact version (that is why
+# '--refresh' recorded a snapshot sha1 in the first place).
+class FetchTasksNeverBuildsAContainerForASnapshotPinnedSource(avocado.Test):
+    def test(self):
+        from seine.bootstrap import HostBootstrap
+        distro = {"source": "debian", "release": "bookworm", "architecture": "amd64",
+                 "uri": "http://example.com/debian",
+                 "feeds": [{"suite": "bookworm"}]}
+        manifest = {
+            "openssl": {"version": "3.0.11-1", "binaries": {},
+                       "files": ["openssl_3.0.11-1.dsc"],
+                       "snapshot": {"openssl_3.0.11-1.dsc": "abc123"},
+                       "file_hashes": {"openssl_3.0.11-1.dsc": "abc"}},
+        }
+        def boom(*a, **k):
+            raise AssertionError("_builder_for() must not run for a snapshot-pinned source")
+        downloaded = []
+        def fake_download(sess, url, dest):
+            downloaded.append((url, dest))
+            with open(dest, "wb") as f:
+                f.write(b"x")
+            return "abc"
+        with patch("seine.vendor._builder_for", boom), \
+             patch("seine.vendor.snapshot.download", fake_download):
+            tasks = vendor.fetch_tasks(distro, "bookworm", manifest, {},
+                                       HostBootstrap(distro, {}))
+            self.assertEqual(len(tasks), 1)
+            tasks[0].run()
+        self.assertEqual(len(downloaded), 1)
+
+# The lock is meant to be reviewed as a diff, so a change in Python
+# dict insertion order (which nothing here controls -- resolve() builds
+# its own dicts off a BFS walk, not alphabetically) must never show up
+# as a spurious reorder. save_lock() relies entirely on
+# 'sort_keys=True' recursing through every nesting level for this --
+# worth a test of its own, since it is easy to lose silently (a
+# reformat that drops the kwarg, a future field built from a raw
+# set() and never sorted).
+class SaveLockOutputIsDeterministicRegardlessOfDictOrder(avocado.Test):
+    def test(self):
+        from seine.vendor import save_lock, load_lock
+
+        a = {"bookworm": {"digest": "d", "sources": {
+            "openssl": {"version": "3.0.11-1",
+                       "binaries": {"libssl3": {"amd64": "3.0.11-1"},
+                                   "libcrypto3": {"amd64": "3.0.11-1"}},
+                       "file_hashes": {"b.dsc": "2", "a.dsc": "1"}},
+            "bash": {"version": "5.2-1", "binaries": {}}}}}
+        # Same content, every dict rebuilt in the opposite key order.
+        b = {"bookworm": {"sources": {
+            "bash": {"binaries": {}, "version": "5.2-1"},
+            "openssl": {"file_hashes": {"a.dsc": "1", "b.dsc": "2"},
+                       "binaries": {"libcrypto3": {"amd64": "3.0.11-1"},
+                                   "libssl3": {"amd64": "3.0.11-1"}},
+                       "version": "3.0.11-1"}}, "digest": "d"}}
+
+        workdir = tempfile.mkdtemp(prefix="seine-tests-lock-order-")
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        path_a = os.path.join(workdir, "a.lock.yaml")
+        path_b = os.path.join(workdir, "b.lock.yaml")
+        save_lock(path_a, a)
+        save_lock(path_b, b)
+        with open(path_a) as fa, open(path_b) as fb:
+            self.assertEqual(fa.read(), fb.read())
+        self.assertEqual(load_lock(path_a), load_lock(path_b))
+
+# A binary's own value collapses to a bare hash when its version
+# matches its source's -- the version is then implied, not repeated --
+# and only ever becomes a small '{hash, version}' mapping for a
+# genuine divergence (a binNMU, kept per architecture: see
+# _compress_binaries()'s own comment on why a per-package override
+# would be unsafe). 'binary_hashes' is folded in and dropped entirely.
+class CompressBinariesMergesHashAndOnlyKeepsAVersionOnDivergence(avocado.Test):
+    def test(self):
+        from seine.vendor import _compress_binaries, _expand_binaries
+
+        sources = {"openssl": {"version": "3.0.11-1", "binaries": {
+            "libssl3": {"amd64": "3.0.11-1", "arm64": "3.0.11-1"},
+            "libssl3-udeb": {"amd64": "3.0.11-1+b2"}},
+            "binary_hashes": {
+                "libssl3": {"amd64": "aaa", "arm64": "bbb"},
+                "libssl3-udeb": {"amd64": "ccc"}}}}
+        compressed = _compress_binaries(sources)
+        self.assertNotIn("binary_hashes", compressed["openssl"])
+        self.assertEqual(compressed["openssl"]["binaries"]["libssl3"],
+                         {"amd64": "aaa", "arm64": "bbb"})
+        self.assertEqual(compressed["openssl"]["binaries"]["libssl3-udeb"],
+                         {"amd64": {"hash": "ccc", "version": "3.0.11-1+b2"}})
+        self.assertEqual(_expand_binaries(compressed), sources)
+
+# The same fold, for a binary that also carries a snapshot.debian.org
+# sha1 -- 'binary_snapshot' drops out entirely too, joined into the same
+# scalar as the sha256 (64 hex chars, never ambiguous against a sha1's
+# 40) when the version matches, or into the divergence mapping otherwise.
+class CompressBinariesFoldsInASnapshotSha1(avocado.Test):
+    def test(self):
+        from seine.vendor import _compress_binaries, _expand_binaries
+
+        sha256 = "a" * 64
+        sha1 = "b" * 40
+        sources = {"openssl": {"version": "3.0.11-1", "binaries": {
+            "libssl3": {"amd64": "3.0.11-1"},
+            "libssl3-udeb": {"amd64": "3.0.11-1+b2"}},
+            "binary_hashes": {"libssl3": {"amd64": sha256},
+                              "libssl3-udeb": {"amd64": sha256}},
+            "binary_snapshot": {"libssl3": {"amd64": sha1},
+                                "libssl3-udeb": {"amd64": sha1}}}}
+        compressed = _compress_binaries(sources)
+        self.assertNotIn("binary_snapshot", compressed["openssl"])
+        self.assertEqual(compressed["openssl"]["binaries"]["libssl3"]["amd64"],
+                         "%s:%s" % (sha256, sha1))
+        self.assertEqual(compressed["openssl"]["binaries"]["libssl3-udeb"]["amd64"],
+                         {"hash": sha256, "version": "3.0.11-1+b2", "snapshot": sha1})
+        self.assertEqual(_expand_binaries(compressed), sources)
+
+# The same fold, aligned onto a source's own 'files:' -- 'file_hashes'/
+# 'snapshot' drop out entirely, each filename's sha256 (and, when found,
+# its snapshot.debian.org sha1) merged into the one 'files:' mapping
+# instead of three separate structures each repeating every filename.
+class CompressFilesFoldsHashAndSnapshotIntoOneScalar(avocado.Test):
+    def test(self):
+        from seine.vendor import _compress_files, _expand_files
+
+        sha256_a = "a" * 64
+        sha256_b = "b" * 64
+        sha1 = "c" * 40
+        sources = {"openssl": {"version": "3.0.11-1",
+                               "files": ["openssl_3.0.11-1.dsc",
+                                        "openssl_3.0.11.orig.tar.gz"],
+                               "file_hashes": {"openssl_3.0.11-1.dsc": sha256_a,
+                                              "openssl_3.0.11.orig.tar.gz": sha256_b},
+                               "snapshot": {"openssl_3.0.11-1.dsc": sha1}}}
+        compressed = _compress_files(sources)
+        self.assertNotIn("file_hashes", compressed["openssl"])
+        self.assertNotIn("snapshot", compressed["openssl"])
+        self.assertEqual(compressed["openssl"]["files"],
+                         {"openssl_3.0.11-1.dsc": "%s:%s" % (sha256_a, sha1),
+                          "openssl_3.0.11.orig.tar.gz": sha256_b})
+        self.assertEqual(_expand_files(compressed), sources)
+
+class SaveLockMergesAMatchingBinaryIntoItsOwnHash(avocado.Test):
+    def test(self):
+        from seine.vendor import save_lock, load_lock
+
+        suites = {"bookworm": {"digest": "d", "sources": {"openssl": {
+            "version": "3.0.11-1",
+            "binaries": {"libssl3": {"amd64": "3.0.11-1"},
+                        "libssl3-udeb": {"amd64": "3.0.11-1+b2"}},
+            "binary_hashes": {"libssl3": {"amd64": "a" * 64},
+                              "libssl3-udeb": {"amd64": "b" * 64}}}}}}
+        workdir = tempfile.mkdtemp(prefix="seine-tests-lock-compress-")
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        path = os.path.join(workdir, "spec.lock.yaml")
+        save_lock(path, suites)
+        with open(path) as f:
+            raw = f.read()
+        # A matching version is a bare hash on disk, not a version
+        # string, and no separate 'binary_hashes:' key survives at all.
+        self.assertIn("amd64: " + "a" * 64, raw)
+        self.assertNotIn("amd64: 3.0.11-1\n", raw)
+        self.assertNotIn("binary_hashes", raw)
+        loaded = load_lock(path)
+        openssl = loaded["bookworm"]["sources"]["openssl"]
+        self.assertEqual(openssl["binaries"]["libssl3"]["amd64"], "3.0.11-1")
+        self.assertEqual(openssl["binary_hashes"]["libssl3"]["amd64"], "a" * 64)
+        self.assertEqual(openssl["binaries"]["libssl3-udeb"]["amd64"], "3.0.11-1+b2")
+        self.assertEqual(openssl["binary_hashes"]["libssl3-udeb"]["amd64"], "b" * 64)
+
+# The trickier of the two loading paths a lock's data ever takes (see
+# _expand_binary_versions()'s own comment): an ordinary 'seine vendor'
+# run reaches spec["_vendor_lock"] through BuildCmd's own generic YAML/
+# jinja loader, never through load_lock() at all -- this proves
+# VendorCmd.main() expands it there too, by handing a compressed lock
+# straight to a stubbed _run() and inspecting what it actually
+# received.
+class MainExpandsACompressedLockLoadedThroughBuildCmd(avocado.Test):
+    def test(self):
+        from seine.vendor import VendorCmd
+
+        spec_dir = tempfile.mkdtemp(prefix="seine-tests-lock-expand-")
+        self.addCleanup(shutil.rmtree, spec_dir, ignore_errors=True)
+        spec_path = os.path.join(spec_dir, "foo.yaml")
+        lock_path = os.path.join(spec_dir, "foo.lock.yaml")
+        with open(spec_path, "w") as f:
+            f.write("distribution:\n    release: bookworm\n"
+                    "    feeds:\n        - suite: bookworm\n"
+                    "vendor:\n    - name: openssl\n")
+        with open(lock_path, "w") as f:
+            f.write("vendor:\n"
+                    "  bookworm:\n"
+                    "    digest: whatever\n"
+                    "    sources:\n"
+                    "      openssl:\n"
+                    "        version: '3.0.11-1'\n"
+                    "        binaries:\n"
+                    "          libssl3:\n"
+                    "            amd64: null\n")
+
+        seen = {}
+        cmd = VendorCmd()
+        cmd._run = lambda distro, entries, exclude, wanted, refresh, archs=None, \
+                          extra_archs=(), **kwargs: (
+            seen.update(vendor_lock=kwargs["vendor_lock"]) or 0)
+        with self.assertRaises(SystemExit) as ctx:
+            cmd.main([spec_path])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(
+            seen["vendor_lock"]["bookworm"]["sources"]["openssl"]
+                ["binaries"]["libssl3"]["amd64"],
+            "3.0.11-1")
