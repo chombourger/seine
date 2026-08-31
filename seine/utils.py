@@ -601,6 +601,20 @@ class ContainerEngine:
     def deploy_root():
         return os.environ.get("SEINE_DEPLOY_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "deploy")
+    # A vendor repository (seine/vendor.py's own deploy_repository()) is
+    # unlike the rest of deploy_root(): a shared, machine-independent
+    # *input* -- the same fetched .debs regardless of which spec or which
+    # machine last built against them -- rather than a build's own local
+    # output (a spec's own artifact, packages()). Worth relocating on its
+    # own, separately from deploy_root(), so it can be pointed at a
+    # network mount several machines share without dragging every other,
+    # genuinely per-machine deploy/ artifact onto that same mount.
+    # SEINE_VENDOR_DIR names it outright; unset, it stays right where it
+    # always was, under deploy_root().
+    @staticmethod
+    def vendor_root():
+        return os.environ.get("SEINE_VENDOR_DIR") \
+               or os.path.join(ContainerEngine.deploy_root(), "vendor")
     # Kept apart from the scratch space, so a log survives what
     # 'seine cache clear scratch' or a stray 'rm -rf tmp' takes with it.
     # SEINE_LOG_DIR names it outright; unset, it is under SEINE_BUILD_DIR.

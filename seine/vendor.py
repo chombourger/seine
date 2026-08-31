@@ -207,8 +207,13 @@ def repository(suite):
     return path
 
 # Where a suite's vendor repository is *delivered*: a plain apt archive
-# (pool/, dists/, Release, signatures) under 'deploy/', the way
-# image.py's own builds land at 'deploy/<release>/' -- built by index()
+# (pool/, dists/, Release, signatures) under 'deploy/vendor/' by default
+# -- ContainerEngine.vendor_root()'s own SEINE_VENDOR_DIR relocates just
+# this, independently of the rest of 'deploy/' (a spec's own per-machine
+# artifacts, e.g. 'deploy/<release>/', image.py's own builds), since a
+# vendor repository is a shared input several machines may want to point
+# at the same network mount rather than a build's own local output --
+# built by index()
 # out of repository(suite)'s flat fetched files and the frozen manifest
 # beside them, and nothing else: no cache bookkeeping, no raw fetched
 # files loose at top level, just what a plain 'apt' would need to use
@@ -227,7 +232,7 @@ def repository(suite):
 # this exists at all rather than serving straight out of cache/, per the
 # user's own framing of the ask.
 def deploy_repository(suite):
-    path = os.path.join(ContainerEngine.deploy_root(), "vendor", suite)
+    path = os.path.join(ContainerEngine.vendor_root(), suite)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -1071,8 +1076,8 @@ def _hardlink(src, dst):
 # Hardlinked, not copied, so a fetched file existing in two places (the
 # flat, durable cache copy and this run's delivered view of it) never
 # costs extra disk; falls back to a copy only if the filesystem itself
-# refuses the link (cache and deploy can be moved to different roots of
-# their own -- SEINE_CACHE_DIR/SEINE_DEPLOY_DIR -- so unlike a fetch
+# refuses the link (cache and vendor can be moved to different roots of
+# their own -- SEINE_CACHE_DIR/SEINE_VENDOR_DIR -- so unlike a fetch
 # failing halfway, which must not take the rest of an index down with
 # it, this one really can cross devices).
 #

@@ -27,6 +27,7 @@ which lays out:
 ├── logs/         a build's step-by-step output, one directory per run
 ├── deploy/       a spec's own image, when its 'filename' is a bare name,
 │                 one directory per release (deploy/bookworm, deploy/trixie)
+│   └── vendor/   'vendor:' repositories, one directory per suite
 └── tmp/          scratch space: sources and images assembled mid-build
 ```
 
@@ -39,11 +40,23 @@ and wins over `SEINE_BUILD_DIR` when both are set:
 | `SEINE_DL_DIR`      | Packages fetched from the feeds  | `downloads/` |
 | `SEINE_LOG_DIR`     | A build's step output            | `logs/`, as `logs/<digest>/<run>/` |
 | `SEINE_DEPLOY_DIR`  | A spec's own image, if its `filename` is relative | `deploy/`, as `deploy/<release>/` |
+| `SEINE_VENDOR_DIR`  | `vendor:` repositories            | `deploy/vendor/`, as `deploy/vendor/<suite>/` |
 | `SEINE_TMP_DIR`     | Scratch space                    | `tmp/` |
 
 ```
 export SEINE_CACHE_DIR=/drive/seine/cache
 export SEINE_DL_DIR=/drive/seine/downloads
+```
+
+`SEINE_VENDOR_DIR` wins over `SEINE_DEPLOY_DIR` the same way, and is worth
+setting on its own: a vendor repository is a shared *input* -- the same
+fetched `.deb`s regardless of which machine last built against them --
+unlike the rest of `deploy/`, which is a build's own local output. Point
+it at a network mount several machines share without dragging every
+other, per-machine `deploy/` artifact onto that same mount:
+
+```
+export SEINE_VENDOR_DIR=/mnt/shared/seine-vendor
 ```
 
 Storage (podman's, containing the images and the running state) has no
