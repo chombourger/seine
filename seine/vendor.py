@@ -398,6 +398,22 @@ def main():
     queued_bins = set()
     warnings = []
 
+    # Provenance for the dependency graph (see vendor-graph/vendor-why):
+    # 'depths' is a source's own BFS depth from the nearest root, assigned
+    # once when it is first queued -- roots start at 0. 'edges' records
+    # one row per (source, Build-Depends binary) survivor of pruning below,
+    # 'to' filled in once every source is resolved (a binary's owning
+    # source is only known once its own stanza has been read, which may
+    # happen after the edge naming it). 'bin_origin_depth' remembers, for
+    # a build-dep binary, the depth its first-discovering source would
+    # hand to whatever source ends up owning it -- bin_queue processing
+    # (below) does not otherwise know which source asked for it.
+    depths = {name: 0 for name, _, _ in queue}
+    edges = []
+    pruned_base = []
+    pruned_excluded = []
+    bin_origin_depth = {}
+
     while queue or bin_queue:
         if queue:
             name, constraint, direct = queue.popleft()
@@ -484,7 +500,8 @@ def main():
                     if source in exclude or source in seen or source in queued: continue
                     queue.append((source, None, False))
                     queued[source] = False
-                
+                    depths.setdefault(source, depths.get(name, 0))
+
                 # Build-Depends are binary packages with arch and profile qualifiers.
                 # Evaluate per wanted arch using apt_pkg.parse_src_depends with
                 # the suite's configured build-profiles/options (DEB_BUILD_PROFILES
@@ -507,9 +524,18 @@ def main():
                         for dep_group in parsed:
                             for dep in dep_group:
                                 dep_name = dep[0] if isinstance(dep, (tuple, list)) else str(dep).split()[0]
+                                raw = dep_name
+                                if isinstance(dep, (tuple, list)) and len(dep) > 2 and dep[1]:
+                                    raw = "%s (%s %s)" % (dep_name, dep[2], dep[1])
                                 if dep_name in exclude:
+                                    pruned_excluded.append(
+                                        {"source": name, "name": dep_name, "arch": arch,
+                                         "field": key, "reason": "excluded"})
                                     continue
                                 if dep_name in base.get(arch, set()):
+                                    pruned_base.append(
+                                        {"source": name, "name": dep_name, "arch": arch,
+                                         "field": key, "reason": "already in sbuild chroot"})
                                     continue
                                 # Recorded for this source regardless of
                                 # whether another source's build-deps
@@ -518,10 +544,20 @@ def main():
                                 # actually depend on it, and index()'s
                                 # gocode closure walks this list per source.
                                 dep_bins.add(dep_name)
+                                # 'to' is filled in once every source is
+                                # resolved (see bin_owner below) -- the
+                                # binary's owning source may not have been
+                                # read yet.
+                                edges.append(
+                                    {"from": name, "to": None, "via": dep_name,
+                                     "arch": arch, "field": key, "raw": raw,
+                                     "depth": depths.get(name, 0)})
                                 if dep_name in seen_bins or dep_name in queued_bins:
                                     continue
                                 bin_queue.append(dep_name)
                                 queued_bins.add(dep_name)
+                                bin_origin_depth.setdefault(
+                                    dep_name, depths.get(name, 0) + 1)
                 entry["build_dep_bins"] = sorted(dep_bins)
         else:
             # resolve a binary package to its source package (suite+arch aware)
@@ -544,12 +580,40 @@ def main():
                 # If the same source was already queued via another binary, dedup via queued/seen.
                 queue.append((source, None, False))
                 queued[source] = False
+                depths.setdefault(source, bin_origin_depth.get(bin_name, 1))
             except Exception:
                 warnings.append("'%s' is not in this suite" % bin_name)
                 continue
 
+    # 'to' names the source owning 'via' -- only known now that every
+    # source's own 'binaries' (its Binary: field) has been read. An edge
+    # whose binary never resolved to any source (excluded from bin_cache,
+    # apt had nothing for it) is dropped rather than shipped with a null
+    # target -- vendor-why has nothing useful to say about it either way.
+    bin_owner = {}
+    for src, ent in resolved.items():
+        for binpkg in ent.get("binaries", {}):
+            bin_owner[binpkg] = src
+    for edge in edges:
+        edge["to"] = bin_owner.get(edge["via"])
+    edges = [e for e in edges if e["to"] is not None]
+
+    # Reverse lookup ("who pulled X"), sorted so the shallowest -- most
+    # direct -- reason comes first.
+    reverse = {}
+    for edge in edges:
+        reverse.setdefault(edge["to"], []).append(
+            {"parent": edge["from"], "via": edge["via"], "arch": edge["arch"],
+             "field": edge["field"], "depth": edge["depth"]})
+    for rows in reverse.values():
+        rows.sort(key=lambda r: (r["depth"], r["parent"]))
+
+    graph = {"edges": edges, "reverse": reverse,
+             "pruned": {"base_chroot": pruned_base, "excluded": pruned_excluded}}
+
     with open(os.path.join(MOUNT, "response.json"), "w") as f:
-        json.dump({"ok": True, "sources": resolved, "warnings": warnings}, f)
+        json.dump({"ok": True, "sources": resolved, "warnings": warnings,
+                   "graph": graph}, f)
 
 try:
     main()
@@ -659,7 +723,7 @@ class VendorResolver:
                              % (self.suite, response.get("error")))
         for warning in response.get("warnings", []):
             print("warning: %s" % warning)
-        return response["sources"]
+        return response["sources"], response["graph"]
 
 # ---------------------------------------------------------------------
 # The frozen manifest: what a resolve step decided, kept beside the
@@ -670,6 +734,11 @@ class VendorResolver:
 
 MANIFEST = ".vendor-manifest.json"
 
+# Bumped whenever the 'graph' field's own shape (edges/reverse/pruned)
+# changes -- a reader can tell a manifest's graph apart from one written
+# by an older 'seine vendor' without guessing from its shape.
+GRAPH_VERSION = 1
+
 def _manifest_path(suite):
     return os.path.join(repository(suite), MANIFEST)
 
@@ -679,6 +748,20 @@ def load_manifest(suite):
             return json.load(f)
     except (OSError, ValueError):
         return {}
+
+# Rebuilds a graph's 'reverse' index from its own 'edges' -- the same
+# construction RESOLVE_SCRIPT does inside the resolver container, needed
+# again on the host once VendorCmd._merge_refresh_graph() combines edges
+# from two different runs into one list.
+def _reverse_of(edges):
+    reverse = {}
+    for edge in edges:
+        reverse.setdefault(edge["to"], []).append(
+            {"parent": edge["from"], "via": edge["via"], "arch": edge["arch"],
+             "field": edge["field"], "depth": edge["depth"]})
+    for rows in reverse.values():
+        rows.sort(key=lambda r: (r["depth"], r["parent"]))
+    return reverse
 
 def save_manifest(suite, manifest):
     path = _manifest_path(suite)
@@ -1072,7 +1155,8 @@ def index(builder, suite, signer):
 # 'Task.run()' is called for what it does, its return value thrown away
 # (the same as every other caller of it -- see packages.py's own
 # Task bodies). Each resolve task instead writes into 'results', a dict
-# handed in and shared by every task of this wave, keyed by suite.
+# handed in and shared by every task of this wave, keyed by suite to a
+# (sources, graph) pair -- VendorResolver.resolve()'s own return shape.
 # ---------------------------------------------------------------------
 
 def resolve_tasks(distro, entries, suites_wanted, options, hostBootstrap,
@@ -1404,12 +1488,24 @@ class VendorCmd(Cmd):
                                     hostBootstrap, exclude, results)
             self._run_wave([hostBootstrap.task()] + resolve, retryable=False)
             for suite in stale:
-                fresh = results[suite]
+                fresh, graph = results[suite]
                 if isinstance(refresh, str):
-                    fresh = self._merge_refresh(
-                        load_manifest(suite).get("sources", {}), fresh, refresh)
+                    old = load_manifest(suite)
+                    old_sources = old.get("sources", {})
+                    merged = self._merge_refresh(old_sources, fresh, refresh)
+                    # Same selection _merge_refresh() just made for
+                    # 'sources' -- a source kept unchanged (reverted to
+                    # its old entry) keeps its old graph rows too, so the
+                    # two never disagree about a source this run never
+                    # actually touched.
+                    moved = {name for name in merged
+                             if name == refresh or name not in old_sources}
+                    graph = self._merge_refresh_graph(
+                        old.get("graph", {}), graph, moved)
+                    fresh = merged
                 manifests[suite] = fresh
-                save_manifest(suite, {"sources": fresh, "digest": digests[suite]})
+                save_manifest(suite, {"sources": fresh, "digest": digests[suite],
+                                      "graph": graph, "graph_version": GRAPH_VERSION})
         else:
             # The resolve wave above is what builds this, as one of its
             # own tasks -- skipped entirely when every suite's manifest
@@ -1446,6 +1542,27 @@ class VendorCmd(Cmd):
             if source != name and source in merged:
                 merged[source] = entry
         return merged
+
+    # The graph's own half of _merge_refresh(): edges/pruned rows keep
+    # whichever side (old or freshly-resolved) 'moved' says their own
+    # 'source'/'from' belongs to, then 'reverse' is rebuilt from the
+    # combined edges rather than merged row by row -- a 'to' target may
+    # gain or lose a parent on either side, and rebuilding is simpler
+    # (and cheaper, this is never more than a few hundred rows) than
+    # reconciling that by hand.
+    def _merge_refresh_graph(self, old, fresh, moved):
+        old_edges = old.get("edges", [])
+        fresh_edges = fresh.get("edges", [])
+        edges = ([e for e in old_edges if e["from"] not in moved] +
+                 [e for e in fresh_edges if e["from"] in moved])
+        old_pruned = old.get("pruned", {})
+        fresh_pruned = fresh.get("pruned", {})
+        pruned = {}
+        for kind in ("base_chroot", "excluded"):
+            pruned[kind] = (
+                [p for p in old_pruned.get(kind, []) if p["source"] not in moved] +
+                [p for p in fresh_pruned.get(kind, []) if p["source"] in moved])
+        return {"edges": edges, "reverse": _reverse_of(edges), "pruned": pruned}
 
     def _logs(self):
         base = ContainerEngine.logs_root()

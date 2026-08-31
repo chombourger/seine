@@ -316,6 +316,29 @@ class ManifestRoundTrips(avocado.Test):
         self.assertEqual(vendor.load_manifest(suite),
                          {"sources": {"openssl": {"version": "3.0"}}})
 
+    # The 'graph' field save_manifest()/load_manifest() carry alongside
+    # 'sources' -- both untouched, so this is really about VendorCmd._run()
+    # always writing one, not the pass-through functions themselves.
+    def test_graph_and_graph_version_round_trip(self):
+        suite = "manifest-graph-test-%d" % os.getpid()
+        graph = {"edges": [], "reverse": {},
+                 "pruned": {"base_chroot": [], "excluded": []}}
+        vendor.save_manifest(suite, {"sources": {}, "digest": "d",
+                                     "graph": graph,
+                                     "graph_version": vendor.GRAPH_VERSION})
+        document = vendor.load_manifest(suite)
+        self.assertEqual(document["graph"], graph)
+        self.assertEqual(document["graph_version"], vendor.GRAPH_VERSION)
+
+    # A manifest a pre-graph 'seine vendor' wrote has no 'graph' key at
+    # all -- a reader has to ask for it with .get(), not [], the same as
+    # a manifest missing 'digest' already does.
+    def test_a_manifest_without_a_graph_still_loads(self):
+        suite = "manifest-no-graph-test-%d" % os.getpid()
+        vendor.save_manifest(suite, {"sources": {"openssl": {"version": "3.0"}}})
+        document = vendor.load_manifest(suite)
+        self.assertIsNone(document.get("graph"))
+
 class SuiteDistroKeepsEveryConfiguredFeed(avocado.Test):
     # Renamed for this suite, but not narrowed to its own feed alone: a
     # build-dependency closure needs the same consistent view of the
@@ -659,6 +682,32 @@ class RefreshWithANameKeepsEveryOtherEntryFrozen(avocado.Test):
         self.assertEqual(merged, {"a": {"version": "1"}, "b": {"version": "2new"},
                                   "c": {"version": "3new"}})
 
+# _merge_refresh_graph()'s own version of the same rule: a source not in
+# 'moved' keeps its old edges/pruned rows untouched, one that is takes
+# the freshly-resolved ones -- and 'reverse' always reflects whichever
+# edges actually survived the split, never the old run's own reverse map.
+class RefreshWithANameMergesTheGraphTheSameWay(avocado.Test):
+    def test(self):
+        from seine.vendor import VendorCmd
+        cmd = VendorCmd()
+        old = {"edges": [{"from": "a", "to": "shared", "via": "libshared-dev",
+                          "arch": "amd64", "field": "Build-Depends",
+                          "raw": "libshared-dev", "depth": 0}],
+              "pruned": {"base_chroot": [{"source": "a", "name": "gcc",
+                                          "arch": "amd64", "field": "Build-Depends",
+                                          "reason": "already in sbuild chroot"}],
+                        "excluded": []}}
+        fresh = {"edges": [{"from": "b", "to": "shared", "via": "libshared-dev",
+                            "arch": "amd64", "field": "Build-Depends",
+                            "raw": "libshared-dev (>= 3.0)", "depth": 0}],
+                "pruned": {"base_chroot": [], "excluded": []}}
+        graph = cmd._merge_refresh_graph(old, fresh, moved={"b"})
+        self.assertEqual(graph["edges"], old["edges"] + fresh["edges"])
+        self.assertEqual(graph["pruned"], {
+            "base_chroot": old["pruned"]["base_chroot"], "excluded": []})
+        self.assertEqual(
+            {row["parent"] for row in graph["reverse"]["shared"]}, {"a", "b"})
+
 # The resolve wave is what builds the host bootstrap image, as one of its
 # own tasks -- so a run touching only suites whose manifest is already
 # frozen has to build it itself, or the fetch/index containers standing
@@ -755,7 +804,9 @@ class AChangedSpecReresolvesWithoutRefresh(avocado.Test):
         def fake_resolve_tasks(distro, entries, suites_wanted, options,
                               hostBootstrap, exclude, results):
             resolved["suites"] = list(suites_wanted)
-            results["bookworm"] = {}
+            results["bookworm"] = (
+                {}, {"edges": [], "reverse": {},
+                    "pruned": {"base_chroot": [], "excluded": []}})
             return []
 
         class FakeHostBootstrap:
@@ -1049,6 +1100,17 @@ class ResolveWalksTheBuildDepClosure(avocado.Test):
         self.assertEqual(response["sources"]["bar"]["direct"], False)
         self.assertEqual(response["sources"]["bar"]["binaries"],
                          {"libbar-dev": {"amd64": "2.0-1"}})
+        # The graph records the same closure as a 'foo' -(Build-Depends)->
+        # 'libbar-dev' -(candidate.source_name)-> 'bar' edge, with a
+        # reverse row 'vendor-why bar' can read straight off.
+        graph = response["graph"]
+        self.assertEqual(graph["edges"], [
+            {"from": "foo", "to": "bar", "via": "libbar-dev", "arch": "amd64",
+             "field": "Build-Depends", "raw": "libbar-dev", "depth": 0}])
+        self.assertEqual(graph["reverse"], {
+            "bar": [{"parent": "foo", "via": "libbar-dev", "arch": "amd64",
+                    "field": "Build-Depends", "depth": 0}]})
+        self.assertEqual(graph["pruned"], {"base_chroot": [], "excluded": []})
 
 # seen_bins/queued_bins dedup the fetch queue (a binary is only fetched
 # once); build_dep_bins must not inherit that dedup -- index()'s gocode
@@ -1126,6 +1188,33 @@ class ResolveHonoursBuildProfiles(avocado.Test):
         # 'bar' only exists to satisfy a <!nocheck> build-dep: with
         # 'nocheck' set, it should never be queued at all.
         self.assertNotIn("bar", response["sources"])
+
+class ResolveGraphRecordsWhyABuildDepWasPruned(avocado.Test):
+    def test_base_chroot_and_exclude_both_short_circuit_before_an_edge(self):
+        stanzas = [
+            source_stanza("foo", "1.0-1", ["foo-bin"],
+                          build_depends="gcc, doc-package"),
+        ]
+        binaries = {"foo-bin": FakeBinary("1.0-1", source_name="foo")}
+        request = {"archs": ["amd64"], "exclude": ["doc-package"],
+                  "base_chroot": {"amd64": ["gcc"]},
+                  "build_profiles": [], "build_options": [],
+                  "sources": [{"name": "foo", "version": None}]}
+        response = run_resolve(request, stanzas, binaries)
+        self.assertTrue(response["ok"], response.get("error"))
+        # Neither ever became a source of its own, nor an edge -- both
+        # were pruned before 'foo's own build-dep loop got that far.
+        self.assertNotIn("gcc", response["sources"])
+        self.assertNotIn("doc-package", response["sources"])
+        graph = response["graph"]
+        self.assertEqual(graph["edges"], [])
+        self.assertEqual(graph["reverse"], {})
+        self.assertEqual(graph["pruned"]["base_chroot"], [
+            {"source": "foo", "name": "gcc", "arch": "amd64",
+             "field": "Build-Depends", "reason": "already in sbuild chroot"}])
+        self.assertEqual(graph["pruned"]["excluded"], [
+            {"source": "foo", "name": "doc-package", "arch": "amd64",
+             "field": "Build-Depends", "reason": "excluded"}])
 
 class ResolveWarnsAboutAnUnknownSource(avocado.Test):
     def test(self):
