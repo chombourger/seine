@@ -47,6 +47,11 @@ CACHES = {
     # Named for what it holds rather than for what keeps it: which engine
     # that is, and how, is seine's business and not a user's.
     "bootstraps": lambda: ContainerEngine.cache("bootstraps"),
+    # Packages a 'vendor:' section resolved from a remote feed, kept so a
+    # spec can be rebuilt years after that feed is gone. Registered ahead
+    # of anything writing to it, so 'seine cache clear ... vendor' exists
+    # from the start rather than appearing the day the feature lands.
+    "vendor":    lambda: ContainerEngine.cache("vendor"),
     IMAGES:      None,
     # What every step of a build cost, which 'seine analyze' reads back.
     # Not something a build takes out again -- it is read by hand and by
@@ -252,6 +257,7 @@ KINDS = {
     "downloads": [cache_index.DOWNLOADS],
     "packages":  [cache_index.PACKAGE],
     "chroots":   [cache_index.CHROOT],
+    "vendor":    [cache_index.VENDOR],
     IMAGES:      [cache_index.IMAGE],
 }
 
@@ -379,6 +385,45 @@ class CacheCmd(Cmd):
         elif kind == cache_index.DOWNLOADS:
             shutil.rmtree(os.path.join(CACHES["downloads"](), key),
                           ignore_errors=True)
+        elif kind == cache_index.VENDOR:
+            # '<suite>_<source>_<name>_<arch>_<version>' -- none of those
+            # first four ever hold an underscore of their own (Debian
+            # package and suite names cannot), so a plain split finds
+            # them; 'name' is the literal 'source' for a source artifact
+            # (see vendor.py's own _artifact_key()) and a binary package
+            # name otherwise.
+            suite, source, name, arch, version = key.split("_", 4)
+            where = os.path.join(CACHES["vendor"](), suite)
+            # The epoch a version may start with is not in the filename
+            # apt gave it -- '1:1.2-3' downloads as '..._1.2-3...'.
+            stripped = version.split(":", 1)[-1]
+            if os.path.isdir(where):
+                if name == "source":
+                    # The orig tarball is named after the upstream version
+                    # alone -- the debian revision after the last '-' is
+                    # not part of it -- while the .dsc and .debian.tar.*
+                    # carry the full version; matching on either lets one
+                    # key take every file the source's own build produced.
+                    upstream = stripped.rsplit("-", 1)[0]
+                    for entry in sorted(os.listdir(where)):
+                        if entry.startswith("%s_" % source) and \
+                                (stripped in entry or upstream in entry):
+                            path = os.path.join(where, entry)
+                            if os.path.isfile(path):
+                                os.unlink(path)
+                else:
+                    path = os.path.join(where, "%s_%s_%s.deb"
+                                        % (name, stripped, arch))
+                    if os.path.isfile(path):
+                        os.unlink(path)
+            # Made from what is there; the next 'seine vendor' run writes
+            # one that matches what this just removed.
+            for derived in ["Packages", "Packages.gz", "Sources", "Sources.gz",
+                            "Release", "Release.gpg", "InRelease",
+                            ".vendor-packages.db"]:
+                path = os.path.join(where, derived)
+                if os.path.isfile(path):
+                    os.unlink(path)
         elif kind == cache_index.PACKAGE:
             release, _, rest = key.partition("/")
             architecture, _, source = rest.partition("/")
@@ -1056,6 +1101,8 @@ Caches:
   packages    packages the 'packages' section built, as an apt repository
   chroots     buildd chroot tarballs sbuild unpacks to build a package
   bootstraps  packages the bootstrap and builder image builds fetched
+  vendor      packages a 'vendor' section pinned from a remote feed, kept so
+              a specification can still be rebuilt once that feed is gone
   images      the container images seine built: the bootstrap tooling, the
               builder, the imager's kernel and appliance and the transport
               bootstrap, in podman storage of its own

@@ -840,6 +840,47 @@ class WhatWasNotWantedInAWhileIsRemoved(Caches):
         self.assertTrue(os.path.isfile(os.path.join(self.paths["chroots"], "blob")))
         self.assertTrue(os.path.isdir(self.paths["downloads"]))
 
+# As above, for a vendor artifact -- named by content rather than by a
+# stamp file, since a vendor never wrote one: eviction has to work out
+# the filename(s) an entry's own key names instead (see CacheCmd._evict()).
+class AVendorArtifactGoesWithItsKey(Caches):
+    def setUp(self):
+        super().setUp()
+        self.index = cache_index.Index()
+        self.repository = os.path.join(self.paths["vendor"], "bookworm")
+        os.makedirs(self.repository, exist_ok=True)
+        for name in ["libssl3_3.0.11-1_amd64.deb", "openssl_3.0.11-1.dsc",
+                    "openssl_3.0.11.orig.tar.xz", "Packages"]:
+            open(os.path.join(self.repository, name), "w").close()
+
+    def aged(self, key, days):
+        self.index.made(cache_index.VENDOR, key)
+        recorded = self.index._read()
+        recorded[cache_index.VENDOR][key]["used"] -= days * 86400
+        self.index._write(recorded)
+
+    def test_a_binary_artifact(self):
+        self.aged("bookworm_libssl3_libssl3_amd64_3.0.11-1", 40)
+        self.run_cmd(["clear", "--older-than", "30d"])
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.repository, "libssl3_3.0.11-1_amd64.deb")))
+        self.assertFalse(os.path.isfile(os.path.join(self.repository, "Packages")))
+
+    def test_a_source_artifact_takes_every_file_it_named(self):
+        self.aged("bookworm_openssl_source_-_3.0.11-1", 40)
+        self.run_cmd(["clear", "--older-than", "30d"])
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.repository, "openssl_3.0.11-1.dsc")))
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.repository, "openssl_3.0.11.orig.tar.xz")))
+
+    def test_an_epoch_is_not_in_the_filename(self):
+        open(os.path.join(self.repository, "libssl3_3.0.11-1_amd64.deb"), "w").close()
+        self.aged("bookworm_libssl3_libssl3_amd64_1:3.0.11-1", 40)
+        self.run_cmd(["clear", "--older-than", "30d"])
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.repository, "libssl3_3.0.11-1_amd64.deb")))
+
 class ASpanOfTime(avocado.Test):
     def test(self):
         from seine.cache_index import span

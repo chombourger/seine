@@ -42,6 +42,28 @@ WORKDIR = "/src"
 GIT_NAME  = "seine"
 GIT_EMAIL = "seine@localhost"
 
+# The 'distribution' section, defaulted and validated once so that two
+# callers -- Image.parse() and VendorCmd, which shares nothing else with
+# it -- do not each keep their own copy of what a bare 'distribution:'
+# means.
+def distribution(spec):
+    distro = spec["distribution"] if "distribution" in spec else {}
+    if "source" not in distro:
+        distro["source"] = "debian"
+    if "release" not in distro:
+        distro["release"] = "buster"
+    if "architecture" not in distro:
+        distro["architecture"] = "amd64"
+    if "uri" not in distro:
+        distro["uri"] = "http://ftp.debian.org/debian"
+    spec["distribution"] = distro
+
+    # Validated here rather than when a bootstrap first reads them, so a
+    # mistyped feed is reported against the specification instead of
+    # halfway through building an image from it.
+    feeds(distro)
+    return distro
+
 # The apt feeds a system is built from. A specification lists them
 # explicitly rather than having suites guessed for it: which of -updates
 # and -security a release has, and where they are served from, differs

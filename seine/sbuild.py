@@ -264,9 +264,14 @@ class SbuildChroot:
             "/root/.cache/sbuild/%s" % SbuildChroot.TEMPORARY
 
         volumes = [(ContainerEngine.downloads(self.distro["release"]),
-                    "/var/cache/mmdebstrap")]
+                    "/var/cache/mmdebstrap"),
+                   (os.path.dirname(self.path), "/root/.cache/sbuild")]
         try:
-            builderImage.exec(args, self.architecture, volumes=volumes)
+            # Not 'architecture=self.architecture': that mounts the chroot
+            # cache directory of 'builderImage's own distro, which for a
+            # vendor's resolver differs from this chroot's -- see
+            # VendorResolver.base_chroot().
+            builderImage.exec(args, volumes=volumes)
         except subprocess.CalledProcessError:
             # Only what this run wrote: the chroot that was there is whole
             # and still matches its inputs, where removing the pair made

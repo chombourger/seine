@@ -123,3 +123,14 @@ def signer(options):
     if key is None or len(key) == 0:
         return None
     return Signer(key)
+
+# The vendor repository's own signer, independent of signer() above. A
+# package a 'vendor:' section pulled in was never built or audited by
+# seine, unlike the 'packages:' repository signer() signs -- keeping the
+# keys apart keeps that distinction visible to whatever trusts either
+# repository's signature. No caller yet.
+def vendor_signer(options):
+    key = options.get("vendor_sign_key") or os.environ.get("SEINE_VENDOR_SIGN_KEY")
+    if key is None or len(key) == 0:
+        return None
+    return Signer(key)

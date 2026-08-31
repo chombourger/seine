@@ -397,6 +397,7 @@ downloads   253.7 MiB  /home/user/project/build/downloads
 packages      1.1 GiB  /home/user/project/build/cache/packages
 chroots     278.4 MiB  /home/user/project/build/cache/chroots
 bootstraps  485.3 MiB  /home/user/project/build/cache/bootstraps
+vendor          0.0 B  /home/user/project/build/cache/vendor
 images        9.3 GiB  /home/user/project/build/containers
 analyze      24.0 KiB  /home/user/project/build/cache/analyze
 scratch     365.5 KiB  /home/user/project/build/tmp

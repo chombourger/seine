@@ -55,21 +55,7 @@ class Image:
         if "image" not in spec:
             raise ValueError("'image' not found in provided specification!")
 
-        distro = spec["distribution"] if "distribution" in spec else {}
-        if "source" not in distro:
-            distro["source"] = "debian"
-        if "release" not in distro:
-            distro["release"] = "buster"
-        if "architecture" not in distro:
-            distro["architecture"] = "amd64"
-        if "uri" not in distro:
-            distro["uri"] = "http://ftp.debian.org/debian"
-        spec["distribution"] = distro
-
-        # Validated here rather than when a bootstrap first reads them, so
-        # a mistyped feed is reported against the specification instead of
-        # halfway through building an image from it.
-        utils.feeds(distro)
+        distro = utils.distribution(spec)
 
         image = spec["image"]
         if "filename" not in image:

@@ -35,7 +35,7 @@ class Builder:
 
     # Written in two halves, with whoever is watching looking in between:
     # what a build reading a chroot as it is made would see.
-    def exec(self, args, architecture, volumes=None):
+    def exec(self, args, architecture=None, volumes=None):
         target = [a for a in args if a.startswith("/root/.cache/sbuild/")][0]
         self.wrote = os.path.join(self.where, os.path.basename(target))
         with open(self.wrote, "wb") as f:
@@ -46,7 +46,7 @@ class Builder:
             f.write(self.content[4:])
 
 class Failing(Builder):
-    def exec(self, args, architecture, volumes=None):
+    def exec(self, args, architecture=None, volumes=None):
         super().exec(args, architecture, volumes)
         raise subprocess.CalledProcessError(1, "mmdebstrap")
 
