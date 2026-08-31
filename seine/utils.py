@@ -349,9 +349,9 @@ class ContainerEngine:
                or os.path.join(ContainerEngine.build_dir(), "cache")
         return os.path.join(root, *names)
     # Host-side apt archives cache, bind-mounted into ansible's target
-    # container so package downloads survive across builds/releases.
-    # Scoped per release: package filenames already carry the architecture,
-    # so arm64/amd64 fetches for the same release safely share one dir.
+    # container so package downloads survive across builds/suites.
+    # Scoped per suite: package filenames already carry the architecture,
+    # so arm64/amd64 fetches for the same suite safely share one dir.
     #
     # A root of its own, not a cache subdirectory: SEINE_DL_DIR moves it
     # the way SEINE_CACHE_DIR moves the rest. Unset, it is under
@@ -361,8 +361,18 @@ class ContainerEngine:
         return os.environ.get("SEINE_DL_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "downloads")
     @staticmethod
-    def downloads(release):
-        path = os.path.join(ContainerEngine.downloads_root(), release)
+    def downloads(suite):
+        path = os.path.join(ContainerEngine.downloads_root(), suite)
+        os.makedirs(path, exist_ok=True)
+        return path
+    # A sibling of downloads(suite), not a subdirectory of it: that one is
+    # synced flat against /var/cache/apt/archives, and apt's lists are a
+    # different cache with a different shape. No caller yet -- this is
+    # host-side storage for whatever resolves a suite's package graph
+    # against apt's indices without re-fetching Sources/Packages every run.
+    @staticmethod
+    def downloads_lists(suite):
+        path = os.path.join(ContainerEngine.downloads_root(), suite, "lists")
         os.makedirs(path, exist_ok=True)
         return path
     # Host-side apt repository holding the packages rebuilt from the spec's
