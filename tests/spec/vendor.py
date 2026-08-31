@@ -1484,7 +1484,11 @@ class FakeCache(dict):
 
 # The plumbing every resolve_namespace() test shares: run main() with a
 # faked apt.Cache/apt_pkg.SourceRecords/subprocess against a request, and
-# return the response.json it wrote.
+# return the response.json it wrote. 'binaries' is keyed by plain binary
+# name, same as callers write it -- also aliased here under every
+# 'name:arch' resolve() actually looks up a per-arch candidate through
+# (real apt.Cache resolves those independently; this fixture has only one
+# FakeBinary per name, so every arch in the request sees the same version).
 def run_resolve(request, stanzas, binaries):
     ns = resolve_namespace()
     mount = tempfile.mkdtemp(prefix="seine-tests-resolve-")
@@ -1492,10 +1496,14 @@ def run_resolve(request, stanzas, binaries):
         ns["MOUNT"] = mount
         with open(os.path.join(mount, "request.json"), "w") as f:
             json.dump(request, f)
+        cache = dict(binaries)
+        for name, binpkg in binaries.items():
+            for arch in request.get("archs", []):
+                cache.setdefault("%s:%s" % (name, arch), binpkg)
         with patch("subprocess.run"), \
              patch("apt_pkg.init_config"), \
              patch("apt_pkg.init_system"), \
-             patch("apt.Cache", return_value=FakeCache(binaries)), \
+             patch("apt.Cache", return_value=FakeCache(cache)), \
              patch("apt_pkg.SourceRecords",
                   return_value=FakeSourceRecords(stanzas)):
             ns["main"]()

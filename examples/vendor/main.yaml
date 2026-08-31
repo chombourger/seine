@@ -1,0 +1,297 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# A local, signed apt repository of the source packages listed
+# in core-sbom for bookworm and trixie, amd64 and arm64 -- not built
+# into an image, just pinned so a rebuild years from now does not
+# depend on the feeds still being up:
+#
+#   seine vendor examples/vendor/main.yaml
+#
+# add '--suite trixie' or '--suite bookworm' to vendor one of the two
+# suites this asks for on its own, leaving the other untouched; add
+# '--architecture amd64' or '--architecture arm64' likewise to narrow
+# which architecture gets fetched (resolving still covers both --
+# see docs/specification.md's 'vendor' section). Resolves every core
+# source package (with its full build-dependency closure, deduped
+# against the buildd chroot's own package set) and fetches it into
+# ./build/cache/vendor/<suite>/, one repository per suite holding
+# both architectures. Suites and architectures are filtered wisely:
+# a package needed everywhere has no filter, one needed for a single
+# release or architecture carries that suite/arch alone.
+#
+# No 'distribution: release:' here on purpose: this file merges into a
+# real image specification too ('seine build pc-image.yaml vendor.yaml',
+# say), and a release set here -- parsed after the image's own -- would
+# win over it (see docs/specification.md: "the last parsed value will be
+# used") and vendor a release the image was never built for. Standalone
+# 'seine vendor' does not need it either: which suites to vendor comes
+# from 'vendor:'s own entries and '--suite', not from 'distribution:
+# release:'.
+
+requires:
+    - ../common/amd64
+    - ../common/arm64
+    - ../common/debian-feeds
+
+vendor:
+    - name: acl
+    - name: adduser
+    - name: apparmor
+    - name: apt
+    - name: arch-test
+    - name: argon2
+    - name: attr
+    - name: audit
+    - name: base-files
+    - name: base-passwd
+    - name: bash
+    - name: binutils
+    - name: bluez
+    - name: bmap-tools
+    - name: brotli
+    - name: btrfs-progs
+    - name: build-essential
+    - name: bzip2
+    - name: ca-certificates
+    - name: cdebconf
+    - name: coreutils
+    - name: cpio
+    - name: cracklib2
+    - name: cryptsetup
+    - name: curl
+    - name: cyrus-sasl2
+    - name: dacite
+    - name: dash
+    - name: db5.3
+    - name: dbus
+    - name: debconf
+    - name: debhelper
+    - name: debian-archive-keyring
+    - name: debianutils
+    - name: devscripts
+    - name: dh-runit
+    - name: dh-sysuser
+    - name: dhcpcd
+    - name: dhcpcd5
+    - name: dialog
+    - name: diffutils
+    - name: dmidecode
+    - name: docker.io
+    - name: dpkg
+    - name: dracut
+    - name: duktape
+    - name: e2fsprogs
+    - name: efibootguard
+    - name: efitools
+    - name: elfutils
+    - name: expat
+    - name: file
+    - name: findutils
+    - name: firmware-free
+    - name: gcc-defaults
+    - name: gdisk
+    - name: git
+    - name: glib2.0
+    - name: glibc
+    - name: gmp
+    - name: gnupg2
+    - name: gnutls28
+    - name: gpm
+    - name: grep
+    - name: groff
+    - name: grub-efi-amd64-signed
+      arch: [amd64]
+    - name: grub2
+    - name: gzip
+    - name: hostname
+    - name: icu
+    - name: init-system-helpers
+    - name: initramfs-tools
+    - name: iproute2
+    - name: iptables
+    - name: iputils
+    - name: isl
+    - name: jansson
+    - name: jinja2
+    - name: json-c
+    - name: kernel-wedge
+    - name: keyutils
+    - name: klibc
+    - name: kmod
+    - name: krb5
+    - name: less
+    - name: libarchive
+    - name: libb2
+    - name: libbpf
+    - name: libbsd
+    - name: libcap-ng
+    - name: libcap2
+    - name: libedit
+    - name: libffi
+    - name: libfido2
+    - name: libfile-find-rule-perl
+    - name: libgcrypt20
+    - name: libgpg-error
+    - name: libgpiod
+    - name: libguestfs
+    - name: libidn2
+    - name: libksba
+    - name: libmd
+    - name: libmnl
+    - name: libndp
+    - name: libnetfilter-conntrack
+    - name: libnfnetlink
+    - name: libnftnl
+    - name: libnsl
+    - name: libnumber-compare-perl
+    - name: libpipeline
+    - name: libpsl
+    - name: libpwquality
+    - name: libseccomp
+    - name: libselinux
+    - name: libsemanage
+    - name: libsepol
+    - name: libsodium
+    - name: libssh2
+    - name: libtasn1-6
+    - name: libteam
+    - name: libtext-charwidth-perl
+    - name: libtext-glob-perl
+    - name: libtext-wrapi18n-perl
+    - name: libubootenv
+    - name: libxcrypt
+    - name: libxml2
+    - name: libyaml
+    - name: libzstd
+    - name: linux
+    - name: linux-base
+    - name: linux-signed-amd64
+      arch: [amd64]
+    - name: lm-sensors
+    - name: localepurge
+    - name: lsof
+    - name: lua5.4
+    - name: lvm2
+    - name: lz4
+    - name: make-dfsg
+    - name: man-db
+    - name: manpages
+    - name: mawk
+    - name: media-types
+    - name: mmdebstrap
+    - name: modemmanager
+    - name: mpclib3
+    - name: mpfr4
+    - name: mtd-utils
+    - name: nano
+    - name: ncurses
+    - name: net-snmp
+    - name: net-tools
+    - name: netbase
+    - name: nettle
+    - name: network-manager
+    - name: newt
+    - name: nghttp2
+    - name: nghttp3
+    - name: ngtcp2
+    - name: ntpsec
+    - name: openldap
+    - name: openssh
+    - name: openssl
+    - name: p11-kit
+    - name: pam
+    - name: parted
+    - name: patch
+    - name: pbzip2
+    - name: pci.ids
+    - name: pciutils
+    - name: pcre2
+    - name: perl
+    - name: pigz
+    - name: pinentry
+    - name: popt
+    - name: procps
+    - name: psmisc
+    - name: pv
+    - name: python-apt
+    - name: python3-defaults
+    - name: qemu
+    - name: quilt
+    - name: readline
+    - name: refpolicy
+    - name: rpcsvc-proto
+    - name: rtmpdump
+    - name: rust-buffered-reader
+    - name: rust-nettle
+    - name: rust-nettle-sys
+    - name: rust-sequoia-openpgp
+    - name: rustc
+    - name: sbsigntool
+    - name: sbuild
+    - name: sed
+    - name: sensible-utils
+    - name: sgml-base
+    - name: shadow
+    - name: six
+    - name: slang2
+    - name: sqlite3
+    - name: sudo
+    - name: supermin
+    - name: swupdate
+    - name: systemd
+    - name: sysvinit
+    - name: tar
+    - name: tcp-wrappers
+    - name: tzdata
+    - name: ucf
+    - name: uchardet
+    - name: uriparser
+    - name: usrmerge
+    - name: util-linux
+    - name: vim
+    - name: wget
+    - name: wolfssl
+    - name: xml-core
+    - name: xxhash
+    - name: xz-utils
+    - name: zchunk
+    - name: zlib
+    - name: gcc-12
+      suite: bookworm
+    - name: gdbm
+      suite: bookworm
+    - name: gpgme1.0
+      suite: bookworm
+    - name: libassuan
+      suite: bookworm
+    - name: libcbor
+      suite: bookworm
+    - name: libconfig
+      suite: bookworm
+    - name: librsync
+      suite: bookworm
+    - name: libtirpc
+      suite: bookworm
+    - name: libunistring
+      suite: bookworm
+    - name: libwebsockets
+      suite: bookworm
+    - name: npth
+      suite: bookworm
+    - name: policykit-1
+      suite: bookworm
+    - name: python3.11
+      suite: bookworm
+    - name: gcc-14
+      suite: trixie
+    - name: python3.13
+      suite: trixie
+    - name: rust-sequoia-policy-config
+      suite: trixie
+    - name: rust-sequoia-sqv
+      suite: trixie
+    - name: unicode-data
+      suite: trixie
+    - name: wtmpdb
+      suite: trixie

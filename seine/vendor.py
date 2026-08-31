@@ -452,6 +452,15 @@ def main():
     exclude = set(request["exclude"])
     base = {arch: set(names) for arch, names in request["base_chroot"].items()}
 
+    # A foreign 'archs' entry needs its own Packages/Sources indices
+    # before 'apt-get update' below can fetch them -- 'dpkg
+    # --add-architecture' persists that for the rest of this one
+    # process (unlike fetch_binary()'s own per-call '-o
+    # APT::Architectures::=', which is throwaway by necessity). Safe to
+    # call for the native architecture too: dpkg already carries it.
+    for arch in archs:
+        subprocess.run(["dpkg", "--add-architecture", arch], check=True)
+
     # Ensure apt lists are up to date, especially for deb-src
     print("Running apt-get update...")
     subprocess.run(["apt-get", "update"], check=True)
@@ -557,16 +566,30 @@ def main():
             
             for binpkg in binaries_list:
                 per_arch = {}
-                if binpkg in bin_cache:
-                    pkg = bin_cache[binpkg]
-                    for arch in archs:
-                        candidate = pkg.candidate
-                        if candidate:
-                            binver = candidate.version
-                            if direct == False and binpkg in base.get(arch, set()):
-                                continue
-                            per_arch[arch] = binver
-                            any_new = True
+                # Looked up per arch, qualified 'binpkg:arch' -- an
+                # unqualified 'bin_cache[binpkg]' only ever resolves to
+                # apt's *native* architecture's own Package object, so
+                # reusing its '.candidate' for every arch in a loop (as
+                # this used to) silently copied the native version into
+                # every foreign arch's slot instead of actually
+                # resolving one. Correct by construction for an
+                # 'Architecture: all' binary (apt gives every
+                # configured arch the same candidate for one of those
+                # anyway) and now correct for an arch-specific one too;
+                # a 'binpkg:arch' apt has no candidate for (built for
+                # some archs and not others) is simply skipped, not
+                # fabricated.
+                for arch in archs:
+                    qualified = "%s:%s" % (binpkg, arch)
+                    if qualified not in bin_cache:
+                        continue
+                    candidate = bin_cache[qualified].candidate
+                    if candidate:
+                        binver = candidate.version
+                        if direct == False and binpkg in base.get(arch, set()):
+                            continue
+                        per_arch[arch] = binver
+                        any_new = True
                 if per_arch:
                     entry["binaries"][binpkg] = per_arch
             
