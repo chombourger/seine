@@ -144,6 +144,37 @@ def _tool_cache(app, arguments):
     return render.render_cache(matching=pattern)
 _tool_doctor = _render_tool("render_doctor", with_context=False)
 
+# render_vendor()/render_vendor_why() are text already, same as every
+# other render_*() -- chunked here (SPEC_DUMP_CHUNK_LINES/_text_chunk,
+# defined further down, beside spec-dump) the same way spec-dump/docs
+# are, rather than handed back whole: a large closure's own summary can
+# run to one line per suite plus per-package reasons, no different in
+# kind from a merged spec dump.
+def _tool_vendor(app, arguments):
+    from seine.tui import render
+    text = render.render_vendor(app.context, suite=arguments.get("suite"))
+    lines = text.splitlines()
+    try:
+        start = int(arguments["start"]) if arguments.get("start") else 1
+        end = int(arguments["end"]) if arguments.get("end") else start + SPEC_DUMP_CHUNK_LINES - 1
+    except (TypeError, ValueError):
+        return "'start'/'end' must be line numbers (1-indexed)"
+    return _text_chunk(lines, start, end, SPEC_DUMP_CHUNK_LINES, "the vendor status")
+
+def _tool_vendor_why(app, arguments):
+    package = arguments.get("package")
+    if not package:
+        return "give 'package', a source package name from 'vendor'"
+    from seine.tui import render
+    text = render.render_vendor_why(app.context, package, suite=arguments.get("suite"))
+    lines = text.splitlines()
+    try:
+        start = int(arguments["start"]) if arguments.get("start") else 1
+        end = int(arguments["end"]) if arguments.get("end") else start + SPEC_DUMP_CHUNK_LINES - 1
+    except (TypeError, ValueError):
+        return "'start'/'end' must be line numbers (1-indexed)"
+    return _text_chunk(lines, start, end, SPEC_DUMP_CHUNK_LINES, "the answer")
+
 # The build this TUI session itself started, not any spec's own history
 # (analyze covers that) -- the same text BuildScreen's stage list renders.
 def _tool_build_status(app, arguments):
@@ -1213,6 +1244,68 @@ def _cancel_build_preview(app, arguments):
         return Preview(False, "no build is running")
     return Preview(True, "would cancel the running build")
 
+# Marks the run as the AI chat's own -- only one started this way gets
+# the unprompted notify_vendor_finished() turn, never one begun by
+# '/vendor' or the Vendor screen. Set right after start_vendor() (whose
+# reset() clears it), the same race-avoidance _start_ai_build() needs.
+def _start_ai_vendor(app, distro, entries, exclude, wanted, extra_archs):
+    from seine.tui.vendor import start_vendor
+    start_vendor(app, app.vendor_state, distro, entries, exclude, wanted,
+                 extra_archs=extra_archs)
+    app.vendor_state.notify_ai = True
+
+def _tool_start_vendor(app, arguments):
+    build = _single_group(app)
+    if build is None:
+        return NO_SINGLE_GROUP
+    from seine.tui.vendor import prepare
+    try:
+        distro, entries, exclude, wanted, extra_archs = prepare(
+            build, arguments.get("suite") or None)
+    except ValueError as e:
+        return "could not start: %s" % e
+    try:
+        # Crosses back through call_from_thread the same boundary
+        # TextualReporter does -- start_vendor() touches Indicators.
+        app.call_from_thread(_start_ai_vendor, app, distro, entries, exclude,
+                             wanted, extra_archs)
+    except RuntimeError as e:
+        return "could not start: %s" % e
+    app.call_from_thread(app.show, "vendor")
+    return "vendor started (%s)" % ", ".join(wanted)
+
+# Refuses before ConfirmAction ever opens for the same reasons
+# start_vendor() itself would raise or prepare() would error -- a bad
+# 'suite', a specification with no 'vendor:' section, one already
+# running, or a build in the way. Without this, approving "start a
+# vendor run?" only then reveals it was never going to work.
+def _start_vendor_preview(app, arguments):
+    build = _single_group(app)
+    if build is None:
+        return Preview(False, NO_SINGLE_GROUP)
+    if app.vendor_state.running:
+        return Preview(False, "a vendor is already running")
+    if app.build_state.running:
+        return Preview(False, "a build is running -- wait for it to finish first")
+    from seine.tui.vendor import prepare
+    try:
+        prepare(build, arguments.get("suite") or None)
+    except ValueError as e:
+        return Preview(False, str(e))
+    return Preview(True, "would start a vendor run")
+
+def _tool_cancel_vendor(app, arguments):
+    if not app.vendor_state.running:
+        return "no vendor is running"
+    from seine import tasks
+    tasks.interrupt()
+    return "cancelling -- waiting for running steps to finish"
+
+def _cancel_vendor_preview(app, arguments):
+    if not app.vendor_state.running:
+        return Preview(False, "no vendor is running")
+    return Preview(True, "would cancel the running vendor")
+
 # Read-only outbound fetch, restricted to a small whitelist of trusted
 # domains -- the ai-tool equivalent of source-pull/bash reading real
 # upstream state instead of training data, but for a page rather than a
@@ -1602,6 +1695,61 @@ TOOLS = {t.name: t for t in [
                                                     "package name"}},
          "required": []},
         False, _tool_cache),
+    Tool("vendor", "Every suite the active specification's 'vendor:' "
+        "section names (or just one, with 'suite'): source/binary "
+        "package counts, which are 'direct' (an explicit 'vendor:' "
+        "entry) versus pulled in as a build dependency, and the "
+        "dependency graph's own size if 'seine vendor' has resolved it. "
+        "Says 'no vendor graph yet' for a suite nobody has vendored, "
+        "and works on a specification with no 'image:' section at all "
+        "-- vendoring is independent of building. Chunked like "
+        "spec-dump -- give 'start'/'end' for more once the first "
+        "chunk's header says how many lines there are.",
+        {"type": "object",
+         "properties": {"suite": {"type": "string",
+                                  "description": "narrow to one suite "
+                                                 "instead of every one "
+                                                 "'vendor:' names"},
+                        "start": {"type": "integer",
+                                 "description": "1-indexed line to start "
+                                                "from, for a chunk past "
+                                                "the first"},
+                        "end": {"type": "integer",
+                               "description": "1-indexed line to end at "
+                                              "-- omit for a default-size "
+                                              "chunk from 'start'"}},
+         "required": []},
+        False, _tool_vendor),
+    Tool("vendor-why", "Why a source package ended up in the vendor -- "
+        "read straight off the resolver's own recorded dependency "
+        "graph (edges/pruned it wrote when 'seine vendor' last resolved "
+        "this suite), never re-derived by guessing at Build-Depends. "
+        "Says whether 'package' is a root (an explicit 'vendor:' entry) "
+        "or an extra, then every recorded (parent, via binary, field, "
+        "arch, depth) reason it was pulled in, shallowest first. A "
+        "package the vendor never reached at all says so plainly, "
+        "rather than an empty answer that reads like 'no reason "
+        "found'. Chunked like 'vendor' above.",
+        {"type": "object",
+         "properties": {"package": {"type": "string",
+                                    "description": "a source package "
+                                                   "name, e.g. from "
+                                                   "'vendor' above"},
+                        "suite": {"type": "string",
+                                 "description": "narrow to one suite "
+                                                "instead of searching "
+                                                "every one 'vendor:' "
+                                                "names"},
+                        "start": {"type": "integer",
+                                 "description": "1-indexed line to start "
+                                                "from, for a chunk past "
+                                                "the first"},
+                        "end": {"type": "integer",
+                               "description": "1-indexed line to end at "
+                                              "-- omit for a default-size "
+                                              "chunk from 'start'"}},
+         "required": ["package"]},
+        False, _tool_vendor_why),
     Tool("doctor", "Whether this machine has what a build needs.",
         _no_args(), False, _tool_doctor),
     Tool("build-status", "Per-step status of the build this TUI session "
@@ -1821,6 +1969,27 @@ TOOLS = {t.name: t for t in [
     Tool("cancel-build", "Cancel the running build -- the same thing "
         "'/cancel' does.", _no_args(), True, _tool_cancel_build,
         _cancel_build_preview),
+    Tool("start-vendor", "Start a real 'seine vendor' run against the "
+        "active specification's own 'vendor:' section: every source "
+        "package it names, and its full build-dependency closure, "
+        "resolved and fetched into a signed apt repository. Switches to "
+        "the Vendor screen, same as '/vendor'. Runs for real, network "
+        "and container activity both -- refused outright (before "
+        "approval) if there is no 'vendor:' section, a bad 'suite', or "
+        "a build already running: '/build' and '/vendor' never run at "
+        "once (both drive the same underlying task engine).",
+        {"type": "object",
+         "properties": {"suite": {"type": "string",
+                                  "description": "vendor only this "
+                                                 "suite; omit to vendor "
+                                                 "every suite 'vendor:' "
+                                                 "names, no other value "
+                                                 "needed for that"}},
+         "required": []},
+        True, _tool_start_vendor, _start_vendor_preview),
+    Tool("cancel-vendor", "Cancel the running vendor -- the same thing "
+        "'/cancel' does.", _no_args(), True, _tool_cancel_vendor,
+        _cancel_vendor_preview),
     Tool("spec-update", "Change one node in a loaded spec file. 'at' is a "
         "JSONPath naming exactly one node -- reuse the expression "
         "spec-query already gave you for it, don't guess a fresh one. "
@@ -2487,28 +2656,59 @@ def notify_build_finished(app):
         pass
     app.run_worker(lambda: _run(app), thread=True, exclusive=True, group="ai")
 
+# 'vendor_state''s own twin of notify_build_finished() above -- same
+# one-shot, "only a run start-vendor itself started" wiring, fired from
+# App._vendor_finished() the way notify_build_finished() is from
+# _build_finished().
+def notify_vendor_finished(app):
+    if app.ai_state.busy:
+        return
+    outcome = "failed" if app.vendor_state.error else "finished successfully"
+    app.ai_state.busy = True
+    app.ai_state.turn_started_at = time.time()
+    app.ai_state.messages.append({
+        "role": "user",
+        "content": "(seine) The vendor run you started with start-vendor "
+                   "has %s. Check it and report back." % outcome})
+    app.ai_state.changed()
+    try:
+        app.say("AI chat: vendor %s -- checking in" % outcome)
+    except NoMatches:
+        pass
+    app.run_worker(lambda: _run(app), thread=True, exclusive=True, group="ai")
+
 # Appended to the system prompt fresh every turn (in _run()'s loop, not
 # injected into state.messages, so it never appears in the chat pane) --
-# a build started or finished mid-conversation is state the model has
-# no other way to notice. Overall state only, not a per-step breakdown:
-# build-status already covers that on demand.
+# a build/vendor started or finished mid-conversation is state the model
+# has no other way to notice. Overall state only, not a per-step
+# breakdown: build-status/'vendor' already cover that on demand.
+def _state_overall(state):
+    if state.running:
+        return "running"
+    if state.done and state.error:
+        return "failed"
+    if state.done:
+        return "finished"
+    return "not started yet"
+
 def _live_status(app):
+    parts = []
     build = app.build_state
-    if len(build.order) == 0:
-        return ""
-    if build.running:
-        overall = "running"
-    elif build.done and build.error:
-        overall = "failed"
-    elif build.done:
-        overall = "finished"
-    else:
-        overall = "not started yet"
-    return ("\n\nThe build this TUI session itself has run is currently: "
+    if len(build.order) > 0:
+        parts.append(
+            "The build this TUI session itself has run is currently: "
             "%s. This is live, not something said earlier in the "
             "conversation -- trust it over your own prior turns, and call "
             "build-status for the per-step picture if that's what's "
-            "actually asked." % overall)
+            "actually asked." % _state_overall(build))
+    vendor = app.vendor_state
+    if len(vendor.order) > 0:
+        parts.append(
+            "The vendor run this TUI session itself has started is "
+            "currently: %s. Live, the same as the build status above -- "
+            "call 'vendor' for what it actually resolved/fetched once "
+            "it's done." % _state_overall(vendor))
+    return ("\n\n" + "\n\n".join(parts)) if parts else ""
 
 # Reasoning models (seen live: Qwen3) stream 'delta.reasoning_content'
 # separately from 'delta.content' -- only the latter is ever shown,

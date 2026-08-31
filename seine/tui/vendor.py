@@ -53,6 +53,10 @@ class VendorState:
         # BuildState.on_finished -- "a vendor run just finished, redraw
         # if anyone is looking".
         self.on_finished = None
+        # Set by ai.py's 'start-vendor' tool, never by '/vendor' -- same
+        # role as BuildState's own, reset() below so it never survives
+        # past the run that set it.
+        self.notify_ai = False
 
     @property
     def running(self):
@@ -66,6 +70,7 @@ class VendorState:
         self.message = None
         self.error = False
         self.done = False
+        self.notify_ai = False
         self.retries = 0
         self.logs = None
         self._baseline = self._repo_bytes()

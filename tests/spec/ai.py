@@ -207,6 +207,7 @@ class ToolTable(avocado.Test):
     def test_only_the_named_actions_are_gated(self):
         gated = {name for name, tool in self.ai.TOOLS.items() if tool.gated}
         self.assertEqual(gated, {"start-build", "cancel-build",
+                                 "start-vendor", "cancel-vendor",
                                  "spec-update", "spec-create",
                                  "side-load", "side-unload",
                                  "gist-create", "gist-delete",
@@ -218,7 +219,8 @@ class ToolTable(avocado.Test):
     def test_read_only_tools_work_with_no_active_spec(self):
         app = self.SeineApp()
         for name in ["overview", "plan", "packages", "analyze", "artifacts",
-                    "cache", "doctor", "installed-packages", "issues", "build-status",
+                    "cache", "vendor", "vendor-why", "doctor", "installed-packages",
+                    "issues", "build-status",
                     "task-log", "spec-files", "read", "spec-dump", "docs", "spec-query",
                     "gist-list", "gist-show", "source-list",
                     "mtda-status", "mtda-console-read", "mtda-console-wait",
@@ -1576,6 +1578,68 @@ class ToolTable(avocado.Test):
         text = self.ai.TOOLS["cache"].run(app, {"matching": "("})
         self.assertIn("not a usable pattern", text)
 
+    # A vendor-only spec (no 'image:') is a real, supported '/use' --
+    # BuildCmd.parse()'s own comment -- so this is the shape a real
+    # 'vendor'/'vendor-why' call would actually see, not PC_IMAGE plus a
+    # workaround.
+    def _vendor_spec(self):
+        path = os.path.join(self.workdir, "vendor-only.yaml")
+        with open(path, "w") as f:
+            f.write(
+                "distribution:\n"
+                "    release: bookworm\n"
+                "    architecture: amd64\n"
+                "    uri: http://example.com/debian\n"
+                "vendor:\n"
+                "    - name: openssl\n")
+        return path
+
+    def _save_openssl_manifest(self, suite):
+        from seine.vendor import save_manifest
+        save_manifest(suite, {
+            "sources": {
+                "openssl": {"version": "3.0.11-1", "direct": True,
+                           "binaries": {"libssl3": {"amd64": "3.0.11-1"}}},
+                "bar": {"version": "2.0-1", "direct": False,
+                       "binaries": {"libbar-dev": {"amd64": "2.0-1"}}}},
+            "digest": "d", "graph_version": 1,
+            "graph": {"edges": [
+                {"from": "openssl", "to": "bar", "via": "libbar-dev",
+                 "arch": "amd64", "field": "Build-Depends",
+                 "raw": "libbar-dev", "depth": 0}],
+                "reverse": {"bar": [
+                    {"parent": "openssl", "via": "libbar-dev", "arch": "amd64",
+                     "field": "Build-Depends", "depth": 0}]},
+                "pruned": {"base_chroot": [], "excluded": []}}})
+
+    def test_vendor_reports_a_real_manifest(self):
+        app = self.SeineApp(files=[self._vendor_spec()])
+        self._save_openssl_manifest("bookworm")
+        text = self.ai.TOOLS["vendor"].run(app, {"suite": "bookworm"})
+        self.assertIn("2 source package(s)", text)
+        self.assertIn("roots: openssl", text)
+
+    # Same 'lines N-M of T' header spec-dump's own chunking uses --
+    # _text_chunk() is shared, not reimplemented for this tool.
+    def test_vendor_is_chunked_like_spec_dump(self):
+        app = self.SeineApp(files=[self._vendor_spec()])
+        self._save_openssl_manifest("bookworm")
+        text = self.ai.TOOLS["vendor"].run(app, {"suite": "bookworm", "start": 1, "end": 1})
+        self.assertTrue(text.startswith("lines 1-1 of "))
+
+    def test_vendor_why_explains_a_pulled_in_package(self):
+        app = self.SeineApp(files=[self._vendor_spec()])
+        self._save_openssl_manifest("bookworm")
+        text = self.ai.TOOLS["vendor-why"].run(
+            app, {"package": "bar", "suite": "bookworm"})
+        self.assertIn("extra -- pulled in", text)
+        self.assertIn("openssl build-depends on libbar-dev", text)
+
+    def test_vendor_why_requires_a_package_argument(self):
+        app = self.SeineApp(files=[self._vendor_spec()])
+        text = self.ai.TOOLS["vendor-why"].run(app, {})
+        self.assertIn("give 'package'", text)
+
     def test_reset_conversation_clears_state(self):
         app = self.SeineApp()
         app.ai_state.messages.append({"role": "user", "content": "hi"})
@@ -1593,6 +1657,43 @@ class ToolTable(avocado.Test):
         app = self.SeineApp()
         self.assertIn("no single active specification",
                       self.ai.TOOLS["start-build"].run(app, {}))
+
+    def test_start_vendor_with_no_active_spec(self):
+        app = self.SeineApp()
+        self.assertIn("no single active specification",
+                      self.ai.TOOLS["start-vendor"].run(app, {}))
+
+    def test_cancel_vendor_with_nothing_running(self):
+        app = self.SeineApp()
+        self.assertEqual(self.ai.TOOLS["cancel-vendor"].run(app, {}),
+                         "no vendor is running")
+
+    # start-vendor's own preview refuses before ConfirmAction ever
+    # opens for the same reasons prepare()/start_vendor() would
+    # otherwise error on, once approved -- same hardening cancel-build's
+    # own preview already has.
+    def test_start_vendor_preview_refuses_without_a_vendor_section(self):
+        app = self.SeineApp(files=[NATIVE_IMAGE])
+        preview = self.ai.TOOLS["start-vendor"].preview(app, {})
+        self.assertFalse(preview.ok)
+        self.assertIn("no 'vendor:' section", preview.message)
+
+    def test_start_vendor_preview_refuses_an_unknown_suite(self):
+        app = self.SeineApp(files=[self._vendor_spec()])
+        preview = self.ai.TOOLS["start-vendor"].preview(app, {"suite": "not-a-suite"})
+        self.assertFalse(preview.ok)
+        self.assertIn("not a suite", preview.message)
+
+    def test_start_vendor_preview_approves_a_real_vendor_section(self):
+        app = self.SeineApp(files=[self._vendor_spec()])
+        preview = self.ai.TOOLS["start-vendor"].preview(app, {})
+        self.assertTrue(preview.ok)
+
+    def test_cancel_vendor_preview_refuses_with_nothing_running(self):
+        app = self.SeineApp()
+        preview = self.ai.TOOLS["cancel-vendor"].preview(app, {})
+        self.assertFalse(preview.ok)
+        self.assertIn("no vendor is running", preview.message)
 
 # Fakes the whole shape 'seine/tui/ai.py' reads off a real 'litellm'
 # response/stream -- kept as small as the real thing actually needs, not
@@ -2522,7 +2623,7 @@ class TheLoop(avocado.Test):
                 self.assertEqual(len(app.context.builds[0].spec["playbook"]), 2)
         _run(scenario)
 
-    # The AI-tool mirror of the side-load test just above -- approving
+    # The AI-tool vendor of the side-load test just above -- approving
     # 'side-unload' has to actually run 'app.context.side_unload()', not
     # just say so. The fragment is side-loaded directly on 'app.context'
     # before the scenario starts (plain Python, no running app needed
@@ -2652,6 +2753,151 @@ class TheLoop(avocado.Test):
                 # reverted) -- only its *highlight* is gone.
                 self.assertNotIn("extra play", after_update)
                 self.assertEqual(len(app.context.builds[0].spec["playbook"]), 2)
+        _run(scenario)
+
+# start-vendor/cancel-vendor themselves, run for real inside a running
+# app -- call_from_thread needs one, which is why the ToolTable class
+# above only covers the negative/preview paths (no active spec, refused
+# up front). VendorCmd._run() is faked out the same way
+# VendorScreenIntegration in tests/spec/tui.py does it, no podman/
+# network involved -- the gated-approval UI flow itself (ConfirmAction,
+# a preview shown before running) is generic and already proven
+# elsewhere; what's under test here is start-vendor's own wiring,
+# including the notify_ai hand-off StartBuildNotifiesTheAI below covers
+# for a build.
+class StartVendorTool(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.vendor import VendorCmd
+            from seine.tui.app import SeineApp
+            from seine.tui.vendor import VendorScreen
+        self.VendorCmd = VendorCmd
+        self.SeineApp = SeineApp
+        self.VendorScreen = VendorScreen
+        self.real_run = VendorCmd._run
+        self.addCleanup(setattr, VendorCmd, "_run", self.real_run)
+        from seine import tasks
+        self.addCleanup(tasks._interrupted.clear)
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        os.environ["SEINE_LLM_MODEL"] = "openai/fake"
+        self._real_litellm = sys.modules.get("litellm")
+        self.addCleanup(self._restore_litellm)
+        self.fragment = os.path.join(self.workdir, "vendor-only.yaml")
+        with open(self.fragment, "w") as f:
+            f.write(
+                "distribution:\n"
+                "    release: bookworm\n"
+                "    architecture: amd64\n"
+                "    uri: http://example.com/debian\n"
+                "vendor:\n"
+                "    - name: openssl\n")
+
+    def _restore_litellm(self):
+        if self._real_litellm is not None:
+            sys.modules["litellm"] = self._real_litellm
+        else:
+            sys.modules.pop("litellm", None)
+
+    # Called on a real background thread, not straight from the test's
+    # own coroutine: _tool_start_vendor() -> start_vendor() crosses back
+    # through call_from_thread the same way a real tool call always
+    # does, from ai._run()'s own worker thread -- Textual refuses that
+    # call from the app's own thread, which the test coroutine is.
+    def _call_tool(self, name, arguments):
+        import threading as th
+        result = {}
+        def call():
+            from seine.tui import ai
+            result["text"] = ai.TOOLS[name].run(self._app, arguments)
+        th.Thread(target=call).start()
+        return result
+
+    # Event-gated, same as StartBuildNotifiesTheAI's own _fast_build()
+    # below -- lets the test see "started, notify_ai set, still running"
+    # before letting the fake run finish and the notify_ai hand-off
+    # fire for real (a second, real 'ai._run()' turn, hence
+    # fake_litellm(tool_name=None): a plain answer, no further tool call).
+    def test_start_vendor_runs_for_real_and_notifies_the_ai(self):
+        import threading as th
+        release = th.Event()
+        def gated_run(cmd_self, distro, entries, exclude, wanted, refresh,
+                     archs=None, extra_archs=(), display=None):
+            display.started("resolve:bookworm")
+            release.wait(timeout=5)
+            display.finished("resolve:bookworm", failed=False)
+            display.say("vendored 1 source package(s) for bookworm")
+        self.VendorCmd._run = gated_run
+        sys.modules["litellm"] = fake_litellm()
+
+        async def scenario():
+            app = self.SeineApp(files=[self.fragment])
+            self._app = app
+            async with app.run_test() as pilot:
+                result = self._call_tool("start-vendor", {})
+                for _ in range(50):
+                    if "text" in result:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertIn("vendor started", result.get("text", ""))
+                self.assertIsInstance(app.screen, self.VendorScreen)
+                self.assertTrue(app.vendor_state.notify_ai)
+                self.assertTrue(app.vendor_state.running)
+
+                release.set()
+                for _ in range(100):
+                    if not app.ai_state.busy and not app.vendor_state.notify_ai:
+                        break
+                    await asyncio.sleep(0.02)
+                    await pilot.pause()
+                self.assertTrue(app.vendor_state.done)
+                self.assertFalse(app.vendor_state.error)
+                # Cleared by App._vendor_finished() once the hand-off
+                # actually fired -- the one-shot guarantee itself.
+                self.assertFalse(app.vendor_state.notify_ai)
+                notice = next((m for m in app.ai_state.messages
+                              if m.get("role") == "user"
+                              and "(seine)" in (m.get("content") or "")), None)
+                self.assertIsNotNone(notice)
+                self.assertIn("start-vendor", notice["content"])
+                self.assertIn("finished successfully", notice["content"])
+        _run(scenario)
+
+    def test_cancel_vendor_stops_a_real_run(self):
+        import threading as th
+        release = th.Event()
+        def slow_run(cmd_self, distro, entries, exclude, wanted, refresh,
+                    archs=None, extra_archs=(), display=None):
+            from seine import tasks as tasks_mod
+            display.started("resolve:bookworm")
+            release.wait(timeout=5)
+            if tasks_mod._interrupted.is_set():
+                raise tasks_mod.Interrupted(["resolve:bookworm"])
+            display.finished("resolve:bookworm", failed=False)
+        self.VendorCmd._run = slow_run
+
+        from seine.tui import ai
+        async def scenario():
+            app = self.SeineApp(files=[self.fragment])
+            self._app = app
+            async with app.run_test() as pilot:
+                self._call_tool("start-vendor", {})
+                for _ in range(50):
+                    if app.vendor_state.current is not None:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertEqual(ai.TOOLS["cancel-vendor"].run(app, {}),
+                                 "cancelling -- waiting for running steps to finish")
+                release.set()
+                for _ in range(50):
+                    if not app.vendor_state.running:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertTrue(app.vendor_state.done)
+                self.assertTrue(app.vendor_state.error)
         _run(scenario)
 
 # Whole-build completion, only for a build 'start-build' itself started,

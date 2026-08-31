@@ -500,6 +500,13 @@ class SeineApp(App):
         self.refresh_indicators()
         if isinstance(self.screen, VendorScreen):
             self.screen.update_body()
+        # One-shot, same as BuildState's own: only ai.py's 'start-vendor'
+        # tool ever sets this.
+        if self.vendor_state.notify_ai:
+            self.vendor_state.notify_ai = False
+            if isinstance(self.screen, VendorScreen):
+                self.show("chat")
+            ai.notify_vendor_finished(self)
 
     def _test_finished(self):
         self._socket_send({"type": "test_finished",
