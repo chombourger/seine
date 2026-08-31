@@ -9,7 +9,10 @@ from seine.bootstrap   import Bootstrap
 from seine.cache_index import CHROOT, Index, say, since
 from seine.utils     import ContainerEngine
 from seine.utils     import apt_sources
+from seine.utils     import feeds
 from seine.utils     import locked
+from seine.utils     import offline_suites
+from seine.utils     import vendor_mountpoint
 from seine.utils     import BUILDER_KIND
 from seine.utils     import PRIVILEGED_RUN_OPTIONS
 
@@ -57,8 +60,20 @@ class BuilderImage(Bootstrap):
     # package from a different version than the one the image would have
     # installed -- which for the security suite means rebuilding a source
     # that is missing the fixes apt would otherwise have given it.
+    #
+    # A suite 'apt-pull-mode: offline' covers is left out here: the vendor
+    # repository it reads from instead is refreshed by 'seine vendor'
+    # between builds, and baking a file: line pointed at it into this image
+    # would go stale the moment that happens without the image itself
+    # changing. packages.py's own fetch() writes the same line at exec
+    # time instead, into the throwaway container each build already gets.
     def _sources(self):
-        sources = apt_sources(self.distro, sources=True)
+        offline = set(offline_suites(self.distro))
+        online = [feed for feed in feeds(self.distro)
+                 if feed["suite"] not in offline]
+        sources = apt_sources(self.distro, sources=True, entries=online)
+        if len(sources) == 0:
+            return "true"
         return " && ".join(
             "echo '%s' >> /etc/apt/sources.list.d/seine.list" % s for s in sources)
 
@@ -179,7 +194,16 @@ class SbuildChroot:
         with open(self.inputs, "r") as f:
             return f.read().strip() == digest
 
-    def create(self, builderImage):
+    # 'offline' bakes the chroot's own sources.list from the local vendor
+    # repository instead of the network, for a real 'packages:' rebuild
+    # under 'apt-pull-mode: offline'. Left False by seine/vendor.py's own
+    # base_chroot(), which shares this same cache entry (see 'key' above)
+    # to compute a vendor's build-dependency closure -- going offline
+    # there would have it read a vendor repository that its own resolve is
+    # what is supposed to fill, before anything has. utils.apt_sources()'s
+    # own rule -- offline is an explicit opt-in, never inferred -- applies
+    # here too, for the same reason.
+    def create(self, builderImage, offline=False):
         # Another build may be making the same chroot: they want the same
         # bytes, so one makes it and the other finds it made rather than
         # both writing one tarball.
@@ -194,9 +218,9 @@ class SbuildChroot:
             for stale in self._mistakable:
                 if os.path.isfile(stale):
                     os.unlink(stale)
-            return self._create(builderImage)
+            return self._create(builderImage, offline)
 
-    def _create(self, builderImage):
+    def _create(self, builderImage, offline=False):
 
         # --mode=root: we are already root inside the container, so there
         # is no reason to make mmdebstrap unshare a namespace of its own
@@ -217,10 +241,12 @@ class SbuildChroot:
             "--customize-hook=sync-out /var/cache/apt/archives /var/cache/mmdebstrap",
             self.distro["release"],
             "/root/.cache/sbuild/%s" % self.filename,
-        ] + apt_sources(self.distro)
+        ] + apt_sources(self.distro, offline=offline)
         # Digested before the name is swapped in below: where a chroot is
         # written is not what it is made from, and caches made before this
-        # still match.
+        # still match. Offline and online sources differ, so flipping
+        # 'apt-pull-mode' digests as a different chroot rather than one
+        # silently built from the wrong one.
         digest = hashlib.sha256(" ".join(args).encode()).hexdigest()[:16]
         if self.current(digest):
             entry = Index().hit(CHROOT, self.key)
@@ -234,6 +260,10 @@ class SbuildChroot:
         volumes = [(ContainerEngine.downloads(self.distro["release"]),
                     "/var/cache/mmdebstrap"),
                    (os.path.dirname(self.path), "/root/.cache/sbuild")]
+        if offline:
+            from seine import vendor
+            volumes += [(vendor.deploy_repository(suite), vendor_mountpoint(suite))
+                       for suite in offline_suites(self.distro)]
         try:
             # Not 'architecture=self.architecture': that mounts the chroot
             # cache directory of 'builderImage's own distro, which for a

@@ -126,6 +126,126 @@ class RecordingBuilderImage:
             open(os.path.join(self.workdir, "linux_1-1.dsc"), "w").close()
         return 0
 
+# BuilderImage._sources() is what BUILDER_IMAGE_SCRIPT bakes into the
+# image's own Dockerfile -- an offline suite has to stay out of it, since
+# the vendor repository it would otherwise point at is refreshed by
+# 'seine vendor' between builds, without the image itself changing.
+class BuilderImageLeavesOfflineSuitesOutOfWhatItBakes(avocado.Test):
+    def sources(self, offline):
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        if offline:
+            distro["apt-pull-mode"] = "offline"
+        return BuilderImage(distro, {})._sources()
+
+    def test_offline_bakes_nothing(self):
+        # Not empty: a Dockerfile RUN joining this with '&&' needs a
+        # command either way.
+        self.assertEqual(self.sources(offline=True), "true")
+
+    def test_online_is_unaffected(self):
+        self.assertIn("example.com/debian bookworm main", self.sources(offline=False))
+
+# 'apt-get source' is the one thing packages.py still runs against the
+# builder image's own apt, so it is where the offline routing left out of
+# the image has to be written back in, per invocation.
+class OfflineFetchInjectsTheVendorSourceAtExecTime(avocado.Test):
+    def builder(self, offline):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        if offline:
+            distro["apt-pull-mode"] = "offline"
+        return Builder(distro, {}, RecordingBuilderImage(self.workdir))
+
+    def package(self, source):
+        return parse("""
+                packages:
+                    - source: %s
+        """ % source).image.packages[0]
+
+    def test_an_apt_source_is_wrapped_when_offline(self):
+        from seine import vendor
+        from seine.utils import vendor_mountpoint
+        builder = self.builder(offline=True)
+        args, volumes = builder._offline_fetch(
+            ["apt-get", "source", "busybox"], self.package("apt://busybox"), [])
+        self.assertEqual(args[:2], ["sh", "-c"])
+        self.assertIn("file:%s" % vendor_mountpoint("bookworm"), args[2])
+        self.assertIn("apt-get update", args[2])
+        self.assertIn("apt-get source busybox", args[2])
+        self.assertIn((vendor.deploy_repository("bookworm"), vendor_mountpoint("bookworm")),
+                      volumes)
+
+    def test_an_apt_source_passes_through_online(self):
+        builder = self.builder(offline=False)
+        args, volumes = builder._offline_fetch(
+            ["apt-get", "source", "busybox"], self.package("apt://busybox"), [])
+        self.assertEqual(args, ["apt-get", "source", "busybox"])
+        self.assertEqual(volumes, [])
+
+    def test_git_and_https_sources_are_never_wrapped(self):
+        builder = self.builder(offline=True)
+        for source, fetch_args in [
+            ("git://example.com/busybox.git;rev=deadbeef", ["git", "clone"]),
+            ("https://example.com/busybox_1.dsc", ["dget", "-u", "https://example.com/busybox_1.dsc"]),
+        ]:
+            args, volumes = builder._offline_fetch(
+                fetch_args, self.package(source), [])
+            self.assertEqual(args, fetch_args)
+            self.assertEqual(volumes, [])
+
+# The buildd chroot sbuild unpacks bakes its own sources.list at creation
+# time (mmdebstrap), so it is the other half of honouring 'apt-pull-mode'
+# -- see SbuildChroot._create()'s own comment for why base_chroot() (in
+# seine/vendor.py) never passes 'offline' here, unlike a real rebuild.
+class ChrootBakesOfflineSourcesAndDigestsDifferently(avocado.Test):
+    def create(self, distro, offline):
+        from seine.sbuild import SbuildChroot
+        chroot = SbuildChroot(distro, {}, "amd64")
+        calls = []
+        class FakeBuilder:
+            def exec(self, args, architecture=None, volumes=None, workdir=None,
+                     environment=None, check=True, tty=False):
+                calls.append((args, volumes))
+                # _create() only needs a file to os.replace() into place --
+                # unpacking a real chroot is not what is under test.
+                open(chroot.temporary, "w").close()
+        chroot.create(FakeBuilder(), offline=offline)
+        return chroot, calls
+
+    def test_offline_reads_the_vendor_and_mounts_its_repository(self):
+        from seine import vendor
+        from seine.utils import vendor_mountpoint
+        distro = {"source": "debian", "release": "bookworm", "architecture": "amd64",
+                  "uri": "http://example.com/debian", "apt-pull-mode": "offline"}
+        _, calls = self.create(distro, offline=True)
+        args, volumes = calls[0]
+        self.assertIn("file:%s" % vendor_mountpoint("bookworm"), " ".join(args))
+        self.assertIn((vendor.deploy_repository("bookworm"), vendor_mountpoint("bookworm")),
+                      volumes)
+
+    def test_online_reads_the_network_and_mounts_nothing_extra(self):
+        distro = {"source": "debian", "release": "bookworm", "architecture": "amd64",
+                  "uri": "http://example.com/debian"}
+        _, calls = self.create(distro, offline=False)
+        args, volumes = calls[0]
+        self.assertIn("example.com/debian bookworm main", " ".join(args))
+        self.assertNotIn("vendor-repo", " ".join(str(v) for v in volumes))
+
+    def test_flipping_offline_changes_the_digest(self):
+        online_distro = {"source": "debian", "release": "bookworm",
+                         "architecture": "amd64", "uri": "http://example.com/debian"}
+        offline_distro = dict(online_distro, **{"apt-pull-mode": "offline"})
+        online, _ = self.create(online_distro, offline=False)
+        with open(online.inputs) as f:
+            online_digest = f.read()
+        offline, _ = self.create(offline_distro, offline=True)
+        with open(offline.inputs) as f:
+            offline_digest = f.read()
+        self.assertNotEqual(online_digest, offline_digest)
+
 class CrossBuildProfile(avocado.Test):
     def builder(self, architecture):
         from seine.packages import Builder
@@ -1394,7 +1514,7 @@ class AFailedBuildKeepsItsLog(avocado.Test):
             def __init__(self, *arguments):
                 pass
 
-            def create(self, image):
+            def create(self, image, offline=False):
                 return self
 
         # What was already in the scratch space is somebody else's, and on

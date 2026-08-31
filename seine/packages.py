@@ -27,7 +27,11 @@ from seine.sbuild import OUTPUT
 from seine.sbuild import REPOSITORY
 from seine.sbuild import SbuildChroot
 from seine.utils  import apt_sources
+from seine.utils  import feeds
 from seine.utils  import locked
+from seine.utils  import offline_apt_script
+from seine.utils  import offline_suites
+from seine.utils  import vendor_mountpoint
 from seine.utils  import ContainerEngine
 from seine.utils  import GIT_EMAIL
 from seine.utils  import GIT_NAME
@@ -619,9 +623,10 @@ class Builder:
             return self._source_dir(package.name, workdir)
 
         ssh_volumes, environment = self._ssh(package)
+        args, volumes = self._offline_fetch(
+            self._fetch_args(package), package, volumes + ssh_volumes)
         self.builderImage.exec(
-            self._fetch_args(package), volumes=volumes + ssh_volumes,
-            workdir=WORKDIR, environment=environment)
+            args, volumes=volumes, workdir=WORKDIR, environment=environment)
         if package.scheme == "https":
             self._verify(package, workdir, os.path.basename(package.source),
                          package.sha256, "sha256")
@@ -726,6 +731,32 @@ class Builder:
         # says where to look for it.
         return ["sh", "-c", "%s && cd %s && git checkout --detach %s" % (
             " ".join(args), package.source_name, package.parameters["rev"])]
+
+    # 'apt-get source' reads whatever the builder image's own sources.list
+    # says -- which, under 'apt-pull-mode: offline', no longer carries the
+    # suite it needs at all: BuilderImage._sources() leaves an offline
+    # suite out of what it bakes rather than pointing it at a vendor
+    # repository that 'seine vendor' may since have refreshed. Written here
+    # instead, into the same throwaway container this fetch already runs
+    # in, right before the command that needs it.
+    #
+    # https:// and git:// sources never touch the image's own apt at all,
+    # so they pass through untouched.
+    def _offline_fetch(self, args, package, volumes):
+        if package.scheme != "apt":
+            return args, volumes
+        suites = offline_suites(self.distro)
+        if len(suites) == 0:
+            return args, volumes
+        from seine import vendor
+        volumes = volumes + [(vendor.deploy_repository(suite), vendor_mountpoint(suite))
+                             for suite in suites]
+        script = offline_apt_script(self.distro, feeds(self.distro),
+                                    "/etc/apt/sources.list.d/seine.list",
+                                    offline=True)
+        script += "apt-get update -qqy; "
+        script += shlex.join(args)
+        return ["sh", "-c", script], volumes
 
     # Every scheme leaves exactly one unpacked source tree behind, next to
     # the .dsc/tarballs it came from, but only apt-get source and dget name
@@ -1365,7 +1396,14 @@ class Builder:
                      self.distro["source"],
                      self.distro["release"],
                      architecture,
-                     "\n".join(apt_sources(self.distro, sources=True)),
+                     # 'offline=': what fetch()/the chroot actually read
+                     # from flips between the network and the local
+                     # vendor repository with 'apt-pull-mode', so a
+                     # rebuild already stamped under one has to be told
+                     # apart from one done under the other, the same as
+                     # any other feed change already is.
+                     "\n".join(apt_sources(self.distro, sources=True,
+                                           offline=len(offline_suites(self.distro)) > 0)),
                      self.chroot_architecture(package, architecture),
                      # Who signed it. The .dsc and the .changes carry
                      # their signature inside them, so a build signed by
@@ -1688,7 +1726,7 @@ class Builder:
     # They need the host bootstrap and not the target one: packages are
     # built in a chroot of the build architecture, whichever architecture
     # the image is for.
-    def tasks(self, packages, hostBootstrap):
+    def tasks(self, packages, hostBootstrap, vendor_task=None):
         if self._tasked is not None and packages != self._tasked:
             raise RuntimeError(
                 "Builder.tasks() was called twice on one Builder with two "
@@ -1698,6 +1736,13 @@ class Builder:
         self._tasked = packages
         module.resolve_kernels(self, packages, hostBootstrap)
         pending = self._pending(packages)
+        # Every build in here reaches the builder image's own apt, whether
+        # it fetches, resolves build-deps or indexes -- so whenever a
+        # 'vendor' task is running ahead of this one (Image.shared_tasks()
+        # names it when 'apt-pull-mode: offline' needs it), 'packages-
+        # prepare' waits on it too, the same way it already waits on the
+        # host bootstrap.
+        needs_vendor = [vendor_task] if vendor_task is not None else []
         # Which ones were already built when the graph was made, asked now
         # rather than at the barrier: by then this build has built the rest
         # of them, and a package it just made was not one it reused.
@@ -1710,15 +1755,22 @@ class Builder:
             if self._indexable():
                 first = [Task("packages-prepare",
                               functools.partial(self._prepare, hostBootstrap),
-                              needs=["bootstrap-host"])]
+                              needs=["bootstrap-host"] + needs_vendor)]
+            # No 'packages-prepare' to carry it here, so 'packages' itself
+            # waits on vendor directly -- otherwise a rerun with nothing
+            # pending and nothing to reindex drops the vendor wait
+            # entirely, and 'rootfs' (which only waits on 'packages')
+            # races it.
+            needs = ["bootstrap-host"] + [t.name for t in first]
+            if len(first) == 0:
+                needs += needs_vendor
             return first + [Task("packages",
                                  functools.partial(self._reused, reused),
-                                 needs=["bootstrap-host"]
-                                       + [t.name for t in first])]
+                                 needs=needs)]
 
         tasks = [Task("packages-prepare",
                       functools.partial(self._prepare, hostBootstrap),
-                      needs=["bootstrap-host"])]
+                      needs=["bootstrap-host"] + needs_vendor)]
 
         # A package built against another has to be built after it, which
         # is the same order 'before'/'after' already worked out -- as task
@@ -2253,7 +2305,8 @@ class Builder:
         with self._chroots:
             chroot = SbuildChroot(self.distro, self.options,
                                   self.chroot_architecture(package, architecture))
-            chroot.create(self.builderImage)
+            chroot.create(self.builderImage,
+                          offline=len(offline_suites(self.distro)) > 0)
 
         with self._workdirs:
             source = self._sources.get(package.name)

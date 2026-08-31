@@ -22,6 +22,7 @@ from seine.tasks        import Task
 from seine.utils        import ContainerEngine, feeds, apt_sources
 from seine.utils        import locked
 from seine.utils        import PRIVILEGED_RUN_OPTIONS
+from seine import settings
 from seine import signing
 from seine import tasks as task_runner
 
@@ -110,15 +111,44 @@ def exclusions(spec):
         raise ValueError("'vendor-exclude' shall be a list of source package names!")
     return excluded
 
-# Every suite a 'vendor:' section names: the release itself for an
-# unqualified entry, and whatever 'suite:' names otherwise -- whether or
-# not it has a configured feed. Used both to validate a '--suite' name
-# and, by suites() below, as the full set that needs one when no
-# '--suite' narrows a run.
+# 'distribution: architectures:' -- every architecture a release/project
+# supports, beside the one 'distribution: architecture:' (singular) says
+# this particular run targets. Without it, the only way to vendor for
+# more than that one architecture was to tag some unrelated entry's own
+# 'arch:' with the extra name -- a side effect of a per-package field
+# never meant to carry a whole run's intent. This is the direct way to
+# say it: architectures(), the one place both this and every entry's
+# own 'arch:' are folded into the run's actual wanted set, reads it from
+# here rather than from any one entry. Merged the same way
+# 'vendor-exclude:' is -- additive, deduplicated (docs/merging.md,
+# BuildCmd._merge_distro_architectures()) -- unlike every other
+# 'distribution:' setting.
+def extra_architectures(spec):
+    archs = (spec.get("distribution") or {}).get("architectures", [])
+    if type(archs) != type([]) or any(type(a) != type("") for a in archs):
+        raise ValueError(
+            "'distribution: architectures:' shall be a list of architecture names!")
+    return archs
+
+# Every suite a 'vendor:' section names: every release 'distribution:
+# feeds:' actually configures for an unqualified entry (matching
+# entries_for()'s own for_suite(), which an unqualified entry answers
+# 'yes' to regardless of which suite is asked), and whatever 'suite:'
+# names otherwise -- whether or not it has a configured feed. Never
+# distro['release'] alone: a specification naming several releases under
+# 'feeds:' (examples/vendor/main.yaml's own bookworm-and-trixie feeds,
+# say) has no 'distribution: release:' of its own to prefer one over the
+# other, and an unqualified entry there means every one of them, not
+# whichever release a merge happened to leave in distro['release'], or
+# utils.distribution()'s own generic fallback when nothing set it at
+# all. Used both to validate a
+# '--suite' name and, by suites() below, as the full set that needs one
+# when no '--suite' narrows a run.
 def named_suites(entries, distro):
     named = set()
+    releases = {feed["release"] for feed in feeds(distro)}
     for entry in entries:
-        named.update(entry.suites or [distro["release"]])
+        named.update(entry.suites or releases)
     return sorted(named)
 
 # Which of 'names' has no configured feed to resolve it from.
@@ -144,9 +174,11 @@ def suites(entries, distro):
 # Every architecture a 'vendor:' section asks for, across every suite --
 # what 'dpkg --add-architecture' would need for the whole run. Per-suite
 # scoping (which architectures a given suite actually asks for) is done by
-# entries_for()/architectures_for() once resolving that suite.
-def architectures(entries, distro):
-    wanted = {distro["architecture"]}
+# entries_for()/architectures_for() once resolving that suite. 'extra' is
+# extra_architectures()'s own return -- 'distribution: architectures:'
+# widening the base set the same way an entry's own 'arch:' already does.
+def architectures(entries, distro, extra=()):
+    wanted = {distro["architecture"]} | set(extra)
     for entry in entries:
         if entry.architectures is not None:
             wanted.update(entry.architectures)
@@ -182,12 +214,13 @@ def repository(suite):
 # files loose at top level, just what a plain 'apt' would need to use
 # it. This is the one and only place it exists -- unlike an earlier
 # version of this split, cache never carries a pool/dists view of its
-# own -- which is exactly why ansible_runner.py's own offline apt-pull
-# mount has to rebuild it here itself, just-in-time, rather than assume
-# a prior 'seine vendor' run left it standing: deploy/ is wiped between
-# builds in this project's own workflow, and 'seine build' never
-# re-invokes 'seine vendor' to repopulate it. See
-# AnsibleContainerRunner._refresh_vendor_deploy().
+# own. A build's own 'vendor' task (image.py's own Image._vendor_task())
+# builds this before 'rootfs' ever mounts it -- ansible_runner.py no
+# longer rebuilds it itself, just-in-time or otherwise, so a
+# specification going offline over a suite its own 'vendor:' section
+# does not feed still depends on some other 'seine vendor' run having
+# left this standing (see docs/specification.md's own
+# 'apt-pull-mode: offline').
 #
 # Also where a person goes looking for a *deliverable*: handed to
 # whoever tracks OSS license compliance, archived, shipped -- the reason
@@ -197,6 +230,19 @@ def deploy_repository(suite):
     path = os.path.join(ContainerEngine.deploy_root(), "vendor", suite)
     os.makedirs(path, exist_ok=True)
     return path
+
+# Whether a release's own vendor repository is already there -- carried
+# over from an earlier 'seine build' on this machine, or dropped in from
+# another one's 'deploy/vendor/<release>' outright. Trusted outright:
+# 'Packages' is only ever written by index() finishing a run, never by
+# deploy_repository() making the directory, so its presence is taken to
+# mean every '.deb' the manifest names is there and the index describes
+# it -- not re-verified against the manifest or reindexed. That is the
+# whole point of shipping deploy/ ahead of a build: skipping 'seine
+# build's own vendor task finding out again what it already knows (see
+# image.py's own Image._vendor_task()).
+def is_deployed(release):
+    return os.path.isfile(os.path.join(deploy_repository(release), "Packages"))
 
 # The distribution a suite's own container session bootstraps and reads
 # apt sources from: the same source/architecture/uri as the specification
@@ -636,8 +682,16 @@ class VendorResolver:
 
     def _builder(self, hostBootstrap):
         # Suite-specific bootstrap so the resolver's dpkg status does not
-        # pollute candidate selection across releases
-        _suiteBootstrap = HostBootstrap(self.suite_distro, self.options)
+        # pollute candidate selection across releases -- built from the
+        # suite's own underlying release ('bookworm' for
+        # 'bookworm-security'), not the suite name itself: only a release
+        # is ever a Debian docker tag, and 'FROM debian:bookworm-security'
+        # pulls nothing that exists (docker.io publishes base and
+        # '-backports' tags, never '-security'/'-updates').
+        release = next((f.get("release", f["suite"]) for f in feeds(self.distro)
+                        if f["suite"] == self.suite), self.suite)
+        _suiteBootstrap = HostBootstrap(
+            dict(self.suite_distro, release=release), self.options)
         _suiteBootstrap.create()
         builder = VendorResolverImage(self.suite_distro, self.options)
         builder.create(_suiteBootstrap)
@@ -785,13 +839,14 @@ def save_manifest(suite, manifest):
 # configured in the same specification for some other suite's sake,
 # cannot, and is left out here for exactly that reason: editing it would
 # otherwise force a suite that never saw it to re-resolve for nothing.
-def manifest_digest(distro, entries, exclude, suite):
+def manifest_digest(distro, entries, exclude, suite, extra_archs=()):
     relevant = sorted(
         (e.name, e.suites, e.architectures, e.version)
         for e in entries_for(entries, suite))
     payload = {
         "entries": relevant,
         "exclude": sorted(exclude),
+        "extra-architectures": sorted(extra_archs),
         "build-profiles": distro.get("build-profiles", []),
         "build-options": distro.get("build-options", []),
         "feeds": feeds_for_suite(distro, suite),
@@ -1026,10 +1081,9 @@ def _link_fetched(fetched, where, component, name):
 # differently) without a "promotion" step to patch it up after the
 # fact, and it is cheap enough to always do outright: no network call
 # anywhere in this function, only hardlinking files already on disk and
-# running apt-ftparchive/gpg -- which is what lets seine build's own
-# ansible_runner.py call this itself, just-in-time, before mounting it,
-# rather than depending on deploy/ having survived since 'seine vendor'
-# last ran (see AnsibleContainerRunner._refresh_vendor_deploy()).
+# running apt-ftparchive/gpg -- called by index_tasks() as part of a
+# build's own 'vendor' task, which 'rootfs' waits on (image.py's own
+# task graph) rather than reindexing again itself.
 def index(builder, suite, signer):
     fetched = repository(suite)
     where = deploy_repository(suite)
@@ -1160,14 +1214,15 @@ def index(builder, suite, signer):
 # ---------------------------------------------------------------------
 
 def resolve_tasks(distro, entries, suites_wanted, options, hostBootstrap,
-                  exclude, results):
+                  exclude, results, extra_archs=()):
     tasks = []
     for suite in suites_wanted:
         suite_entries = entries_for(entries, suite)
         if len(suite_entries) == 0:
             continue
         archs = sorted({a for e in suite_entries
-                        for a in e.architectures_for(architectures(entries, distro))})
+                        for a in e.architectures_for(
+                            architectures(entries, distro, extra_archs))})
         resolver = VendorResolver(distro, suite, options)
 
         def run(resolver=resolver, suite_entries=suite_entries, archs=archs,
@@ -1197,7 +1252,7 @@ def _builder_for(distro, suite, options, hostBootstrap):
 # decided on the host, before any container -- unlike apt's own
 # skip-if-present check, which only happens once one has already been
 # spawned to ask it.
-def fetch_tasks(distro, suite, manifest, options, hostBootstrap):
+def fetch_tasks(distro, suite, manifest, options, hostBootstrap, archs=None):
     tasks = []
     seen_bins = set()
     where = repository(suite)
@@ -1217,6 +1272,8 @@ def fetch_tasks(distro, suite, manifest, options, hostBootstrap):
                                 suite, source, version)))
         for binpkg, per_arch in sorted(entry["binaries"].items()):
             for arch, binver in sorted(per_arch.items()):
+                if archs is not None and arch not in archs:
+                    continue
                 key = (binpkg, arch)
                 if key in seen_bins:
                     continue
@@ -1337,11 +1394,15 @@ class VendorCmd(Cmd):
     NAME = "vendor"
     SHORT_OPTIONS = "dhj:v"
     LONG_OPTIONS = ["debug", "help", "jobs=", "vendor-sign-key=",
-                    "suite=", "verbose"]
+                    "architecture=", "suite=", "verbose"]
 
     def __init__(self):
-        self.options = {"debug": False, "jobs": 1, "keep": False,
-                        "vendor_sign_key": None, "verbose": False}
+        # 'jobs' falls back to the persisted setting (seine/settings.py,
+        # '/set jobs N' in the TUI) before the hardcoded '1', the same
+        # way BuildCmd.__init__() already does -- an explicit '-j'/
+        # '--jobs' below still overrides either.
+        self.options = {"debug": False, "jobs": settings.load().get("jobs") or 1,
+                        "keep": False, "vendor_sign_key": None, "verbose": False}
 
     def usage(self):
         return USAGE
@@ -1372,6 +1433,7 @@ class VendorCmd(Cmd):
             sys.exit(1)
 
         suites_asked = []
+        archs_asked = []
         for o, a in opts:
             if o in ("-d", "--debug"):
                 self.options["debug"] = True
@@ -1392,6 +1454,8 @@ class VendorCmd(Cmd):
                 self.options["vendor_sign_key"] = a
             elif o in ("--suite"):
                 suites_asked.append(a)
+            elif o in ("--architecture"):
+                archs_asked.append(a)
             elif o in ("-v", "--verbose"):
                 self.options["verbose"] = True
             else:
@@ -1410,6 +1474,7 @@ class VendorCmd(Cmd):
             distro = utils.distribution(build.spec)
             entries = parse(build.spec)
             exclude = exclusions(build.spec)
+            extra_archs = extra_architectures(build.spec)
             available = named_suites(entries, distro)
         except OSError as e:
             sys.stderr.write("error: couldn't open specification file: %s\n" % e)
@@ -1431,6 +1496,23 @@ class VendorCmd(Cmd):
                 sys.exit(1)
         wanted = suites_asked if len(suites_asked) > 0 else available
 
+        # Unlike '--suite', narrowing here never skips a resolve: an
+        # architecture's closure is walked the same way regardless of
+        # what a run wants fetched, so a suite's frozen manifest always
+        # stays complete for every architecture 'vendor:' asks for --
+        # only fetch_tasks() (and so what actually reaches the disk)
+        # is scoped down. None (nothing asked) keeps that unscoped.
+        available_archs = architectures(entries, distro, extra_archs)
+        for arch in archs_asked:
+            if arch not in available_archs:
+                sys.stderr.write(
+                    "error: '--architecture %s' names an architecture this "
+                    "specification's 'vendor:' section does not ask for, "
+                    "expected one of %s\n"
+                    % (arch, ", ".join(available_archs)))
+                sys.exit(1)
+        archs = archs_asked if len(archs_asked) > 0 else None
+
         # Only what this run actually wants needs a configured feed: a
         # '--suite' run does not fail over a suite it never asked for --
         # see named_suites()/unconfigured_suites() above.
@@ -1443,7 +1525,8 @@ class VendorCmd(Cmd):
             sys.exit(3)
 
         try:
-            sys.exit(self._run(distro, entries, exclude, wanted, refresh))
+            sys.exit(self._run(distro, entries, exclude, wanted, refresh, archs,
+                               extra_archs))
         except OSError as e:
             sys.stderr.write("error: %s\n" % e)
             sys.exit(2)
@@ -1457,7 +1540,23 @@ class VendorCmd(Cmd):
             sys.stderr.write("error: vendor was %s\n" % (str(e) or "interrupted"))
             sys.exit(130)
 
-    def _run(self, distro, entries, exclude, wanted, refresh):
+    # 'display' is the same Reporter-shaped sink 'seine build's own
+    # TUI screen already feeds tasks.run() through -- 'started'/
+    # 'finished'/'say', nothing else. None (the CLI's own path, via
+    # main()) keeps '_run_wave()'s existing verbose/'-j 1' live-tail
+    # instead; a caller wanting its own progress view (the vendor
+    # screen) hands one in and gets it on every wave, not just some.
+    #
+    # 'archs' scopes fetch_tasks() alone (see main()'s own comment on
+    # why resolving stays unscoped) -- None fetches every architecture
+    # 'vendor:' asks for, same as before this existed.
+    #
+    # 'extra_archs' is extra_architectures()'s own return
+    # ('distribution: architectures:') -- folded into manifest_digest()
+    # too, so a spec newly naming one re-resolves to actually cover it
+    # rather than keeping a manifest frozen before it was asked for.
+    def _run(self, distro, entries, exclude, wanted, refresh, archs=None,
+             extra_archs=(), display=None):
         hostBootstrap = HostBootstrap(distro, self.options)
 
         # Which suites need a fresh resolve: every one of them when
@@ -1469,7 +1568,8 @@ class VendorCmd(Cmd):
         # asks for -- see manifest_digest(). An ordinary, unchanged
         # rerun still just freezes what an earlier one resolved rather
         # than asking apt again for it.
-        digests = {suite: manifest_digest(distro, entries, exclude, suite)
+        digests = {suite: manifest_digest(distro, entries, exclude, suite,
+                                          extra_archs)
                   for suite in wanted}
         stale = []
         manifests = {}
@@ -1485,8 +1585,10 @@ class VendorCmd(Cmd):
         if len(stale) > 0:
             results = {}
             resolve = resolve_tasks(distro, entries, stale, self.options,
-                                    hostBootstrap, exclude, results)
-            self._run_wave([hostBootstrap.task()] + resolve, retryable=False)
+                                    hostBootstrap, exclude, results,
+                                    extra_archs)
+            self._run_wave([hostBootstrap.task()] + resolve, retryable=False,
+                          display=display)
             for suite in stale:
                 fresh, graph = results[suite]
                 if isinstance(refresh, str):
@@ -1512,23 +1614,35 @@ class VendorCmd(Cmd):
             # is already frozen, which leaves the image the fetch/index
             # containers stand on still unbuilt (or gone, after 'seine
             # cache clear images') the first time a run touches nothing
-            # but already-resolved suites.
-            hostBootstrap.create()
+            # but already-resolved suites. Still run as a one-task wave,
+            # not a bare call: a caller with its own display (the vendor
+            # screen) gets a row and a real log file for it either way --
+            # otherwise this step is invisible on every ordinary rerun,
+            # which is the *common* case once a suite's manifest is
+            # frozen, not a rare one.
+            self._run_wave([hostBootstrap.task()], retryable=False, display=display)
 
         fetch = []
         for suite in wanted:
             fetch += fetch_tasks(distro, suite, manifests[suite], self.options,
-                                 hostBootstrap)
-        self._run_wave(fetch, retryable=True)
+                                 hostBootstrap, archs)
+        self._run_wave(fetch, retryable=True, display=display)
 
         signer = signing.vendor_signer(self.options)
         self._run_wave(
             index_tasks(distro, wanted, self.options, hostBootstrap, signer),
-            retryable=False)
+            retryable=False, display=display)
 
         for suite in wanted:
             print("vendored %d source package(s) for %s"
                  % (len(manifests[suite]), suite))
+        # A caller with its own display has nothing to read the prints
+        # above off of (they go to the real terminal, not wherever it is
+        # watching) -- the same summary, one line, through 'say()'.
+        if display is not None:
+            display.say("vendored " + ", ".join(
+                "%d source package(s) for %s" % (len(manifests[suite]), suite)
+                for suite in wanted))
         return 0
 
     # '--refresh=NAME': the freshly-resolved closure with every entry but
@@ -1574,7 +1688,7 @@ class VendorCmd(Cmd):
     # because an earlier failure stopped new ones starting is retried
     # exactly like one that failed outright -- neither says anything
     # about that task itself.
-    def _run_wave(self, wave_tasks, retryable):
+    def _run_wave(self, wave_tasks, retryable, display=None):
         if len(wave_tasks) == 0:
             return
         jobs = self.options["jobs"]
@@ -1586,9 +1700,25 @@ class VendorCmd(Cmd):
         # single line to show for whole stretches of it, and losing that
         # to a lost terminal is a worse trade than the file costs.
         logs = self._logs()
-        # Followed live only when nothing else could be running beside
-        # it to interleave with (see _LiveFollower's own docstring).
-        follower = _LiveFollower(logs) if (verbose and jobs <= 1) else None
+        # Optional: a caller tailing this wave's own log files (the
+        # vendor screen) needs to know where they landed -- a fresh
+        # directory every wave, unlike a build's single stable
+        # 'image.logs'. '_LiveFollower' has no use for its own path
+        # back, so this is checked for, not assumed.
+        if display is not None:
+            wave_logs = getattr(display, "wave_logs", None)
+            if wave_logs is not None:
+                wave_logs(logs)
+        # A caller's own display (the vendor screen's TextualReporter)
+        # wins outright -- verbose/'-j 1' live-tail is the CLI's own
+        # fallback for when nothing else is watching, not a rule that
+        # applies to every caller of this.
+        if display is not None:
+            follower = display
+        else:
+            # Followed live only when nothing else could be running beside
+            # it to interleave with (see _LiveFollower's own docstring).
+            follower = _LiveFollower(logs) if (verbose and jobs <= 1) else None
 
         # Not retried: 'tasks.run()' as 'seine build' itself already uses
         # it, stopping (jobs=1) or reporting (jobs>1) the way every other
@@ -1662,7 +1792,7 @@ Description:
 
 Usage:
   seine vendor [-j N] [--refresh[=NAME]] [--vendor-sign-key KEY]
-               [--suite NAME]... SPEC...
+               [--suite NAME]... [--architecture NAME]... SPEC...
 
 Flags:
   -d, --debug           print what each step decided and its full output
@@ -1678,6 +1808,12 @@ Flags:
       --suite NAME      vendor only this suite; may be given more than
                         once. Every suite the specification's 'vendor:'
                         section asks for otherwise
+      --architecture NAME
+                        fetch binaries for only this architecture; may
+                        be given more than once. Every architecture the
+                        specification's 'vendor:' section asks for
+                        otherwise. Resolving itself is unaffected --
+                        only what gets fetched is narrowed
   -v, --verbose         print each step as it runs, and what the cache
                         reused or made
 """

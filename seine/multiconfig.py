@@ -60,7 +60,16 @@ def _load(files, options):
 # output it would write, without its directory or extension. Distinct by
 # construction -- see _check_filenames() -- and the one thing about a
 # group a person building several of them together already has in mind.
+#
+# A group with no 'image:' section (a vendor-only one -- see
+# BuildCmd.parse()'s own comment) writes no output at all, so there is
+# no filename to take this from; its own release is the next most
+# distinct thing about it, and the TUI's Context.use() (unlike this
+# module's own real multi-group callers, see the header comment) reaches
+# this even for a single, image-less group.
 def _label(build):
+    if build.image._output is None:
+        return build.spec["distribution"]["release"]
     return os.path.splitext(os.path.basename(build.image._output))[0]
 
 # Two groups writing the same file is caught here rather than by whichever
@@ -235,7 +244,7 @@ def _logs(groups_files):
         return tempfile.mkdtemp(dir=spec, prefix="%s-" % run)
 
 # Everything 'seine build'/'seine plan' does for more than one group,
-# mirroring BuildCmd.main()'s tail and Image.build() for a single one:
+# vendoring BuildCmd.main()'s tail and Image.build() for a single one:
 # parse every group, print or build the merged result, then the
 # bookkeeping build() does once per image done once here for all of them.
 def run(groups_files, options):

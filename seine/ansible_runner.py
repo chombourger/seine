@@ -7,16 +7,13 @@ import tempfile
 import yaml
 
 from seine                      import packages
-from seine                      import signing
-from seine.bootstrap            import HostBootstrap
 from seine.transport_bootstrap import TransportBootstrap
 from seine import tasks
 from seine.utils                import ContainerEngine
 from seine.utils                import spawn_own_pgroup
-from seine.utils                import apt_sources
 from seine.utils                import feeds
+from seine.utils                import offline_apt_script
 from seine.utils                import vendor_mountpoint
-from seine.utils                import offline_suites
 
 # Where the downloads cache is mounted, which is deliberately not apt's own
 # archives directory.
@@ -89,43 +86,23 @@ class AnsibleContainerRunner:
         if packages.has_packages(self.distro):
             volumes += ["-v", "%s:%s" % (packages.repository(self.distro),
                                          packages.REPOSITORY)]
-        # 'vendor:'s own *delivered* repositories, one per suite this
-        # went offline for -- read-only, since nothing running inside
-        # the target has any business adding to a vendor. Not
-        # vendor.repository(suite) (the cache of raw fetched files,
-        # which carries no pool/dists of its own) -- see
-        # _refresh_vendor_deploy(), which rebuilds this before run()
-        # ever gets here.
-        from seine import vendor
-        for suite in offline_suites(self.distro):
-            volumes += ["-v", "%s:%s:ro" % (vendor.deploy_repository(suite),
-                                            vendor_mountpoint(suite))]
+        # 'vendor:'s own *delivered* repository for this build's own
+        # release -- read-only, since nothing running inside the target
+        # has any business adding to a vendor. Not vendor.repository()
+        # (the cache of raw fetched files, which carries no pool/dists
+        # of its own), and not one mount per suite: 'seine build's own
+        # vendor task (Image._vendor_task()) only ever vendors the
+        # release itself -- a resolve sees every feed of the release
+        # (main, updates, security -- see _suite_distro()'s own
+        # comment), but what it delivers is one repository, named for
+        # the release alone. Built by that task, and by the time this
+        # runs it already has, since 'rootfs' waits on it.
+        if self.distro.get("apt-pull-mode") == "offline":
+            from seine import vendor
+            release = self.distro["release"]
+            volumes += ["-v", "%s:%s:ro" % (vendor.deploy_repository(release),
+                                            vendor_mountpoint(release))]
         return volumes
-
-    # Rebuilds every offline suite's *delivered* vendor repository
-    # (deploy_repository(suite)) fresh, right before it is mounted --
-    # rather than trusting a 'seine vendor' run to have left it standing
-    # in deploy/, which this project's own workflow wipes between
-    # builds, and which 'seine build' never repopulates on its own.
-    # Safe to do unconditionally: vendor.index() only ever hardlinks
-    # files repository(suite) (the cache) already has and runs apt-
-    # ftparchive/gpg over them -- no network call anywhere in it, as
-    # long as the resolver/builder podman image it stands its container
-    # on is itself already cached from that same prior 'seine vendor'
-    # run (the same precondition an offline build already has on its
-    # chroot/package caches).
-    def _refresh_vendor_deploy(self):
-        from seine import vendor
-        suites = offline_suites(self.distro)
-        if len(suites) == 0:
-            return
-        hostBootstrap = HostBootstrap(self.distro, self.options)
-        hostBootstrap.create()
-        signer = signing.vendor_signer(self.options)
-        for suite in suites:
-            builder = vendor._builder_for(self.distro, suite, self.options,
-                                          hostBootstrap)
-            vendor.index(builder, suite, signer)
 
     # The cache into apt's own archives directory, so what another build
     # already fetched is not fetched again.
@@ -163,20 +140,32 @@ class AnsibleContainerRunner:
     # the baked-in entry would still reach for the network right beside
     # the one just written for it.
     def _configure_feeds(self):
-        every = feeds(self.distro)
-        offline = self.distro.get("apt-pull-mode") == "offline"
-        extra = every if offline else every[1:]
-        if len(extra) == 0:
+        if self.distro.get("apt-pull-mode") != "offline":
+            extra = feeds(self.distro)[1:]
+            if len(extra) == 0:
+                return
+            script = offline_apt_script(self.distro, extra, FEEDS_LIST)
+            self._exec(["sh", "-c", script])
             return
-        lines = apt_sources(self.distro, sources=True, entries=extra,
-                            offline=offline)
-        script = ""
-        if offline:
-            script += ("rm -f /etc/apt/sources.list "
-                      "/etc/apt/sources.list.d/*.sources "
-                      "/etc/apt/sources.list.d/*.list; ")
-        script += "".join("echo '%s' >> %s; " % (line, FEEDS_LIST)
-                          for line in lines)
+        # Offline: every apt source this container had -- base_feed()
+        # included -- is replaced by a single vendor entry for the
+        # build's own release, not one per suite/component: the
+        # delivered repository already covers the whole release in one
+        # 'dists/<release>/' (main and extra alike -- see vendor.py's
+        # own index()), so one deb line and one deb-src line naming
+        # both components is everything apt needs to read from it.
+        from seine import vendor
+        release = self.distro["release"]
+        where = vendor_mountpoint(release)
+        keyring = vendor.keyring(release)
+        options = ("[signed-by=%s/%s]" % (where, keyring) if keyring is not None
+                  else "[trusted=yes]")
+        lines = ["deb %s file:%s %s main extra" % (options, where, release),
+                 "deb-src %s file:%s %s main extra" % (options, where, release)]
+        script = ("rm -f /etc/apt/sources.list "
+                 "/etc/apt/sources.list.d/*.sources "
+                 "/etc/apt/sources.list.d/*.list; ")
+        script += "".join("echo '%s' >> %s; " % (line, FEEDS_LIST) for line in lines)
         self._exec(["sh", "-c", script])
 
     # 'apt-pull-mode: offline' above replaced every feed -- base_feed()
@@ -191,9 +180,8 @@ class AnsibleContainerRunner:
     def _restore_online_feeds(self):
         if self.distro.get("apt-pull-mode") != "offline":
             return
-        lines = apt_sources(self.distro, sources=True, entries=feeds(self.distro))
         script = "rm -f %s; " % FEEDS_LIST
-        script += "".join("echo '%s' >> %s; " % (line, FEEDS_LIST) for line in lines)
+        script += offline_apt_script(self.distro, feeds(self.distro), FEEDS_LIST)
         self._exec(["sh", "-c", script])
 
     # Creates the target container, runs 'playbooks' against it and leaves
@@ -201,8 +189,6 @@ class AnsibleContainerRunner:
     # then 'container rm' it) for build_tarball() to pick up. On failure,
     # the container is torn down here since there's nothing left to export.
     def run(self, playbooks):
-        self._refresh_vendor_deploy()
-
         transport = TransportBootstrap(self.baseline, self.distro, self.options)
         transport.create()
 

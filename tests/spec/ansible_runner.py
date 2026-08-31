@@ -54,45 +54,30 @@ class VolumesMountTheDeliveredVendorRepository(avocado.Test):
         volumes = cmd._volumes()
         self.assertNotIn("/vendor-repo/bookworm", " ".join(volumes))
 
-# AnsibleContainerRunner._refresh_vendor_deploy() -- the just-in-time
-# rebuild that lets an offline build find its vendor repository in
-# deploy/ regardless of whether it survived since 'seine vendor' last
-# ran. HostBootstrap/vendor._builder_for() are faked out: what is under
-# test is that this calls vendor.index() once per offline suite with a
-# builder standing on one shared, created HostBootstrap -- not whether
-# podman itself works.
-class RefreshVendorDeployIndexesEachOfflineSuite(avocado.Test):
+# _configure_feeds() -- offline mode replaces every apt source with a
+# single vendor entry for the build's own release: one deb line and one
+# deb-src line, both naming 'main extra' together, never one pair per
+# suite/component. The rebuild that used to sit in
+# AnsibleContainerRunner._refresh_vendor_deploy() is gone: 'rootfs' now
+# waits on the 'vendor' task (see image.py's own task graph), which has
+# already built deploy_repository(release) by the time this runs, so
+# there is nothing left here to refresh just-in-time.
+class ConfigureFeedsWritesOneVendorEntryForTheRelease(avocado.Test):
     def test(self):
-        created = {"n": 0}
-        class FakeHostBootstrap:
-            def __init__(self, distro, options):
-                pass
-            def create(self):
-                created["n"] += 1
-
-        indexed = []
-        def fake_builder_for(distro, suite, options, hostBootstrap):
-            return ("builder-for", suite)
-        def fake_index(builder, suite, signer):
-            indexed.append((builder, suite))
-
         cmd = runner(offline_distro())
-        with patch("seine.ansible_runner.HostBootstrap", FakeHostBootstrap), \
-             patch("seine.vendor._builder_for", fake_builder_for), \
-             patch("seine.vendor.index", fake_index):
-            cmd._refresh_vendor_deploy()
+        written = []
+        with patch.object(cmd, "_exec", lambda args, check=True: written.append(args)):
+            cmd._configure_feeds()
 
-        self.assertEqual(created["n"], 1)
-        self.assertEqual(sorted(indexed),
-                         [(("builder-for", "bookworm"), "bookworm"),
-                          (("builder-for", "bookworm-security"), "bookworm-security")])
+        self.assertEqual(len(written), 1)
+        script = written[0][-1]
+        self.assertEqual(script.count("deb "), 1)
+        self.assertEqual(script.count("deb-src "), 1)
+        self.assertIn("file:/vendor-repo/bookworm bookworm main extra", script)
 
-    def test_nothing_offline_never_touches_a_bootstrap(self):
-        class FakeHostBootstrap:
-            def __init__(self, distro, options):
-                raise AssertionError(
-                    "HostBootstrap should not be built when nothing is offline")
-
+    def test_online_keeps_every_feed_but_the_first(self):
         cmd = runner(online_distro())
-        with patch("seine.ansible_runner.HostBootstrap", FakeHostBootstrap):
-            cmd._refresh_vendor_deploy()
+        written = []
+        with patch.object(cmd, "_exec", lambda args, check=True: written.append(args)):
+            cmd._configure_feeds()
+        self.assertEqual(len(written), 0)

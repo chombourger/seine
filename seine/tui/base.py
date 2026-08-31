@@ -230,6 +230,34 @@ class Indicators(Static):
         self.update("%d build%s" % (count, "" if count == 1 else "s"))
         self.display = True
 
+# Same role as Indicators above -- a vendor run is exactly the same
+# kind of long-running background thing a build is, deserving the same
+# "still going, and clickable to look at it" chip regardless of which
+# screen is open. A separate widget rather than folded into Indicators
+# itself: 'seine vendor' and a real build can never run at once (see
+# start_vendor()'s own comment), so there is nothing to count -- one
+# vendor is either running or it is not, the same single fact
+# TargetIndicator already shows about a storage write.
+class VendorIndicator(Static):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.display = False
+
+    def on_click(self, event):
+        if self.app.vendor_state.running:
+            self.app.show("vendor")
+
+    # Uses state.done, not VendorState.running, for the same reason
+    # Indicators.refresh_text() does: Worker.is_running can still read
+    # True one tick before the worker actually finishes.
+    def refresh_text(self):
+        state = self.app.vendor_state
+        if state.worker is None or state.done:
+            self.display = False
+            return
+        self.update("vendoring")
+        self.display = True
+
 # Same role as Indicators above, one door down: hidden unless a
 # storage write is actually in progress (app.target_state.writing, fed
 # by TargetState.on_event() -- see seine/tui/target.py), showing live
@@ -338,6 +366,7 @@ class BaseScreen(Screen):
         yield Horizontal(
             Static(id="status", markup=False),
             Indicators(id="indicators"),
+            VendorIndicator(id="vendor-indicator"),
             TargetIndicator(id="target-indicator"),
             id="infobar",
         )
@@ -375,6 +404,7 @@ class BaseScreen(Screen):
         else:
             tree.load(self.app.context, previous_spec=self.app.context.changed_from)
         self.query_one(Indicators).refresh_text()
+        self.query_one(VendorIndicator).refresh_text()
         self.query_one(TargetIndicator).refresh_text()
         self.update_body()
 

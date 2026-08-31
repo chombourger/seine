@@ -107,13 +107,29 @@ def _validate(app, argv):
 
 # Shared by every command below that just switches to a screen over the
 # active spec, optionally naming one first -- the same '/use' + active
-# check either way, only the screen name differs.
-def _show_over_active_spec(app, argv, screen):
+# check either way, only the screen name differs. 'require_image' is for
+# the one screen (plan, so far) that needs the active spec's own
+# 'image:' section -- checked before switching, so a vendor-only spec
+# never lands on a screen that would have nothing to show.
+def _show_over_active_spec(app, argv, screen, require_image=False):
     if len(argv) > 0:
         _use(app, argv)
     if not app.context.active:
         raise CommandError("no active specification -- '/use SPEC' first")
+    if require_image:
+        _require_image(app)
     app.show(screen)
+
+# Shared by '/plan' and '/build': both end up calling into Image, which
+# needs the active spec's own 'image:' section (BuildCmd.parse() skips
+# parsing one at all when it is missing -- see its own comment). A
+# vendor-only specification is legitimately active in the TUI (vendor
+# screen, vendor-graph/vendor-why) without ever having one.
+def _require_image(app):
+    if any("image" not in build.spec for build in app.context.builds):
+        raise CommandError(
+            "no 'image:' section in the active specification -- nothing "
+            "to build or plan")
 
 def _plan(app, argv):
     """say what a build would do, without doing any of it
@@ -122,7 +138,7 @@ def _plan(app, argv):
     merged specification, diffed against the last real build of these
     files. Given SPEC arguments, first runs '/use SPEC...'.
     """
-    _show_over_active_spec(app, argv, "plan")
+    _show_over_active_spec(app, argv, "plan", require_image=True)
 
 def _overview(app, argv):
     """back to the overview screen"""
@@ -173,6 +189,12 @@ def _build(app, argv):
     if app.build_state.running:
         app.show("build")
         return
+    # seine.tasks.run() keeps its own progress in module-level globals
+    # (interrupted/running/display), never designed for two independent
+    # job graphs at once -- see start_vendor()'s own comment.
+    if app.vendor_state.running:
+        raise CommandError("a vendor is running -- wait for it to finish first")
+    _require_image(app)
     if len(app.context.builds) != 1:
         raise CommandError(
             "build needs exactly one active group -- multi-group builds "
@@ -196,6 +218,48 @@ def _build(app, argv):
 _build_options = (
     ("-j N, --jobs=N", "Override the parallel job count for this run only."),
 )
+
+def _vendor(app, argv):
+    """resolve and fetch the active specification's own 'vendor:' section
+
+    Runs 'seine vendor' against the active specification: every source
+    package its 'vendor:' section names, and its full build-dependency
+    closure, fetched into a signed apt repository of its own -- one per
+    suite. Given SPEC arguments, first runs '/use SPEC...'. Works on a
+    specification with no 'image:' section too, the same as the plain
+    CLI (vendoring is independent of building) -- unlike '/build', which
+    needs one. '--suite'/'--refresh' aren't driven from here yet; use
+    'seine vendor' directly for those.
+    """
+    if len(argv) > 0:
+        _use(app, argv)
+    if not app.context.active:
+        raise CommandError("no active specification -- '/use SPEC' first")
+    # Same "typing it again just looks" shortcut '/build' gives a
+    # running build.
+    if app.vendor_state.running:
+        app.show("vendor")
+        return
+    if app.build_state.running:
+        raise CommandError("a build is running -- wait for it to finish first")
+    if len(app.context.builds) != 1:
+        raise CommandError(
+            "vendor needs exactly one active group -- multi-group builds "
+            "('/use a -- b') aren't driven from the TUI yet")
+    build = app.context.builds[0]
+    # Imported here, not at module level: same import-cycle reason
+    # '/build' imports start_build() from seine.tui.build locally.
+    from seine.tui.vendor import prepare, start_vendor
+    try:
+        distro, entries, exclude, wanted, extra_archs = prepare(build)
+    except ValueError as e:
+        raise CommandError(str(e))
+    try:
+        start_vendor(app, app.vendor_state, distro, entries, exclude, wanted,
+                     extra_archs=extra_archs)
+    except RuntimeError as e:
+        raise CommandError(str(e))
+    app.show("vendor")
 
 def _filesystem(app, argv):
     """browse a finished image, read-only
@@ -370,9 +434,12 @@ def _set(app, argv):
     app.say("%s = %s" % (key, value))
 
 def _cancel(app, argv):
-    """stop a running build (same as Ctrl-C)"""
-    if not app.build_state.running:
-        raise CommandError("no build is running")
+    """stop a running build or vendor (same as Ctrl-C)"""
+    # Whichever it is, there is only ever one seine.tasks.run() in
+    # flight at a time (start_vendor()'s own comment) -- interrupt() is
+    # the same global stop either way, so this need not ask which.
+    if not app.build_state.running and not app.vendor_state.running:
+        raise CommandError("no build or vendor is running")
     tasks.interrupt()
     app.say("cancelling -- waiting for running steps to finish")
 
@@ -555,6 +622,7 @@ REGISTRY = {
         Command("packages", _packages, "[SPEC...]",                *_doc(_packages)),
         Command("build",    _build,    "[--jobs=N] [SPEC...]",     *_doc(_build),
                 options=_build_options),
+        Command("vendor",   _vendor,   "[SPEC...]",                *_doc(_vendor)),
         Command("filesystem", _filesystem, "[SPEC...]",             *_doc(_filesystem)),
         Command("cd",       _cd,       "[PATH]",                   *_doc(_cd)),
         Command("cancel",   _cancel,   "",                         *_doc(_cancel)),

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier Apache-2.0
 
 import contextlib
+import functools
 import os
 import subprocess
 import tarfile
@@ -40,6 +41,14 @@ class Image:
         self._output = None
         self._tarball = None
         self._verbose = options["verbose"]
+        # Both only ever set for real by parse() -- defaulted here too so
+        # a specification with no 'image:' section (a vendor-only one,
+        # say) still has something safe to read: 'packages' as "nothing
+        # rebuilt from source" rather than an AttributeError, and 'spec'
+        # as the tell plan()/tasks() use to refuse cleanly instead of
+        # reaching into a spec that was never parsed.
+        self.packages = []
+        self.spec = None
 
     def __del__(self):
         if self._tarball:
@@ -233,6 +242,62 @@ class Image:
         image.close()
         self._image = image.name
 
+    # A 'vendor' task, resolving/fetching/indexing what 'vendor:' asks for
+    # before 'packages:' reaches for it -- only when there is anything to
+    # do: a 'vendor:' section that feeds no suite 'apt-pull-mode: offline'
+    # actually needs is left for a plain 'seine vendor' to build whenever
+    # someone wants it, same as today, since nothing here would read it.
+    #
+    # Narrowed to this build's own release, like 'seine vendor --suite
+    # <release>' -- 'vendor:' entries scoped to some other suite are no
+    # business of this build's own 'packages:'. Fetching (not resolving,
+    # which still walks every architecture 'vendor:' asks for -- see
+    # VendorCmd.main()'s own comment) is narrowed the same way to this
+    # build's own architecture, like 'seine vendor --architecture
+    # <architecture>': a foreign architecture's binaries are no more this
+    # build's business than a foreign suite's.
+    #
+    # No task at all, rather than one that would find nothing to do, once
+    # deploy/vendor/<release> already has an index in it (vendor.
+    # is_deployed()): trusted outright as complete, not reresolved,
+    # refetched or reindexed against the manifest -- a 'seine build' run
+    # this way never touches the network, or apt, or a resolver
+    # container, on account of vendoring at all.
+    #
+    # Short of that, reuses VendorCmd._run() itself rather than a copy of
+    # it, the same way the TUI's own start_vendor() already does -- an
+    # ordinary rerun with nothing changed still just freezes what an
+    # earlier resolve found (see manifest_digest()), so this costs
+    # nothing when the vendor repository is already current.
+    def _vendor_task(self, distro):
+        from seine import vendor
+        entries = vendor.parse(self.spec)
+        if len(entries) == 0:
+            return None
+        release = distro["release"]
+        if release not in utils.offline_suites(distro):
+            return None
+        if len(vendor.entries_for(entries, release)) == 0:
+            return None
+        if vendor.is_deployed(release):
+            return None
+        wanted = [release]
+        exclude = vendor.exclusions(self.spec)
+        # Resolving still has to cover whatever 'distribution:
+        # architectures:' asks for beyond this build's own architecture
+        # -- only fetching (via 'archs=' below) is narrowed to it, same
+        # as with a foreign suite.
+        extra_archs = vendor.extra_architectures(self.spec)
+        cmd = vendor.VendorCmd()
+        cmd.options = dict(cmd.options, jobs=self.options.get("jobs", 1),
+                           verbose=self.options.get("verbose", False))
+        return Task("vendor",
+                    functools.partial(cmd._run, distro, entries, exclude,
+                                      wanted, False,
+                                      archs=[distro["architecture"]],
+                                      extra_archs=extra_archs),
+                    needs=["bootstrap-host"])
+
     # The host bootstrap and the packages built in a chroot of it -- the
     # half of a build several specifications can share when they agree on
     # a release, since neither varies by architecture. A caller building
@@ -242,12 +307,17 @@ class Image:
         distro = self.spec["distribution"]
         self.hostBootstrap = (hostBootstrap if hostBootstrap is not None
                               else HostBootstrap(distro, self.options))
+        vendor_task = self._vendor_task(distro)
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options),
             redactions(self.spec))
-        return [self.hostBootstrap.task()] + builder.tasks(
+        shared = [self.hostBootstrap.task()]
+        if vendor_task is not None:
+            shared.append(vendor_task)
+        return shared + builder.tasks(
             requested if requested is not None else self.packages,
-            self.hostBootstrap)
+            self.hostBootstrap,
+            vendor_task=vendor_task.name if vendor_task is not None else None)
 
     # The rest: the target bootstrap this image's own root file-system is
     # assembled in, and everything built on top of it -- never shared
@@ -290,6 +360,9 @@ class Image:
     # installed from the repository they land in, so it boots the kernel the
     # specification rebuilt rather than the distribution's.
     def tasks(self):
+        if self.spec is None:
+            raise ValueError(
+                "no 'image:' section in this specification -- nothing to build")
         shared = self.shared_tasks()
         all_tasks = shared if self.options.get("packages_only") \
             else shared + self.own_tasks()
@@ -351,6 +424,9 @@ class Image:
     # Nothing is fetched, built or written: the same graph run() would
     # walk, printed instead of walked.
     def plan(self):
+        if self.spec is None:
+            raise ValueError(
+                "no 'image:' section in this specification -- nothing to plan")
         distro = self.spec["distribution"]
         if self.options.get("packages_only"):
             what = "the packages"

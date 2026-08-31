@@ -101,6 +101,14 @@ class BuildState:
         # looking", fired from finished_ok()/finished_failed() below
         # rather than polled.
         self.on_finished = None
+        # Set once too, the same way: lets App follow a build onto the
+        # vendor screen for the 'vendor' task Image._vendor_task() adds
+        # ahead of packages: (see task_started()/task_finished() below),
+        # then back once it is done. Unset for a build with no such task
+        # -- neither ever fires, and the screen is left exactly as
+        # '/build'/the 'start-build' tool already put it.
+        self.on_task_started = None
+        self.on_task_finished = None
         # Set by ai.py's 'start-build' tool, never by '/build' -- tells
         # App._build_finished() whether this build's outcome is one the
         # AI chat should get an unprompted turn to report on. Reset in
@@ -138,6 +146,8 @@ class BuildState:
         # Clear leftovers from a previous rootfs run (a retry after failure).
         self.play = None
         self.ansible_task = None
+        if self.on_task_started:
+            self.on_task_started(name)
 
     def task_finished(self, name, failed=False):
         row = self.rows.setdefault(
@@ -147,6 +157,8 @@ class BuildState:
             row["elapsed"] = time.time() - row["started"]
         if self.current == name:
             self.current = None
+        if self.on_task_finished:
+            self.on_task_finished(name, failed)
 
     def say(self, text):
         self.message = text
@@ -287,6 +299,9 @@ class BuildScreen(BaseScreen):
         self._tail = Tail()
         super().on_mount()
         self._timer = self.set_interval(1.0, self._tick)
+        # Empty RichLog crashes textual on click (indexes -1 into an
+        # empty list) -- seed a blank line to avoid it.
+        self.query_one("#tail", RichLog).write("")
 
     def on_unmount(self):
         timer = getattr(self, "_timer", None)

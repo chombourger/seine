@@ -54,6 +54,7 @@ every argument each one takes):
  * **Plan** -- what a build would do, diffed against the last real build
    of these files, without doing any of it.
  * **Build** -- see [below](#building).
+ * **Vendor** -- see [below](#vendoring).
  * **Filesystem** -- see [below](#browsing-a-built-image).
  * **Artifacts**, **Packages**, **Analyze**, **Cache**, **Diff** -- the
    same information `seine analyze`/`--sbom`/`seine cache`/etc. give on
@@ -105,6 +106,20 @@ or (once Ansible's own stdout says so) the exact play and task while the
 target's own playbook runs:
 
 ![Build screen: the spec tree live-tracking a running Ansible task, matching the log tail](images/tui-build.gif)
+
+### Vendoring
+
+`/vendor` runs a specification's own `vendor:` section the same way
+`seine vendor` does on the command line: every source package it names,
+and its full build-dependency closure, resolved and fetched into a
+signed apt repository of its own -- one per suite. The screen is the
+same live cockpit `/build` opens, sized for what a vendor run is
+instead: a stats panel (suites, task counts, retries, and how much has
+been downloaded this session versus the repository's own total size)
+beside a live task list. Works on a specification with no `image:`
+section at all -- vendoring pins a package set, it does not build one.
+`/build` and `/vendor` never run at once; starting one while the other
+is running is refused, and `/cancel` stops whichever is.
 
 ### Driving a real target
 
@@ -203,7 +218,8 @@ instead of polling rendered text:
  * `{"type": "spec_written", "path"}` -- `spec-update`/`spec-create`
    actually wrote `path` to disk.
  * `{"type": "build_finished", "error", "message"}` / `{"type":
-   "test_finished", "error", "message"}` -- `/build` / `/test` finished.
+   "vendor_finished", "error", "message"}` / `{"type": "test_finished",
+   "error", "message"}` -- `/build` / `/vendor` / `/test` finished.
  * `{"type": "screen_changed", "screen"}` -- `/command` switched screens.
  * `{"type": "target_connected", "agent"}` / `{"type":
    "target_storage_on_host"}` / `{"type": "target_storage_write_completed",

@@ -31,17 +31,41 @@ os.environ["SEINE_LOG_DIR"] = tempfile.mkdtemp(prefix="seine-tests-logs-")
 os.environ["SEINE_DEPLOY_DIR"] = tempfile.mkdtemp(prefix="seine-tests-deploy-")
 os.environ.pop("SEINE_SIGN_KEY", None)
 os.environ.pop("SEINE_VENDOR_SIGN_KEY", None)
+# VendorCmd.__init__() now reads settings.load() for its own 'jobs'
+# default (the same fallback BuildCmd.__init__() already had) -- without
+# this, every 'VendorCmd()' constructed below reads whatever a real
+# '~/.config/seine/settings.json' on the machine running these actually
+# says, instead of the deterministic default every other test here (and
+# tests/spec/tui.py/ai.py, for the exact same reason) already assumes.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="seine-tests-config-")
 atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"], ignore_errors=True)
 atexit.register(shutil.rmtree, os.environ["SEINE_LOG_DIR"], ignore_errors=True)
 atexit.register(shutil.rmtree, os.environ["SEINE_DEPLOY_DIR"], ignore_errors=True)
+atexit.register(shutil.rmtree, os.environ["XDG_CONFIG_HOME"], ignore_errors=True)
 
-from seine import vendor, utils
+from seine import vendor, settings, utils
 
 def load(text):
     build = BuildCmd()
     build.loads(text)
     distro = utils.distribution(build.spec)
     return build.spec, distro
+
+# VendorCmd's own jobs default -- BuildCmd's twin (tests/spec/build.py's
+# own DefaultJobCount): 1 unless a persisted setting overrides it, an
+# explicit -j/--jobs still winning either way.
+class DefaultJobCount(avocado.Test):
+    def setUp(self):
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
+    def test_one_with_no_settings_file(self):
+        self.assertEqual(vendor.VendorCmd().options["jobs"], 1)
+
+    def test_the_persisted_value_otherwise(self):
+        current = settings.load()
+        current["jobs"] = 3
+        settings.save(current)
+        self.assertEqual(vendor.VendorCmd().options["jobs"], 3)
 
 class SupportedEntries(avocado.Test):
     def test(self):
@@ -129,6 +153,40 @@ class ExcludeIsAListOfStrings(avocado.Test):
         except ValueError:
             pass
 
+class ExtraArchitectureIsAListOfStrings(avocado.Test):
+    def test(self):
+        self.assertEqual(
+            vendor.extra_architectures(
+                {"distribution": {"architectures": ["arm64"]}}),
+            ["arm64"])
+        self.assertEqual(vendor.extra_architectures({}), [])
+        try:
+            vendor.extra_architectures(
+                {"distribution": {"architectures": "arm64"}})
+            self.fail("a non-list 'distribution: architectures:' was accepted")
+        except ValueError:
+            pass
+
+class ArchitecturesUnionsInExtraArchitecturesToo(avocado.Test):
+    def test(self):
+        spec, distro = load("""
+                distribution:
+                    release: bookworm
+                    architecture: amd64
+                    architectures:
+                        - arm64
+                vendor:
+                    - name: openssl
+        """)
+        entries = vendor.parse(spec)
+        extra = vendor.extra_architectures(spec)
+        self.assertEqual(vendor.architectures(entries, distro, extra),
+                         ["amd64", "arm64"])
+        # Without the extra, only the base architecture -- confirms the
+        # widening comes from 'distribution: architectures:', not from
+        # 'openssl' itself (unqualified, so it never names an architecture).
+        self.assertEqual(vendor.architectures(entries, distro), ["amd64"])
+
 class UnqualifiedEntryAppliesToTheRelease(avocado.Test):
     def test(self):
         spec, distro = load("""
@@ -141,6 +199,44 @@ class UnqualifiedEntryAppliesToTheRelease(avocado.Test):
         self.assertEqual(vendor.suites(entries, distro), ["bookworm"])
         self.assertEqual([e.name for e in vendor.entries_for(entries, "bookworm")],
                          ["openssl"])
+
+# named_suites() -- an unqualified entry means every release 'feeds:'
+# configures, not distro['release'] alone: examples/vendor/main.yaml
+# carries no 'distribution: release:' of its own on purpose (a build
+# merging it after an image spec would otherwise clobber that image's
+# own release), and still has to vendor both bookworm and trixie by
+# default when run standalone.
+class UnqualifiedEntriesMeanEveryConfiguredRelease(avocado.Test):
+    def test(self):
+        spec, distro = load("""
+                distribution:
+                    feeds:
+                        - suite: bookworm
+                        - suite: trixie
+                vendor:
+                    - name: openssl
+                    - name: curl
+                      suite: trixie
+        """)
+        entries = vendor.parse(spec)
+        self.assertEqual(vendor.named_suites(entries, distro),
+                         ["bookworm", "trixie"])
+
+    # distro['release'] defaulting to something with no feed configured
+    # here at all (utils.distribution()'s own fallback) never leaks into
+    # what an unqualified entry names -- only 'trixie' is configured, so
+    # the fallback showing up in the result would mean this regressed.
+    def test_unset_release_default_is_never_named(self):
+        spec, distro = load("""
+                distribution:
+                    feeds:
+                        - suite: trixie
+                vendor:
+                    - name: openssl
+        """)
+        entries = vendor.parse(spec)
+        self.assertNotEqual(distro["release"], "trixie")
+        self.assertEqual(vendor.named_suites(entries, distro), ["trixie"])
 
 class SuiteHasToBeAConfiguredFeed(avocado.Test):
     def test(self):
@@ -199,7 +295,8 @@ class SuiteFlagOnlyValidatesFeedsItNeeds(avocado.Test):
 
         cmd = VendorCmd()
         seen = {}
-        cmd._run = lambda distro, entries, exclude, wanted, refresh: (
+        cmd._run = lambda distro, entries, exclude, wanted, refresh, archs=None, \
+                          extra_archs=(): (
             seen.update(wanted=wanted) or 0)
 
         # 'trixie' has no configured feed, but '--suite bookworm' never
@@ -213,6 +310,91 @@ class SuiteFlagOnlyValidatesFeedsItNeeds(avocado.Test):
         with self.assertRaises(SystemExit) as ctx:
             cmd.main(["--suite", "trixie", spec_file.name])
         self.assertEqual(ctx.exception.code, 3)
+
+class ArchitectureFlagNarrowsFetchingAlone(avocado.Test):
+    def test(self):
+        from seine.vendor import VendorCmd
+        spec_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False)
+        self.addCleanup(os.unlink, spec_file.name)
+        spec_file.write("""
+                distribution:
+                    release: bookworm
+                    architecture: amd64
+                    feeds:
+                        - suite: bookworm
+                vendor:
+                    - name: openssl
+                    - name: busybox
+                      arch: [armhf]
+        """)
+        spec_file.close()
+
+        cmd = VendorCmd()
+        seen = {}
+        cmd._run = lambda distro, entries, exclude, wanted, refresh, archs=None, \
+                          extra_archs=(): (
+            seen.update(archs=archs) or 0)
+
+        # No '--architecture' at all: unscoped, same as before this flag
+        # existed.
+        with self.assertRaises(SystemExit) as ctx:
+            cmd.main([spec_file.name])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIsNone(seen["archs"])
+
+        # '--architecture armhf' is one 'vendor:' asks for (via
+        # 'busybox's own 'arch:'), so it is accepted and threaded through.
+        with self.assertRaises(SystemExit) as ctx:
+            cmd.main(["--architecture", "armhf", spec_file.name])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(seen["archs"], ["armhf"])
+
+        # 'arm64' is not among what 'vendor:' asks for (amd64, from
+        # 'distribution:', and armhf, from 'busybox's own 'arch:') --
+        # rejected before ever reaching '_run()'.
+        with self.assertRaises(SystemExit) as ctx:
+            cmd.main(["--architecture", "arm64", spec_file.name])
+        self.assertEqual(ctx.exception.code, 1)
+
+# 'distribution: architectures:' reaches the CLI the same way 'vendor:'
+# entries' own 'arch:' does -- both fold into main()'s own
+# available_archs, and both reach '_run()' as 'extra_archs'.
+class DistributionArchitecturesWidensWhatArchitectureAccepts(avocado.Test):
+    def test(self):
+        from seine.vendor import VendorCmd
+        spec_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False)
+        self.addCleanup(os.unlink, spec_file.name)
+        spec_file.write("""
+                distribution:
+                    release: bookworm
+                    architecture: amd64
+                    architectures:
+                        - arm64
+                    feeds:
+                        - suite: bookworm
+                vendor:
+                    - name: openssl
+        """)
+        spec_file.close()
+
+        cmd = VendorCmd()
+        seen = {}
+        cmd._run = lambda distro, entries, exclude, wanted, refresh, archs=None, \
+                          extra_archs=(): (
+            seen.update(archs=archs, extra_archs=extra_archs) or 0)
+
+        # 'arm64' is accepted even though no entry names it -- only
+        # 'distribution: architectures:' does.
+        with self.assertRaises(SystemExit) as ctx:
+            cmd.main(["--architecture", "arm64", spec_file.name])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(seen["archs"], ["arm64"])
+
+        # And unconditionally reaches '_run()' as 'extra_archs', whether
+        # or not '--architecture' narrowed anything.
+        self.assertEqual(seen["extra_archs"], ["arm64"])
 
 class ArchitecturesUnionEveryEntry(avocado.Test):
     def test(self):
@@ -462,6 +644,22 @@ class TaskGraphShape(avocado.Test):
                "uri": "http://example.com/debian",
                "feeds": [{"suite": "bookworm"}, {"suite": "bookworm-security"}]}
 
+    # 'extra_archs' (vendor.extra_architectures()'s own return) has to
+    # reach the resolver same as an entry's own 'arch:' does -- otherwise
+    # 'distribution: architectures:' would validate at the CLI (main()'s
+    # own available_archs) without ever actually being resolved for.
+    def test_resolve_tasks_fold_extra_archs_into_the_closure(self):
+        import inspect
+        from seine.bootstrap import HostBootstrap
+        distro = self.distro()
+        entries = vendor.parse({"vendor": [{"name": "openssl"}]})
+        results = {}
+        tasks = vendor.resolve_tasks(
+            distro, entries, ["bookworm"], {},
+            HostBootstrap(distro, {}), [], results, extra_archs=["arm64"])
+        archs = inspect.signature(tasks[0].run).parameters["archs"].default
+        self.assertEqual(archs, ["amd64", "arm64"])
+
     def test_resolve_tasks_need_the_host_bootstrap(self):
         from seine.bootstrap import HostBootstrap
         distro = self.distro()
@@ -493,6 +691,25 @@ class TaskGraphShape(avocado.Test):
                           "fetch-src:bookworm:openssl"])
         for task in tasks:
             self.assertEqual(task.needs, [])
+
+    # 'archs' scopes which binaries fetch_tasks() bothers with -- the
+    # source itself is unaffected, since a suite's manifest already
+    # decided (at resolve time, over every architecture 'vendor:' asks
+    # for) that this source belongs at all.
+    def test_fetch_tasks_narrowed_to_one_architecture(self):
+        from seine.bootstrap import HostBootstrap
+        distro = self.distro()
+        manifest = {
+            "openssl": {"version": "3.0.11-1", "direct": True,
+                       "binaries": {"libssl3": {"amd64": "3.0.11-1",
+                                                "armhf": "3.0.11-1"}}},
+        }
+        tasks = vendor.fetch_tasks(distro, "bookworm", manifest, {},
+                                   HostBootstrap(distro, {}), ["amd64"])
+        names = sorted(t.name for t in tasks)
+        self.assertEqual(names,
+                         ["fetch-bin:bookworm:libssl3:amd64",
+                          "fetch-src:bookworm:openssl"])
 
     def test_fetch_tasks_skip_a_source_whose_files_are_all_there(self):
         from seine.bootstrap import HostBootstrap
@@ -591,6 +808,172 @@ class TaskGraphShape(avocado.Test):
                                    HostBootstrap(distro, {}), None)
         self.assertEqual(sorted(t.name for t in tasks),
                          ["index:bookworm", "index:bookworm-security"])
+
+# 'seine build' resolving 'vendor:' itself, ahead of 'packages:', when an
+# offline suite actually needs it -- Image._vendor_task()/shared_tasks().
+# None of these touch podman: a Task's own body is a deferred callable,
+# never run just by building the graph (see TaskGraphShape's own header).
+class ImageWiresVendorAheadOfPackages(avocado.Test):
+    def build(self, offline):
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    release: bookworm
+                    architecture: amd64
+                    uri: http://example.com/debian
+                    %s
+                    feeds:
+                        - suite: bookworm
+                vendor:
+                    - name: openssl
+                packages:
+                    - source: apt://busybox
+                image:
+                    filename: vendor-wiring-test.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """ % ("apt-pull-mode: offline" if offline else ""))
+        build.parse()
+        return build
+
+    def test_a_vendor_task_is_added_when_offline_needs_it(self):
+        steps = self.build(offline=True).image.tasks()
+        self.assertIn("vendor", [t.name for t in steps])
+
+    # A pre-existing deploy/vendor/bookworm (an index() run left behind,
+    # here or on another machine) is trusted outright, not reresolved,
+    # refetched or reindexed -- so there is nothing left for a 'vendor'
+    # task to do, and none is added at all.
+    def test_no_vendor_task_when_the_repository_is_already_deployed(self):
+        from seine import vendor
+        open(os.path.join(vendor.deploy_repository("bookworm"), "Packages"),
+            "w").close()
+        steps = self.build(offline=True).image.tasks()
+        self.assertNotIn("vendor", [t.name for t in steps])
+
+    def test_no_vendor_task_online(self):
+        steps = self.build(offline=False).image.tasks()
+        self.assertNotIn("vendor", [t.name for t in steps])
+
+    def test_packages_prepare_waits_on_vendor(self):
+        steps = self.build(offline=True).image.tasks()
+        prepare = next(t for t in steps if t.name == "packages-prepare")
+        self.assertIn("vendor", prepare.needs)
+
+    # Narrowed to 'bookworm' (the release built) even though 'vendor:' and
+    # 'apt-pull-mode: offline' both also cover 'bookworm-security'.
+    def test_vendor_task_is_narrowed_to_the_release_being_built(self):
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    release: bookworm
+                    architecture: amd64
+                    uri: http://example.com/debian
+                    apt-pull-mode: offline
+                    feeds:
+                        - suite: bookworm
+                        - suite: bookworm-security
+                vendor:
+                    - name: openssl
+                    - name: curl
+                      suite: bookworm-security
+                packages:
+                    - source: apt://busybox
+                image:
+                    filename: vendor-wiring-test.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        vendor_task = next(t for t in build.image.tasks() if t.name == "vendor")
+        wanted = vendor_task.run.args[3]
+        self.assertEqual(wanted, ["bookworm"])
+
+    # Fetching is narrowed to this build's own architecture, like 'seine
+    # vendor --architecture amd64' -- 'vendor:' asking for 'armhf' too is
+    # none of this build's business.
+    def test_vendor_task_is_narrowed_to_the_architecture_being_built(self):
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    release: bookworm
+                    architecture: amd64
+                    uri: http://example.com/debian
+                    apt-pull-mode: offline
+                    feeds:
+                        - suite: bookworm
+                vendor:
+                    - name: openssl
+                    - name: curl
+                      arch: [armhf]
+                packages:
+                    - source: apt://busybox
+                image:
+                    filename: vendor-wiring-test.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        vendor_task = next(t for t in build.image.tasks() if t.name == "vendor")
+        self.assertEqual(vendor_task.run.keywords["archs"], ["amd64"])
+
+    # Same narrowing, but the other suite is a wholly different release
+    # ('trixie', not a pocket of 'bookworm') with its own feed -- confirms
+    # only the release actually being built is selected, not every release
+    # 'vendor:'/'apt-pull-mode: offline' together cover.
+    def test_vendor_task_ignores_a_different_release_also_configured(self):
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    release: bookworm
+                    architecture: amd64
+                    uri: http://example.com/debian
+                    apt-pull-mode: offline
+                    feeds:
+                        - suite: bookworm
+                        - suite: trixie
+                vendor:
+                    - name: openssl
+                    - name: curl
+                      suite: trixie
+                packages:
+                    - source: apt://busybox
+                image:
+                    filename: vendor-wiring-test.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        vendor_task = next(t for t in build.image.tasks() if t.name == "vendor")
+        wanted = vendor_task.run.args[3]
+        self.assertEqual(wanted, ["bookworm"])
+
+    def test_a_vendor_section_nothing_offline_needs_adds_no_task(self):
+        # 'vendor:' with no 'apt-pull-mode: offline' behind it is still
+        # only ever built by a plain 'seine vendor' -- nothing here would
+        # read it, so 'seine build' leaves it alone.
+        build = BuildCmd()
+        build.loads("""
+                distribution:
+                    release: bookworm
+                    architecture: amd64
+                    uri: http://example.com/debian
+                    feeds:
+                        - suite: bookworm
+                vendor:
+                    - name: openssl
+                image:
+                    filename: vendor-wiring-test.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        self.assertNotIn("vendor", [t.name for t in build.image.tasks()])
 
 # _run_wave()'s own retry loop, with fake task bodies rather than real
 # fetches -- what is under test is the retry/renaming logic, not apt.
@@ -727,6 +1110,8 @@ class HostBootstrapIsBuiltEvenWhenNothingIsStale(avocado.Test):
             "openssl": {"version": "3.0.11-1", "direct": True, "binaries": {}}},
             "digest": digest})
 
+        from seine.tasks import Task
+
         created = {"n": 0}
         class FakeHostBootstrap:
             def __init__(self, distro, options):
@@ -734,15 +1119,45 @@ class HostBootstrapIsBuiltEvenWhenNothingIsStale(avocado.Test):
             def create(self):
                 created["n"] += 1
             def task(self):
-                raise AssertionError(
-                    "task() should not be needed when nothing is stale")
+                return Task("bootstrap-host", self.create)
 
         cmd = VendorCmd()
         cmd.options["jobs"] = 1
-        cmd._run_wave = lambda wave_tasks, retryable: None
+        # Only the bootstrap-only wave actually runs its task -- fetch/
+        # index stay no-ops, same as before, not this test's concern
+        # (and 'openssl' has no real files to fetch here). Still run as
+        # a one-task wave even with nothing else stale (see _run()'s own
+        # comment), so a caller with its own display never sees this
+        # step as invisible on an otherwise ordinary rerun.
+        seen_display = {}
+        def fake_run_wave(wave_tasks, retryable, display=None):
+            for task in wave_tasks:
+                if task.name == "bootstrap-host":
+                    seen_display["display"] = display
+                    if display is not None:
+                        display.started(task.name)
+                    task.run()
+                    if display is not None:
+                        display.finished(task.name, failed=False)
+        cmd._run_wave = fake_run_wave
+        # A spy 'display', the same shape TextualReporter is -- proves
+        # _run() actually threads it into the bootstrap-only wave, not
+        # just that the wave itself still runs the task.
+        calls = []
+        class SpyDisplay:
+            def started(self, name):
+                calls.append(("started", name))
+            def finished(self, name, failed=False):
+                calls.append(("finished", name, failed))
+            def say(self, text):
+                pass
+        spy = SpyDisplay()
         with patch("seine.vendor.HostBootstrap", FakeHostBootstrap):
-            cmd._run(self.distro(), [], [], ["bookworm"], False)
+            cmd._run(self.distro(), [], [], ["bookworm"], False, display=spy)
         self.assertEqual(created["n"], 1)
+        self.assertIs(seen_display["display"], spy)
+        self.assertEqual(calls, [("started", "bootstrap-host"),
+                                 ("finished", "bootstrap-host", False)])
 
 # manifest_digest() -- what decides whether a frozen manifest still
 # matches the spec that would resolve it.
@@ -784,6 +1199,17 @@ class ManifestDigestChangesWithWhatWouldResolveDifferently(avocado.Test):
             manifest_digest(self.distro(), entries, [], "bookworm"),
             manifest_digest(moved, entries, [], "bookworm"))
 
+    # A spec newly naming 'distribution: architectures:' has to
+    # re-resolve -- otherwise a manifest frozen before it was asked for
+    # would stay frozen without arm64, forever, since nothing else about
+    # the spec changed.
+    def test_changes_when_extra_archs_change(self):
+        from seine.vendor import manifest_digest, parse
+        entries = parse({"vendor": [{"name": "openssl"}]})
+        self.assertNotEqual(
+            manifest_digest(self.distro(), entries, [], "bookworm"),
+            manifest_digest(self.distro(), entries, [], "bookworm", ["arm64"]))
+
 # _run()'s own staleness decision: a manifest that is present and
 # non-empty, with no '--refresh' given, is still resolved again once the
 # spec no longer matches the digest it was frozen with.
@@ -802,7 +1228,8 @@ class AChangedSpecReresolvesWithoutRefresh(avocado.Test):
 
         resolved = {"suites": None}
         def fake_resolve_tasks(distro, entries, suites_wanted, options,
-                              hostBootstrap, exclude, results):
+                              hostBootstrap, exclude, results,
+                              extra_archs=()):
             resolved["suites"] = list(suites_wanted)
             results["bookworm"] = (
                 {}, {"edges": [], "reverse": {},
@@ -819,7 +1246,7 @@ class AChangedSpecReresolvesWithoutRefresh(avocado.Test):
 
         cmd = VendorCmd()
         cmd.options["jobs"] = 1
-        cmd._run_wave = lambda wave_tasks, retryable: None
+        cmd._run_wave = lambda wave_tasks, retryable, display=None: None
         with patch("seine.vendor.HostBootstrap", FakeHostBootstrap), \
              patch("seine.vendor.resolve_tasks", fake_resolve_tasks):
             cmd._run(self.distro(), [], [], ["bookworm"], False)

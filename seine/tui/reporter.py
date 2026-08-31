@@ -30,3 +30,15 @@ class TextualReporter:
         sink_output = getattr(self.sink, "output", None)
         if sink_output is not None:
             self.app.call_from_thread(sink_output, name, line)
+
+    # VendorState's own addition: 'seine vendor' runs three waves, each
+    # its own tasks.run() with a fresh log directory of its own (see
+    # VendorCmd._run_wave()) -- unlike a build's single, stable
+    # 'image.logs', there is no one directory the vendor screen could
+    # read 'state.logs' from without being told each time it changes.
+    # Guarded the same way 'output' is: nothing calls this for a sink
+    # that never defined it (BuildState never will).
+    def wave_logs(self, path):
+        sink_wave_logs = getattr(self.sink, "wave_logs", None)
+        if sink_wave_logs is not None:
+            self.app.call_from_thread(sink_wave_logs, path)

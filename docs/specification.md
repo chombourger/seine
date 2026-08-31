@@ -124,7 +124,16 @@ packages that will make the end system. The following attributes are supported:
 
  * source: either `debian` or `ubuntu`
  * release: codename of the version to be used (e.g. `bookworm`)
- * architecture: one of `amd64`, `arm64` or `armhf`
+ * architecture: one of `amd64`, `arm64` or `armhf` -- the one this
+   particular `seine build`/`seine vendor` run targets
+ * architectures: every architecture a `vendor:` section may vendor for,
+   beside `architecture` itself (see [vendor](#vendor)); optional, and
+   nothing else about a run -- `architecture` alone still decides what a
+   real build produces. Unlike every other setting here, additive across
+   composed files rather than last-loaded-wins (docs/merging.md): a
+   per-architecture fragment (`examples/common/amd64.yaml`,
+   `.../arm64.yaml`) names its own one, and a specification composing
+   both ends up with both
  * uri: base location of the distribution packages
  * components: archive components every feed carries (`main` by default)
  * feeds: apt feeds to build from (see below)
@@ -242,30 +251,39 @@ apt-pull-mode: offline
 ```
 
 Switches every feed from its network `uri` to the local repository
-[`seine vendor`](#vendor) built for its suite, so that installing what a
-specification asks for -- the target's own `apt` tasks, in its running
-container -- touches no network at all. `packages: false` is not a thing
-to say here: `apt-pull-mode` is a distribution-wide toggle, the same
-scope `distribution`'s other settings have, not a per-feed one.
+[`seine vendor`](#vendor) built for its suite, so that reaching for a
+package touches no network at all: the target's own `apt` tasks in its
+running container, `apt://` fetching a package's own source, and a
+buildd chroot resolving what it build-depends on -- everywhere `packages:`
+and a specification's own playbooks would otherwise reach the network are
+covered alike. `packages: false` is not a thing to say here:
+`apt-pull-mode` is a distribution-wide toggle, the same scope
+`distribution`'s other settings have, not a per-feed one.
 
 It does not reach the host and target bootstraps' own minimal package
-sets, or the buildd chroot packages are rebuilt in: what mirrors those is
-a full-suite snapshot (see [Building from a snapshot](#building-from-a-snapshot)
-above), not `vendor:`, which deliberately excludes anything the buildd
-chroot already provides. `apt-pull-mode: offline` is for what a
-specification's own playbooks and packages install once that chroot (or
-bootstrap) is standing -- exactly what `vendor:`'s own build-dependency
-closure covers.
+sets: what mirrors those is a full-suite snapshot (see
+[Building from a snapshot](#building-from-a-snapshot) above), not
+`vendor:`, which deliberately excludes anything a buildd chroot already
+provides by itself -- exactly what `vendor:`'s own build-dependency
+closure covers. Nor does it reach `seine vendor`'s own resolve and fetch
+containers: those are what fills this repository in the first place, and
+going offline there would have them read one with nothing in it yet.
 
-Offline for the length of that installing alone: what ships in the image
-is rewritten back to the real feeds before it is exported, the same
+Offline for the length of that alone: what ships in the image is
+rewritten back to the real feeds before it is exported, the same
 `sources.list.d` entry an online build would have left, so the device it
 ends up on can still reach the network on its own -- a path that only
 ever existed on the machine that built it would otherwise break the
-first `apt-get update` the device itself runs.
+first `apt-get update` the device itself runs. The sbuild builder image
+and buildd chroot get no such rewrite: they are thrown away at the end of
+every build, never exported.
 
-`seine vendor` has to have already built a suite's repository before a
-build asks for it offline; nothing here builds one on demand.
+A build resolves this itself when a `vendor:` section feeds a suite
+covered here -- see [`vendor`](#vendor) above -- so a plain `seine build`
+is enough. It is only a bare, `vendor:`-less feed reaching for this
+mode, or `seine vendor`'s own resolve and fetch containers (never
+themselves offline, whatever the specification says -- see above), that
+still depend on a repository having been built some other way first.
 
 ### defaults
 
@@ -795,9 +813,11 @@ would leave that resolution to be spelled out by hand for every source.
 `suite:`/`arch:` each take one name or a list of them; missing, an entry
 applies to every suite the specification's `vendor:` section asks for (or
 its own release, when nothing asks for another) and every architecture
-asked of it. A named suite has to be one of `distribution: feeds:`'s own
--- `seine vendor` reads a suite's packages from the same feed a build
-would.
+asked of it -- the specification's own `distribution: architecture:`,
+plus `distribution: architectures:` (see [distribution](#distribution)),
+plus whatever any other entry's own `arch:` names. A named suite has to
+be one of `distribution: feeds:`'s own -- `seine vendor` reads a suite's
+packages from the same feed a build would.
 
 `version:` pins what is vendored, either exactly (`"1.2-3"`) or with a
 comparison (`">=1.2"`, `"<=1.2"`, `"=1.2"`, `">>1.2"`, `"<<1.2"`), the
@@ -815,6 +835,29 @@ dependency (documentation, tests) nobody wants vendored.
 vendor-exclude:
     - texlive-latex-base
 ```
+
+`distribution: architectures:` vendors for these architectures too, on
+top of `distribution: architecture:` -- what an unqualified entry (no
+`arch:` of its own) then covers. The only other way to reach a second
+architecture would be tagging some unrelated entry's own `arch:` with
+it, a side effect of a per-package field standing in for what this says
+directly:
+
+```
+distribution:
+    architecture: amd64
+    architectures:
+        - amd64
+        - arm64
+```
+
+`seine vendor --architecture NAME` narrows a run to fetching one (or a
+few) of the architectures a `vendor:` section -- `arch:`, entry by
+entry, `distribution: architectures:`, or `distribution: architecture:`
+itself -- together ask for; unlike `--suite`, this only narrows what
+gets *fetched*, not resolved, so a suite's frozen manifest stays
+complete for every one of them regardless of which `--architecture` any
+one run named.
 
 Resolving is frozen: once `seine vendor` has decided a source's version,
 an ordinary run keeps it rather than asking the suite's feed again --
@@ -837,7 +880,14 @@ the rest of its options.
 
 Building a repository is one thing; reading from it instead of the
 network is another -- see [`apt-pull-mode: offline`](#apt-pull-mode-offline)
-below.
+below. `seine build` resolves/fetches/indexes a `vendor:` section itself,
+ahead of `packages:`, exactly when that section feeds a suite
+`apt-pull-mode: offline` needs -- a `vendor:` that feeds none is still
+left for a plain `seine vendor` to build whenever someone wants it,
+since nothing in the build would read it either way. Already-frozen
+entries cost nothing extra: the same resolve-is-frozen rule above
+applies, so a rerun that changed nothing just re-signs what an earlier
+resolve found.
 
 ### imager
 

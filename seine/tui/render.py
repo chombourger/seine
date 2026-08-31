@@ -323,3 +323,124 @@ def render_issues_stats(context):
     for pkg, count in data["by_package"].most_common(10):
         lines.append(" %-17s %4d" % (pkg, count))
     return "\n".join(lines) + "\n"
+
+# Shared by render_vendor()/render_vendor_why(): a build's own 'vendor:'
+# entries and the distribution they resolve against. Unlike
+# _issues_build() above, this loops every group in context.builds rather
+# than refusing more than one -- the same shape render_packages()/
+# render_artifacts() already use, since a vendor's own suites are just
+# another thing each group's spec happens to have.
+def _vendor_entries(build):
+    from seine import vendor, utils
+    try:
+        entries = vendor.parse(build.spec)
+        distro = utils.distribution(build.spec)
+    except ValueError as e:
+        return None, None, "%s\n" % e
+    return entries, distro, None
+
+# One suite's own summary: source/binary counts, which entries are
+# 'direct' (an explicit 'vendor:' entry) versus pulled in as a build
+# dependency, and the graph's own size if one was ever resolved with it.
+# A suite with no manifest at all (never vendored) says so rather than
+# printing a page of zeroes.
+def _render_vendor_suite(suite, document):
+    sources = document.get("sources", {})
+    if len(sources) == 0:
+        return "%s: no vendor graph yet -- 'seine vendor' first\n" % suite
+    roots = sorted(name for name, entry in sources.items() if entry.get("direct"))
+    binaries = sum(len(entry.get("binaries", {})) for entry in sources.values())
+    lines = ["%s -- %d source package(s) (%d direct, %d pulled in), "
+             "%d binary package(s)"
+             % (suite, len(sources), len(roots), len(sources) - len(roots), binaries)]
+    lines.append("  roots: %s" % (", ".join(roots) if roots else "(none)"))
+    graph = document.get("graph")
+    if graph is None:
+        lines.append("  no dependency graph recorded yet -- vendored before "
+                     "graph tracking existed, '--refresh' to get one")
+    else:
+        pruned = graph.get("pruned", {})
+        lines.append("  %d edge(s), %d pruned build-dep(s)"
+                     % (len(graph.get("edges", [])),
+                        len(pruned.get("base_chroot", [])) +
+                        len(pruned.get("excluded", []))))
+    return "\n".join(lines)
+
+# Every suite a specification's 'vendor:' section names (or just one,
+# with 'suite'), each summarised by _render_vendor_suite(). What a person
+# (or the AI chat, via 'vendor-status') asks first -- "what's in the
+# vendor" -- before narrowing to one package with render_vendor_why().
+def render_vendor(context, suite=None):
+    if not context.active:
+        return "no active specification -- '/use SPEC...' picks one\n"
+    from seine import vendor
+    sections = []
+    for build in context.builds:
+        entries, distro, error = _vendor_entries(build)
+        if error:
+            sections.append(error)
+            continue
+        if len(entries) == 0:
+            sections.append("no 'vendor:' section in this specification\n")
+            continue
+        available = vendor.named_suites(entries, distro)
+        if suite is not None and suite not in available:
+            sections.append(
+                "'%s' is not a suite this specification's 'vendor:' asks "
+                "for -- expected one of %s\n" % (suite, ", ".join(available)))
+            continue
+        for s in ([suite] if suite is not None else available):
+            sections.append(_render_vendor_suite(s, vendor.load_manifest(s)))
+    return "\n\n".join(sections) + "\n"
+
+# One package's own breadcrumb: whether it is a root or an extra, and --
+# reading the persisted graph's 'reverse' map, no BFS needed -- every
+# recorded (parent, via, field, arch, depth) reason it is here at all.
+# 'graph' being None (a manifest frozen before graph tracking existed) and
+# 'reverse' simply having nothing for this package (an old, pre-graph
+# resolve of a still-current manifest) are told apart -- the first is "we
+# never asked", the second is "we asked and found nothing", and a person
+# reading this should not confuse the two.
+def _render_vendor_why_suite(suite, package, entry, graph):
+    kind = ("direct -- an explicit 'vendor:' entry" if entry.get("direct")
+           else "extra -- pulled in as a build-dependency")
+    lines = ["%s -- %s: %s" % (suite, package, kind)]
+    reverse = (graph or {}).get("reverse", {})
+    reasons = reverse.get(package, [])
+    if reasons:
+        lines.append("  reached via:")
+        for r in reasons:
+            lines.append("    %s build-depends on %s (%s, %s) -- depth %d"
+                         % (r["parent"], r["via"], r["field"], r["arch"], r["depth"]))
+    elif graph is None:
+        lines.append("  no dependency graph recorded for this suite yet -- "
+                     "vendored before graph tracking existed, '--refresh' "
+                     "to get one")
+    elif not entry.get("direct"):
+        lines.append("  no recorded reason -- resolved before this graph "
+                     "was written")
+    return "\n".join(lines)
+
+def render_vendor_why(context, package, suite=None):
+    if not context.active:
+        return "no active specification -- '/use SPEC...' picks one\n"
+    from seine import vendor
+    sections = []
+    for build in context.builds:
+        entries, distro, error = _vendor_entries(build)
+        if error or len(entries) == 0:
+            continue
+        available = vendor.named_suites(entries, distro)
+        for s in ([suite] if suite is not None else available):
+            if s not in available:
+                continue
+            document = vendor.load_manifest(s)
+            sources = document.get("sources", {})
+            if package not in sources:
+                continue
+            sections.append(_render_vendor_why_suite(
+                s, package, sources[package], document.get("graph")))
+    if len(sections) == 0:
+        scope = " in '%s'" % suite if suite else ""
+        return "'%s' is not in this specification's vendor%s\n" % (package, scope)
+    return "\n\n".join(sections) + "\n"

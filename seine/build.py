@@ -18,7 +18,7 @@ from seine.image      import Image
 from seine.cmd        import Cmd
 from seine.partition  import PartitionHandler
 from seine.tasks      import Interrupted
-from seine.utils      import ContainerEngine, digest, locked
+from seine.utils      import ContainerEngine, digest, distribution, locked
 from seine.utils      import redact, redactions
 
 # Specifications are rendered before they are parsed, so that one file can
@@ -616,6 +616,10 @@ class BuildCmd(Cmd):
                     if setting == "feeds":
                         self._merge_feeds(spec["distribution"]["feeds"])
                         continue
+                    if setting == "architectures":
+                        self._merge_distro_architectures(
+                            spec["distribution"]["architectures"])
+                        continue
                     self.spec["distribution"][setting] = spec["distribution"][setting]
             elif "distribution" not in self.spec:
                 self.spec["distribution"] = spec["distribution"]
@@ -642,6 +646,21 @@ class BuildCmd(Cmd):
                 existing[0].update(feed)
             else:
                 merged.append(feed)
+
+    # Additive, deduplicated, unlike every other 'distribution:' setting
+    # (docs/merging.md): a project's supported architectures accumulate
+    # across whichever per-architecture fragments a specification
+    # composes (examples/common/amd64.yaml, .../arm64.yaml, each naming
+    # its own), rather than the most specific one silently dropping what
+    # an earlier one already said. 'architecture' itself (singular, what
+    # this one run targets) is unaffected -- still last-loaded wins.
+    #
+    # direction: additive, deduplicated (docs/merging.md).
+    def _merge_distro_architectures(self, architectures):
+        for arch in architectures:
+            archs = self.spec["distribution"].setdefault("architectures", [])
+            if arch not in archs:
+                archs.append(arch)
 
     # direction: most-specific file wins (docs/merging.md).
     def _merge_imager(self, spec):
@@ -1179,8 +1198,21 @@ class BuildCmd(Cmd):
             self.image = Image(self.partitionHandler, self.options)
         self._apply_defaults()
         self.raw_spec = copy.deepcopy(self.spec)
-        self.spec = self.partitionHandler.parse(self.spec)
-        self.spec = self.image.parse(self.spec)
+        # A vendor-only specification (no 'image:' of its own -- 'seine
+        # vendor' resolves this same shape without ever touching
+        # PartitionHandler/Image either, see VendorCmd.main()) skips both:
+        # neither tolerates a missing 'image:' key. 'vendor:' is still
+        # validated here, the same as Image.parse() already does for an
+        # image-bearing spec, so a typo is caught at '/use' rather than
+        # waiting for 'seine vendor' or the vendor screen to find it.
+        if "image" in self.spec:
+            self.spec = self.partitionHandler.parse(self.spec)
+            self.spec = self.image.parse(self.spec)
+        else:
+            from seine import vendor
+            distro = distribution(self.spec)
+            vendor.suites(vendor.parse(self.spec), distro)
+            vendor.exclusions(self.spec)
         return self.spec
 
     def build(self, reporter=None):

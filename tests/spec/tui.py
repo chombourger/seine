@@ -43,6 +43,20 @@ def _content(widget):
 
 PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
 
+# A minimal vendor-only specification -- no 'image:' section at all, the
+# same shape as examples/vendor/main.yaml (pins a package set, builds
+# nothing). Shared by every test below exercising BuildCmd.parse()'s own
+# tolerance for one (see its own comment).
+def _write_vendor_only_spec(path):
+    with open(path, "w") as f:
+        f.write(
+            "distribution:\n"
+            "    release: bookworm\n"
+            "    architecture: amd64\n"
+            "    uri: http://example.com/debian\n"
+            "vendor:\n"
+            "    - name: openssl\n")
+
 def _run(scenario):
     asyncio.run(scenario())
 
@@ -135,6 +149,19 @@ class ActiveSpecification(avocado.Test):
         self.assertRaises((OSError, ValueError),
                           context.use, ["/does/not/exist.yaml"])
         self.assertFalse(context.active)
+
+    # A vendor-only specification (no 'image:' -- see BuildCmd.parse()'s
+    # own comment) loads and labels the same as any other: label() falls
+    # back to the release (multiconfig._label()'s own comment) since
+    # there is no output filename to take it from.
+    def test_use_tolerates_a_vendor_only_specification(self):
+        context = self.Context()
+        fragment = os.path.join(self.workdir, "vendor-only.yaml")
+        _write_vendor_only_spec(fragment)
+        context.use([fragment])
+        self.assertTrue(context.active)
+        self.assertEqual(context.label(), "bookworm")
+        self.assertNotIn("image", context.builds[0].spec)
 
 # What the Overview/Plan screens show, without a Textual App around it.
 class Rendering(avocado.Test):
@@ -419,6 +446,113 @@ class AnalyzeCacheDoctorRendering(avocado.Test):
         text = self.render_doctor()
         for group in ["Container engine", "Imaging", "Ansible", "Storage"]:
             self.assertIn(group, text)
+
+# render_vendor()/render_vendor_why() over a real 'vendor:' section --
+# a standalone, image-less spec (like examples/vendor/main.yaml's own
+# shape: 'vendor:' pinning a package set with no 'image:' of its own to
+# build). Context.use() tolerates that now (BuildCmd.parse()'s own
+# comment) the same way the plain 'seine vendor' CLI always has, which
+# is exactly the scenario this suite exists to cover. Manifests
+# themselves are written straight with save_manifest(), the same as
+# IndexRebuildsPoolFromTheCurrentManifest in tests/spec/vendor.py does,
+# rather than actually resolving anything.
+class VendorRendering(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.context import Context
+            from seine.tui.render import render_vendor, render_vendor_why
+        self.Context = Context
+        self.render_vendor = render_vendor
+        self.render_vendor_why = render_vendor_why
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        self.fragment = os.path.join(self.workdir, "vendor-only.yaml")
+        _write_vendor_only_spec(self.fragment)
+
+    def _vendor_context(self):
+        context = self.Context()
+        context.use([self.fragment])
+        return context, "bookworm"
+
+    def test_no_active_spec_says_so(self):
+        self.assertIn("use", self.render_vendor(self.Context()))
+        self.assertIn("use", self.render_vendor_why(self.Context(), "openssl"))
+
+    def test_no_vendor_section_says_so(self):
+        context = self.Context()
+        context.use([PC_IMAGE])
+        self.assertIn("no 'vendor:' section", self.render_vendor(context))
+
+    def test_no_manifest_yet_says_so(self):
+        context, release = self._vendor_context()
+        text = self.render_vendor(context, suite=release)
+        self.assertIn("no vendor graph yet", text)
+        self.assertIn("seine vendor", text)
+
+    def test_an_unknown_suite_lists_what_it_does_ask_for(self):
+        context, release = self._vendor_context()
+        text = self.render_vendor(context, suite="not-a-real-suite")
+        self.assertIn("not a suite", text)
+        self.assertIn(release, text)
+
+    def _save_openssl_manifest(self, suite):
+        from seine.vendor import save_manifest
+        save_manifest(suite, {
+            "sources": {
+                "openssl": {"version": "3.0.11-1", "direct": True,
+                           "binaries": {"libssl3": {"amd64": "3.0.11-1"}}},
+                "bar": {"version": "2.0-1", "direct": False,
+                       "binaries": {"libbar-dev": {"amd64": "2.0-1"}}}},
+            "digest": "d", "graph_version": 1,
+            "graph": {"edges": [
+                {"from": "openssl", "to": "bar", "via": "libbar-dev",
+                 "arch": "amd64", "field": "Build-Depends",
+                 "raw": "libbar-dev", "depth": 0}],
+                "reverse": {"bar": [
+                    {"parent": "openssl", "via": "libbar-dev", "arch": "amd64",
+                     "field": "Build-Depends", "depth": 0}]},
+                "pruned": {"base_chroot": [], "excluded": []}}})
+
+    def test_summarises_a_real_manifest(self):
+        context, release = self._vendor_context()
+        self._save_openssl_manifest(release)
+        text = self.render_vendor(context, suite=release)
+        self.assertIn("2 source package(s)", text)
+        self.assertIn("1 direct", text)
+        self.assertIn("1 pulled in", text)
+        self.assertIn("2 binary package(s)", text)
+        self.assertIn("roots: openssl", text)
+        self.assertIn("1 edge(s)", text)
+
+    def test_a_manifest_without_a_graph_says_so(self):
+        from seine.vendor import save_manifest
+        context, release = self._vendor_context()
+        save_manifest(release, {"sources": {
+            "openssl": {"version": "3.0.11-1", "direct": True, "binaries": {}}}})
+        text = self.render_vendor(context, suite=release)
+        self.assertIn("no dependency graph recorded", text)
+
+    def test_why_explains_a_pulled_in_package(self):
+        context, release = self._vendor_context()
+        self._save_openssl_manifest(release)
+        text = self.render_vendor_why(context, "bar", suite=release)
+        self.assertIn("extra -- pulled in", text)
+        self.assertIn("openssl build-depends on libbar-dev", text)
+        self.assertIn("depth 0", text)
+
+    def test_why_explains_a_root(self):
+        context, release = self._vendor_context()
+        self._save_openssl_manifest(release)
+        text = self.render_vendor_why(context, "openssl", suite=release)
+        self.assertIn("direct -- an explicit 'vendor:' entry", text)
+
+    def test_why_says_so_when_the_package_is_not_in_the_vendor(self):
+        context, release = self._vendor_context()
+        self._save_openssl_manifest(release)
+        text = self.render_vendor_why(context, "ghost", suite=release)
+        self.assertIn("is not in this specification's vendor", text)
 
 # Not spec-scoped either, and reads 'seine/settings.py' straight --
 # nothing here goes through 'Context'.
@@ -750,6 +884,54 @@ class App(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.AnalyzeScreen)
+        _run(scenario)
+
+    # A vendor-only spec (no 'image:') is a legitimate '/use' -- lands on
+    # Overview like any other, since render_overview() never touches
+    # build.image beyond the already-None-safe '_output'.
+    def test_startup_with_a_vendor_only_spec_lands_on_overview(self):
+        async def scenario():
+            fragment = os.path.join(self.workdir, "vendor-only.yaml")
+            _write_vendor_only_spec(fragment)
+            app = self.SeineApp(files=[fragment])
+            async with app.run_test():
+                self.assertIsNone(app._startup_error)
+                self.assertTrue(app.context.active)
+                self.assertEqual(app.context.label(), "bookworm")
+                self.assertIsInstance(app.screen, self.OverviewScreen)
+        _run(scenario)
+
+    # '/plan' and '/build' both end up inside Image, which a vendor-only
+    # spec never parsed (BuildCmd.parse()'s own comment) -- refused with
+    # a clear message rather than reaching PlanScreen/BuildScreen and
+    # crashing once it tries to read an Image that was never parsed.
+    def test_plan_refuses_a_vendor_only_spec(self):
+        async def scenario():
+            fragment = os.path.join(self.workdir, "vendor-only.yaml")
+            _write_vendor_only_spec(fragment)
+            app = self.SeineApp(files=[fragment])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/plan"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertNotIsInstance(app.screen, self.PlanScreen)
+                self.assertIn("no 'image:' section",
+                             _content(app.screen.query_one("#status")))
+        _run(scenario)
+
+    def test_build_refuses_a_vendor_only_spec(self):
+        async def scenario():
+            fragment = os.path.join(self.workdir, "vendor-only.yaml")
+            _write_vendor_only_spec(fragment)
+            app = self.SeineApp(files=[fragment])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/build"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("no 'image:' section",
+                             _content(app.screen.query_one("#status")))
         _run(scenario)
 
     # Not spec-scoped -- reachable with no active specification at all.
@@ -1113,6 +1295,78 @@ class App(avocado.Test):
             async with app.run_test() as pilot:
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.DoctorScreen)
+        _run(scenario)
+
+# App._build_task_started()/_build_task_finished() (seine/tui/app.py):
+# following a build onto the vendor screen for its 'vendor' task
+# (Image._vendor_task(), see seine/image.py) and back. Driven straight
+# through BuildState's own reporter callbacks -- the same way tui.py's
+# own BuildState tests elsewhere in this file drive task_started()/
+# task_finished() without a real build running -- so nothing here
+# touches podman.
+class BuildFollowsVendorScreen(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import BuildScreen, SeineApp, VendorScreen
+        self.BuildScreen = BuildScreen
+        self.VendorScreen = VendorScreen
+        self.SeineApp = SeineApp
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
+    def test_a_vendor_task_starting_switches_to_the_vendor_screen(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.show("build")
+                await pilot.pause()
+                app.build_state.task_started("vendor")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.VendorScreen)
+        _run(scenario)
+
+    def test_the_vendor_task_finishing_switches_back_to_build(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.show("build")
+                await pilot.pause()
+                app.build_state.task_started("vendor")
+                await pilot.pause()
+                app.build_state.task_finished("vendor")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.BuildScreen)
+        _run(scenario)
+
+    def test_a_manual_screen_change_is_left_alone(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.show("build")
+                await pilot.pause()
+                app.build_state.task_started("vendor")
+                await pilot.pause()
+                # The person went looking at something else themselves
+                # while the vendor stage was running.
+                app.show("chat")
+                await pilot.pause()
+                app.build_state.task_finished("vendor")
+                await pilot.pause()
+                self.assertNotIsInstance(app.screen, self.BuildScreen)
+        _run(scenario)
+
+    def test_a_build_with_no_vendor_stage_never_switches(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.show("build")
+                await pilot.pause()
+                app.build_state.task_started("packages-prepare")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.BuildScreen)
         _run(scenario)
 
 # The Settings screen (seine/tui/settings.py): a modal, the same shape
@@ -2100,7 +2354,7 @@ class BuildScreenIntegration(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 status = app.screen.query_one("#status")
-                self.assertIn("no build is running",
+                self.assertIn("no build or vendor is running",
                               _content(status))
         _run(scenario)
 
@@ -2120,6 +2374,257 @@ class BuildScreenIntegration(avocado.Test):
                 status = app.screen.query_one("#status")
                 self.assertIn("no active specification",
                               _content(status))
+        _run(scenario)
+
+# 'resolve()'-style plain-Python state, no App -- VendorState's own
+# rows/render() are kept apart from VendorScreen the same way
+# BuildState is from BuildScreen.
+class VendorStateBehaviour(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.vendor import VendorState
+        self.VendorState = VendorState
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+
+    def test_nothing_reset_yet_says_so(self):
+        state = self.VendorState()
+        self.assertEqual(state.render(), "no steps yet\n")
+        self.assertFalse(state.running)
+
+    def test_a_task_moves_from_running_to_done(self):
+        state = self.VendorState()
+        state.reset(["bookworm"])
+        state.task_started("resolve:bookworm")
+        self.assertEqual(state.rows["resolve:bookworm"]["state"], "running")
+        self.assertEqual(state.current, "resolve:bookworm")
+        self.assertIn("●", state.render())
+        state.task_finished("resolve:bookworm", failed=False)
+        self.assertEqual(state.rows["resolve:bookworm"]["state"], "done")
+        self.assertIsNone(state.current)
+        self.assertIsNotNone(state.rows["resolve:bookworm"]["elapsed"])
+        self.assertIn("✔", state.render())
+
+    def test_a_failed_task_is_marked_failed(self):
+        state = self.VendorState()
+        state.reset(["bookworm"])
+        state.task_started("fetch-src:bookworm:openssl")
+        state.task_finished("fetch-src:bookworm:openssl", failed=True)
+        self.assertIn("✘", state.render())
+
+    # A retried task is a new Task named '<base>#<attempt>' (see
+    # MAX_ATTEMPTS in seine/vendor.py) -- counted as it starts, not
+    # derived from 'rows' afterwards.
+    def test_a_retry_attempt_is_counted(self):
+        state = self.VendorState()
+        state.reset(["bookworm"])
+        state.task_started("fetch-bin:bookworm:libbar-dev:amd64")
+        state.task_finished("fetch-bin:bookworm:libbar-dev:amd64", failed=True)
+        state.task_started("fetch-bin:bookworm:libbar-dev:amd64#2")
+        self.assertEqual(state.retries, 1)
+        self.assertIn("retries: 1", state.render_stats())
+
+    def test_wave_logs_tracks_the_current_waves_own_directory(self):
+        state = self.VendorState()
+        state.reset(["bookworm"])
+        self.assertIsNone(state.logs)
+        state.wave_logs("/tmp/wherever")
+        self.assertEqual(state.logs, "/tmp/wherever")
+
+    # Not overwritten by finished_ok() -- _run()'s own final say() (a
+    # per-suite summary) is the message a finished run should keep.
+    def test_finished_ok_keeps_the_last_say_message(self):
+        state = self.VendorState()
+        state.reset(["bookworm"])
+        state.say("vendored 3 source package(s) for bookworm")
+        state.finished_ok()
+        self.assertTrue(state.done)
+        self.assertFalse(state.error)
+        self.assertEqual(state.message, "vendored 3 source package(s) for bookworm")
+
+    def test_finished_failed_overwrites_the_message(self):
+        state = self.VendorState()
+        state.reset(["bookworm"])
+        state.say("vendored 3 source package(s) for bookworm")
+        state.finished_failed("resolving vendor packages for 'bookworm' failed: boom")
+        self.assertTrue(state.done)
+        self.assertTrue(state.error)
+        self.assertIn("boom", state.message)
+
+    # Real directory sizes, not fake progress -- reset() baselines
+    # against what a suite's own (durable) repository already has,
+    # sample_repo() reports only what this run itself added.
+    def test_sample_repo_reports_bytes_added_since_reset(self):
+        from seine.vendor import repository
+        state = self.VendorState()
+        where = repository("bookworm")
+        with open(os.path.join(where, "already-there.deb"), "wb") as f:
+            f.write(b"x" * 1000)
+        state.reset(["bookworm"])
+        self.assertEqual(state.bytes_downloaded_session, 0)
+        with open(os.path.join(where, "new.deb"), "wb") as f:
+            f.write(b"y" * 500)
+        state.sample_repo()
+        self.assertEqual(state.bytes_downloaded_session, 500)
+        self.assertEqual(state.repo_size, 1500)
+
+# VendorCmd._run() itself is faked out (real network/podman), the same
+# way Image.build() is for BuildScreenIntegration above -- what's under
+# test is the screen/command/cross-exclusion wiring around it, not
+# 'seine vendor' itself (tests/spec/vendor.py's own job).
+class VendorScreenIntegration(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    class _FakeWorker:
+        is_running = True
+
+    def setUp(self):
+        with _tui_required(self):
+            from seine.vendor import VendorCmd
+            from seine.tui.app import SeineApp
+            from seine.tui.vendor import VendorScreen
+        self.VendorCmd = VendorCmd
+        self.SeineApp = SeineApp
+        self.VendorScreen = VendorScreen
+        self.real_run = VendorCmd._run
+        self.addCleanup(setattr, VendorCmd, "_run", self.real_run)
+        from seine import tasks
+        self.addCleanup(tasks._interrupted.clear)
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        self.fragment = os.path.join(self.workdir, "vendor-only.yaml")
+        _write_vendor_only_spec(self.fragment)
+
+    def test_vendor_command_runs_to_completion(self):
+        def fast_run(cmd_self, distro, entries, exclude, wanted, refresh, display=None):
+            display.started("resolve:bookworm")
+            display.finished("resolve:bookworm", failed=False)
+            display.say("vendored 1 source package(s) for bookworm")
+        self.VendorCmd._run = fast_run
+
+        async def scenario():
+            app = self.SeineApp(files=[self.fragment])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/vendor"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, self.VendorScreen)
+                for _ in range(50):
+                    if not app.vendor_state.running:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertTrue(app.vendor_state.done)
+                self.assertFalse(app.vendor_state.error)
+                self.assertEqual(app.vendor_state.message,
+                                 "vendored 1 source package(s) for bookworm")
+                self.assertIn("resolve:bookworm", app.vendor_state.render())
+        _run(scenario)
+
+    # say()'s own progress lines (seine/cache_index.py, read by
+    # fetch_source()/fetch_binary()) are gated behind 'verbose' -- apt
+    # itself runs '-qq', silent by design, so without this the screen's
+    # log tail has nothing at all to show for the fetch wave. A live
+    # bug: the log tail stayed empty through both the resolve and fetch
+    # waves, only apt-ftparchive's own (unrelated) index-wave output
+    # ever showed.
+    def test_vendor_runs_verbose_so_the_log_tail_has_something_to_show(self):
+        import time as clock
+        seen = {}
+        def fast_run(cmd_self, distro, entries, exclude, wanted, refresh, display=None):
+            seen["verbose"] = cmd_self.options.get("verbose")
+            # A no-op fake finishing instantly races the Vendor screen's
+            # own async mount (app.show("vendor") right after this
+            # worker starts) -- every other fake run in this file gives
+            # it a moment the same way.
+            clock.sleep(0.02)
+        self.VendorCmd._run = fast_run
+
+        async def scenario():
+            app = self.SeineApp(files=[self.fragment])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/vendor"
+                await pilot.press("enter")
+                await pilot.pause()
+                for _ in range(50):
+                    if not app.vendor_state.running:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertTrue(seen.get("verbose"))
+        _run(scenario)
+
+    def test_vendor_refuses_without_a_vendor_section(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/vendor"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("no 'vendor:' section",
+                              _content(app.screen.query_one("#status")))
+        _run(scenario)
+
+    # seine.tasks.run() keeps its own progress in module-level globals,
+    # never designed for two independent job graphs at once -- neither
+    # command may start while the other's already running.
+    def test_vendor_refuses_while_a_build_is_running(self):
+        async def scenario():
+            app = self.SeineApp(files=[self.fragment])
+            async with app.run_test() as pilot:
+                app.build_state.worker = self._FakeWorker()
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/vendor"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("a build is running",
+                              _content(app.screen.query_one("#status")))
+        _run(scenario)
+
+    def test_build_refuses_while_a_vendor_is_running(self):
+        async def scenario():
+            app = self.SeineApp(files=[PC_IMAGE])
+            async with app.run_test() as pilot:
+                app.vendor_state.worker = self._FakeWorker()
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/build"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("a vendor is running",
+                              _content(app.screen.query_one("#status")))
+        _run(scenario)
+
+    def test_cancel_stops_a_running_vendor(self):
+        async def scenario():
+            app = self.SeineApp(files=[self.fragment])
+            async with app.run_test() as pilot:
+                app.vendor_state.worker = self._FakeWorker()
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/cancel"
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIn("cancelling",
+                              _content(app.screen.query_one("#status")))
+        _run(scenario)
+
+    def test_vendor_indicator_shows_while_running_only(self):
+        async def scenario():
+            app = self.SeineApp(files=[self.fragment])
+            async with app.run_test():
+                from seine.tui.base import VendorIndicator
+                indicator = app.screen.query_one(VendorIndicator)
+                self.assertFalse(indicator.display)
+                app.vendor_state.worker = self._FakeWorker()
+                app.refresh_indicators()
+                self.assertTrue(indicator.display)
+                self.assertEqual(_content(indicator), "vendoring")
+                app.vendor_state.done = True
+                app.refresh_indicators()
+                self.assertFalse(indicator.display)
         _run(scenario)
 
 # A failed row with no message under it is the same gap render() had

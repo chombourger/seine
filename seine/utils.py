@@ -50,8 +50,14 @@ def distribution(spec):
     distro = spec["distribution"] if "distribution" in spec else {}
     if "source" not in distro:
         distro["source"] = "debian"
+    # 'buster' until 2026-08-30: it went EOL, dropped off
+    # deb.debian.org entirely, and a bootstrap naming it as a fallback
+    # nobody actually configured now fails outright rather than quietly
+    # building something stale. 'bookworm' is oldstable as of this
+    # writing -- still served -- and the fallback's whole job is a
+    # release that exists, not a particular one.
     if "release" not in distro:
-        distro["release"] = "buster"
+        distro["release"] = "bookworm"
     if "architecture" not in distro:
         distro["architecture"] = "amd64"
     if "uri" not in distro:
@@ -218,6 +224,25 @@ def offline_suites(distro, entries=None):
         return []
     return sorted({feed["suite"] for feed
                   in (entries if entries is not None else feeds(distro))})
+
+# A shell fragment writing 'entries' into 'target' inside a container --
+# shared by ansible_runner.py (the running target container) and sbuild.py
+# (a throwaway builder container), the two places that turn a feed list
+# into what a container's own apt actually reads. 'offline' is passed
+# through to apt_sources() unchanged, same opt-in-only rule as there.
+#
+# Going offline replaces what is already in /etc/apt rather than adding to
+# it: a baked-in entry left standing would still reach for the network
+# right beside the one just written for it.
+def offline_apt_script(distro, entries, target, offline=False):
+    lines = apt_sources(distro, sources=True, entries=entries, offline=offline)
+    script = ""
+    if offline:
+        script += ("rm -f /etc/apt/sources.list "
+                  "/etc/apt/sources.list.d/*.sources "
+                  "/etc/apt/sources.list.d/*.list; ")
+    script += "".join("echo '%s' >> %s; " % (line, target) for line in lines)
+    return script
 
 # One build at a time for the things two builds share.
 #

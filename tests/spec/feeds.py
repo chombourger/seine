@@ -11,7 +11,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from seine.utils import apt_sources, base_feed, feeds
+from seine.utils import apt_sources, base_feed, feeds, offline_apt_script
 
 # Nothing under here may write into the machine's own cache. These build
 # Builder objects directly, and asking one for a stamp or an index makes
@@ -147,6 +147,28 @@ class OfflineFeedsReadFromTheLocalVendorInstead(avocado.Test):
         self.assertEqual(apt_sources(offline),
                          ["deb http://example.com/debian bookworm main"])
 
+# ansible_runner.py and sbuild.py both turn a feed list into a container's
+# own apt sources through this one function -- exercised directly here so
+# a change to either caller's script-building is not the only thing that
+# would catch a regression in it.
+class OfflineAptScriptIsSharedByAnsibleAndSbuild(avocado.Test):
+    def test_online_appends_without_clearing(self):
+        made = offline_apt_script(distro([{"suite": "bookworm"}]),
+                                  feeds(distro([{"suite": "bookworm"}])),
+                                  "/etc/apt/sources.list.d/seine.list")
+        self.assertNotIn("rm -f", made)
+        self.assertIn("http://example.com/debian bookworm main", made)
+        self.assertIn("/etc/apt/sources.list.d/seine.list", made)
+
+    def test_offline_clears_first_and_reads_the_vendor(self):
+        offline = dict(distro([{"suite": "bookworm"}]),
+                       **{"apt-pull-mode": "offline"})
+        made = offline_apt_script(offline, feeds(offline),
+                                  "/etc/apt/sources.list.d/seine.list",
+                                  offline=True)
+        self.assertIn("rm -f /etc/apt/sources.list", made)
+        self.assertIn("file:/vendor-repo/bookworm", made)
+
 class MalformedFeedsAreRejected(avocado.Test):
     def test(self):
         for feeds in ["bookworm",                  # not a list
@@ -239,6 +261,38 @@ class RebuiltWhenAFeedMoves(avocado.Test):
                               "uri": "https://snapshot.debian.org/archive/debian/20260901T000000Z",
                               "valid-until": False}])
         self.assertNotEqual(before, after, "busybox was not invalidated")
+
+class RebuiltWhenAptPullModeFlips(avocado.Test):
+    def stamp(self, offline):
+        from seine.build    import BuildCmd
+        from seine.packages import Builder
+        from seine.sbuild   import BuilderImage
+        build = BuildCmd()
+        build.loads("""
+                packages:
+                    - source: apt://busybox
+                image:
+                    filename: feeds-test.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        spec = distro([{"suite": "bookworm"}])
+        if offline:
+            spec = dict(spec, **{"apt-pull-mode": "offline"})
+        builder = Builder(spec, {}, BuilderImage(spec, {}))
+        package = build.image.packages[0]
+        return os.path.basename(builder.stamp(package)).rsplit("_", 1)[1]
+
+    def test(self):
+        # fetch()/the chroot read a package's build inputs from the
+        # network or the local vendor repository depending on this
+        # setting -- a package already built under one is not what a
+        # rebuild under the other would produce.
+        online = self.stamp(offline=False)
+        offline = self.stamp(offline=True)
+        self.assertNotEqual(online, offline, "busybox was not invalidated")
 
 class ComponentsAreADistributionWideDefault(avocado.Test):
     def test(self):
@@ -401,10 +455,18 @@ class OfflineFeedsReplaceWhatTargetBootstrapBaked(avocado.Test):
         made = self.script([{"suite": "bookworm"}])
         self.assertIn("rm -f /etc/apt/sources.list", made)
 
-    def test_every_feed_is_covered_not_only_the_extra_ones(self):
+    # Never one mount/line per feed: the release's own vendor repository
+    # (deploy_repository(release), built by the build's own 'vendor'
+    # task) already covers every one of the release's feeds -- main,
+    # updates, security alike -- so a single deb line and a single
+    # deb-src line, both naming 'main extra' together, are what this
+    # writes regardless of how many feeds the release itself lists.
+    def test_one_deb_and_one_deb_src_line_for_the_release(self):
         made = self.script([{"suite": "bookworm"}, {"suite": "bookworm-security"}])
-        self.assertIn("file:/vendor-repo/bookworm-security", made)
-        self.assertIn("file:/vendor-repo/bookworm ", made)
+        self.assertNotIn("bookworm-security", made)
+        self.assertIn("file:/vendor-repo/bookworm bookworm main extra", made)
+        self.assertEqual(made.count("echo 'deb "), 1)
+        self.assertEqual(made.count("echo 'deb-src "), 1)
 
 class VendorRepositoriesAreMountedWhenOffline(avocado.Test):
     def test(self):

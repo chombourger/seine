@@ -20,13 +20,15 @@ from textual.css.query import NoMatches
 from textual.widgets import RichLog, Static
 
 from seine.tui import ai, commands
-from seine.tui.base import BaseScreen, Indicators, Prompt, StaticPane, TargetIndicator
+from seine.tui.base import (BaseScreen, Indicators, VendorIndicator, Prompt,
+                            StaticPane, TargetIndicator)
 from seine.tui.build import BuildScreen, BuildState
 from seine.tui.chat import ChatScreen
 from seine.tui.context import Context
 from seine.tui.filesystem import FilesystemScreen, FilesystemState
 from seine.tui.history import History
 from seine.tui.issues import IssuesScreen
+from seine.tui.vendor import VendorScreen, VendorState
 from seine.tui.render import (render_analyze, render_artifacts, render_cache,
                               render_doctor, render_overview, render_packages,
                               render_plan)
@@ -140,7 +142,7 @@ SCREENS = {"overview": OverviewScreen, "plan": PlanScreen, "build": BuildScreen,
           "packages": PackagesScreen, "analyze": AnalyzeScreen,
           "cache": CacheScreen, "doctor": DoctorScreen, "diff": DiffScreen,
           "issues": IssuesScreen, "chat": ChatScreen, "target": TargetScreen,
-          "test": TestScreen}
+          "test": TestScreen, "vendor": VendorScreen}
 
 # Offers the same command registry through Ctrl+P. Selecting one fills the
 # prompt and focuses it rather than running it -- a second, deliberate
@@ -183,6 +185,18 @@ class SeineApp(App):
     #body { padding: 1 2; }
     #tasklist { padding: 1 2; }
     #tail { padding: 0 1; }
+    /* Vendor screen: its own ids, not '#spectree'/'#tail'/'#cmd'/'#tasks'
+       -- those are 2fr:1fr everywhere else, this one is 1fr:1fr both
+       rows (see VendorScreen.compose()'s own comment). */
+    #vendormain, #vendorrow { height: 1fr; }
+    #vendorspectree, #vendortail, #vendorstatspane, #vendortaskspane {
+        width: 1fr; height: 100%; border: round $foreground 40%;
+    }
+    #vendorspectree:focus, #vendortail:focus {
+        border: round $border;
+    }
+    #vendorstats, #vendortasks { padding: 1 2; }
+    #vendortail { padding: 0 1; }
     #fslist { height: 1fr; }
     #previewpane { height: 1fr; padding: 1 2; }
     #hint { color: $text-muted; padding: 0 2; }
@@ -193,6 +207,7 @@ class SeineApp(App):
     /* '$accent', not '$text-muted' like '#hint' -- this is clickable
        and worth noticing, closer to a link than a caption. */
     #indicators { color: $accent; padding: 0 2; height: 1; width: auto; }
+    #vendor-indicator { color: $accent; padding: 0 2; height: 1; width: auto; }
     #target-indicator { color: $accent; padding: 0 2; height: 1; width: auto; }
     #completions {
         height: auto;
@@ -215,6 +230,15 @@ class SeineApp(App):
         # so it updates regardless of which screen is open. The start
         # edge is start_build() calling refresh_indicators() directly.
         self.build_state.on_finished = self._build_finished
+        # Follows a build onto the vendor screen for its 'vendor' task
+        # (Image._vendor_task(), ahead of packages:), then back -- see
+        # _build_task_started()/_build_task_finished() below. Wired once,
+        # the same as on_finished, so both '/build' and the AI's
+        # 'start-build' tool get it without either asking for it.
+        self.build_state.on_task_started = self._build_task_started
+        self.build_state.on_task_finished = self._build_task_finished
+        self.vendor_state = VendorState()
+        self.vendor_state.on_finished = self._vendor_finished
         self.fs_state = FilesystemState()
         self.ai_state = ai.AIState()
         # Give AIState a back-reference to the app so it can trigger socket
@@ -422,12 +446,13 @@ class SeineApp(App):
         if isinstance(self.screen, BaseScreen):
             self.screen.refresh_data()
 
-    # Refreshes both chips regardless of which one a caller actually
+    # Refreshes every chip regardless of which one a caller actually
     # changed -- ConsoleAdapter.on_event() (target.py) needs
     # TargetIndicator kept current too, not just Indicators.
     def refresh_indicators(self):
         if isinstance(self.screen, BaseScreen):
             self.screen.query_one(Indicators).refresh_text()
+            self.screen.query_one(VendorIndicator).refresh_text()
             self.screen.query_one(TargetIndicator).refresh_text()
 
     def _build_finished(self):
@@ -450,6 +475,31 @@ class SeineApp(App):
             if isinstance(self.screen, BuildScreen):
                 self.show("chat")
             ai.notify_build_finished(self)
+
+    # A build's own 'vendor' task (Image._vendor_task(), added ahead of
+    # packages: when 'apt-pull-mode: offline' needs it) is the one part of
+    # a build the vendor screen already knows how to show -- resolve/
+    # fetch/index progress, wave by wave. Followed there while it runs,
+    # then back to the build screen once it is done, the same "left alone
+    # if they navigated away themselves" rule _build_finished() already
+    # applies on the way to chat: only switch while still on the screen
+    # this same following put the user on, never yanking them off
+    # somewhere else they went looking on their own.
+    def _build_task_started(self, name):
+        if name == "vendor" and isinstance(self.screen, BuildScreen):
+            self.show("vendor")
+
+    def _build_task_finished(self, name, failed=False):
+        if name == "vendor" and isinstance(self.screen, VendorScreen):
+            self.show("build")
+
+    def _vendor_finished(self):
+        self._socket_send({"type": "vendor_finished",
+                           "error": self.vendor_state.error,
+                           "message": self.vendor_state.message})
+        self.refresh_indicators()
+        if isinstance(self.screen, VendorScreen):
+            self.screen.update_body()
 
     def _test_finished(self):
         self._socket_send({"type": "test_finished",
