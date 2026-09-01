@@ -700,6 +700,21 @@ class ContainerEngine:
     def chats():
         return os.environ.get("SEINE_CHAT_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "chats")
+    # One append-only JSONL file per day, every gated AI tool call
+    # (seine/tui/ai.py's own '_audit()') -- across conversations, unlike
+    # chats() above, since "did the AI ever run source-rm today" cuts
+    # across them. Kept apart from scratch()/cache the same way
+    # logs_root() is: 'seine cache clear' must not eat it.
+    # SEINE_AUDIT_DIR names the root outright; unset, it is under
+    # SEINE_BUILD_DIR.
+    @staticmethod
+    def audit():
+        import datetime
+        root = os.environ.get("SEINE_AUDIT_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "audit")
+        os.makedirs(root, exist_ok=True)
+        stamp = datetime.date.today().strftime("%Y%m%d")
+        return os.path.join(root, "%s.jsonl" % stamp)
     # Where a pulled package source (seine/sources.py) or a 'bash' tool
     # call lands -- unlike scratch(), kept across builds on purpose, so
     # a source stays pulled until 'source rm' says otherwise. Not named

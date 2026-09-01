@@ -47,6 +47,7 @@ read-only and run without asking:
 | `spec-query`, `spec-dump` | A JSONPath search, or the fully merged spec tree |
 | `docs` | Written reference, chunked: the AI's own system prompt, one cluster file per group of related rules (always present), and this project's own written docs (`docs/*.md`, not always present) -- see below |
 | `gist-list`, `gist-show` | Reusable spec fragments kept outside any one project -- see [Gists](building.md#gists) |
+| `audit-log` | Every gated tool call made today: when, which tool, approved or denied, arguments, result |
 | `reset-conversation` | Forgets everything discussed so far |
 
 `docs` reaches beyond both the spec and the model's own built-in facts,

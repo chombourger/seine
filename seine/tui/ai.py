@@ -249,6 +249,37 @@ def _tool_task_log(app, arguments):
     lines = data.decode("utf-8", "replace").splitlines()
     return "\n".join(lines[-LOG_TAIL_LINES:])
 
+# Tail of today's gated-tool audit trail (ContainerEngine.audit(),
+# written by '_audit()' below) -- capped the same way task-log's own
+# tail is, newest activity kept when there's more than fits.
+AUDIT_LOG_MAX_ROWS = 50
+
+def _tool_audit_log(app, arguments):
+    import datetime
+    path = ContainerEngine.audit()
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return "no gated tool calls recorded yet today"
+    entries = []
+    for line in lines:
+        try:
+            entries.append(json.loads(line))
+        except ValueError:
+            continue
+    if not entries:
+        return "no gated tool calls recorded yet today"
+    if len(entries) > AUDIT_LOG_MAX_ROWS:
+        entries = entries[-AUDIT_LOG_MAX_ROWS:]
+    rows = []
+    for e in entries:
+        when = datetime.datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S")
+        verdict = "approved" if e["approved"] else "denied"
+        args = ", ".join("%s=%s" % (k, v) for k, v in e.get("arguments", {}).items())
+        rows.append("%s %-16s %-8s %s -- %s" % (when, e["tool"], verdict, args, e["result"]))
+    return "\n".join(rows)
+
 def _tool_sbom_diff(app, arguments):
     old = arguments.get("old")
     new = arguments.get("new")
@@ -1697,6 +1728,11 @@ TOOLS = {t.name: t for t in [
                                                     "package name"}},
          "required": []},
         False, _tool_cache),
+    Tool("audit-log", "Every gated tool call this session's AI has made "
+        "today, oldest first: when, which tool, approved or denied, its "
+        "arguments, and what it returned. Ungated -- reading the trail "
+        "is not itself an action worth confirming.",
+        _no_args(), False, _tool_audit_log),
     Tool("vendor", "Every suite the active specification's 'vendor:' "
         "section names (or just one, with 'suite'): source/binary "
         "package counts, which are 'direct' (an explicit 'vendor:' "
@@ -2455,6 +2491,20 @@ def confirm(app, tool, arguments, preview):
             return False
     return answer.get("approved", False)
 
+# Append-only audit trail of gated tool calls -- what the AI actually
+# did (or was refused), not the chat transcript's own record of what was
+# said. 'result' is capped: it's already what was sent back to the
+# model, not a place to duplicate a multi-KB task-log for its own sake.
+AUDIT_RESULT_CAP = 2000
+
+def _audit(tool, arguments, approved, result, started):
+    entry = {"ts": started, "tool": tool.name, "approved": approved,
+             "arguments": arguments, "result": str(result)[:AUDIT_RESULT_CAP]}
+    path = ContainerEngine.audit()
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    os.chmod(path, 0o600)
+
 def _dispatch(app, call):
     tool = TOOLS.get(call.function.name)
     if tool is None:
@@ -2464,17 +2514,23 @@ def _dispatch(app, call):
     except ValueError:
         arguments = {}
     if tool.gated:
+        started = time.time()
         preview = None
         # A bad call is refused here, before anyone is asked to approve
         # anything -- confirm()'s modal is for reviewing a real, valid
-        # change, not for rejecting a broken request.
+        # change, not for rejecting a broken request. Not audited: no
+        # real action was ever on the table to approve or deny.
         if tool.preview:
             pre = tool.preview(app, arguments)
             if not pre.ok:
                 return pre.message
             preview = pre.message
         if not confirm(app, tool, arguments, preview):
+            _audit(tool, arguments, False, "denied by user", started)
             return "denied by user"
+        result = tool.run(app, arguments)
+        _audit(tool, arguments, True, result, started)
+        return result
     return tool.run(app, arguments)
 
 # RichLog.write() is one full row per call, not an append-in-place
