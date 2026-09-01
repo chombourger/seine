@@ -2398,6 +2398,7 @@ class TheLoop(avocado.Test):
         async def scenario():
             from seine.tui.ai import ConfirmAction
             app = self.SeineApp()
+            app.build_state.worker = types.SimpleNamespace(is_running=True)
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "cancel the build"
@@ -2413,22 +2414,25 @@ class TheLoop(avocado.Test):
                 await pilot.pause()
                 await self._settle(app, pilot)
                 tool_result = [m for m in app.ai_state.messages if m["role"] == "tool"][0]
-                self.assertEqual(tool_result["content"], "no build is running")
+                self.assertEqual(tool_result["content"],
+                                 "cancelling -- waiting for running steps to finish")
         _run(scenario)
 
-    # Neither of today's two gated tools takes an argument worth
-    # showing, so this drives 'ConfirmAction' directly with one made up
-    # -- a future gated tool that does (a patch to apply, say) must not
-    # ask a person to approve it blind.
+    # 'mtda-power' is one of the gated tools with no 'preview' -- it
+    # still falls back to confirm()'s own plain dump of 'arguments',
+    # which a tool with a real 'preview' (cancel-build, since gaining
+    # one) no longer goes through -- a future gated tool without a
+    # preview that takes an argument worth showing must not ask a
+    # person to approve it blind either.
     def test_a_gated_tools_own_arguments_are_shown_before_approval(self):
         sys.modules["litellm"] = fake_litellm(
-            tool_name="cancel-build", tool_arguments='{"reason": "testing"}')
+            tool_name="mtda-power", tool_arguments='{"state": "on"}')
         async def scenario():
             from seine.tui.ai import ConfirmAction
             app = self.SeineApp()
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
-                prompt.value = "cancel the build"
+                prompt.value = "turn the target on"
                 await pilot.press("enter")
                 await pilot.pause()
                 for _ in range(100):
@@ -2437,7 +2441,7 @@ class TheLoop(avocado.Test):
                     await asyncio.sleep(0.02)
                     await pilot.pause()
                 self.assertIsInstance(app.screen, ConfirmAction)
-                self.assertIn("reason: testing", _content(app.screen.query_one("#confirmargs")))
+                self.assertIn("state: on", _content(app.screen.query_one("#confirmargs")))
                 await pilot.press("escape")
                 await pilot.pause()
                 await self._settle(app, pilot)
@@ -2448,6 +2452,7 @@ class TheLoop(avocado.Test):
         async def scenario():
             from seine.tui.ai import ConfirmAction
             app = self.SeineApp()
+            app.build_state.worker = types.SimpleNamespace(is_running=True)
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "cancel the build"
@@ -2474,6 +2479,7 @@ class TheLoop(avocado.Test):
         async def scenario():
             from seine.tui.ai import ConfirmAction
             app = self.SeineApp()
+            app.build_state.worker = types.SimpleNamespace(is_running=True)
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "cancel the build"
@@ -2501,6 +2507,7 @@ class TheLoop(avocado.Test):
         async def scenario():
             from seine.tui.ai import ConfirmAction
             app = self.SeineApp()
+            app.build_state.worker = types.SimpleNamespace(is_running=True)
             async with app.run_test() as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "cancel the build"
