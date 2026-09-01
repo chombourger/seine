@@ -4,6 +4,7 @@
 import atexit
 import contextlib
 import fcntl
+import functools
 import hashlib
 import os
 import platform
@@ -303,8 +304,65 @@ def locked(path, shared=False, blocking=True):
 # specification: its last plan, its logs. The names rather than the contents,
 # which change with every edit -- the very thing those are compared across.
 def digest(files, length=None):
-    named = "\0".join(os.path.abspath(f) for f in files)
+    named = "\0".join(_portable_name(f) for f in files)
     return hashlib.sha256(named.encode()).hexdigest()[:length]
+
+# A file's name, made independent of where its workspace was checked out --
+# a raw abspath() would give the same specification a different digest() on
+# every machine or clone. A file inside a git repository is named relative
+# to that repo's remote (falling back to its toplevel directory's basename
+# if it has no remote), so the same checkout content hashes the same way
+# everywhere; anything else keeps its absolute path.
+def _portable_name(f):
+    abspath = os.path.abspath(f)
+    toplevel = _git_toplevel(os.path.dirname(abspath))
+    if toplevel is None:
+        return abspath
+    rel = os.path.relpath(abspath, toplevel)
+    prefix = _git_remote(toplevel) or os.path.basename(toplevel)
+    return "%s/%s" % (prefix, rel)
+
+@functools.lru_cache(maxsize=None)
+def _git_toplevel(directory):
+    try:
+        return subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+# 'origin' if there is one, else whichever remote sorts first -- picking a
+# remote deterministically matters more than which one, since it only has
+# to agree with itself across machines that cloned the same repository.
+@functools.lru_cache(maxsize=None)
+def _git_remote(toplevel):
+    try:
+        names = subprocess.run(
+            ["git", "-C", toplevel, "remote"],
+            capture_output=True, text=True, check=True).stdout.split()
+        if not names:
+            return None
+        name = "origin" if "origin" in names else sorted(names)[0]
+        url = subprocess.run(
+            ["git", "-C", toplevel, "remote", "get-url", name],
+            capture_output=True, text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return _normalize_remote(url)
+
+# Collapses the ssh and https forms of the same remote to one string --
+# 'git@github.com:org/repo.git' and 'https://github.com/org/repo.git' both
+# become 'github.com/org/repo' -- so cloning method doesn't change digest().
+def _normalize_remote(url):
+    url = url.strip()
+    if url.endswith(".git"):
+        url = url[:-len(".git")]
+    match = (re.match(r"^[\w.+-]+@([^:/]+):(.+)$", url) or
+             re.match(r"^\w+://(?:[^@/]+@)?([^/]+)/(.+)$", url))
+    if not match:
+        return url
+    host, path = match.groups()
+    return "%s/%s" % (host.lower(), path.strip("/"))
 
 # The lock file a specification pairs with, kas style: 'foo.yaml' always
 # pairs with 'foo.lock.yaml', full stop -- no field asks for it, and a
