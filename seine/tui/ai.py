@@ -116,12 +116,14 @@ NO_SINGLE_GROUP = ("no single active specification -- '/use SPEC' first "
                    "(multi-group builds aren't driven from the TUI yet)")
 
 # A tool that just wraps one render_*() -- the same text a person
-# reading that screen already sees, nothing computed twice.
+# reading that screen already sees, nothing computed twice. str()'d:
+# render_doctor() hands back a styled rich.Text (for the Doctor
+# screen's colouring), not a plain str like every other render_*().
 def _render_tool(name, with_context=True):
     def run(app, arguments):
         from seine.tui import render
         fn = getattr(render, name)
-        return fn(app.context) if with_context else fn()
+        return str(fn(app.context) if with_context else fn())
     return run
 
 _tool_overview = _render_tool("render_overview")
