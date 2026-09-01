@@ -1059,7 +1059,7 @@ class SignedRebuild(avocado.Test):
     # The agent as well as the spaces: gpg starts one for a home directory
     # the first time it is used and it outlives the test, left running
     # against a workdir avocado has since removed. See the same teardown in
-    # tests/spec/packages.py.
+    # tests/build/packages.py.
     def tearDown(self):
         for space in self.spaces:
             subprocess.run(["podman", "unshare", "rm", "-rf", space], check=False)

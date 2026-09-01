@@ -125,7 +125,7 @@ Note that the proxy must be reachable from inside a container: a proxy on
 
 ## Running the tests
 
-The tests under `tests/spec/` use
+The tests under `tests/`, one directory per theme, use
 [avocado](https://avocado-framework.github.io/), which Debian does not
 package -- install it in a virtual environment that can still see the
 system packages pip cannot install:
@@ -135,7 +135,7 @@ sudo apt-get install -y python3-guestfs python3-libarchive-c
 python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
 pip install -r requirements.txt avocado-framework 'setuptools<81'
-avocado run tests/spec/*.py
+avocado run tests/*/*.py
 ```
 
 `--system-site-packages` is what makes `guestfs` and `libarchive`
@@ -151,7 +151,7 @@ it for real -- are tagged `container`, take minutes on a cold cache, and
 cancel themselves where podman is missing. Leave them out with:
 
 ```
-avocado run --filter-by-tags='-container' --filter-by-tags-include-empty tests/spec/*.py
+avocado run --filter-by-tags='-container' --filter-by-tags-include-empty tests/*/*.py
 ```
 
 `--filter-by-tags-include-empty` is needed because avocado otherwise drops
@@ -159,13 +159,13 @@ every test that carries no tag at all, which is all the others.
 
 ### The full plan
 
-`tests/spec/images.py` builds images for real -- `pc-image` and
+`tests/image/images.py` builds images for real -- `pc-image` and
 `rpi4-image`, each for bookworm and for trixie, each with the 6.18 kernel
 of `examples/linux-6.18/`. Four kernels and four images is a long run,
 so they cancel themselves unless asked for:
 
 ```
-SEINE_TEST_PLAN=full avocado run --filter-by-tags=full tests/spec/images.py
+SEINE_TEST_PLAN=full avocado run --filter-by-tags=full tests/image/images.py
 ```
 
 Each of the four builds with `--jobs 4`, and the four may run beside each

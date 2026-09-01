@@ -200,7 +200,7 @@ class Index:
 
     # Compatibility shims for tests and any code reaching into the old
     # JSON-backed internals. Not part of the public API but kept so
-    # existing callers (tests/spec/cache.py's `aged` helper) continue to
+    # existing callers (tests/cache/cache.py's `aged` helper) continue to
     # work without change. Implemented in terms of the sqlite store.
     def _read(self):
         try:

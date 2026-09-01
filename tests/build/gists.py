@@ -105,7 +105,7 @@ class ReadAndDelete(avocado.Test):
 
 # 'GistCmd' reads/writes through 'default_dir()' like a real user would
 # run it -- SEINE_GISTS_DIR points that at the test's own directory,
-# same as 'tests/spec/cache.py's Caches class does for SEINE_CACHE_DIR.
+# same as 'tests/cache/cache.py's Caches class does for SEINE_CACHE_DIR.
 class Cli(avocado.Test):
     def setUp(self):
         self.environment = dict(os.environ)

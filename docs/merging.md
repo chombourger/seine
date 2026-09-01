@@ -60,7 +60,7 @@ them write. There are two rules in use, never a third:
 
 Getting the direction backwards for a given section is the single
 easiest way to misjudge what a new merge rule will do -- verify with a
-throwaway two-file `build.loads()` (see `tests/spec/merge.py` for the
+throwaway two-file `build.loads()` (see `tests/build/merge.py` for the
 pattern) rather than assuming either rule from the other.
 
 | Section | Unit | Direction | Notes |
@@ -130,6 +130,6 @@ build on; `_merge_package()`/`_merge_extends()` add `packages`'
 `extends:` recursion on top. `distribution`/`imager`/`image`'s own
 scalars don't go through either helper -- they're a plain
 "later file's value replaces" loop, which is the whole of what
-last-loaded-wins needs. `tests/spec/merge.py` is the executable
+last-loaded-wins needs. `tests/build/merge.py` is the executable
 version of the table above: a merge rule that isn't covered by a test
 there is one nobody has actually pinned down yet.

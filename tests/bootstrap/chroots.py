@@ -12,7 +12,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-# As tests/spec/feeds.py: asking a chroot where it lives makes the
+# As tests/bootstrap/feeds.py: asking a chroot where it lives makes the
 # directory, so keep this out of the machine's own cache.
 os.environ["SEINE_CACHE_DIR"] = tempfile.mkdtemp(prefix="seine-tests-")
 atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"],

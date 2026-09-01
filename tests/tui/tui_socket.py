@@ -2,7 +2,7 @@
 
 # The --interaction-socket path (seine/tui/app.py: _start_socket_server()
 # and friends, seine/tui/ai.py: AIState._new_assistant_messages()/
-# _mark_sent()) gets its own file rather than folding into tests/spec/
+# _mark_sent()) gets its own file rather than folding into tests/tui/
 # tui.py -- that file is already 2000+ lines of screen-by-screen UI
 # behaviour, and socket wire-protocol tests read very differently (raw
 # AF_UNIX client sockets, background threads) from the Pilot-driven
@@ -35,7 +35,7 @@ for _var in ("SEINE_LLM_MODEL", "SEINE_LLM_API_BASE", "SEINE_LLM_API_KEY"):
 # test here builds a real SeineApp.
 os.chdir(tempfile.mkdtemp(prefix="seine-tui-socket-tests-cwd-"))
 
-from tests.spec.native_image import native_image
+from tests.native_image import native_image
 
 NATIVE_IMAGE = native_image()
 
@@ -177,7 +177,7 @@ class SocketProtocol(avocado.Test):
         self.Prompt = Prompt
 
     # "input" types into the real Prompt widget and submits it -- same
-    # round trip tests/spec/tui.py's own App.test_an_unknown_slash_
+    # round trip tests/tui/tui.py's own App.test_an_unknown_slash_
     # command_is_shown_not_raised (prompt.value == "/nope" after Enter,
     # not cleared) already covers for a keyboard Enter.
     def test_input_message_types_and_submits(self):
@@ -197,7 +197,7 @@ class SocketProtocol(avocado.Test):
                 await _wait_until(pilot, lambda: "/nope" in lines())
                 # Enter was processed by the real Prompt (on_input_
                 # submitted() clears it on any submit, same as a keyboard
-                # Enter -- tests/spec/tui.py's own
+                # Enter -- tests/tui/tui.py's own
                 # test_history_recalls_previous_commands_on_up relies on
                 # the same clear-then-recall-with-Up shape), not just
                 # injected straight into history.
@@ -315,7 +315,7 @@ class SocketAIBridge(avocado.Test):
         _run(scenario)
 
 # App-level events other than the AI chat: a build finishing, and the
-# TUI switching screens. Both reuse choke points tests/spec/tui.py
+# TUI switching screens. Both reuse choke points tests/tui/tui.py
 # already exercises for their non-socket behaviour (App._build_finished(),
 # App.show()) -- only the socket side is new here.
 class SocketAppEvents(avocado.Test):
@@ -397,7 +397,7 @@ class SocketAppEvents(avocado.Test):
         _run(scenario)
 
 # A minimal stand-in for mtda.client.Client -- same shape/role as
-# tests/spec/target.py's own FakeClient and tests/spec/ai.py's
+# tests/tui/target.py's own FakeClient and tests/tui/ai.py's
 # _FakeMtdaClient, duplicated rather than imported (test files here
 # stay self-contained). Only what target_connected/target_storage_on_
 # host/target_storage_write_completed actually touch.
@@ -497,14 +497,14 @@ class SocketTargetEvents(avocado.Test):
                 self.assertIn(("storage_to_target",), self.client.calls)
         _run(scenario)
 
-    # target.py's functions are duck-typed over 'app' (tests/spec/
+    # target.py's functions are duck-typed over 'app' (tests/tui/
     # target.py's own Actions class calls them against a bare
     # types.SimpleNamespace()) -- _socket_send() must stay a no-op
     # there instead of an AttributeError.
     def test_connect_does_not_raise_without_socket_send(self):
         self.target.connect(types.SimpleNamespace())
 
-# A stand-in for litellm -- same shape/role as tests/spec/ai.py's own
+# A stand-in for litellm -- same shape/role as tests/tui/ai.py's own
 # fake_litellm(), duplicated rather than imported (test files here stay
 # self-contained). Only what confirm_shown/confirm_resolved/
 # ai_turn_finished/spec_written actually need to drive: a first-turn
@@ -662,7 +662,7 @@ class SocketAIEvents(avocado.Test):
     # no preview) but its own _cancel_build_preview() refuses before
     # ConfirmAction ever opens when nothing is running -- confirm() is
     # never reached at all with no build in flight (a real, pre-existing
-    # gap: tests/spec/ai.py's own TheLoop class has the exact same
+    # gap: tests/tui/ai.py's own TheLoop class has the exact same
     # "ConfirmAction never appeared" failure using this same setup,
     # unrelated to this work). 'spec-create' is gated with a preview
     # that succeeds against a real minimal spec, so it reliably reaches
@@ -766,7 +766,7 @@ class SocketAIEvents(avocado.Test):
 # TestState (seine/tui/testing.py) gained an 'on_finished' hook, same
 # shape as BuildState's own -- driven directly against a fake
 # SuiteResult rather than a real Robot Framework run, same "only the
-# wiring is new here" reasoning tests/spec/ai.py's own MtdaTools class
+# wiring is new here" reasoning tests/tui/ai.py's own MtdaTools class
 # gives for testing against a fake mtda client instead of real hardware.
 class SocketTestEvents(avocado.Test):
     """

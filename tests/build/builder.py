@@ -592,7 +592,7 @@ class TwoPackagesSharingASourceFetchItOnce(avocado.Test):
     # A kernel tree is full of symlinks; dereferencing one into a plain
     # file is a change dpkg-source refuses to represent as a patch. Caught
     # for real building two kernels this way, see the 'full' test in
-    # tests/spec/multiconfig.py.
+    # tests/build/multiconfig.py.
     def test_symlinks_are_copied_as_symlinks(self):
         builder = self.builder(FakeFetch())
         source = os.path.join(self.workdir, "source")

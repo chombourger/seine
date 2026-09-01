@@ -94,18 +94,19 @@ the right to submit it under the project's licence -- see the
 
 ## Tests
 
-The tests live under `tests/spec/` and are run with avocado -- see
-"Running the tests" in [docs/getting-started.md](docs/getting-started.md) for how to install it.
-Run them before opening a pull request:
+The tests live under `tests/`, one directory per theme (`tests/build/`,
+`tests/tui/`, ...), and are run with avocado -- see "Running the tests"
+in [docs/getting-started.md](docs/getting-started.md) for how to install
+it. Run them before opening a pull request:
 
 ```
-avocado run tests/spec/*.py
+avocado run tests/*/*.py
 ```
 
 A change in behaviour comes with a test for it. Tests that need podman
 or kvm are tagged `container`, so that the rest stay runnable anywhere;
 tag yours the same way if it builds something, and have it cancel
-itself where what it needs is missing. `tests/spec/tui.py` (the TUI,
+itself where what it needs is missing. `tests/tui/tui.py` (the TUI,
 `seine/tui/`) needs `textual` (the `tui` extra) the same way and is
 tagged `tui`, cancelling itself where that is missing.
 

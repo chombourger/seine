@@ -17,7 +17,7 @@ os.environ.setdefault("SEINE_CACHE_DIR", tempfile.mkdtemp(prefix="seine-tui-test
 # Every SeineApp()/BuildCmd() below reads settings.py -- pointed at an
 # empty, per-run directory so a real settings.json can never leak in.
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="seine-tui-tests-config-")
-# None of this file is about the AI chat (that's tests/spec/ai.py's
+# None of this file is about the AI chat (that's tests/tui/ai.py's
 # job) -- popped, not just left unset, so a real endpoint exported in
 # the shell running the whole suite can't silently route a bare-text
 # test here into seine.tui.ai.ask() instead of the plain CommandError
@@ -41,7 +41,7 @@ def _content(widget):
         return widget._content
     return getattr(widget, "_Static__content", "")
 
-from tests.spec.native_image import native_image
+from tests.native_image import native_image
 
 NATIVE_IMAGE = native_image()
 PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
@@ -296,7 +296,7 @@ class PackagesRendering(avocado.Test):
 
 # Scanned via settings.sbom2cve_program (a real, tiny external program,
 # not a container stand-in) rather than pulling debsbom's own image --
-# same "exercise the real subprocess call" choice tests/spec/secscan.py's
+# same "exercise the real subprocess call" choice tests/security/secscan.py's
 # own ACustomProgramReplacesTheContainer makes.
 def _fake_scanner(workdir, findings):
     import stat
@@ -457,7 +457,7 @@ class AnalyzeCacheDoctorRendering(avocado.Test):
 # comment) the same way the plain 'seine vendor' CLI always has, which
 # is exactly the scenario this suite exists to cover. Manifests
 # themselves are written straight with save_manifest(), the same as
-# IndexRebuildsPoolFromTheCurrentManifest in tests/spec/vendor.py does,
+# IndexRebuildsPoolFromTheCurrentManifest in tests/vendor/vendor.py does,
 # rather than actually resolving anything.
 class VendorRendering(avocado.Test):
     """
@@ -1999,7 +1999,7 @@ class FilesystemStateBehaviour(avocado.Test):
 # One real image, read through the actual TUI wiring ('filesystem'/'cd'
 # commands -> 'browse()' -> a worker thread -> 'Inspector'). Cancels
 # rather than fails if the appliance cannot launch here, same as
-# tests/spec/inspect.py.
+# tests/image/inspect.py.
 class FilesystemScreenIntegration(avocado.Test):
     """
     :avocado: tags=tui
@@ -2476,7 +2476,7 @@ class VendorStateBehaviour(avocado.Test):
 # VendorCmd._run() itself is faked out (real network/podman), the same
 # way Image.build() is for BuildScreenIntegration above -- what's under
 # test is the screen/command/cross-exclusion wiring around it, not
-# 'seine vendor' itself (tests/spec/vendor.py's own job).
+# 'seine vendor' itself (tests/vendor/vendor.py's own job).
 class VendorScreenIntegration(avocado.Test):
     """
     :avocado: tags=tui
@@ -2667,7 +2667,7 @@ class TestStateRendering(avocado.Test):
 
 # seine.testing.runner.run_spec() is patched out below the same way
 # Image.build is above BuildScreenIntegration -- this isn't about
-# proving Robot Framework runs correctly (tests/spec/testing.py's own
+# proving Robot Framework runs correctly (tests/cli/testing.py's own
 # job), only that '/test' wires TestState up to TextualReporter
 # correctly. It didn't: TextualReporter calls its sink's
 # 'task_started'/'task_finished' (seine/tui/reporter.py, the same

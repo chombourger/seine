@@ -22,7 +22,7 @@ from seine.cache import CacheCmd, CACHES, IMAGES, PORTABLE, human
 #
 # The images are the exception: they are podman's, and none of these tests
 # needs podman to answer what a directory can. A machine with a real one is
-# what the round trip in tests/spec/images.py is for.
+# what the round trip in tests/image/images.py is for.
 class Caches(avocado.Test):
     def setUp(self):
         self.environment = dict(os.environ)

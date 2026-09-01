@@ -9,7 +9,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from tests.spec.native_image import native_image
+from tests.native_image import native_image
 
 def seine(*args):
     return subprocess.run([sys.executable, "./seine.py"] + list(args),

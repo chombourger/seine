@@ -49,7 +49,7 @@ class DeviceMapping(avocado.Test):
 # the one thing that cannot be faked here. Cancels rather than fails if
 # the appliance cannot launch (no kvm, no readable kernel for supermin,
 # etc.), the same as every other guestfs-dependent test in this suite
-# (tests/spec/images.py).
+# (tests/image/images.py).
 class AnActualImage(avocado.Test):
     def setUp(self):
         try:

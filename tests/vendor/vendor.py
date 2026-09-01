@@ -37,7 +37,7 @@ os.environ.pop("SEINE_VENDOR_SIGN_KEY", None)
 # this, every 'VendorCmd()' constructed below reads whatever a real
 # '~/.config/seine/settings.json' on the machine running these actually
 # says, instead of the deterministic default every other test here (and
-# tests/spec/tui.py/ai.py, for the exact same reason) already assumes.
+# tests/tui/tui.py/ai.py, for the exact same reason) already assumes.
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="seine-tests-config-")
 atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"], ignore_errors=True)
 atexit.register(shutil.rmtree, os.environ["SEINE_LOG_DIR"], ignore_errors=True)
@@ -52,7 +52,7 @@ def load(text):
     distro = utils.distribution(build.spec)
     return build.spec, distro
 
-# VendorCmd's own jobs default -- BuildCmd's twin (tests/spec/build.py's
+# VendorCmd's own jobs default -- BuildCmd's twin (tests/build/build.py's
 # own DefaultJobCount): 1 unless a persisted setting overrides it, an
 # explicit -j/--jobs still winning either way.
 class DefaultJobCount(avocado.Test):
@@ -2026,7 +2026,7 @@ class RefreshAndCheckNeedExactlyOneSpecFile(avocado.Test):
 # snapshot.debian.org: '--refresh's own enrichment (_enrich_for_lock()),
 # and the plain-vendor direct-download path it feeds
 # (fetch_source()/fetch_binary()/fetch_tasks()). seine/snapshot.py's
-# own client is covered in tests/spec/snapshot.py; these are about how
+# own client is covered in tests/vendor/snapshot.py; these are about how
 # vendor.py uses it, so a fake session (matching that file's own) is
 # enough -- no real network here either.
 # ---------------------------------------------------------------------

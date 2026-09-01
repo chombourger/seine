@@ -18,7 +18,7 @@ import time
 
 _available = None
 
-# 'app' here is duck-typed, not always a real SeineApp -- tests/spec/
+# 'app' here is duck-typed, not always a real SeineApp -- tests/tui/
 # target.py's own Actions class exercises this module against a bare
 # types.SimpleNamespace(), which has no '_socket_send' at all.
 def _socket_send(app, event):

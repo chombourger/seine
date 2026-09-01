@@ -4,7 +4,7 @@ import os
 
 from seine.utils import HOST_ARCH
 
-_EXAMPLES = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "examples")
+_EXAMPLES = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "examples")
 
 # The example spec whose own architecture matches the host running the
 # test -- most callers never touch a container, but there's no reason to

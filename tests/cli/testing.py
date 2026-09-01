@@ -15,7 +15,7 @@ def seine(*args):
     return subprocess.run([sys.executable, "./seine.py"] + list(args),
                           cwd=path_to_sources, capture_output=True, text=True)
 
-# Every setUp() below needs this: mirrors tests/spec/tui.py's own
+# Every setUp() below needs this: mirrors tests/tui/tui.py's own
 # '_tui_required' for the 'test' extra (robotframework) instead.
 @contextlib.contextmanager
 def _test_extra_required(test):
@@ -438,7 +438,7 @@ test:
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("1 passed", run.stdout)
 
-# doctor's own group, tested here rather than tests/spec/doctor.py
+# doctor's own group, tested here rather than tests/cli/doctor.py
 # (which the 'test' extra doesn't otherwise touch) -- same shape as its
 # neighbouring 'note, not an error' checks.
 class Doctor(avocado.Test):

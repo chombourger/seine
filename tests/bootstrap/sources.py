@@ -15,7 +15,7 @@ sys.path.append(path_to_sources)
 from seine import sources
 from seine.sources import SourceCmd
 from seine.utils import ContainerEngine, HOST_ARCH
-from tests.spec.native_image import native_image
+from tests.native_image import native_image
 
 DISTRO = {"source": "debian", "release": "bookworm", "architecture": HOST_ARCH,
          "uri": "http://ftp.debian.org/debian"}
@@ -155,7 +155,7 @@ class Remove(avocado.Test):
 # Stands in for SourceBootstrap so pull()'s own orchestration -- the feed
 # script, the before/after diff, refusing an already-pulled name -- is
 # tested without a container, the same swap-in-place idiom
-# tests/spec/sbom.py's Engine uses. 'effect' does whatever a real
+# tests/security/sbom.py's Engine uses. 'effect' does whatever a real
 # 'apt-get source' would have left in 'workdir'; tests set it per case.
 class FakeSourceBootstrap:
     instances = []
@@ -262,7 +262,7 @@ class Pull(avocado.Test):
 
 # 'SourceCmd' reads/writes through ContainerEngine.workbench() like a
 # real user would run it -- SEINE_WORKBENCH_DIR points that at the
-# test's own directory, same as tests/spec/gists.py's Cli class does
+# test's own directory, same as tests/build/gists.py's Cli class does
 # for SEINE_GISTS_DIR. 'pull' still swaps in FakeSourceBootstrap: a real
 # fetch is 'ASourceIsActuallyPulled' below, not every case here.
 class Cli(avocado.Test):

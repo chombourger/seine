@@ -51,7 +51,7 @@ class FakeReporter:
     def say(self, text):
         pass
 
-# No podman here: tasks.run is stood in for, same as tests/spec/plan.py
+# No podman here: tasks.run is stood in for, same as tests/build/plan.py
 # does for Image.build -- under test is Image.build()'s new plumbing.
 class ImageBuildTakesAReporter(avocado.Test):
     def setUp(self):
@@ -141,7 +141,7 @@ class ImageBuildTakesAReporter(avocado.Test):
         self.build.image.build(reporter=FakeReporter())
 
 # The digest-timing regression test that used to live here moved to
-# tests/spec/build.py, alongside the fix itself (fix(build): take a
+# tests/build/build.py, alongside the fix itself (fix(build): take a
 # build's digest before tasks can mutate the spec) -- it needed nothing
 # from this file that HEAD did not already have.
 

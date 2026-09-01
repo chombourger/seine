@@ -20,13 +20,13 @@ sys.path.append(path_to_sources)
 os.environ.setdefault("SEINE_CACHE_DIR", tempfile.mkdtemp(prefix="seine-ai-tests-"))
 os.chdir(tempfile.mkdtemp(prefix="seine-ai-tests-cwd-"))
 
-from tests.spec.native_image import native_image
+from tests.native_image import native_image
 
 NATIVE_IMAGE = native_image()
 PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
 REBUILD_BUSYBOX = os.path.join(path_to_sources, "examples", "rebuild-busybox", "main.yaml")
 
-# Same helper, same reason, as 'tests/spec/tui.py' 's own -- not
+# Same helper, same reason, as 'tests/tui/tui.py' 's own -- not
 # imported from there (test files stay self-contained here, none of
 # them import each other): 'Static' keeps what 'update()' gave it in a
 # private attribute, '_content' on the python3-textual Debian trixie
@@ -68,7 +68,7 @@ def _clear_llm_env():
 def _run(scenario):
     asyncio.run(scenario())
 
-# Duplicated rather than imported from tests/spec/tui.py -- the same
+# Duplicated rather than imported from tests/tui/tui.py -- the same
 # "test files stay self-contained" reason given at the top of this file.
 @contextlib.contextmanager
 def _tui_required(test):
@@ -990,7 +990,7 @@ class ToolTable(avocado.Test):
         self.assertFalse(preview.ok)
 
     # Stands in for SourceBootstrap so source-pull is tested without a
-    # container -- same swap-in-place idiom tests/spec/sources.py's own
+    # container -- same swap-in-place idiom tests/bootstrap/sources.py's own
     # FakeSourceBootstrap uses, kept separate since test files here stay
     # self-contained.
     def _fake_source_pull(self, dirname="bash-5.14"):
@@ -1055,7 +1055,7 @@ class ToolTable(avocado.Test):
         preview = self.ai.TOOLS["source-rm"].preview(app, {"name": "nope"})
         self.assertFalse(preview.ok)
 
-    # Patches the classes directly, same reasoning tests/spec/sources.py's
+    # Patches the classes directly, same reasoning tests/bootstrap/sources.py's
     # own Bash class gives -- both are reached through the class, never
     # an instance.
     def _fake_bash(self, output="", returncode=0):
@@ -1382,7 +1382,7 @@ class ToolTable(avocado.Test):
         self.assertIn("no tarball", text)
 
     # A real var/lib/dpkg/status, not just a name-echoing tarball.
-    # Same shape as tests/spec/sbom.py's status_tarball(), kept local
+    # Same shape as tests/security/sbom.py's status_tarball(), kept local
     # rather than imported -- test files here stay self-contained.
     def _status_tarball(self, status):
         path = os.path.join(self.workdir, "root.tar")
@@ -1784,7 +1784,7 @@ def fake_litellm(tool_name=None, tool_arguments="{}", captured_messages=None):
         suppress_debug_info=False,
     )
 
-# A stand-in for mtda.client.Client -- same shape/role as tests/spec/
+# A stand-in for mtda.client.Client -- same shape/role as tests/tui/
 # target.py's own FakeClient, duplicated rather than imported (test
 # files here stay self-contained, none import another).
 class _FakeMtdaClient:
@@ -2766,7 +2766,7 @@ class TheLoop(avocado.Test):
 # app -- call_from_thread needs one, which is why the ToolTable class
 # above only covers the negative/preview paths (no active spec, refused
 # up front). VendorCmd._run() is faked out the same way
-# VendorScreenIntegration in tests/spec/tui.py does it, no podman/
+# VendorScreenIntegration in tests/tui/tui.py does it, no podman/
 # network involved -- the gated-approval UI flow itself (ConfirmAction,
 # a preview shown before running) is generic and already proven
 # elsewhere; what's under test here is start-vendor's own wiring,
@@ -2910,7 +2910,7 @@ class StartVendorTool(avocado.Test):
 # Whole-build completion, only for a build 'start-build' itself started,
 # triggers an unprompted follow-up turn (BuildState.notify_ai wired
 # through App._build_finished()). A fast fake 'Image.build' stands in,
-# same shape as BuildScreenIntegration in tests/spec/tui.py -- no podman needed.
+# same shape as BuildScreenIntegration in tests/tui/tui.py -- no podman needed.
 class StartBuildNotifiesTheAI(avocado.Test):
     """
     :avocado: tags=tui
@@ -3397,7 +3397,7 @@ class Routing(avocado.Test):
 # Opt-in, real endpoint: skipped unless 'SEINE_LLM_MODEL'/
 # 'SEINE_LLM_API_BASE' are both actually set, the same "cancel, don't
 # fail, when the real thing isn't there" shape 'AnSBOMIsActuallyBuilt'
-# (tests/spec/sbom.py) already uses for podman. Nothing here is asserted
+# (tests/security/sbom.py) already uses for podman. Nothing here is asserted
 # on the model's own wording -- only that a real round trip, tool call
 # included, actually completes.
 class RealEndpoint(avocado.Test):

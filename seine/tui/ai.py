@@ -34,7 +34,7 @@ from seine.utils import redact, redactions
 
 # Same duck-typing as seine.tui.target's own _socket_send(): 'app' here
 # is not always a real SeineApp (see MtdaTools's stand-in app in
-# tests/spec/ai.py, which has no '_socket_send' at all).
+# tests/tui/ai.py, which has no '_socket_send' at all).
 def _socket_send(app, event):
     send = getattr(app, "_socket_send", None)
     if send is not None:

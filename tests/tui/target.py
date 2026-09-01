@@ -13,7 +13,7 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine.tui import target
-from tests.spec.native_image import native_image
+from tests.native_image import native_image
 
 NATIVE_IMAGE = native_image()
 
@@ -336,7 +336,7 @@ class Actions(avocado.Test):
         self.assertEqual(result, {"power": "ON", "uptime": 42,
                                   "storage": ("idle", 0, 0), "usb": []})
 
-# Same '_tui_required' guard tests/spec/tui.py uses for anything that
+# Same '_tui_required' guard tests/tui/tui.py uses for anything that
 # needs the 'tui' extra (textual). Kept self-contained here rather than
 # imported from tui.py, same reason tui.py gives for not sharing
 # helpers across test files.
@@ -425,7 +425,7 @@ class TargetCommand(avocado.Test):
 
     # No confirmation: typing '/target on' already is the deliberate
     # act, unlike the AI's own tool calls (ai.py's own gating, tested
-    # in tests/spec/ai.py's MtdaTools).
+    # in tests/tui/ai.py's MtdaTools).
     def test_power_on_runs_directly_no_confirmation(self):
         self.commands.dispatch(self.app, "/target on")
         self.assertEqual(self._client().calls, [("target_on",)])
@@ -563,12 +563,12 @@ class LiveState(avocado.Test):
 # The footer chip's own behaviour lives in seine/tui/base.py's
 # TargetIndicator.refresh_text() -- a plain read of TargetState, same
 # shape Indicators.refresh_text() already has, and (like Indicators)
-# left without a dedicated widget-level test: tests/spec/tui.py has
+# left without a dedicated widget-level test: tests/tui/tui.py has
 # none for Indicators either, only for whole-screen behaviour.
 
 # ConsoleAdapter needs pyte (setup.py's 'tui' extra, bundled with
 # textual/rich) -- cancel rather than error if it truly isn't there,
-# same convention tests/spec/tui.py's _tui_required uses.
+# same convention tests/tui/tui.py's _tui_required uses.
 @contextlib.contextmanager
 def _pyte_required(test):
     try:

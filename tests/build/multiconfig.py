@@ -24,12 +24,12 @@ from seine.utils import HOST_ARCH
 
 EXAMPLES = os.path.join(path_to_sources, "examples")
 
-# As tests/spec/images.py's own: these do not run unless asked for, since
+# As tests/image/images.py's own: these do not run unless asked for, since
 # a kernel build takes real time even slimmed down.
 PLAN = os.environ.get("SEINE_TEST_PLAN", "")
 
 # Nothing under here may write into the machine's own cache -- see the
-# same header in tests/spec/tasks.py.
+# same header in tests/build/tasks.py.
 os.environ["SEINE_CACHE_DIR"] = tempfile.mkdtemp(prefix="seine-tests-")
 os.environ.pop("SEINE_SIGN_KEY", None)
 atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"],
@@ -347,7 +347,7 @@ image:
 # -- busybox built once for the two of them, each kernel built once for
 # its own group and not folded into the other's -- so '--packages-only'
 # is enough, and this asks nothing of the kernels beyond that they were
-# built: unlike tests/spec/images.py's own, nothing here boots one.
+# built: unlike tests/image/images.py's own, nothing here boots one.
 class MultiGroupSharesPackagesWithinAnArchCohort(avocado.Test):
     """
     :avocado: tags=full,container

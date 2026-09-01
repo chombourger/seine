@@ -87,7 +87,7 @@ class StatsAggregateFindings(avocado.Test):
 
 # Stands in for the container engine so the tests can see what debsbom
 # would have been run with, or that it was not run at all, without
-# pulling its image -- same shape as tests/spec/sbom.py's own 'Engine'.
+# pulling its image -- same shape as tests/security/sbom.py's own 'Engine'.
 class Engine:
     def __init__(self, testcase, output=b""):
         self.testcase = testcase
@@ -120,7 +120,7 @@ def sbom(workdir, name="pc-image-sbom.spdx.json"):
 # scan() always reads settings.sbom2cve_program, so any test calling it
 # needs its own settings.json -- otherwise it silently picks up whatever
 # is at the real ~/.config/seine/settings.json on the machine running
-# the test. Isolated the same way tests/spec/doctor.py's own LLM check
+# the test. Isolated the same way tests/cli/doctor.py's own LLM check
 # isolates XDG_CONFIG_HOME.
 class Isolated(avocado.Test):
     def setUp(self):
@@ -157,7 +157,7 @@ class TheBuiltInScannerIsRunWithTheRightArguments(Isolated):
 class ACustomProgramReplacesTheContainer(Isolated):
     # A real (tiny) external program, not another stand-in -- exercising
     # the actual subprocess call rather than mocking it out too, the way
-    # tests/spec/sources.py's 'ASourceIsActuallyPulled' does for a real fetch.
+    # tests/bootstrap/sources.py's 'ASourceIsActuallyPulled' does for a real fetch.
     def _write_fake_scanner(self):
         path = os.path.join(self.workdir, "fake-scanner")
         with open(path, "w") as f:
