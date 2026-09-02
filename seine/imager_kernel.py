@@ -16,6 +16,7 @@ DEFAULT_PACKAGES = {
     "amd64": "linux-image-amd64",
     "arm64": "linux-image-arm64",
     "armhf": "linux-image-armmp",
+    "i386":  "linux-image-686",
 }
 
 class ImagerKernel(Bootstrap):

@@ -23,6 +23,7 @@ HOST_MACHINE_TO_ARCH = {
     "x86_64":  "amd64",
     "aarch64": "arm64",
     "armv7l":  "armhf",
+    "i686":    "i386",
 }
 HOST_ARCH = HOST_MACHINE_TO_ARCH.get(platform.machine(), platform.machine())
 

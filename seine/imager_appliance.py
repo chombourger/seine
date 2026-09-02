@@ -17,6 +17,7 @@ ARCH_INFO = {
     "amd64": {"triplet": "x86_64-linux-gnu",   "host_cpu": "x86_64"},
     "arm64": {"triplet": "aarch64-linux-gnu",  "host_cpu": "aarch64"},
     "armhf": {"triplet": "arm-linux-gnueabihf", "host_cpu": "armv7l"},
+    "i386":  {"triplet": "i386-linux-gnu",      "host_cpu": "i686"},
 }
 
 # supermin cannot cross-build appliances (it always builds for the arch it

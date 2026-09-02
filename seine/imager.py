@@ -32,6 +32,7 @@ DEFAULT_HYPERVISORS = {
     "amd64": "/usr/bin/qemu-system-x86_64",
     "arm64": "/usr/bin/qemu-system-aarch64",
     "armhf": "/usr/bin/qemu-system-arm",
+    "i386":  "/usr/bin/qemu-system-i386",
 }
 
 # libguestfs's launch-command construction hardcodes several x86-only

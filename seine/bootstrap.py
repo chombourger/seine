@@ -170,7 +170,8 @@ class HostBootstrap(Bootstrap):
 
     def create(self):
         build_options = ["--squash"]
-        if self.host_architecture != HOST_ARCH:
+        emulated = self.host_architecture != HOST_ARCH
+        if emulated:
             build_options += ["--platform", "linux/%s" % self.host_architecture]
         mount = ""
         digest_comment = ""
@@ -189,7 +190,9 @@ class HostBootstrap(Bootstrap):
             "apt-{}".format(self.distro["release"]),
             self._sources(),
             mount,
-            digest_comment), options=build_options)
+            digest_comment,
+            _qemu_fetch(self.host_architecture, emulated),
+            APT_CLEANUP), options=build_options)
 
     # base_feed() alone, the same reasoning as TargetBootstrap's own
     # dockerfile(): these packages need nothing from backports or
@@ -242,6 +245,52 @@ class TargetBootstrap(Bootstrap):
                 self.distro["architecture"],
                 feed_digest(self.distro))
 
+# Which foreign-ISA qemu-user-static interpreter this host needs to
+# cross-bootstrap the other supported architectures -- native CPU compat
+# (amd64 running i386, arm64 running armhf) needs none, confirmed
+# deliberately rather than assumed (see packages.py's own SCOPES comment
+# on the same pairing). Keyed by HOST_ARCH since it is this machine's own
+# architecture, not the target's, that decides which interpreters a
+# cross bootstrap running on it will ever call for.
+#
+# That compat pairing is real silicon only: qemu-user ships each ISA as
+# its own binary (qemu-arm vs qemu-aarch64, qemu-i386 vs qemu-x86_64), so
+# an EMULATED host (built via --platform, not this machine's own arch)
+# gets none of its compat architecture's native support either and needs
+# that interpreter fetched too.
+QEMU_ARCHS = {
+    "amd64": ["aarch64", "arm"],
+    "arm64": ["x86_64", "i386"],
+}
+QEMU_ARCHS_EMULATED = {
+    "amd64": ["aarch64", "arm", "i386"],
+    "arm64": ["x86_64", "i386", "arm"],
+}
+
+# 'qemu-user'/'qemu-user-static' installed together are ~465MiB, covering
+# every architecture QEMU supports; this host ever needs at most two. The
+# split differs by release -- trixie's 'qemu-user-static' is only
+# compatibility symlinks into 'qemu-user', bookworm's is the real static
+# binaries -- so both names are downloaded (never installed) and
+# extracted into the same tree, and whichever one actually holds the
+# bytes resolves the symlinks either way, without asking which release
+# this is. 'true' for an architecture with nothing to cross-bootstrap
+# (there is none today, but an unlisted HOST_ARCH should build a host
+# bootstrap with no interpreters rather than fail one).
+def _qemu_fetch(architecture, emulated=False):
+    table = QEMU_ARCHS_EMULATED if emulated else QEMU_ARCHS
+    archs = table.get(architecture, [])
+    if len(archs) == 0:
+        return "true"
+    wanted = " ".join("/qemu-extract/usr/bin/qemu-%s-static" % a for a in archs)
+    return (
+        "mkdir -p /qemu-extract && cd /qemu-extract && "
+        "(apt-get download qemu-user-static qemu-user || true) && "
+        "for deb in *.deb; do dpkg -x \"$deb\" .; done && "
+        "cp -L %s /usr/bin/ && "
+        "cd / && rm -rf /qemu-extract"
+    ) % wanted
+
 HOST_BOOTSTRAP_SCRIPT = """
 FROM {0}:{1} AS base
 {5}
@@ -252,8 +301,8 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={2},sharing=locked {4} 
      {3} &&                                       \
      apt-get update -qqy &&                       \
      apt-get install -qqy --no-install-recommends \
-         arch-test debian-archive-keyring gpg     \
-         mmdebstrap qemu-user-static
+         arch-test debian-archive-keyring gpg mmdebstrap && \
+     {6}
 FROM base AS clean-base
 RUN rm -rf /usr/share/doc                        \
            /usr/share/info                       \

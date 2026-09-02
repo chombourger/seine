@@ -4,6 +4,14 @@ seine (0.1-3) unstable; urgency=medium
     vendor and sbuild OCI images and chroots under /usr/share/seine/oci,
     imported into podman automatically instead of being built from
     scratch.
+  * Add i386 to the imager's per-architecture tables (kernel package,
+    hypervisor, appliance triplet), next to the amd64/arm64/armhf
+    entries already there.
+  * Only fetch the qemu-user-static interpreter a HostBootstrap really
+    needs to cross-bootstrap another architecture, instead of the whole
+    qemu-user package (~465MiB for every architecture QEMU supports).
+    amd64 and i386, or arm64 and armhf, need no interpreter at all: the
+    CPU already runs that code natively.
 
  -- Cedric Hombourger <chombourger@gmail.com>  Wed, 02 Sep 2026 07:28:59 +0200
 
