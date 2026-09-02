@@ -288,6 +288,9 @@ class SbuildChroot:
 
 BUILDER_IMAGE_SCRIPT = """
 FROM {0}
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \
+           /etc/apt/sources.list.d/*.list && \
+    {3}
 RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
      apt-get update -qqy &&                       \
      apt-get install -qqy --no-install-recommends \
@@ -308,11 +311,7 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
 # iproute2 is not optional: sbuild brings the loopback interface up with
 # 'ip link set lo up' when it takes the network away from the build, and
 # dies rather than warns when 'ip' is missing.
-RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \
-           /etc/apt/sources.list.d/*.list && \
-    {3} && \
-    apt-get update -qqy && \
-    {6}
+RUN {6}
 RUN echo 'root:1:65535' > /etc/subuid && \
     echo 'root:1:65535' > /etc/subgid
 # The chroot sbuild builds in is a root of its own that our bind mounts do
