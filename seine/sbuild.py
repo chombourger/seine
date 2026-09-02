@@ -7,6 +7,7 @@ import subprocess
 
 from seine.bootstrap   import Bootstrap
 from seine.cache_index import CHROOT, Index, say, since
+from seine.oci_bundle  import import_bundled
 from seine.utils     import ContainerEngine
 from seine.utils     import apt_sources
 from seine.utils     import apt_sources_dockerfile
@@ -245,6 +246,8 @@ class SbuildChroot:
         # 'apt-pull-mode' digests as a different chroot rather than one
         # silently built from the wrong one.
         digest = hashlib.sha256(" ".join(args).encode()).hexdigest()[:16]
+        if self.current(digest) == False:
+            import_bundled()
         if self.current(digest):
             entry = Index().hit(CHROOT, self.key)
             say(self.options, "chroot %s reused, made %s"

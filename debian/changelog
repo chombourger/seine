@@ -1,3 +1,12 @@
+seine (0.1-3) unstable; urgency=medium
+
+  * Add seine-oci-<release>-<hostarch> packages: prebuilt bootstrap,
+    vendor and sbuild OCI images and chroots under /usr/share/seine/oci,
+    imported into podman automatically instead of being built from
+    scratch.
+
+ -- Cedric Hombourger <chombourger@gmail.com>  Wed, 02 Sep 2026 07:28:59 +0200
+
 seine (0.1-2) unstable; urgency=medium
 
   * Refresh packaging for trixie: debhelper-compat 13, add

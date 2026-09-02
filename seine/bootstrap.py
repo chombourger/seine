@@ -8,8 +8,10 @@ import os
 import tempfile
 
 from seine.cache_index import IMAGE, Index, say, since
+from seine.oci_bundle import import_bundled
 from seine.tasks import Task
 from seine.utils import ContainerEngine
+from seine.utils import HOST_ARCH
 from seine.utils import INPUTS_LABEL
 from seine.utils import KIND_LABEL
 from seine.utils import ROOTFS_KIND
@@ -77,8 +79,14 @@ class Bootstrap(ABC):
                == self.digest(dockerfile, base)
 
     # Builds the image from 'dockerfile' unless one built from the same
-    # inputs is already there.
+    # inputs is already there -- or a 'seine-oci-<hostarch>' package left
+    # one under /usr/share/seine/oci with the same inputs, which is worth
+    # a look before building it here. A bundle whose inputs no longer
+    # match (an archive that moved since it was packaged) leaves 'current'
+    # false, and this builds it exactly as if there had been no bundle.
     def build(self, dockerfile, base=None, options=None):
+        if self.current(dockerfile, base) == False:
+            import_bundled()
         if self.current(dockerfile, base):
             entry = Index().hit(IMAGE, self.name)
             say(self.options, "image %s reused, made %s"
@@ -142,8 +150,10 @@ class HostBootstrap(Bootstrap):
     # plain HostBootstrap (defaultName() below) so the two never thrash
     # one another's cached tag when 'apt-pull-mode: offline' makes them
     # genuinely different images.
-    def __init__(self, distro, options, vendor_digest=None, force_online=False):
+    def __init__(self, distro, options, vendor_digest=None, host_architecture=None,
+                force_online=False):
         self.vendor_digest = vendor_digest
+        self.host_architecture = host_architecture or HOST_ARCH
         self.force_online = force_online
         super().__init__(distro, options)
 
@@ -160,6 +170,8 @@ class HostBootstrap(Bootstrap):
 
     def create(self):
         build_options = ["--squash"]
+        if self.host_architecture != HOST_ARCH:
+            build_options += ["--platform", "linux/%s" % self.host_architecture]
         mount = ""
         digest_comment = ""
         if self._offline():

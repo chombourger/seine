@@ -3,3 +3,11 @@ export PYBUILD_NAME = seine
 
 %:
 	dh $@ --with python3 --buildsystem=pybuild
+
+# Prebuilt OCI bundles for seine-oci-<release>-<hostarch>, one per
+# release per host architecture. Needs network access and podman's own
+# '--platform' support (qemu-user-static's binfmt registration) to
+# build the non-native host for real -- see debian/build-oci.py.
+execute_after_dh_auto_build:
+	HOSTARCH=amd64 debian/build-oci.py debian/build-oci/amd64
+	HOSTARCH=arm64 debian/build-oci.py debian/build-oci/arm64
