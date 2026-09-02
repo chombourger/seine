@@ -11,6 +11,7 @@ from seine.oci_bundle  import import_bundled
 from seine.utils     import ContainerEngine
 from seine.utils     import apt_sources
 from seine.utils     import apt_sources_dockerfile
+from seine.utils     import APT_CLEANUP
 from seine.utils     import feeds
 from seine.utils     import locked
 from seine.utils     import offline_suites
@@ -54,7 +55,8 @@ class BuilderImage(Bootstrap):
             self.distro["release"],
             self._sources(),
             "apt-{}".format(self.distro["release"]),
-            REPOSITORY)
+            REPOSITORY,
+            APT_CLEANUP)
 
     # The builder installs build dependencies and fetches sources from the
     # same places the image itself is built from, with deb-src alongside so
@@ -309,7 +311,8 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
 RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \
            /etc/apt/sources.list.d/*.list && \
     {3} && \
-    apt-get update -qqy
+    apt-get update -qqy && \
+    {6}
 RUN echo 'root:1:65535' > /etc/subuid && \
     echo 'root:1:65535' > /etc/subgid
 # The chroot sbuild builds in is a root of its own that our bind mounts do

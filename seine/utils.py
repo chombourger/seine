@@ -191,6 +191,19 @@ def apt_sources(distro, sources=False, entries=None, offline=False):
 # running, not while it is being built.
 DOCKERFILE_SOURCES_LIST = "/etc/apt/sources.list.d/seine.list"
 
+# apt's package lists: stale as soon as the next 'apt-get update' runs,
+# never needed once an image is built. Safe everywhere, even on an image
+# that becomes part of what a build ships.
+APT_LISTS_CLEANUP = "rm -rf /var/lib/apt/lists/*"
+
+# Doc/info/man pages a human would read, on top of APT_LISTS_CLEANUP.
+# Only for a tooling image seine itself uses and never ships -- a
+# TargetBootstrap-derived image (TransportBootstrap, say) keeps them:
+# whatever it carries there is part of what a build hands the user, not
+# seine's own tooling to trim.
+APT_CLEANUP = "rm -rf /usr/share/doc /usr/share/info /usr/share/man && " \
+             + APT_LISTS_CLEANUP
+
 # The '&&'-joined shell fragment a Dockerfile RUN instruction chains
 # ahead of its own 'apt-get update': writes 'entries' into a fresh
 # sources.list.d file so the image reads the specification's own feed

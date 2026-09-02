@@ -17,6 +17,7 @@ from seine.utils import KIND_LABEL
 from seine.utils import ROOTFS_KIND
 from seine.utils import apt_sources
 from seine.utils import apt_sources_dockerfile
+from seine.utils import APT_CLEANUP
 from seine.utils import base_feed
 from seine.utils import feed_digest
 from seine.utils import locked
@@ -304,9 +305,7 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={2},sharing=locked {4} 
          arch-test debian-archive-keyring gpg mmdebstrap && \
      {6}
 FROM base AS clean-base
-RUN rm -rf /usr/share/doc                        \
-           /usr/share/info                       \
-           /usr/share/man
+RUN {7}
 """
 
 TARGET_BOOTSTRAP_SCRIPT = """
@@ -328,6 +327,5 @@ RUN --mount=type=cache,target=/var/cache/mmdebstrap,id={4},sharing=locked \
         >rootfs/etc/apt/apt.conf.d/00-no-suggests
 FROM scratch AS base
 COPY --from=bootstrap rootfs/ /
-RUN  apt-get clean -qqy && \
-     rm -rf /usr/share/doc /usr/share/info /usr/share/man
+RUN  apt-get clean -qqy
 """

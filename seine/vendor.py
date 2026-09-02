@@ -22,6 +22,7 @@ from seine.sbuild       import BuilderImage, SbuildChroot
 from seine.tasks        import Task
 from seine.utils        import ContainerEngine, feeds, apt_sources
 from seine.utils        import locked, lock_sibling
+from seine.utils        import APT_CLEANUP
 from seine.utils        import PRIVILEGED_RUN_OPTIONS
 from seine import settings
 from seine import signing
@@ -346,7 +347,8 @@ class VendorResolverImage(Bootstrap):
             self.distro["source"],
             self.distro["release"],
             self._sources(),
-            self.distro["release"])
+            self.distro["release"],
+            APT_CLEANUP)
 
     def _sources(self):
         sources = apt_sources(self.distro, sources=True)
@@ -395,7 +397,8 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \\
 RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \\
            /etc/apt/sources.list.d/*.list && \\
     {3} && \\
-    apt-get update -qqy
+    apt-get update -qqy && \\
+    {5}
 """
 
 # ---------------------------------------------------------------------

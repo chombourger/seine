@@ -5,6 +5,7 @@ import os
 
 from seine.bootstrap import Bootstrap
 from seine.utils import apt_sources_dockerfile
+from seine.utils import APT_LISTS_CLEANUP
 from seine.utils import base_feed
 from seine.utils import feed_digest
 from seine.utils import TRANSPORT_KIND
@@ -56,8 +57,8 @@ class TransportBootstrap(Bootstrap):
                 vendor.BUILD_CONTEXT, vendor_mountpoint(release))
             digest_comment = "# vendor digest: %s" % self.vendor_digest
         return self.build(TRANSPORT_BOOTSTRAP_SCRIPT.format(
-            self.baseline, self._sources(), mount, digest_comment),
-            base=self.baseline, options=build_options)
+            self.baseline, self._sources(), mount, digest_comment,
+            APT_LISTS_CLEANUP), base=self.baseline, options=build_options)
 
     # base_feed() alone: same reasoning as HostBootstrap's own _sources().
     def _sources(self):
@@ -73,6 +74,6 @@ RUN {2} rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \\
     apt-get update -qqy && \\
     apt-get install -qqy --no-install-recommends python3 python3-apt attr && \\
     apt-mark auto python3 python3-apt attr && \\
-    rm -rf /var/lib/apt/lists/*
+    {4}
 CMD /bin/true
 """
