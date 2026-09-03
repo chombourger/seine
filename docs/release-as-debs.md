@@ -46,3 +46,12 @@ build, it only compiles/packages for that architecture.
   `apt-get install -s <package>` first and check the `Remove:` list —
   a foreign-architecture install can pull in an unexpectedly large
   dependency change.
+
+### CI
+
+`.github/workflows/debs.yml` builds both architectures on every push and
+pull request, inside a `debian:trixie` container (not the runner's own
+Ubuntu) so the packages target the right distro. arm64 runs natively on
+GitHub's `ubuntu-24.04-arm` runners rather than cross-building, so no
+cross toolchain step is needed there. On a tag push it also publishes the
+`.deb` files as release assets on that tag.
