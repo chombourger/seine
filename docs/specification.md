@@ -1220,16 +1220,29 @@ The following attributes are supported:
 
 Disk partitions are defined with the following attributes:
 
-| Attribute | Required | Description                              |
-| --------- |:--------:| ---------------------------------------- |
-| label     | yes      | Name of the partition                    |
-| flags     | no       | Partition flags (see below)              |
-| group     | no       | Name of the LVM group to join            |
-| size      | no       | Size of the partition                    |
-| type      | no       | File-system type (e.g. `ext4`)           |
-| where     | yes*     | Where to mount the partition file-system |
+| Attribute   | Required | Description                              |
+| ----------- |:--------:| ----------------------------------------- |
+| label       | yes      | Name of the partition                    |
+| flags       | no       | Partition flags (see below)              |
+| group       | no       | Name of the LVM group to join            |
+| size        | no       | Size of the partition                    |
+| type        | no       | File-system type (e.g. `ext4`)           |
+| compression | no       | Compression, for a read-only `type`      |
+| identify    | no       | How a read-only `type` is found at boot  |
+| where       | yes*     | Where to mount the partition file-system |
 
 (*) Required unless the partition is a LVM physical volume
+
+`type` may also be `squashfs` or `erofs`, in which case the partition is built
+read-only and needs a `gpt` partition `table` (see [image](#image) above): the
+imager identifies it in `/etc/fstab` by `PARTLABEL=<label>`, which does not
+exist on a `msdos` table. `identify: partuuid` uses `PARTUUID=` instead.
+`compression` is passed straight through to the underlying tool (`-comp` for
+`mksquashfs`, `-z` for `mkfs.erofs`) with no validation or default of its own
+-- when unset, each tool's own default applies. The imager builds these with
+its own copy of `mksquashfs`/`mkfs.erofs`, transiently -- the specification
+does not need `squashfs-tools`/`erofs-utils` installed, and nothing from
+building them is left in the produced image.
 
 A partition may have the following flags:
 
@@ -1254,13 +1267,45 @@ in the `partitions` section may be referenced by `volumes` (see below).
 Logical volumes share many of the attributes defined above for `partitions` but
 more specifically:
 
-| Attribute | Required | Description                              |
-| --------- |:--------:| ---------------------------------------- |
-| label     | yes      | Name of the volume                       |
-| group     | yes      | Name of the LVM group to join            |
-| size      | no       | Size of the partition                    |
-| type      | no       | File-system type (e.g. `ext4`)           |
-| where     | yes      | Where to mount the volume file-system    |
+| Attribute   | Required | Description                              |
+| ----------- |:--------:| ----------------------------------------- |
+| label       | yes      | Name of the volume                       |
+| group       | yes      | Name of the LVM group to join            |
+| size        | no       | Size of the partition                    |
+| type        | no       | File-system type (e.g. `ext4`)           |
+| compression | no       | Compression, for a read-only `type`      |
+| where       | yes      | Where to mount the volume file-system    |
+
+`type: squashfs`/`erofs` volumes are not restricted to a `gpt` table: the
+imager identifies an LVM logical volume by its `/dev/<group>/<label>` device
+path regardless of file-system type, so `identify`/`PARTLABEL`/`PARTUUID`
+don't apply here. Unlike a plain partition, an LVM volume's `size` is not
+grown to fit a built `squashfs`/`erofs` image -- it must already be large
+enough, or the build fails.
+
+#### Example: a read-only `/usr`
+
+```yaml
+image:
+  filename: example.img
+  table: gpt
+  partitions:
+    - label: boot
+      where: /boot
+      type: ext4
+      size: 256MiB
+    - label: root
+      where: /
+      type: ext4
+    - label: usr
+      where: /usr
+      type: squashfs        # or: erofs
+      compression: zstd     # optional, passed straight through
+    - label: usrlocal
+      where: /usr/local      # nested under /usr, its own writable partition
+      type: ext4
+      size: 128MiB
+```
 
 ### test
 

@@ -12,11 +12,19 @@ import guestfs
 
 from seine.imager_appliance import ImagerAppliance
 from seine.imager_kernel    import ImagerKernel
+from seine.imager_extra_tools import ExtraImagerTools
+from seine.packages          import FALLBACK_EPOCH
+from seine.partition        import RO_FSTYPES
 from seine.tasks import Task
 from seine.utils            import ContainerEngine
 from seine.utils            import HOST_ARCH
 
 DEVICE = "/dev/sda"
+
+# Neither squashfs nor erofs is a g.mkfs() target -- RO_FSTYPES mounts are
+# staged as this, then replaced with the real built image (see the finalize
+# pass in create()).
+STAGING_TYPE = "ext4"
 
 # GPT partition type GUIDs.
 GPT_TYPE_ESP = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
@@ -149,7 +157,8 @@ class Imager:
         g.rm("/rootfs.xattr")
 
     def _mkfs(self, g, part, dev):
-        g.mkfs(part["type"], dev)
+        fstype = STAGING_TYPE if part["type"] in RO_FSTYPES else part["type"]
+        g.mkfs(fstype, dev)
         if "label" in part:
             g.set_label(dev, part["label"])
 
@@ -173,6 +182,117 @@ class Imager:
         elif "boot" in flags:
             g.part_set_bootable(DEVICE, index, True)
         return DEVICE + str(index)
+
+    def _write_fstab(self, g, mount_order, mount_devices, part_index):
+        fstab = []
+        for m in mount_order:
+            dev = mount_devices[id(m)]
+            ro = m["type"] in RO_FSTYPES
+            if m["_lvm"]:
+                what = dev
+            elif ro and m.get("identify") == "partuuid":
+                what = "PARTUUID=%s" % g.part_get_gpt_guid(DEVICE, part_index[id(m)])
+            elif ro:
+                what = "PARTLABEL=%s" % m["label"]
+            else:
+                what = "UUID=%s" % g.vfs_uuid(dev)
+            options = "defaults"
+            passno = 2
+            if ro:
+                options = "ro"
+                passno = 0
+            elif m["_prefix"] == "/":
+                if m["type"] != "btrfs":
+                    options = "errors=remount-ro"
+                passno = 1
+            elif m["type"] == "vfat":
+                options = "umask=0077"
+            fstab.append("%s %s %s %s 0 %d" % (what, m["_prefix"], m["type"], options, passno))
+        g.write("/etc/fstab", ("\n".join(fstab) + "\n").encode())
+
+    def _label_selinux(self, g, mount_order):
+        se_contexts = "/etc/selinux/default/contexts/files/file_contexts"
+        if not (g.is_file(se_contexts) and g.is_file("/usr/sbin/setfiles")):
+            return
+        print("Setting file contexts for SELinux...")
+        if g.is_file("/etc/default/grub"):
+            grub_cfg = g.read_file("/etc/default/grub").decode()
+            grub_cfg = re.sub(r'^(GRUB_CMDLINE_LINUX=.*)"$', r'\1 security=selinux"',
+                               grub_cfg, flags=re.MULTILINE)
+            g.write("/etc/default/grub", grub_cfg.encode())
+        # setfiles never crosses a filesystem boundary, so one call on "/"
+        # misses every separate mount. FAT has no xattr support, so skip it
+        # rather than fail on it.
+        for m in mount_order:
+            if m["type"] in ("vfat", "msdos", "fat", "fat32"):
+                continue
+            g.sh("setfiles -m%s %s %s" % (
+                " -v" if self.verbose else "", se_contexts, m["_prefix"]))
+
+    # Deepest mount first, so a packed mount's own children are already
+    # unmounted (an empty dir, not live content) by the time it's read.
+    def _build_ro_images(self, g, ph, mount_devices):
+        built_sizes = {}
+        ro_mounts = [m for m in ph.mounts if m["type"] in RO_FSTYPES]
+        if not ro_mounts:
+            return built_sizes
+
+        mounted = {id(m) for m in ph.mounts}
+        tools_dir = "/.imager-extra-tools"
+        g.mkdir_p(tools_dir)
+        for host_path in self._extra_tools_files:
+            remote_path = "%s/%s" % (tools_dir, os.path.basename(host_path))
+            g.upload(host_path, remote_path)
+            g.chmod(0o755, remote_path)
+
+        for m in sorted(ro_mounts, key=lambda m: m["_depth"], reverse=True):
+            print("Building %s image for '%s'..." % (m["type"], m["label"]))
+            for child in ph.mounts:
+                if child is not m and id(child) in mounted \
+                   and child["_prefix"].startswith(m["_prefix"]):
+                    g.umount(child["_prefix"])
+                    mounted.discard(id(child))
+
+            tool = "%s/%s" % (tools_dir,
+                "mksquashfs" if m["type"] == "squashfs" else "mkfs.erofs")
+            run = "LD_LIBRARY_PATH=%s %s" % (tools_dir, tool)
+
+            scratch = "/%s.img" % m["label"]
+            comp = m.get("compression")
+            # Fixed timestamp, not real mtimes: identical content must give
+            # identical bytes (and so the same verity root hash) across
+            # rebuilds. Same fallback value packages.py uses when a tree
+            # has no other date to go by.
+            if m["type"] == "squashfs":
+                g.sh("%s %s %s -noappend -all-time %d%s" % (
+                    run, m["_prefix"], scratch, FALLBACK_EPOCH,
+                    " -comp %s" % comp if comp else ""))
+            else:
+                # mkfs.erofs takes output before source, the reverse of mksquashfs
+                g.sh("%s%s -T%d %s %s" % (
+                    run, " -z%s" % comp if comp else "", FALLBACK_EPOCH,
+                    scratch, m["_prefix"]))
+
+            built = g.filesize(scratch)
+            built_sizes[id(m)] = built
+            g.umount(m["_prefix"])
+            mounted.discard(id(m))
+
+            if m["_lvm"]:
+                dest, offset, cap = mount_devices[id(m)], 0, m["size"]
+            else:
+                dest, offset = DEVICE, m["_start_mib"] * 1024 * 1024
+                cap = (m["_end_mib"] - m["_start_mib"]) * 1024 * 1024
+            if built > cap:
+                raise RuntimeError(
+                    "built %s image for '%s' is %d bytes, larger than its "
+                    "%d-byte partition/volume" % (m["type"], m["label"], built, cap))
+
+            g.copy_file_to_device(scratch, dest, destoffset=offset)
+            g.rm(scratch)
+
+        g.rm_rf(tools_dir)
+        return built_sizes
 
     def _hypervisor(self, target_arch):
         imager_spec = self.source.spec.get("imager") or {}
@@ -256,6 +376,15 @@ class Imager:
         self._output_dir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
                                            prefix="imager-")
         self._hypervisor_path = self._prepare_appliance(self._output_dir)
+        self._extra_tools_files = self._prepare_extra_tools(self._output_dir)
+
+    def _prepare_extra_tools(self, output_dir):
+        if not any(m["type"] in RO_FSTYPES for m in self.source.partitionHandler.mounts):
+            return []
+        print("Preparing read-only file-system tools...")
+        tools = ExtraImagerTools(self.source)
+        tools.create()
+        return tools.extract(output_dir)
 
     def _build(self):
         self.create()
@@ -287,10 +416,12 @@ class Imager:
                 print("Partitioning (%s)..." % ph._table)
                 g.part_init(DEVICE, ph._table)
                 part_devices = {}
+                part_index = {}
                 index = 1
                 for part in ph.partitions:
                     dev = self._partition_device(g, ph._table, part, index)
                     part_devices[id(part)] = dev
+                    part_index[id(part)] = index
                     if part["_lvm"]:
                         g.pvcreate(dev)
                     else:
@@ -332,35 +463,14 @@ class Imager:
                 self._restore_xattrs(g)
 
                 print("Writing fstab...")
-                fstab = []
-                for m in mount_order:
-                    dev = mount_devices[id(m)]
-                    what = dev if m["_lvm"] else "UUID=%s" % g.vfs_uuid(dev)
-                    options = "defaults"
-                    passno = 2
-                    if m["_prefix"] == "/":
-                        if m["type"] != "btrfs":
-                            options = "errors=remount-ro"
-                        passno = 1
-                    elif m["type"] == "vfat":
-                        options = "umask=0077"
-                    fstab.append("%s %s %s %s 0 %d" % (what, m["_prefix"], m["type"], options, passno))
-                g.write("/etc/fstab", ("\n".join(fstab) + "\n").encode())
+                self._write_fstab(g, mount_order, mount_devices, part_index)
 
                 print("Copying bootlets...")
                 for bootlet in ph.bootlets:
                     data = g.read_file(bootlet["file"])
                     g.pwrite_device(DEVICE, data, bootlet["_seek"] * 1024)
 
-                se_contexts = "/etc/selinux/default/contexts/files/file_contexts"
-                if g.is_file(se_contexts) and g.is_file("/usr/sbin/setfiles"):
-                    print("Setting file contexts for SELinux...")
-                    if g.is_file("/etc/default/grub"):
-                        grub_cfg = g.read_file("/etc/default/grub").decode()
-                        grub_cfg = re.sub(r'^(GRUB_CMDLINE_LINUX=.*)"$', r'\1 security=selinux"',
-                                           grub_cfg, flags=re.MULTILINE)
-                        g.write("/etc/default/grub", grub_cfg.encode())
-                    g.sh("setfiles -m %s /" % se_contexts)
+                self._label_selinux(g, mount_order)
 
                 if g.is_file("/usr/sbin/grub-install"):
                     print("Installing grub...")
@@ -373,8 +483,14 @@ class Imager:
                         g.mv("/efi/EFI/debian/grubx64.efi", "/efi/EFI/boot/bootx64.efi")
                     g.sh("update-grub")
 
+                built_sizes = self._build_ro_images(g, ph, mount_devices)
+
                 print("Disk usage:")
                 for m in mount_order:
+                    if m["type"] in RO_FSTYPES:
+                        print("%s\t%s (%s)" % (
+                            m["_prefix"], ph._to_human_size(built_sizes[id(m)]), m["type"]))
+                        continue
                     st = g.statvfs(m["_prefix"])
                     total = st["blocks"] * st["frsize"]
                     used = total - st["bfree"] * st["frsize"]
