@@ -28,9 +28,8 @@ execute_after_dh_auto_install-arch:
 		echo /usr/share/seine/pylibs > "$$d/seine-extras.pth"; \
 	done
 
-execute_after_dh_auto_build-indep:
-	HOSTARCH=amd64 debian/build-oci.py debian/build-oci/amd64
-	HOSTARCH=arm64 debian/build-oci.py debian/build-oci/arm64
+execute_after_dh_auto_build-arch:
+	HOSTARCH=$(DEB_HOST_ARCH) debian/build-oci.py debian/build-oci
 
 override_dh_python3:
 	dh_python3 --skip-private

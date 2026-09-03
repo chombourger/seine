@@ -32,54 +32,24 @@ Description: slim embedded images, now easy
  .
  This package provides the seine command line tool.
 
-Package: seine-oci-bookworm-amd64
-Architecture: all
-Multi-Arch: foreign
+Package: seine-oci-bookworm
+Architecture: amd64 arm64
 Depends: seine (= ${binary:Version}),
          ${misc:Depends}
-Conflicts: seine-oci-bookworm-arm64, seine-oci-trixie-arm64
-Description: prebuilt debian:bookworm base image for amd64 hosts
- The 'debian:bookworm' image for an amd64 host, imported into podman on
- first use instead of pulled from a registry -- the only image any of
- seine's own container builds ever pull rather than build locally.
- Install alongside seine-oci-trixie-amd64 for both releases; not
- alongside an arm64 host package.
+Description: prebuilt debian:bookworm base image
+ The 'debian:bookworm' image for this package's own architecture,
+ imported into podman on first use instead of pulled from a registry --
+ the only image any of seine's own container builds ever pull rather
+ than build locally.
+ Install alongside seine-oci-trixie for both releases.
 
-Package: seine-oci-trixie-amd64
-Architecture: all
-Multi-Arch: foreign
+Package: seine-oci-trixie
+Architecture: amd64 arm64
 Depends: seine (= ${binary:Version}),
          ${misc:Depends}
-Conflicts: seine-oci-bookworm-arm64, seine-oci-trixie-arm64
-Description: prebuilt debian:trixie base image for amd64 hosts
- The 'debian:trixie' image for an amd64 host, imported into podman on
- first use instead of pulled from a registry -- the only image any of
- seine's own container builds ever pull rather than build locally.
- Install alongside seine-oci-bookworm-amd64 for both releases; not
- alongside an arm64 host package.
-
-Package: seine-oci-bookworm-arm64
-Architecture: all
-Multi-Arch: foreign
-Depends: seine (= ${binary:Version}),
-         ${misc:Depends}
-Conflicts: seine-oci-bookworm-amd64, seine-oci-trixie-amd64
-Description: prebuilt debian:bookworm base image for arm64 hosts
- The 'debian:bookworm' image for an arm64 host, imported into podman on
- first use instead of pulled from a registry -- the only image any of
- seine's own container builds ever pull rather than build locally.
- Install alongside seine-oci-trixie-arm64 for both releases; not
- alongside an amd64 host package.
-
-Package: seine-oci-trixie-arm64
-Architecture: all
-Multi-Arch: foreign
-Depends: seine (= ${binary:Version}),
-         ${misc:Depends}
-Conflicts: seine-oci-bookworm-amd64, seine-oci-trixie-amd64
-Description: prebuilt debian:trixie base image for arm64 hosts
- The 'debian:trixie' image for an arm64 host, imported into podman on
- first use instead of pulled from a registry -- the only image any of
- seine's own container builds ever pull rather than build locally.
- Install alongside seine-oci-bookworm-arm64 for both releases; not
- alongside an amd64 host package.
+Description: prebuilt debian:trixie base image
+ The 'debian:trixie' image for this package's own architecture,
+ imported into podman on first use instead of pulled from a registry --
+ the only image any of seine's own container builds ever pull rather
+ than build locally.
+ Install alongside seine-oci-bookworm for both releases.
