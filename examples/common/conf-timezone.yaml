@@ -5,6 +5,13 @@ playbook:
     - name: set the system timezone
       priority: 900
       tasks:
+        # trixie split hwclock out of util-linux into util-linux-extra;
+        # community.general.timezone needs it even just to set Etc/UTC.
+        - name: install hwclock on trixie
+          apt:
+              name: util-linux-extra
+              state: present
+          when: ansible_distribution_release == "trixie"
         - name: use UTC
           community.general.timezone:
               # Debian normalizes this to its Etc/UTC symlink; naming that
