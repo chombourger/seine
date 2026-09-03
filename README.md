@@ -1,311 +1,349 @@
-# seine: Slim Embedded Images Now Easy
+# seine
 
-## Introduction
+**Debian system composition for embedded Linux**
 
-seine is a command-line tool that builds images for embedded systems by
-composing a Debian-based system from a YAML specification: Debian packages,
-configuration, a kernel, and a storage/image layout go in; a bootable disk
-image comes out. The specification may be split across several files and
-may include Ansible playbooks for installing and configuring packages.
+seine builds bootable embedded Linux images from a YAML specification.
 
-The mental model is deliberately small:
-
-```
-Debian + composition = target system
-```
-
-seine does not invent a new distribution, a new package format, or a new
-build-time scripting language. It starts from Debian, because Debian already
-answers the questions an embedded image has to answer -- what packages exist,
-how they depend on each other, how they are updated -- and composes a target
-system from what Debian already provides, adding only what a specific board
-or image genuinely needs on top.
-
-### Composition, not a bespoke package universe
-
-Debian is fundamentally a *binary* distribution: a `.deb` is built once,
-independently of any particular system that will install it, and can then be
-installed on any system whose dependencies it satisfies. seine preserves that
-property wherever practical. It composes systems primarily at *image* build
-time -- taking existing Debian binary packages and arranging them, through
-configuration, into a target system -- rather than treating every image
-configuration as a reason to rebuild an otherwise identical package. The
-common case is not "one custom binary universe per board"; it is packages,
-selected and configured, becoming a system:
-
-```
-packages + configuration + kernel + storage layout -> target system
+```text
+      specification
+            │
+            ├── Debian packages
+            ├── grafts
+            ├── vendor inputs
+            ├── configuration
+            └── kernel
+                   │
+                   ▼
+              target system
+                   │
+                   ▼
+               disk image
 ```
 
-This is a different concern from *producing* a package in the first place:
+The basic idea is deliberately small:
 
-```
-source -> Debian binary package
-```
+> **Debian + composition = target system**
 
-seine keeps the two apart on purpose. Package production is Debian's job,
-done by Debian's own tools; system composition is seine's job. When an
-existing package is genuinely not enough -- a patch the distribution does not
-carry, a kernel built from a tree Debian does not package -- seine can graft
-Debian's own packaging onto a modified source and rebuild it, but this is an
-explicit, visible exception, not the normal way packages end up in an image.
-The result of a graft is an ordinary Debian package fed back into the same
-composition step as everything else, so grafting a handful of packages does
-not change how the rest of the system is built. See
-[Rebuilding the kernel](docs/kernels.md#rebuilding-the-kernel) and
-[packages](docs/specification.md#packages) for how grafting actually works.
+seine does not introduce a new Linux distribution, package format, or package build language. It uses Debian packages where possible, Debian packaging when a package needs to be rebuilt (a **graft**), Ansible for system configuration, and standard Linux tools for creating the resulting image.
 
-Keeping the two concerns separate also makes an image easier to reason about
-after the fact: which binary packages it contains, which source packages
-they came from, and which of them were modified rather than taken as
-Debian shipped them are three different, individually inspectable questions
--- because system configuration lives in the specification and playbooks,
-while package modifications live in a small, explicit set of grafted
-packages. seine does not claim bit-for-bit reproducible images; what it
-does provide -- pinned feeds, snapshot builds, a fixed `SOURCE_DATE_EPOCH`
-for rebuilds -- is described in [Reproducibility](docs/building.md#reproducibility).
+It also provides a way to **vendor the inputs to a build** so that a system can be rebuilt later without depending on the state of a live Debian archive.
 
-### Existing concepts, not a new one
+## A minimal specification
 
-Describing a target system means learning a handful of things seine adds,
-not a build language of its own:
-
- * **Debian packages and APT** decide most of what ends up in the image.
- * **Debian source packages** are what a [graft](docs/specification.md#packages) starts from,
-   when a package has to be modified.
- * **Ansible** describes system configuration -- see
-   [Why Ansible](#why-ansible) below.
- * **Kernel configuration and Debian's kernel packaging** are what
-   [rebuilding or replacing a kernel](docs/kernels.md) is built on.
- * **Partitions, filesystems and LVM** describe the
-   [storage layout](docs/specification.md#image) of the resulting image.
-
-None of these are seine inventions. The specification format ties them
-together and adds the settings particular to composing an image -- what feeds
-to build from, what to graft, what the disk should look like -- but
-deliberately does not grow into a general-purpose build system: a small
-number of understandable concepts, applied consistently, is the point.
-
-### Why Ansible
-
-Ansible plays the same role a specification-only DSL would, but is already
-familiar to anyone who configures Linux systems, and it stays a build-time
-tool: seine drives `ansible-playbook` from the host against the container
-being assembled, so Ansible itself is never installed into the target
-system. Using an existing, well-understood configuration language was
-preferred over inventing a seine-specific one that would only ever be used
-here. See [playbook](docs/specification.md#playbook) for how playbooks fit into a specification.
-
-### The kernel
-
-seine's kernel handling stays inside Debian's kernel packaging model rather
-than replacing it: a rebuilt kernel is still built by Debian's packaging,
-still produces `linux-image`, `linux-headers` and the rest under Debian's
-naming, and still installs the way a Debian kernel does. Reconfiguring or
-grafting a kernel are extensions to that packaging, applied for cases where
-the distribution's own kernel is not what an image needs -- not a separate
-kernel build system living beside it.
-
-That packaging distinguishes **architecture**, **featureset** and
-**flavour**, and seine keeps that distinction rather than collapsing it: a
-flavour identifies a real, meaningful configuration (`amd64`'s ordinary
-kernel is not the same flavour as its realtime one), and a kernel grafted
-from a tree Debian does not package is given a distinct ABI name rather than
-allowed to masquerade as one of Debian's own flavours. See
-[Kernels](docs/kernels.md) for the details, and
-[What you do not get](docs/kernels.md#what-you-do-not-get) for what a graft deliberately
-does not carry over.
-
-### How a build actually runs
-
-Mechanically: seine requires no elevated privileges after installation (no
-`sudo`, no bind mounts). The root file-system is first assembled in a
-container -- seine uses podman, which is daemon-less -- then exported as a
-tarball. A throwaway [libguestfs](https://libguestfs.org/) appliance, run
-under qemu/kvm, partitions and formats the disk image and installs the boot
-loader, since that step needs to create the disks/partitions themselves.
-
-### The trade-off
-
-seine intentionally does not try to expose every build-time mechanism a
-package or an image might conceivably need. It favours a small,
-understandable system-composition model, backed by ordinary Debian
-packaging, over arbitrary build-time flexibility. That is a real
-constraint -- some things are out of scope, or have to go through the
-graft escape hatch rather than a setting of their own -- traded for a
-model where what an image is built from, and why, stays legible.
-
-## Contents
-
-* [Introduction](#introduction)
-  * [Composition, not a bespoke package universe](#composition-not-a-bespoke-package-universe)
-  * [Existing concepts, not a new one](#existing-concepts-not-a-new-one)
-  * [Why Ansible](#why-ansible)
-  * [The kernel](#the-kernel)
-  * [How a build actually runs](#how-a-build-actually-runs)
-  * [The trade-off](#the-trade-off)
-* [Getting started](#getting-started)
-* [Specification files](#specification-files)
-* [Kernels](#kernels)
-* [Building](#building)
-* [TUI](#tui)
-* [Testing](#testing)
-* [Software Bill of Materials](#software-bill-of-materials)
-
-## Getting started
-
-```
-sudo apt-get install -y podman passt qemu-kvm crun python3-venv python3-guestfs
-sudo adduser $USER kvm
-pip install -r requirements.txt
-./seine.py build examples/pc-image/main.yaml
-```
-
-`passt` is what gives a rootless container a network; `crun` is needed if
-`/tmp` is its own mount. Building for an architecture other than the host's
-needs that architecture's qemu system emulator too (e.g. `qemu-system-arm`
-for `arm64`). Everything else a build does -- bootstrapping, rebuilding
-packages, writing the repository index -- happens inside containers, so
-none of those tools need to be on the host.
-
-See [docs/getting-started.md](docs/getting-started.md) for the full
-installation walkthrough, using seine behind an HTTP proxy, building a
-`.deb` of seine itself, and running the test suite.
-
-## Specification files
-
-A specification is one or more YAML files, split with `requires` so common
-settings (a release, an architecture) are written once and pulled in by the
-files that need them:
-
-```
-requires:
-    - bookworm
-    - amd64
-
+```yaml
+# spec.yaml
 distribution:
-    - ...   # feeds a build's apt sees
+    architecture: amd64
+    release: bookworm
 
 packages:
-    - ...   # what apt installs, and what gets rebuilt from source
+    - source: apt://busybox
+      patches:
+          - patches/0001-mark-the-banner-as-rebuilt.patch
+
+vendor:
+    - name: busybox
 
 playbook:
-    - ...   # ansible tasks that configure the assembled system
-
-image:
-    - ...   # partitions, filesystems, LVM -- the disk that comes out
+    - name: base packages
+      tasks:
+          - name: install vim
+            apt:
+                state: present
+                name: [vim]
 ```
 
-`distribution` says what Debian release and feeds a build starts from;
-`packages` says what apt installs and which of those are rebuilt from
-Debian's own source (a graft); `playbook` is the Ansible that configures
-what got installed; `image` is the disk layout the result is written to.
-A file can also read what another sets, written `[[ distribution.release ]]`,
-so a fragment shared across releases or boards stays a single copy.
+```console
+seine plan spec.yaml
+seine build spec.yaml
+```
 
-See [docs/specification.md](docs/specification.md) for every section and
-setting: variables, feeds and snapshots, package pinning and grafting,
-signing, the imager, and image layout. See
-[docs/merging.md](docs/merging.md) for how two files touching the same
-section combine -- which one wins a setting both write, and why that
-differs by section.
+`packages:` rebuilds `busybox` from Debian source with a local patch. `vendor:` asks seine to keep that source, and everything it build-depends on, around for a future rebuild. `playbook:` runs an Ansible task against the assembled system.
+
+This excerpt leaves out the `distribution: feeds:` and `image:` sections a runnable specification also needs. `examples/rebuild-busybox/` grafts this same patch onto a bootable image and tests it on real hardware; `examples/vendor/main.yaml` is a vendor-only specification covering a realistic Debian package set; `examples/pc-image/main.yaml` (`seine build examples/pc-image/main.yaml`) is a complete image with neither.
+
+## Composition, not a bespoke package universe
+
+Building an embedded Linux system involves two different problems:
+
+```text
+source ────────────────> Debian package
+                              │
+                              │
+packages + configuration ────┴───> target system
+                                      │
+                                      ▼
+                                  disk image
+```
+
+The first is **package production**. The second is **system composition**.
+
+seine is primarily concerned with the second.
+
+A target system is normally assembled from existing Debian binary packages. There is no need to create a separate binary package universe for every board or image.
+
+When Debian's package is genuinely not sufficient -- for example, a patch is required or the kernel comes from a tree that Debian does not package -- seine can rebuild it using Debian's own packaging. This is called a **graft**.
+
+The result is still an ordinary Debian package and goes through the same composition process as everything else.
+
+## Vendor the inputs, not just the image
+
+A system build depends on more than the packages explicitly named in its specification.
+
+A package that seine rebuilds has build dependencies. Those dependencies have dependencies of their own. Some packages are needed only to build the image and never appear in the resulting root filesystem.
+
+`vendor:` lets seine preserve those inputs.
+
+```yaml
+vendor:
+  - name: openssl
+  - name: busybox
+    suite: [bookworm, trixie]
+  - name: libfoo
+    suite: bookworm
+    arch: [armhf]
+    version: ">=1.2"
+```
+
+For each requested source package, `seine vendor` resolves its complete build-dependency closure for the requested Debian suites and architectures.
+
+The result is a local Debian repository containing the source packages and binary packages needed by that closure.
+
+This is deliberately different from `packages:`:
+
+```text
+packages:  what should seine rebuild?
+vendor:    what inputs must survive?
+```
+
+The dependency closure is recorded with provenance, so it is possible to determine not only *what* was vendored but *why* a source package was included.
+
+The resolver also skips packages a real Debian build environment already provides, so it copies only the inputs that actually need preserving.
+
+## Committed vendor locks
+
+A vendor repository in a local build cache is useful, but it is not enough for a project that wants its build inputs to survive for years.
+
+A specification can therefore have a committed lock file:
+
+```text
+foo.yaml
+foo.lock.yaml
+```
+
+The lock file is discovered automatically when it sits beside the specification.
+
+It records the resolved vendor inputs, including versions and hashes of the files that were fetched. It is generated by seine rather than edited by hand:
+
+```console
+seine vendor --refresh foo.yaml
+```
+
+Once committed, an ordinary:
+
+```console
+seine vendor foo.yaml
+```
+
+uses the frozen resolution rather than asking APT what the current candidate happens to be.
+
+Changing the `vendor:` request without refreshing the lock is an error rather than an invitation to silently resolve something different.
+
+This gives two useful properties:
+
+1. two checkouts of the same specification ask for the same vendor inputs;
+2. changes in the Debian archive do not silently change an existing vendor lock.
+
+`seine vendor --check foo.yaml` can be used by CI to resolve the current archive and report whether it still agrees with the committed lock.
+
+## When Debian no longer has the package
+
+Debian's live archives normally retain the current version of a package, not its complete history.
+
+A lock can therefore outlive the copy of a package in the live archive.
+
+When a vendor lock is refreshed, seine checks the fetched files against `snapshot.debian.org` where possible and records the snapshot's content identifier in the lock.
+
+If the live archive later stops providing the pinned version, an ordinary vendor operation can fetch the file directly from its historical snapshot and verify it against the lock's hash.
+
+The normal build path therefore does not need to query snapshot.debian.org. The information required to retrieve a historical file is already part of the committed lock.
+
+This is an important distinction:
+
+> **snapshot.debian.org is used to preserve history, not as the build system's package repository.**
+
+If a file has never been indexed by snapshot.debian.org, seine does not pretend otherwise: the lock still retains the file's own hash, and the vendor operation continues to require those bytes to match.
+
+This is particularly useful for embedded systems, where an image may need to stay buildable long after the development environment -- and the corresponding Debian archive -- have moved on. A vendor lock pins and preserves the inputs to that future build; it does not, by itself, guarantee that the build reproduces byte-identical output. Package builds are given a fixed `SOURCE_DATE_EPOCH` and a fixed build path (see [Reproducibility](docs/building.md#reproducibility)), but reproducibility of a finished image is not currently tested or guaranteed by seine.
+
+## Debian packages remain Debian packages
+
+Debian is fundamentally a binary distribution: a `.deb` is built independently of the system that will eventually install it and can be reused wherever its dependencies are satisfied.
+
+seine preserves that property wherever practical.
+
+Most packages in an image therefore come directly from the configured Debian feeds. System-specific behaviour belongs in the image specification and its configuration rather than being encoded by rebuilding packages unnecessarily.
+
+When a package really does need to change, seine starts from the Debian source package and rebuilds it. The modified package then becomes another Debian package in the image.
+
+The same distinction applies to vendoring: the vendored repository contains Debian packages and Debian source packages. It is not a second package format.
+
+## Grafts
+
+A graft is the escape hatch for cases where the Debian package is not sufficient.
+
+For example, a package can be rebuilt from Debian source with additional changes, or a kernel can be grafted from a source tree that Debian does not package.
+
+The important distinction is that grafting does not create a second packaging mechanism. The result is fed back into the normal Debian package composition process.
+
+In the common case, no grafts are necessary.
+
+## Configuration with Ansible
+
+System configuration is expressed with Ansible playbooks.
+
+seine runs `ansible-playbook` from the build environment against the system being assembled. Ansible is therefore a build-time dependency; it is not installed into the resulting image unless the specification explicitly asks for it.
+
+Using Ansible avoids creating another configuration DSL that Linux developers would have to learn.
 
 ## Kernels
 
-seine can reconfigure the distribution's own kernel (a `config` fragment
-under `extends: kernel:`) or, when Debian does not package the tree an image
-needs, build one from upstream source under Debian's own kernel packaging:
+seine keeps kernel builds inside Debian's kernel packaging model.
 
-```
+A Debian kernel can be reconfigured using configuration fragments:
+
+```yaml
 packages:
-    - source: apt://linux
-      extends:
-          kernel:
-              config:
-                  - configs/slim-common.fragment
-                  - configs/slim-amd64.fragment
+  - source: apt://linux
+    extends:
+      kernel:
+        config:
+          - configs/slim-common.fragment
+          - configs/slim-amd64.fragment
 ```
 
-Either way the result is still `linux-image`/`linux-headers` built and
-installed the way a Debian kernel is; a kernel grafted from a tree Debian
-does not package gets its own ABI name rather than posing as one of
-Debian's flavours. Out-of-tree kernel modules can be brought in the same
-way.
+When Debian's kernel source is not appropriate, a kernel can instead be grafted from another source tree.
 
-See [docs/kernels.md](docs/kernels.md) for reconfiguring, bringing your
-own kernel tree, and bringing your own modules.
+In either case, the result is packaged as a Debian kernel and installed in the usual way.
+
+## How a build runs
+
+Mechanically, the build separates system composition from disk creation:
+
+```text
+                 specification
+                       │
+                       ▼
+             packages / vendor inputs
+                       │
+                       ▼
+                root filesystem
+                   (Podman)
+                       │
+                       ▼
+                     tar
+                       │
+                       ▼
+               libguestfs / QEMU
+                       │
+                       ▼
+                  disk image
+```
+
+The root filesystem is assembled inside a rootless Podman container.
+
+The disk image is then created by a temporary libguestfs appliance running under QEMU/KVM.
+
+No elevated privileges are required after installation.
+
+Cross-architecture builds use QEMU where necessary.
 
 ## Building
 
-```
-seine plan spec.yaml    # what would be built, and what changed since last time
-seine build spec.yaml   # build it
-```
+The basic commands are:
 
-A build only redoes what the specification changed: package rebuilds,
-bootstrap steps and container images from a previous build are reused
-where nothing they depend on moved. Builds are pinned to a feed snapshot
-and a fixed `SOURCE_DATE_EPOCH`, cross-compile by naming a different
-`distribution.architecture`, and need no elevated privileges (no `sudo`,
-no bind mounts) after the packages in [Getting started](#getting-started)
-are installed.
-
-`--` builds several images together under one scheduler, sharing what
-their specifications agree on -- one host bootstrap, one build of a
-package two boards both ask for:
-
-```
-seine build pc-image.yaml -- rpi4-image.yaml
+```console
+seine plan spec.yaml
+seine build spec.yaml
 ```
 
-See [docs/building.md](docs/building.md) for what a build actually does,
-watching one run, building several together, caching (including moving
-a cache to another machine), cross-compiling, and reproducibility, and
-[docs/environment.md](docs/environment.md) for every environment variable
-seine reads, including where its directories go.
+`plan` shows what would be built and what has changed.
 
-## TUI
+`build` performs the build.
 
+Build results are cached and reused when their inputs have not changed.
+
+Several images can be built together:
+
+```console
+seine build examples/pc-image/main.yaml -- examples/rpi4-image/main.yaml
 ```
-seine tui [SPEC...]
-```
 
-opens an interactive alternative to typing `seine build`/`seine plan`/etc.
-one at a time -- the same engine, driven from a `/command` prompt, with a
-screen for each thing seine can already do: an overview of the active
-specification, a plan, a live build cockpit, a read-only browser of a
-built image, and more. Needs the `tui` extra (`pip install seine[tui]`,
-or the `seine-tui` package).
-
-![seine tui: Doctor, Overview, /extend, Plan, browsing a built image, and Help](docs/images/tui-demo.gif)
-
-See [docs/tui.md](docs/tui.md) for every screen, keyboard shortcut, and
-`/command`.
+Shared work is scheduled once when the specifications require the same inputs.
 
 ## Testing
 
-```
-seine test SPEC.yml
+A specification can carry its own tests:
+
+```console
+seine test spec.yaml
 ```
 
-runs `SPEC.yml`'s own `test` section against a real target driven over
-mtda -- a specification carries its tests the same way it carries its
-packages/playbook/image. Sequential steps, variables, `if`/`for`/`while`,
-`try`/`except`, reusable named keywords, setup/teardown and tags, all
-Robot Framework's own semantics under seine's own declarative YAML, with
-results a CI job can act on unambiguously. Needs the `test` extra (`pip
-install seine[test]`, or the `seine-test` package). See
-[docs/testing.md](docs/testing.md) for the step grammar, the keywords
-seine/mtda expose, and how to run one from `seine tui`.
+Tests run against a real target using mtda and Robot Framework semantics.
+
+This allows a specification to describe not only how an image is assembled, but also how the resulting system is validated.
 
 ## Software Bill of Materials
 
-```
+An image can be built together with an SPDX-format SBOM:
+
+```console
 seine build --sbom spec.yaml
 ```
 
-writes an SPDX-format SBOM beside the image, listing both the binary
-packages installed and the source packages they were built from, from
-dpkg's own record. See
-[docs/building.md#software-bill-of-materials](docs/building.md#software-bill-of-materials)
-for details.
+The SBOM records the binary packages installed in the image and the source packages from which they were built.
+
+## TUI
+
+The same build engine can be driven interactively:
+
+```console
+seine tui [SPEC...]
+```
+
+The TUI provides views for specifications, plans, builds, built images and tests.
+
+It is an alternative interface to the existing commands rather than a separate build implementation.
+
+## What seine deliberately does not do
+
+seine intentionally does not try to expose every possible build-time mechanism a package or image might conceivably need.
+
+It favours a small system-composition model backed by ordinary Debian packaging over arbitrary build-time flexibility.
+
+It is therefore not:
+
+* a replacement for Debian packaging;
+* a general-purpose package build system;
+* a new package format;
+* a new package manager;
+* a complete replacement for systems such as Yocto or Buildroot.
+
+If most of a system's packages need extensive source-level customization, a different build system may be a better fit.
+
+The goal is narrower:
+
+> **Compose a Debian system from explicit inputs, and keep enough of those inputs around that the system can still be understood and rebuilt later.**
+
+## Documentation
+
+* `docs/getting-started.md` — installation and first build
+* `docs/specification.md` — specification format
+* `docs/merging.md` — composing specification files
+* `docs/kernels.md` — kernel configuration and grafting
+* `docs/building.md` — builds, caching, cross-compilation and reproducibility
+* `docs/environment.md` — environment variables and build directories
+* `docs/testing.md` — target testing
+* `docs/tui.md` — interactive interface
+
+See `examples/` for complete specifications, including `examples/vendor/` for a vendor-only build covering a realistic Debian package set across Bookworm/Trixie and amd64/arm64.
