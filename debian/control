@@ -5,6 +5,7 @@ Maintainer: Cedric Hombourger <chombourger@gmail.com>
 Build-Depends: debhelper-compat (= 13),
                dh-python,
                python3-all,
+               python3-pip,
                python3-setuptools
 Standards-Version: 4.7.2
 Rules-Requires-Root: no
@@ -12,8 +13,7 @@ Homepage: https://github.com/chombourger/seine
 X-Python3-Version: >= 3.11
 
 Package: seine
-Architecture: all
-Multi-Arch: foreign
+Architecture: amd64 arm64
 Depends: ${misc:Depends},
          ${python3:Depends},
          ansible,

@@ -12,6 +12,15 @@ seine (0.1-3) unstable; urgency=medium
     qemu-user package (~465MiB for every architecture QEMU supports).
     amd64 and i386, or arm64 and armhf, need no interpreter at all: the
     CPU already runs that code natively.
+  * Fix pybuild installing seine's own Python code into a directory
+    dh_install never packaged (debian/python3-seine, guessed from
+    PYBUILD_NAME): seine.deb shipped no code at all until now.
+  * Make seine Architecture: amd64 arm64 instead of all, and bundle
+    the 'ai', 'tui' and 'test' extras' pip-only deps (litellm, textual,
+    robotframework, ...) under /usr/share/seine/pylibs: none of them
+    have a Debian package, so a plain apt install used to leave those
+    features needing a hand-built venv. seine-oci-<release>-<hostarch>
+    packages are now only built on a native (non-cross) run.
 
  -- Cedric Hombourger <chombourger@gmail.com>  Wed, 02 Sep 2026 07:28:59 +0200
 

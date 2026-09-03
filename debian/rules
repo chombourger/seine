@@ -1,14 +1,37 @@
 #!/usr/bin/make -f
+include /usr/share/dpkg/architecture.mk
+
 export PYBUILD_NAME = seine
 export PYBUILD_DESTDIR = debian/seine
+
+PYVER := $(shell python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+PYABI := cp$(shell python3 -c 'import sys; print("%d%d" % sys.version_info[:2])')
+ifeq ($(DEB_HOST_ARCH),amd64)
+MANYLINUX_ARCH := x86_64
+else
+MANYLINUX_ARCH := aarch64
+endif
 
 %:
 	dh $@ --with python3 --buildsystem=pybuild
 
-# Prebuilt OCI bundles for seine-oci-<release>-<hostarch>, one per
-# release per host architecture. Needs network access and podman's own
-# '--platform' support (qemu-user-static's binfmt registration) to
-# build the non-native host for real -- see debian/build-oci.py.
-execute_after_dh_auto_build:
+execute_after_dh_auto_install-arch:
+	pip install --no-compile --target=debian/seine/usr/share/seine/pylibs \
+		--platform manylinux_2_17_$(MANYLINUX_ARCH) \
+		--platform manylinux2014_$(MANYLINUX_ARCH) \
+		--platform manylinux_2_28_$(MANYLINUX_ARCH) \
+		--python-version $(PYVER) --implementation cp --abi $(PYABI) \
+		--only-binary=:all: \
+		litellm jsonpath-ng 'ruamel.yaml' textual 'rich<14' pyte \
+		robotframework
+	for d in debian/seine/usr/lib/python3*/dist-packages; do \
+		echo /usr/share/seine/pylibs > "$$d/seine-extras.pth"; \
+	done
+
+execute_after_dh_auto_build-indep:
 	HOSTARCH=amd64 debian/build-oci.py debian/build-oci/amd64
 	HOSTARCH=arm64 debian/build-oci.py debian/build-oci/arm64
+
+override_dh_python3:
+	dh_python3 --skip-private
+	dh_python3 usr/share/seine/pylibs --no-guessing-deps
