@@ -5,6 +5,8 @@ import math
 import os
 import re
 
+RO_FSTYPES = {"squashfs", "erofs"}
+
 class PartitionHandler:
 
     START_OFFSET_KB  = 1 * 1024
@@ -119,6 +121,11 @@ class PartitionHandler:
 
         if "where" not in part and part["_lvm"] == False:
             raise ValueError("'where' not defined in partition '%s'!" % label)
+        if part["type"] in RO_FSTYPES and part["_lvm"] == False and self._table != "gpt":
+            raise ValueError(
+                "partition '%s' has a read-only type ('%s'), which needs a 'gpt' "
+                "partition table to be identified in /etc/fstab (this image's "
+                "table is '%s')" % (label, part["type"], self._table))
         if part["_lvm"] == True:
             if "group" not in part:
                 raise ValueError("target 'group' not defined for partition '%s'!" % label)

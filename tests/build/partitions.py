@@ -84,5 +84,73 @@ class PartitionMissingLabel(avocado.Test):
         except Exception as e:
             self.fail("parsing caused an unknown error: %s" % str(type(e)))
 
+class RoFsRequiresGptTable(avocado.Test):
+    def test(self):
+        try:
+            build = BuildCmd()
+            build.loads("""
+                image:
+                    filename: simple-test.img
+                    table: msdos
+                    partitions:
+                        - label: rootfs
+                          where: /
+                        - label: usr
+                          where: /usr
+                          type: squashfs
+            """)
+            build.parse()
+            self.fail("parsing should have failed (read-only type needs a gpt table)!")
+        except ValueError as e:
+            if "needs a 'gpt' partition table" not in str(e):
+                self.fail("parsing did not return the error we expected!")
+        except avocado.core.exceptions.TestFail:
+            raise
+        except Exception as e:
+            self.fail("parsing caused an unknown error: %s" % str(type(e)))
+
+class RoFsOnGptTableIsAccepted(avocado.Test):
+    def test(self):
+        try:
+            build = BuildCmd()
+            build.loads("""
+                image:
+                    filename: simple-test.img
+                    table: gpt
+                    partitions:
+                        - label: rootfs
+                          where: /
+                        - label: usr
+                          where: /usr
+                          type: squashfs
+            """)
+            build.parse()
+        except:
+            self.fail("parsing of a read-only partition on a 'gpt' table failed!")
+
+class RoFsOnLvmVolumeIsAccepted(avocado.Test):
+    def test(self):
+        try:
+            build = BuildCmd()
+            build.loads("""
+                image:
+                    filename: simple-test.img
+                    partitions:
+                        - label: pv
+                          flags:
+                              - lvm
+                          group: main
+                          size: 512MiB
+                    volumes:
+                        - label: usr
+                          group: main
+                          where: /usr
+                          type: squashfs
+                          size: 128MiB
+            """)
+            build.parse()
+        except:
+            self.fail("parsing of a read-only LVM volume failed!")
+
 if __name__ == "__main__":
     avocado.main()

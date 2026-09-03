@@ -1,0 +1,13 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+image:
+    volumes:
+        - label: lv_root
+          size: 512MiB
+        - label: lv_usr
+          group: vg_sys
+          where: /usr
+          type: squashfs
+          size: 1536MiB
+          compression: zstd
