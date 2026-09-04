@@ -72,6 +72,10 @@ every argument each one takes):
 A specification is layered rather than monolithic -- `requires` pulls in
 what a release or board already sets, and `/side-load FRAGMENT.yaml` adds
 one more file on top of the *active* one, live, without starting over.
+Nothing reaches for a side-loaded fragment the way `requires` reaches
+for its own, so it amends the active spec field by field rather than
+losing to it -- a `packages`/`test`/etc. entry the fragment names again
+takes over the fields it sets (see [docs/merging.md](merging.md)).
 `/side-unload FRAGMENT.yaml` reverses it, dropping the file back out and
 reparsing without it -- neither touches `requires:` or anything on disk.
 What makes this worth showing rather than just telling: the spec tree

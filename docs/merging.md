@@ -26,6 +26,32 @@ section's own merge rule is what decides that (see below), and the
 `test`/`playbook` fix this doc follows on from is exactly a case where
 it didn't, for a while.
 
+## Peer files and `requires:` fragments
+
+Everything below assumes a specification is one file plus whatever its
+own `requires:` pulls in. A build is rarely only that: `seine build`
+takes more than one file on its command line, and the TUI's
+`/side-load` appends one more file to the active group -- the exact
+same mechanism (`BuildCmd.load_all()`), just with the extra file coming
+from a person instead of a `requires:` list.
+
+A file `requires:` reaches for a fragment: the reaching file is the
+more specific one, so the direction below (first-loaded wins for the
+sections that pick that direction) treats it that way regardless of
+where in a `requires:` chain it sits. A file given directly on the
+command line, or side-loaded, is not reached for by anything -- there
+is no "generic fragment vs. specific file" relationship between two
+files a person listed side by side. So that case goes the other way
+for the same sections: the later file **amends** the earlier one,
+field by field (an entry present in only one file is kept as-is; a
+field both set takes the later file's value). It is still not a whole
+new entry replacing the old one -- only the fields the later file
+actually names change.
+
+Code content (`playbook`'s `tasks:`, a `test` entry's `keywords:`/a
+case's own `steps:`) is unaffected either way: see "Respecting the
+language a section embeds" below.
+
 ## Two directions
 
 Every section merges by *some* unit -- a whole file for the ones with
@@ -37,13 +63,14 @@ them write. There are two rules in use, never a third:
   settings are recorded before its `requires` are walked, this means
   *first-loaded wins*: `packages`, `playbook`, `test`, and
   `image`'s own `partitions`/`volumes` (matched by `label`) all work
-  this way. A board asking for `apt://linux=6.12.101-1` keeps that
-  pin no matter what a kernel fragment it requires says about the
-  same package; a board's own `boot` test entry's `setup:` stands even
-  if a fragment it requires also names an entry called `boot`. This is
-  the rule for **things a file asks for** -- the file doing the asking
-  outranks anything a fragment it reaches for has to say about the
-  same thing.
+  this way -- within a `requires:` chain; a peer file (the next
+  top-level/side-loaded one, see above) amends by field instead. A
+  board asking for `apt://linux=6.12.101-1` keeps that pin no matter
+  what a kernel fragment it requires says about the same package; a
+  board's own `boot` test entry's `setup:` stands even if a fragment
+  it requires also names an entry called `boot`. This is the rule for
+  **things a file asks for** -- the file doing the asking outranks
+  anything a fragment it reaches for has to say about the same thing.
 
 - **The most specific file wins.** `distribution`, `imager`, and
   `image`'s own scalar settings (`filename`, `table`, `size` --
@@ -60,8 +87,11 @@ them write. There are two rules in use, never a third:
 
 Getting the direction backwards for a given section is the single
 easiest way to misjudge what a new merge rule will do -- verify with a
-throwaway two-file `build.loads()` (see `tests/build/merge.py` for the
-pattern) rather than assuming either rule from the other.
+throwaway two-file test (see `tests/build/merge.py` for the pattern).
+Two plain `build.loads()`/`build.load()` calls exercise the peer
+direction (they are two top-level files, nothing reaches for either);
+exercising the `requires:` direction needs an actual `requires:` link
+between two real files on disk.
 
 | Section | Unit | Direction | Notes |
 |---|---|---|---|
@@ -69,13 +99,13 @@ pattern) rather than assuming either rule from the other.
 | `distribution` | scalar setting | last-loaded wins | except `feeds`, merged by `suite` (a feed named by two files still ends up last-loaded-wins per field, via `dict.update`), and `architectures`, additive/deduplicated like `vendor-exclude` below (`architecture`, singular, still overwrites) |
 | `imager` | scalar setting | last-loaded wins | |
 | `defaults` (`packages` only) | source package | last-loaded wins | deliberately the opposite of `packages` |
-| `packages` | name, else parsed from `source:` | first-loaded wins; `extends:` merges kind-by-kind, some settings (`derived-flavours`, `kernel.configs`, a module's own kernel list) are additive instead | |
-| `vendor` | `name` | first-loaded wins | same shape as `packages`, without `extends:` |
+| `packages` | name, else parsed from `source:` | first-loaded wins within `requires:`, peer amends by field | `extends:` merges kind-by-kind the same way, some settings (`derived-flavours`, `kernel.configs`, a module's own kernel list) are additive instead |
+| `vendor` | `name` | first-loaded wins within `requires:`, peer amends by field | same shape as `packages`, without `extends:`; a lock file's own `vendor:` (a dict, not a list) is a different case entirely -- always last-loaded wins, see `_merge_vendor()` |
 | `vendor-exclude` | exact source package name | additive, deduplicated | order doesn't matter, only presence |
-| `playbook` | `name` | first-loaded wins; `tasks:` is one additive, order-preserving list | tasks never merge task-by-task -- see below |
-| `test` | `name` | first-loaded wins; `library`/`tags`/`variables` additive; `tests:` cases merged the same way one level down, by their own `name` | `keywords:` and a case's own `steps:` are equality-or-error, not first-wins -- see below |
+| `playbook` | `name` | first-loaded wins within `requires:`, peer amends by field; `tasks:` is one additive, order-preserving list either way | tasks never merge task-by-task -- see below |
+| `test` | `name` | first-loaded wins within `requires:`, peer amends by field; `library`/`tags`/`variables` additive either way; `tests:` cases merged the same way one level down, by their own `name` | `keywords:` and a case's own `steps:` are equality-or-error regardless of peer vs. `requires:`, not first-wins -- see below |
 | `image` (scalars) | scalar setting | last-loaded wins | |
-| `image.partitions` / `image.volumes` | `label` | first-loaded wins; `flags` additive (`~flag` removes one a fragment already set) | |
+| `image.partitions` / `image.volumes` | `label` | first-loaded wins within `requires:`, peer amends by field; `flags` additive either way (`~flag` removes one a fragment already set) | |
 
 ## Respecting the language a section embeds
 
@@ -121,15 +151,21 @@ picking a winner)?
 
 ## Where this lives in code
 
-`BuildCmd.merge()` (`seine/build.py`) is the dispatcher; each section
-has its own `_merge_*` method. `_merge_named_list()` and
-`_merge_settings()` are the generic "match by name, merge or append"
-and "first-loaded-wins-unless-additive" helpers `packages`, `playbook`,
-and `test` (and `test`'s own `tests:`/`keywords:` one level down) all
-build on; `_merge_package()`/`_merge_extends()` add `packages`'
-`extends:` recursion on top. `distribution`/`imager`/`image`'s own
+`BuildCmd.merge(spec, peer)` (`seine/build.py`) is the dispatcher;
+`_load()` computes `peer` itself, from `self._loading`'s depth at the
+point a file's own body is merged -- more than one deep means it was
+reached via `requires:`, anything else is a top-level/side-loaded file
+(see "Peer files and `requires:` fragments" above). Each section has
+its own `_merge_*` method. `_merge_named_list()` and `_merge_settings()`
+are the generic "match by name, merge or append" and
+"first-loaded-wins-unless-peer-or-additive" helpers `packages`,
+`playbook`, `vendor`, and `test` (and `test`'s own `tests:`/`keywords:`
+one level down) all build on, threading `peer` through;
+`_merge_package()`/`_merge_extends()` add `packages`' `extends:`
+recursion on top, `_merge_part_or_vol()` the equivalent for
+`image.partitions`/`volumes`. `distribution`/`imager`/`image`'s own
 scalars don't go through either helper -- they're a plain
-"later file's value replaces" loop, which is the whole of what
-last-loaded-wins needs. `tests/build/merge.py` is the executable
+"later file's value replaces" loop, which is already what `peer` would
+ask for, so they ignore it. `tests/build/merge.py` is the executable
 version of the table above: a merge rule that isn't covered by a test
 there is one nobody has actually pinned down yet.

@@ -494,11 +494,14 @@ packages around it.
 
 Two files naming the same source package are describing one package
 rather than asking for two builds of it: the entries are merged, setting
-by setting, as partitions with the same label are. A setting already
-given wins, so a fragment can carry the parts that do not change while
-the specification including it settles the rest. Files given on the
-command line are merged in the order they appear, and a `requires` is
-loaded after the file that asked for it.
+by setting, as partitions with the same label are. A `requires` is
+loaded after the file that asked for it, and a setting that file already
+gave wins, so a fragment can carry the parts that do not change while
+the specification including it settles the rest. A file given directly
+on the command line, or side-loaded in the TUI, is not reached for by
+another and so is not a fragment: the next one amends the settings
+already loaded, field by field, instead of losing to them (see
+[docs/merging.md](merging.md)).
 
 A file that wants to describe a package *without* asking for it to be
 built -- an architecture file naming a kernel flavour, say -- puts the

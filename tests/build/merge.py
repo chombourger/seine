@@ -261,8 +261,9 @@ class MergeVolumeAttributes(avocado.Test):
         if len(vols) != 1 or vols[0]["label"] != "rootfs":
             self.fail("expected 1 volume: 'rootfs' (got %s)" % vols)
         vol = vols[0]
-        if vol["size"] != 750 * 1024 * 1024:
-            self.fail("expected size of 750MiB: got %s" % vol["size"])
+        # Two peer files, so the second amends the first's size.
+        if vol["size"] != 500 * 1024 * 1024:
+            self.fail("expected size of 500MiB: got %s" % vol["size"])
 
 if __name__ == "__main__":
     avocado.main()
@@ -327,14 +328,11 @@ class FeedsAreOverriddenBySuite(avocado.Test):
 class PackagesAreMergedByTheirSourcePackage(avocado.Test):
     def test(self):
         build = BuildCmd()
-        # What a suite says about a kernel: which packaging to take, and
-        # nothing else.
-        build.loads("""
-                packages:
-                    - source: apt://linux=6.12.95-1~bpo12+1
-        """)
-        # What the kernel itself says, which no suite has an opinion on.
-        build.loads("""
+        # The suite pins the version and requires the kernel fragment,
+        # which says which tree to graft on and has no opinion on the
+        # version -- a real 'requires:' chain, not two peer files.
+        with open(os.path.join(self.workdir, "kernel.yml"), "w") as f:
+            f.write("""
                 packages:
                     - source: apt://linux
                       extends:
@@ -343,7 +341,16 @@ class PackagesAreMergedByTheirSourcePackage(avocado.Test):
                               flavour: amd64
                       profiles:
                           - noudeb
-        """)
+            """)
+        suite = os.path.join(self.workdir, "suite.yml")
+        with open(suite, "w") as f:
+            f.write("""
+                requires:
+                    - kernel
+                packages:
+                    - source: apt://linux=6.12.95-1~bpo12+1
+            """)
+        build.load(suite)
         packages = build.spec["packages"]
         self.assertEqual(len(packages), 1)
         # The version the specification asked for survives being described
@@ -355,26 +362,79 @@ class PackagesAreMergedByTheirSourcePackage(avocado.Test):
 class PackagesAreMergedInsideExtends(avocado.Test):
     def test(self):
         build = BuildCmd()
-        build.loads("""
-                packages:
-                    - source: apt://linux
-                      extends:
-                          kernel:
-                              flavour: rpi
-        """)
-        build.loads("""
+        # A board file requiring a generic kernel fragment -- a real
+        # 'requires:' chain, not two peer files.
+        with open(os.path.join(self.workdir, "kernel.yml"), "w") as f:
+            f.write("""
                 packages:
                     - source: apt://linux
                       extends:
                           kernel:
                               flavour: amd64
                               featureset: rt
-        """)
+            """)
+        board = os.path.join(self.workdir, "board.yml")
+        with open(board, "w") as f:
+            f.write("""
+                requires:
+                    - kernel
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: rpi
+            """)
+        build.load(board)
         kernel = build.spec["packages"][0]["extends"]["kernel"]
         # Settled one setting at a time rather than the 'kernel' entry
         # being replaced whole: what was said first stands, what is new
         # is added.
         self.assertEqual(kernel, {"flavour": "rpi", "featureset": "rt"})
+
+class APeerFileAmendsAPackageByField(avocado.Test):
+    # Two top-level files, as 'seine build a.yaml b.yaml' or a TUI
+    # side-load would compose them -- the second amends the first field
+    # by field rather than losing to it or replacing the entry whole.
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                packages:
+                    - source: apt://linux=6.12.95-1~bpo12+1
+                      profiles:
+                          - noudeb
+        """)
+        build.loads("""
+                packages:
+                    - source: apt://linux=6.12.101-1
+        """)
+        package = build.spec["packages"][0]
+        self.assertEqual(package["source"], "apt://linux=6.12.101-1")
+        self.assertEqual(package["profiles"], ["noudeb"])
+
+class ARequiresFragmentDoesNotOverrideAPackageField(avocado.Test):
+    # The 'requires:' counterpart of APeerFileAmendsAPackageByField --
+    # a board still keeps its own pin over a fragment it requires.
+    def test(self):
+        build = BuildCmd()
+        with open(os.path.join(self.workdir, "fragment.yml"), "w") as f:
+            f.write("""
+                packages:
+                    - source: apt://linux=6.12.101-1
+            """)
+        board = os.path.join(self.workdir, "board.yml")
+        with open(board, "w") as f:
+            f.write("""
+                requires:
+                    - fragment
+                packages:
+                    - source: apt://linux=6.12.95-1~bpo12+1
+                      profiles:
+                          - noudeb
+            """)
+        build.load(board)
+        package = build.spec["packages"][0]
+        self.assertEqual(package["source"], "apt://linux=6.12.95-1~bpo12+1")
+        self.assertEqual(package["profiles"], ["noudeb"])
 
 class PackagesAreMergedByName(avocado.Test):
     def test(self):
@@ -448,9 +508,11 @@ class DifferentPackagesAreLeftApart(avocado.Test):
         """)
         packages = build.spec["packages"]
         # busybox is busybox wherever its source is fetched from; the
-        # kernel is not busybox.
+        # kernel is not busybox. Two peer files, so the second's source
+        # amends the first's.
         self.assertEqual(len(packages), 2)
-        self.assertEqual(packages[0]["source"], "apt://busybox")
+        self.assertEqual(packages[0]["source"],
+                         "https://example.com/busybox_1.37.0-6.dsc")
         self.assertEqual(packages[1]["source"],
                          "git://example.com/linux.git;rev=deadbeef")
 
@@ -476,18 +538,25 @@ class VendorEntriesAreMergedByName(avocado.Test):
 class VendorEntrySettingsAreFirstLoadedWins(avocado.Test):
     def test(self):
         build = BuildCmd()
-        build.loads("""
-                vendor:
-                    - name: openssl
-                      version: ">=1.2"
-        """)
         # A fragment naming the same entry again cannot override what the
-        # file asking for it already pinned.
-        build.loads("""
+        # file asking for it already pinned -- a real 'requires:' chain,
+        # not two peer files.
+        with open(os.path.join(self.workdir, "fragment.yml"), "w") as f:
+            f.write("""
                 vendor:
                     - name: openssl
                       version: ">=1.3"
-        """)
+            """)
+        board = os.path.join(self.workdir, "board.yml")
+        with open(board, "w") as f:
+            f.write("""
+                requires:
+                    - fragment
+                vendor:
+                    - name: openssl
+                      version: ">=1.2"
+            """)
+        build.load(board)
         self.assertEqual(build.spec["vendor"][0]["version"], ">=1.2")
 
 class VendorExcludeIsAdditive(avocado.Test):
@@ -1055,6 +1124,8 @@ class SettingsRememberWhichFileWroteThem(avocado.Test):
         build = BuildCmd()
         for name, text in [
                 ("suite.yml", """
+                    requires:
+                        - kernel
                     packages:
                         - source: apt://linux=6.12.101-1
                 """),
@@ -1076,7 +1147,8 @@ class SettingsRememberWhichFileWroteThem(avocado.Test):
             path = os.path.join(self.workdir, name)
             with open(path, "w") as f:
                 f.write(text)
-            build.load(path)
+        build.load(os.path.join(self.workdir, "suite.yml"))
+        build.load(os.path.join(self.workdir, "arch.yml"))
         build.loads("""
                 image:
                     filename: t.img
@@ -1192,21 +1264,29 @@ class TestEntriesAreAmendedByName(avocado.Test):
         self.assertEqual(entry["setup"], {"connect_target": {}})
 
 class ATestEntrysExistingFieldWins(avocado.Test):
-    # Vendors PackagesAreMergedByName: what was said first stands.
+    # A board's own 'boot' test entry stands even if a fragment it
+    # requires also names an entry called 'boot' -- a real 'requires:'
+    # chain, not two peer files.
     def test(self):
         build = BuildCmd()
-        build.loads("""
-                test:
-                    - name: boot
-                      setup:
-                          connect_target: {label: primary}
-        """)
-        build.loads("""
+        with open(os.path.join(self.workdir, "fragment.yml"), "w") as f:
+            f.write("""
                 test:
                     - name: boot
                       setup:
                           connect_target: {label: secondary}
-        """)
+            """)
+        board = os.path.join(self.workdir, "board.yml")
+        with open(board, "w") as f:
+            f.write("""
+                requires:
+                    - fragment
+                test:
+                    - name: boot
+                      setup:
+                          connect_target: {label: primary}
+            """)
+        build.load(board)
         self.assertEqual(build.spec["test"][0]["setup"],
                          {"connect_target": {"label": "primary"}})
 
@@ -1311,7 +1391,7 @@ class TestEntryVariablesAreAddedToRatherThanSettled(avocado.Test):
                       variables: {TIMEOUT: "60s", RETRIES: "3"}
         """)
         self.assertEqual(build.spec["test"][0]["variables"],
-                         {"TIMEOUT": "30s", "RETRIES": "3"})
+                         {"TIMEOUT": "60s", "RETRIES": "3"})
 
 class TestEntriesWithDifferentNamesAreNotMerged(avocado.Test):
     def test(self):
