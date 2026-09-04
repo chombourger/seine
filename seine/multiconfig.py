@@ -52,6 +52,10 @@ def split(args):
 def _load(files, options):
     build = BuildCmd()
     build.options = dict(options, ansible_library=[])
+    # Named the way a top-level 'seine build' names it (BuildCmd.main()),
+    # so a group with no 'image:' of its own can still name its tarball
+    # after the file that asked for it (Image._rootfs_output()).
+    build.options["files"] = files
     build.load_all(files)
     build.parse()
     return build

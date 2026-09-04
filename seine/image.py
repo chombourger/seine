@@ -61,25 +61,28 @@ class Image:
             os.unlink(path)
 
     def parse(self, spec):
-        if "image" not in spec:
-            raise ValueError("'image' not found in provided specification!")
-
         distro = utils.distribution(spec)
 
-        image = spec["image"]
-        if "filename" not in image:
-            raise ValueError("output 'filename' not specified in 'image' section!")
-        filename = image["filename"]
-        # A relative filename follows SEINE_DEPLOY_DIR/SEINE_BUILD_DIR the
-        # way seine's other output does, scoped per release like the
-        # caches are, so two releases built from one checkout don't
-        # overwrite each other's image; an absolute one says where it goes
-        # and is never redirected.
-        if os.path.isabs(filename) == False:
-            deploy = os.path.join(ContainerEngine.deploy_root(), distro["release"])
-            os.makedirs(deploy, exist_ok=True)
-            filename = os.path.join(deploy, filename)
-        self._output = filename
+        if "image" in spec:
+            image = spec["image"]
+            if "filename" not in image:
+                raise ValueError("output 'filename' not specified in 'image' section!")
+            filename = image["filename"]
+            # A relative filename follows SEINE_DEPLOY_DIR/SEINE_BUILD_DIR
+            # the way seine's other output does, scoped per release like
+            # the caches are, so two releases built from one checkout
+            # don't overwrite each other's image; an absolute one says
+            # where it goes and is never redirected.
+            if os.path.isabs(filename) == False:
+                deploy = os.path.join(ContainerEngine.deploy_root(), distro["release"])
+                os.makedirs(deploy, exist_ok=True)
+                filename = os.path.join(deploy, filename)
+            self._output = filename
+        else:
+            # No 'image:' section: nothing to partition, so the root
+            # file-system tarball built for it is this build's real
+            # output instead (own_tasks() below).
+            self._output = self._rootfs_output(distro)
 
         # Validated here so a bad 'packages' section is reported when the
         # specification is parsed rather than once the build reaches it.
@@ -106,6 +109,18 @@ class Image:
 
         self.spec = spec
         return self.spec
+
+    # Named from the spec file's own basename ('main.yaml' -> 'main.tar')
+    # rather than the release: two image-less specs sharing a release
+    # would otherwise collide on one filename. Falls back to the release
+    # when no file is known (e.g. BuildCmd.loads() in a test).
+    def _rootfs_output(self, distro):
+        files = self.options.get("files") or []
+        stem = os.path.splitext(os.path.basename(files[0]))[0] \
+            if len(files) > 0 else distro["release"]
+        deploy = os.path.join(ContainerEngine.deploy_root(), distro["release"])
+        os.makedirs(deploy, exist_ok=True)
+        return os.path.join(deploy, "%s.tar" % stem)
 
     def _require_hashes(self):
         missing = packages.unvouched(self.packages)
@@ -362,6 +377,16 @@ class Image:
             SBOM(distro, self.options).task(self),
         ]
 
+        # No 'image:' section: the tarball built above is the real
+        # output, so move it to its deploy path instead of leaving it
+        # for __del__ to discard as scratch. Needs 'sbom' too: it also
+        # reads '_tarball' and must finish before this renames it away.
+        if "image" not in self.spec:
+            return common + [
+                Task("deploy-rootfs", self._deploy_tarball,
+                    needs=["tarball", "sbom"]),
+            ]
+
         # '--rootfs-only' stops here: a tarball is what somebody wants to
         # look inside, and the disk it would be written to, and the
         # appliance that writes it, are both for booting it.
@@ -371,6 +396,13 @@ class Image:
         return common + [
             Task("disk", self._prepare_disk, needs=["tarball"]),
         ] + Imager(self).tasks(needs_packages)
+
+    # The rootfs tarball, made permanent -- build_tarball() leaves it a
+    # scratch file __del__ would otherwise unlink; renamed away instead,
+    # so there is nothing left there for __del__ to find.
+    def _deploy_tarball(self):
+        os.rename(self._tarball, self._output)
+        self._tarball = None
 
     # What a build is made of, and what each step waits for -- shared_tasks()
     # and, unless '--packages-only' stops here, own_tasks() after it. The
@@ -500,6 +532,9 @@ class Image:
     def build(self, reporter=None):
         if self.options.get("dry_run"):
             return self.plan()
+        if self.spec is None:
+            raise ValueError(
+                "no 'image:' section in this specification -- nothing to build")
         try:
             jobs = self.options.get("jobs", 1)
             verbose = self.options.get("verbose", False)

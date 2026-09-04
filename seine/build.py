@@ -1243,15 +1243,17 @@ class BuildCmd(Cmd):
             self.image = Image(self.partitionHandler, self.options)
         self._apply_defaults()
         self.raw_spec = copy.deepcopy(self.spec)
-        # A vendor-only specification (no 'image:' of its own -- 'seine
-        # vendor' resolves this same shape without ever touching
-        # PartitionHandler/Image either, see VendorCmd.main()) skips both:
-        # neither tolerates a missing 'image:' key. 'vendor:' is still
-        # validated here, the same as Image.parse() already does for an
-        # image-bearing spec, so a typo is caught at '/use' rather than
-        # waiting for 'seine vendor' or the vendor screen to find it.
+        # A vendor-only spec (no 'image:', 'packages:' or 'playbook:')
+        # skips both parsers below -- there is nothing for them to build.
+        # 'vendor:' is still validated here, so a typo is caught now
+        # instead of later in 'seine vendor'.
         if "image" in self.spec:
             self.spec = self.partitionHandler.parse(self.spec)
+            self.spec = self.image.parse(self.spec)
+        elif "packages" in self.spec or "playbook" in self.spec:
+            # No 'image:' section, but something to build: the root
+            # file-system tarball itself becomes this build's real
+            # output (Image.parse()/own_tasks()).
             self.spec = self.image.parse(self.spec)
         else:
             from seine import vendor
