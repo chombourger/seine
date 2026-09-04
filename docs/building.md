@@ -253,6 +253,70 @@ A single group -- no `--` anywhere -- builds exactly as it always has,
 with none of these names: the sharing only shows up once there is
 something to share.
 
+### Two operating systems on one disk
+
+`--`-separated groups (above) each write their own image. `multiconfig:`
+is different: it names sub-builds *inside* one specification, so several
+independently-packaged root file-systems land side by side on the one
+disk that specification's own `image:` describes.
+
+```yaml
+multiconfig:
+    main:
+        - examples/main-recovery-image/main.yaml
+    recovery:
+        - examples/main-recovery-image/recovery.yaml
+
+image:
+    partitions:
+        - label: esp
+          type: vfat
+          source: main
+          where: /efi
+        - label: main-root
+          source: main
+          where: /
+        - label: recovery-root
+          source: recovery
+          where: /
+```
+
+Each group's file list loads exactly like any other specification -- its
+own `distribution:`/`packages:`/`playbook:`, built and cached the same
+way. `source:` on a partition or volume routes that mount's content to a
+declared group's own root file-system instead of this specification's
+own (`source:` absent, today's only behaviour); a specification with no
+`multiconfig:` key is untouched.
+
+A group needs exactly one mount naming it with `where: "/"` -- zero or
+more than one is a parse-time error, since groups are side-by-side
+operating systems, not partitions of one.
+
+A group's own `image:` section, if it has one, is ignored when pulled in
+this way -- the outer specification's `image:` is the only one that
+describes the disk. This is also why the same file works both ways:
+`seine build examples/main-recovery-image/main.yaml` builds `main` alone
+(a tarball, since read this way it has no `image:` of its own), and
+`disk.yaml`'s `multiconfig:` pulls that same file in as one of the
+disk's two groups.
+
+Booting a disk built this way gets one GRUB menu entry per group,
+authored by seine itself rather than left to `update-grub`'s own
+auto-discovery: each entry searches for its own group's root partition
+by label and boots straight off that group's own `/boot`, reading across
+partitions -- a group's kernel/initrd are never copied onto the shared
+EFI System Partition.
+
+One group is the boot-owner (`main` by default, `imager: boot: <name>`
+to name another); it is the only one `grub-install` runs for, and its
+entry is the static default -- there is no seine-side logic to switch it
+later. This is EFI-only for now, the same as seine's own single-rootfs
+GRUB support.
+
+`examples/main-recovery-image/` is a working `main`/`recovery` pair
+built this way -- `seine build examples/main-recovery-image/disk.yaml`
+produces the whole disk.
+
 ### Where the time went
 
 Every build records what each of its steps cost, and `seine analyze`
