@@ -1,0 +1,32 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# ./seine.py build examples/minimal-initrd/main.yaml
+# ./seine.py build --packages-only examples/minimal-uki/main.yaml
+#
+# Wraps the distribution's own amd64 kernel and the initrd
+# examples/minimal-initrd/ deploys into one Unified Kernel Image, once
+# per 'tool:' backend. Needs the initrd built first: 'extends: uki:
+# initrd:' names a deployed 'initrd:' artifact, not one this spec builds.
+
+requires:
+    - ../common/amd64
+    - ../common/trixie
+
+packages:
+    - name: linux-uki-amd64
+      version: "1"
+      extends:
+          uki:
+              tool: ukify
+              linux-image: linux-image-amd64
+              initrd: minimal.img
+              cmdline: "console=ttyS0 ro"
+    - name: linux-uki-efibootguard-amd64
+      version: "1"
+      extends:
+          uki:
+              tool: efibootguard
+              linux-image: linux-image-amd64
+              initrd: minimal.img
+              cmdline: "console=ttyS0 ro"
