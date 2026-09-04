@@ -74,6 +74,23 @@ def _populate(node, key, value, old, changed, redact):
         if diffing and (old is MISSING or old != value):
             changed.append(leaf)
 
+# Each 'multiconfig:' group's own resolved spec, nested under a
+# 'multiconfig' branch and keyed by its declared name -- not diffed
+# against a previous build, since /side-load has no way to reach a
+# sub-build's own file list yet.
+def _populate_multiconfig(node, subbuilds, changed):
+    branch = node.add("multiconfig", expand=True, data="multiconfig")
+    for name, subbuild in subbuilds.items():
+        label = multiconfig._label(subbuild, name=name)
+        subgroup = branch.add(label, expand=True, data=label)
+        patterns = redactions(subbuild.spec)
+        redact = lambda value, patterns=patterns: redact_value(value, patterns)
+        for key, value in subbuild.spec.items():
+            if isinstance(key, str) and key.startswith("_"):
+                continue
+            section_redact = (lambda v: v) if key == "redact" else redact
+            _populate(subgroup, key, value, NO_DIFF, changed, section_redact)
+
 # Prefixed onto a node's label while a running build is touching it --
 # a separate axis from the BUILD OUTPUT tasklist's own step marks (one
 # step can touch several nodes, or none).
@@ -135,6 +152,12 @@ class SpecTree(Tree):
             old = previous_spec if (previous_spec is not None and index == 0) else NO_DIFF
             for key, value in build.spec.items():
                 if isinstance(key, str) and key.startswith("_"):
+                    continue
+                # A spec's own 'multiconfig:' key names sub-builds by
+                # group -- rendered as each group's own resolved spec
+                # (build.subbuilds), not the raw file list it names.
+                if key == "multiconfig" and build.subbuilds:
+                    _populate_multiconfig(group, build.subbuilds, changed)
                     continue
                 child_old = old.get(key, MISSING) if old is not NO_DIFF else NO_DIFF
                 # 'redact' itself is shown as written, same exclusion
@@ -283,6 +306,14 @@ def _branch_for(name):
         return branch
     if name.startswith(PACKAGE_TASK_PREFIXES):
         return ("packages",)
+    # A spec's own 'multiconfig:' group namespaces its tasks
+    # ("<group>:<name>", tasks.namespaced()) -- resolved one level in,
+    # then nested under that group's own branch in the tree.
+    if ":" in name:
+        prefix, rest = name.split(":", 1)
+        branch = _branch_for(rest)
+        if branch:
+            return ("multiconfig", prefix) + branch
     return None
 
 # A separate key from the plain task name, so the coarse rootfs ->
