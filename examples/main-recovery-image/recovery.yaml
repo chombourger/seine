@@ -1,0 +1,27 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# The 'recovery' operating system of examples/main-recovery-image/'s
+# two -- see disk.yaml. A small rescue environment: no grub tools of
+# its own (it is never disk.yaml's boot-owner group), just its own
+# kernel -- one boot entry per group reads straight off each group's
+# own /boot -- and dropbear for a way in.
+requires:
+    - ../common/trixie
+    - ../common/conf-accounts
+    - ../pc-image/grub-serial-console
+
+distribution:
+    architecture: amd64
+
+playbook:
+    - name: recovery packages
+      priority: 250
+      tasks:
+          - name: install a kernel and dropbear
+            apt:
+                state: present
+                name:
+                    - linux-image-amd64
+                    - firmware-linux-free
+                    - dropbear-bin

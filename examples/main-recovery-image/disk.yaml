@@ -1,0 +1,42 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# Two independently-packaged operating systems on one disk: 'main'
+# (main.yaml) is the everyday one, 'recovery' (recovery.yaml) a small
+# rescue environment -- see docs/building.md's "Two operating systems
+# on one disk". Each gets its own root partition ('source:' routes a
+# mount to its declared 'multiconfig:' group); both share one EFI
+# System Partition, and GRUB gets one boot entry per group there --
+# 'main', the default boot-owner group, first and the static default.
+#
+#   seine build examples/main-recovery-image/disk.yaml
+distribution:
+    release: trixie
+    architecture: amd64
+
+multiconfig:
+    main:
+        - examples/main-recovery-image/main.yaml
+    recovery:
+        - examples/main-recovery-image/recovery.yaml
+
+image:
+    filename: main-recovery.img
+    table: gpt
+    partitions:
+        - label: esp
+          type: vfat
+          size: 64MiB
+          source: main
+          where: /efi
+          flags: [boot, primary]
+        - label: main-root
+          type: ext4
+          size: 1280MiB
+          source: main
+          where: /
+        - label: recovery-root
+          type: ext4
+          size: 900MiB
+          source: recovery
+          where: /

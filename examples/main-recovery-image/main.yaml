@@ -1,0 +1,28 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# The 'main' operating system of examples/main-recovery-image/'s two --
+# see disk.yaml. Buildable on its own too: 'seine build
+# examples/main-recovery-image/main.yaml' produces main.tar, the same
+# root file-system disk.yaml's 'multiconfig:' pulls in under the name
+# 'main'. common/amd64.yaml's own playbook installs grub-efi-amd64 and
+# a kernel -- needed here since 'main' is disk.yaml's boot-owner group.
+requires:
+    - ../common/amd64
+    - ../common/trixie
+    - ../common/conf-accounts
+    - ../common/conf-locales
+    - ../common/conf-timezone
+    - ../common/sshd
+    - ../pc-image/grub-serial-console
+
+playbook:
+    - name: everyday packages
+      priority: 250
+      tasks:
+          - name: install a small toolset
+            apt:
+                state: present
+                name:
+                    - vim
+                    - iputils-ping
