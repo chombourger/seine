@@ -222,6 +222,14 @@ class AnsibleContainerRunner:
         return self.cid
 
     def _run_playbooks(self, playbooks):
+        # Nothing to configure beyond what the bootstrap already baked in
+        # -- 'ansible-playbook' itself refuses an empty play list rather
+        # than treating it as a no-op. A disk-owning specification whose
+        # every partition/volume names a 'source:' (nothing of its own to
+        # build) is exactly this case.
+        if len(playbooks) == 0:
+            return
+
         # On copies, not 'playbooks' itself: it is 'spec["playbook"]', and
         # a step that changed it after 'seine analyze' recorded a digest
         # of the specification would leave nothing later reloading those
