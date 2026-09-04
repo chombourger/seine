@@ -1,0 +1,14 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# ./seine.py build examples/minimal-initrd/main.yaml
+#
+# Nothing here is meant to be installed or booted on its own; only its
+# /boot/initrd.img is, once 'initrd:' extracts and deploys it.
+
+requires:
+    - ../common/amd64
+    - ../common/trixie
+
+initrd:
+    filename: minimal.img
