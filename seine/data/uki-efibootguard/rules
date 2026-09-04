@@ -1,0 +1,40 @@
+#!/usr/bin/make -f
+# Written by seine from seine/data/uki-efibootguard/rules.
+
+PACKAGE = [[ name ]]
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+# Stub is efibootguard's own; DEB_HOST_MULTIARCH is dh's, already set.
+override_dh_auto_install:
+	set -e; \
+	vmlinuz=$$(ls /boot/vmlinuz-* 2>/dev/null); \
+	set -- $$vmlinuz; \
+	if [ "$$#" -ne 1 ]; then \
+	  echo "expected exactly one /boot/vmlinuz-*, found: $$vmlinuz" >&2; \
+	  exit 1; \
+	fi; \
+	abi=$${vmlinuz#/boot/vmlinuz-}; \
+	if [ -d "/lib/modules/$$abi" ]; then \
+	  mkdir -p debian/$(PACKAGE)/lib/modules; \
+	  cp -a "/lib/modules/$$abi" debian/$(PACKAGE)/lib/modules/; \
+	fi; \
+	realpkg=$$(dpkg -S "$$vmlinuz" | head -1 | cut -d: -f1); \
+	if [ -z "$$realpkg" ]; then \
+	  echo "no package owns $$vmlinuz" >&2; \
+	  exit 1; \
+	fi; \
+	echo "uki:Kernel=$$realpkg" >> debian/$(PACKAGE).substvars; \
+	mkdir -p debian/$(PACKAGE)/boot/EFI/Linux; \
+	bg_gen_unified_kernel \
+	  /usr/lib/$(DEB_HOST_MULTIARCH)/efibootguard/kernel-stub[[ efi_arch ]].efi \
+	  "$$vmlinuz" \
+	  debian/$(PACKAGE)/boot/EFI/Linux/$(PACKAGE).efi \
+	  --initrd [[ initrd ]] [[ cmdline_arg ]]

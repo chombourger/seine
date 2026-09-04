@@ -1,0 +1,18 @@
+Source: [[ name ]]
+Section: kernel
+Priority: optional
+Maintainer: [[ maintainer ]] <[[ email ]]>
+Build-Depends: debhelper-compat (= 13),
+               [[ linux_image ]],
+               [[ tool_build_depends ]]
+Rules-Requires-Root: no
+
+Package: [[ name ]]
+Architecture: any
+Depends: ${misc:Depends}
+Provides: [[ linux_image ]], ${uki:Kernel}
+Conflicts: [[ linux_image ]], ${uki:Kernel}
+Replaces: [[ linux_image ]], ${uki:Kernel}
+Description: unified kernel image wrapping [[ linux_image ]]
+ Built by seine: [[ linux_image ]]'s own kernel and modules, combined
+ with a prebuilt initramfs, into one UEFI executable.

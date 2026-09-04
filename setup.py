@@ -29,6 +29,7 @@ setup(
     packages=find_packages(),
     package_data={"seine": ["data/*.yml", "data/*.txt", "data/prompt/*.txt",
                             "data/module/*", "data/cross/*",
+                            "data/uki-ukify/*", "data/uki-efibootguard/*",
                             "data/docs/*.md"]},
     cmdclass={"build_py": build_py},
     entry_points = {
