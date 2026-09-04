@@ -19,6 +19,7 @@ from seine import analyze
 from seine import settings
 from seine import tasks
 from seine.build import BuildCmd
+from seine.utils import ContainerEngine
 
 # BuildCmd's jobs default: 1 unless a persisted setting overrides it;
 # an explicit -j/--jobs still wins either way.
@@ -82,6 +83,132 @@ class RecordedDigestSurvivesTaskMutation(avocado.Test):
 
         [run] = analyze.runs(expected)
         self.assertTrue(run["ok"])
+
+IMAGELESS = """
+distribution:
+    release: trixie
+    architecture: amd64
+    uri: http://example.com/debian
+packages:
+    - source: apt://busybox
+"""
+
+VENDOR_ONLY = """
+distribution:
+    release: bookworm
+    architecture: amd64
+    uri: http://example.com/debian
+vendor:
+    - name: openssl
+"""
+
+# A real bug, found live: 'BuildCmd.parse()' used to skip 'Image.parse()'
+# entirely for any specification with no 'image:' section, so
+# 'Image.build()' crashed with a bare 'TypeError' reading
+# 'self.spec["distribution"]' out of an Image that was never parsed --
+# hit by 'seine build' on a 'multiconfig:' group standalone, since a
+# group owns no disk of its own. A specification with 'packages:' or
+# 'playbook:' but no 'image:' now parses fully, and its root
+# file-system tarball becomes its real, deployed output.
+class AnImageLessSpecificationWithSomethingToBuild(avocado.Test):
+    def setUp(self):
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["SEINE_BUILD_DIR"] = self.workdir
+        self.spec = os.path.join(self.workdir, "main.yaml")
+        with open(self.spec, "w") as f:
+            f.write(IMAGELESS)
+
+    def parsed(self):
+        build = BuildCmd()
+        build.options["files"] = [self.spec]
+        build.load_all([self.spec])
+        build.parse()
+        return build
+
+    def test_it_parses_instead_of_staying_unparsed(self):
+        build = self.parsed()
+        self.assertIsNotNone(build.image.spec)
+        self.assertEqual(len(build.image.packages), 1)
+
+    # Named from the spec file's own basename, scoped under the
+    # release, the same as an image-bearing specification's own
+    # 'filename:' -- see Image._rootfs_output().
+    def test_the_tarball_is_named_after_the_spec_file(self):
+        build = self.parsed()
+        self.assertEqual(
+            build.image._output,
+            os.path.join(ContainerEngine.deploy_root(), "trixie", "main.tar"))
+
+    def test_own_tasks_deploy_the_tarball_instead_of_writing_a_disk(self):
+        names = {t.name for t in self.parsed().image.tasks()}
+        self.assertIn("deploy-rootfs", names)
+        self.assertNotIn("disk", names)
+        self.assertNotIn("appliance", names)
+
+    # 'tasks.run()' is stubbed the way this file's own
+    # 'RecordedDigestSurvivesTaskMutation' stubs it: what is under test
+    # is that 'Image.build()' reaches it at all instead of crashing
+    # first, not a real container build.
+    def test_a_real_build_no_longer_crashes(self):
+        build = self.parsed()
+
+        def fake_run(steps, jobs=1, verbose=False, logs=None, display=None):
+            for step in steps:
+                step.started = step.ended = time.time()
+                step.failed = False
+        real_run, tasks.run = tasks.run, fake_run
+        try:
+            build.build()
+        finally:
+            tasks.run = real_run
+
+# 'build_tarball()' leaves the exported root file-system a scratch file
+# under 'ContainerEngine.scratch()' -- '_deploy_tarball()' is what turns
+# that into the build's real, persisted output.
+class DeployTarballMovesTheScratchFileToItsDeployPath(avocado.Test):
+    def test(self):
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["SEINE_BUILD_DIR"] = self.workdir
+        spec = os.path.join(self.workdir, "main.yaml")
+        with open(spec, "w") as f:
+            f.write(IMAGELESS)
+        build = BuildCmd()
+        build.options["files"] = [spec]
+        build.load_all([spec])
+        build.parse()
+
+        scratch = os.path.join(self.workdir, "scratch.tar")
+        with open(scratch, "w") as f:
+            f.write("stands in for a real exported root file-system")
+        build.image._tarball = scratch
+
+        build.image._deploy_tarball()
+
+        self.assertTrue(os.path.isfile(build.image._output))
+        self.assertFalse(os.path.isfile(scratch))
+        self.assertIsNone(build.image._tarball)
+
+# The other side of the same fix: a specification with neither 'image:'
+# nor anything to build ('packages:'/'playbook:') is still refused --
+# with a clean message now, instead of the same crash.
+class AVendorOnlySpecificationStillRefusesToBuild(avocado.Test):
+    def setUp(self):
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["SEINE_BUILD_DIR"] = self.workdir
+
+    def test_parse_still_leaves_it_unparsed(self):
+        build = BuildCmd()
+        build.loads(VENDOR_ONLY)
+        build.parse()
+        self.assertIsNone(build.image.spec)
+
+    def test_build_refuses_cleanly_instead_of_crashing(self):
+        build = BuildCmd()
+        build.loads(VENDOR_ONLY)
+        build.parse()
+        with self.assertRaises(ValueError) as raised:
+            build.build()
+        self.assertIn("no 'image:' section", str(raised.exception))
 
 if __name__ == "__main__":
     avocado.main()
