@@ -1152,7 +1152,7 @@ class SignedRebuild(avocado.Test):
         installed = subprocess.run(
             ["podman", "--root", os.path.join(space["SEINE_BUILD_DIR"], "containers"),
              "run", "--rm", "-v", "%s:/packages:ro" % repository,
-             "builder/debian/bookworm", "sh", "-c", script],
+             "builder/debian/bookworm-%s" % HOST_ARCH, "sh", "-c", script],
             capture_output=True)
         self.assertEqual(installed.returncode, 0,
                          "apt would not install from the signed repository:\n%s"
