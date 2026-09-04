@@ -20,6 +20,7 @@ from email.utils import format_datetime
 from seine        import kernel
 from seine        import module
 from seine        import signing
+from seine        import uki
 from seine.cache_index import PACKAGE, Index, say, since
 from seine.sbuild import BuilderImage
 from seine.tasks  import Task
@@ -82,6 +83,7 @@ ANY_RELEASE = None
 EXTENSIONS = {
     "kernel": kernel.SETTINGS,
     "module": module.SETTINGS,
+    "uki": uki.SETTINGS,
 }
 
 
@@ -334,6 +336,7 @@ class Package:
 
         kernel.parse(self, extends)
         module.parse(self, extends)
+        uki.parse(self, extends)
         return extends
 
     # The upstream version of a source seine writes the packaging for.
@@ -360,6 +363,11 @@ class Package:
                 "'version' is not set. seine writes the packaging for an "
                 "out-of-tree module, so nothing in the tree says what "
                 "version is being built -- the specification has to.")
+        if self.uki and version is None:
+            raise self._error(
+                "'version' is not set. seine writes the packaging for a "
+                "UKI wrapper from nothing, so there is no upstream tree "
+                "to read one from -- the specification has to say it.")
         return version
 
     # apt preferences to put in front of this package's build, as
@@ -621,6 +629,12 @@ class Builder:
                                          self.distro["architecture"]),
                 volumes=volumes, workdir=WORKDIR)
             return self._source_dir(package.name, workdir)
+
+        # A uki package fetches nothing; uki.extend() writes the tree.
+        if uki.is_uki_package(package):
+            sourcedir = os.path.join(workdir, package.name)
+            os.makedirs(sourcedir)
+            return sourcedir
 
         ssh_volumes, environment = self._ssh(package)
         args, volumes = self._offline_fetch(
@@ -890,6 +904,10 @@ class Builder:
         # build is pinned to has to be.
         if package.module:
             return self._committed(package, sourcedir)
+        # A uki package's tree has no revision to date; pin it like
+        # _committed()'s own fallback for the same reason.
+        if uki.is_uki_package(package):
+            return FALLBACK_EPOCH
         source = os.path.join(WORKDIR, os.path.basename(sourcedir))
         timestamp = self.builderImage.output(
             ["dpkg-parsechangelog", "-STimestamp"],
@@ -1499,6 +1517,19 @@ class Builder:
             digest.update(package.cross_kernel.headers.encode())
             digest.update(module.cross_packaging()[1])
 
+        # A uki package is built from these settings plus the named
+        # 'initrd:' artifact's own bytes, none of which the 'for part in
+        # [...]' loop above catches. Without this, a changed cmdline/
+        # tool/linux-image, or a rebuilt initrd with the same filename
+        # but new content, would keep reusing a stale cached UKI.
+        if package.uki:
+            digest.update(package.uki_tool.encode())
+            digest.update(package.uki_linux_image.encode())
+            digest.update(package.uki_cmdline.encode())
+            initrd = uki.initrd_path(self.distro, package.uki_initrd)
+            with open(initrd, "rb") as f:
+                digest.update(f.read())
+
         # A package built against another has to be rebuilt when that one
         # changes: it was compiled and linked against what that package
         # installed. Folding the dependency's digest in says so, and says
@@ -1985,6 +2016,10 @@ class Builder:
     def _fetch_key(self, package):
         if module.is_cross_package(package):
             return None
+        # Never shared: there is nothing two uki packages could ever
+        # have fetched in common, since neither fetches anything.
+        if uki.is_uki_package(package):
+            return ("uki", package.name)
         return tuple(self._fetch_args(package))
 
     # As _fetch_key(), for kernel.fetch_upstream()'s own download: the
@@ -2099,7 +2134,7 @@ class Builder:
                                    prefix="source-")
         try:
             self._copy_into(self._shared_fetches[fetch_key], workdir)
-            sourcedir = self._source_dir(package.source, workdir)
+            sourcedir = self._source_dir(package.source or package.name, workdir)
             if upstream_key is not None:
                 self._copy_into(
                     os.path.join(self._shared_fetches[upstream_key], kernel.UPSTREAM),
@@ -2143,9 +2178,10 @@ class Builder:
         if package.kernel_upstream is not None:
             sourcedir = kernel.graft(self, package, workdir, sourcedir, epoch)
         # Before the patches and before the local changelog entry: both
-        # read a debian/ directory, and for a module this is what puts
-        # one there.
+        # read a debian/ directory, and for a module or a uki wrapper
+        # this is what puts one there.
         module.extend(self, package, sourcedir, epoch)
+        uki.extend(self, package, sourcedir, epoch)
         self.patch(package, sourcedir, epoch)
         # After them: what the series already answers for is not written
         # again, and a specification's own patches are in it by now.
@@ -2539,9 +2575,10 @@ def parse(spec):
     # An entry here asks for a build, and a build needs something to
     # fetch. Naming a package without saying where its source comes from
     # describes it, which is what 'defaults' is for -- and a description
-    # left under 'packages' would otherwise be a build of nothing.
+    # left under 'packages' would otherwise be a build of nothing. A uki
+    # package is the exception: it generates its own source.
     for package in parsed:
-        if package.source is None:
+        if package.source is None and uki.is_uki_package(package) == False:
             raise ValueError(
                 "package '%s' has no 'source' to build from. An entry under "
                 "'packages' asks for a package to be built; one that only "
@@ -2553,6 +2590,7 @@ def parse(spec):
     module.depend_on_kernels(parsed)
     ordered = propagate(order(parsed))
     module.check_kernels(ordered, spec)
+    uki.check_initrds(ordered, spec)
     return ordered
 
 # Carries a package's scope down to what it is built after.

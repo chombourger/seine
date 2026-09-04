@@ -66,6 +66,7 @@ whole project. The ones in use are:
 | `target`       | Driving real hardware through mtda: `/target`, `seine.tui.target` |
 | `testing`      | Test suites and their execution: `seine test`, `seine.testing` |
 | `tui`          | The terminal UI, `seine tui`                          |
+| `uki`          | What `extends: uki` means: Unified Kernel Images      |
 | `utils`        | Shared helpers: the container engine, apt sources     |
 | `vendor`       | The `vendor` section and `seine vendor`               |
 
