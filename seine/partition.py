@@ -49,7 +49,7 @@ class PartitionHandler:
         return math.ceil(size / 1024 / 1024)
 
     def _parse_part_flags(self, part):
-        valid_flags = [ "boot", "lvm", "primary", "extended", "logical" ]
+        valid_flags = [ "boot", "lvm", "xbootldr", "primary", "extended", "logical" ]
         incompatible_flags = [
             [ "primary", "extended", "logical" ]
         ]
