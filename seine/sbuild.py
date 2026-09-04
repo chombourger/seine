@@ -17,6 +17,7 @@ from seine.utils     import locked
 from seine.utils     import offline_suites
 from seine.utils     import vendor_mountpoint
 from seine.utils     import BUILDER_KIND
+from seine.utils     import HOST_ARCH
 from seine.utils     import PRIVILEGED_RUN_OPTIONS
 
 # Where the repository of rebuilt packages is mounted, both in the builder
@@ -77,10 +78,13 @@ class BuilderImage(Bootstrap):
                  if feed["suite"] not in offline]
         return apt_sources_dockerfile(self.distro, online, sources=True)
 
-    # No architecture in the name: this image is always of the host's own
-    # architecture, and it is the chroot inside it that carries the target's.
+    # The host's architecture, not the target's (the chroot's own).
+    # Named so storage copied from a different host misses by name and
+    # rebuilds native, instead of running sbuild's unshare() under
+    # emulation, where it fails.
     def defaultName(self):
-        return os.path.join("builder", self.distro["source"], self.distro["release"])
+        return os.path.join("builder", self.distro["source"],
+                            "%s-%s" % (self.distro["release"], HOST_ARCH))
 
     # Runs 'args' inside a throwaway builder container with the namespace
     # privileges sbuild needs. 'volumes' is a list of (host, container)
