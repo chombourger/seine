@@ -46,6 +46,7 @@ whole project. The ones in use are:
 | `ai`           | The AI chat: its tools, `system_prompt.txt`, `seine tui`'s `/settings`-configured model |
 | `analyze`      | Recorded build timings, and `seine analyze`           |
 | `ansible`      | Running playbooks against the target container        |
+| `bootloader`   | Generating boot entries for the installed image       |
 | `bootstrap`    | The host and target bootstrap images                  |
 | `build`        | Driving a build: the steps it is made of, `seine build` |
 | `cache`        | What seine keeps between builds, and `seine cache`    |
