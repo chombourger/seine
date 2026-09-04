@@ -1226,6 +1226,16 @@ class BuildCmd(Cmd):
         elif "image" not in self.spec:
             self.spec["image"] = spec["image"]
 
+    # Same as '_merge_image''s own plain-setting branch: most-specific
+    # file wins. 'initrd:' has no 'partitions'/'volumes' equivalent, so
+    # nothing routes to _merge_parts_or_vols.
+    def _merge_initrd(self, spec):
+        if "initrd" in self.spec:
+            for setting in spec["initrd"]:
+                self.spec["initrd"][setting] = spec["initrd"][setting]
+        else:
+            self.spec["initrd"] = spec["initrd"]
+
     # What a fragment asked not to print, gathered from every file rather
     # than taken from the last one to say it: the fragment that holds a
     # secret is the fragment that knows it is one, and it is rarely the
@@ -1255,6 +1265,8 @@ class BuildCmd(Cmd):
         self._merge_tests(spec, peer=peer)
         if "image" in spec:
             self._merge_image(spec, peer=peer)
+        if "initrd" in spec:
+            self._merge_initrd(spec)
         return self.spec
 
     def parse(self):
@@ -1269,7 +1281,7 @@ class BuildCmd(Cmd):
         if "image" in self.spec:
             self.spec = self.partitionHandler.parse(self.spec)
             self.spec = self.image.parse(self.spec)
-        elif "packages" in self.spec or "playbook" in self.spec:
+        elif "initrd" in self.spec or "packages" in self.spec or "playbook" in self.spec:
             # No 'image:' section, but something to build: the root
             # file-system tarball itself becomes this build's real
             # output (Image.parse()/own_tasks()).
