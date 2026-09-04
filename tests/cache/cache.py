@@ -15,6 +15,7 @@ sys.path.append(path_to_sources)
 from seine       import cache
 from seine       import cache_index
 from seine.cache import CacheCmd, CACHES, IMAGES, PORTABLE, human
+from seine.utils import HOST_ARCH
 
 # A cache with something in it, under the test's own directory rather than
 # the user's -- said the way a user would say it, with the two environment
@@ -769,9 +770,9 @@ class AnExportScopedToASpecification(Caches):
     def test_the_images_it_would_run_in(self):
         from seine.cache import Wanted
         wanted = Wanted([[self.spec]])
-        self.assertIn("builder/debian/bookworm", wanted.images)
+        self.assertIn("builder/debian/bookworm-%s" % HOST_ARCH, wanted.images)
         self.assertIn("bootstrap/debian/bookworm/all", wanted.images)
-        self.assertNotIn("builder/debian/trixie", wanted.images)
+        self.assertNotIn("builder/debian/trixie-%s" % HOST_ARCH, wanted.images)
 
     def test_the_flag_belongs_to_export_alone(self):
         with self.assertRaises(SystemExit) as caught:
