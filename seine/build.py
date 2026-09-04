@@ -529,7 +529,7 @@ class BuildCmd(Cmd):
         if self.spec is None:
             self.spec = spec
         else:
-            self.merge(spec)
+            self.merge(spec, peer=len(self._loading) <= 1)
 
         if "requires" in spec:
             for req in spec["requires"]:
@@ -692,20 +692,22 @@ class BuildCmd(Cmd):
     # than it would be for an independent list entry; only an exact
     # repeat (the reached-twice case) is dropped.
     #
-    # direction: asking file wins (docs/merging.md).
-    def _merge_playbooks(self, spec):
+    # direction: asking file wins within 'requires:'; a peer file amends
+    # by field instead (docs/merging.md).
+    def _merge_playbooks(self, spec, peer=False):
         if "playbook" not in spec:
             return
         if "playbook" not in self.spec:
             self.spec["playbook"] = spec["playbook"]
             return
         self._merge_named_list(self.spec["playbook"], spec["playbook"],
-                               self._name_of, self._merge_playbook_entry)
+                               self._name_of,
+                               lambda e, n: self._merge_playbook_entry(e, n, peer=peer))
 
-    # direction: asking file wins; 'tasks' additive, not merged by name
-    # (docs/merging.md).
-    def _merge_playbook_entry(self, entry, newentry):
-        self._merge_settings(entry, newentry, appends=lambda s: s == "tasks")
+    # direction: asking file wins within 'requires:', peer amends
+    # instead; 'tasks' additive either way (docs/merging.md).
+    def _merge_playbook_entry(self, entry, newentry, peer=False):
+        self._merge_settings(entry, newentry, appends=lambda s: s == "tasks", peer=peer)
 
     # A suite belongs beside whatever it tests -- the rebuild a
     # 'packages:' entry describes, the config a 'playbook:' task sets --
@@ -718,23 +720,27 @@ class BuildCmd(Cmd):
     # amends rather than duplicates. See seine.testing for what a
     # 'test:' entry holds and how it runs.
     #
-    # direction: asking file wins (docs/merging.md).
-    def _merge_tests(self, spec):
+    # direction: asking file wins within 'requires:'; a peer file amends
+    # by field instead (docs/merging.md).
+    def _merge_tests(self, spec, peer=False):
         if "test" not in spec:
             return
         if "test" not in self.spec:
             self.spec["test"] = spec["test"]
             return
         self._merge_named_list(self.spec["test"], spec["test"],
-                               self._name_of, self._merge_test_entry)
+                               self._name_of,
+                               lambda e, n: self._merge_test_entry(e, n, peer=peer))
 
-    # direction: asking file wins; 'tests'/'keywords' merge by name
-    # below, 'library'/'tags'/'variables' additive (docs/merging.md).
-    def _merge_test_entry(self, entry, newentry):
+    # direction: asking file wins within 'requires:', peer amends
+    # instead; 'tests'/'keywords' merge by name below, 'keywords' stays
+    # identity-or-error either way (docs/merging.md).
+    def _merge_test_entry(self, entry, newentry, peer=False):
         skip = set()
         if "tests" in newentry and type(entry.get("tests")) == type([]):
             self._merge_named_list(entry["tests"], newentry["tests"],
-                                   self._name_of, self._merge_test_case)
+                                   self._name_of,
+                                   lambda e, n: self._merge_test_case(e, n, peer=peer))
             skip.add("tests")
         if "keywords" in newentry and type(entry.get("keywords")) == type([]):
             self._merge_named_list(entry["keywords"], newentry["keywords"],
@@ -742,26 +748,28 @@ class BuildCmd(Cmd):
             skip.add("keywords")
         if "variables" in newentry and type(entry.get("variables")) == type({}):
             for name, value in newentry["variables"].items():
-                entry["variables"].setdefault(name, value)
+                if peer or name not in entry["variables"]:
+                    entry["variables"][name] = value
             skip.add("variables")
         self._merge_settings(entry, newentry,
-                             appends=lambda s: s in ("library", "tags"), skip=skip)
+                             appends=lambda s: s in ("library", "tags"), skip=skip,
+                             peer=peer)
 
     # A case name colliding with genuinely different 'steps:' is more
     # likely an authoring accident than deliberate composition -- raised
     # rather than silently keeping the first-loaded steps, the same
     # equality-or-error rule _merge_keyword() applies.
     #
-    # direction: asking file wins for settings; 'steps' is
-    # identity-or-error, never silently overridden (docs/merging.md).
-    def _merge_test_case(self, case, newcase):
+    # direction: asking file wins for settings within 'requires:', peer
+    # amends instead; 'steps' is identity-or-error regardless (docs/merging.md).
+    def _merge_test_case(self, case, newcase, peer=False):
         if "steps" in newcase and "steps" in case and case["steps"] != newcase["steps"]:
             raise ValueError(
                 "test case '%s' is defined differently by two 'test:' "
                 "entries -- give one of them a different name if they "
                 "are meant to be two cases" % case.get("name"))
         self._merge_settings(case, newcase, appends=lambda s: s == "tags",
-                             skip=("steps",) if "steps" in case else ())
+                             skip=("steps",) if "steps" in case else (), peer=peer)
 
     # Two fragments can define the same keyword, reached twice via two
     # 'requires:' paths -- tolerated if identical, the same rule
@@ -819,15 +827,18 @@ class BuildCmd(Cmd):
     # merged its own way (a nested named list, say).
     #
     # direction: asking file wins -- every caller of this (packages,
-    # playbook, test) inherits it (see docs/merging.md).
-    def _merge_settings(self, entry, newentry, appends=lambda setting: False, skip=()):
+    # playbook, test) inherits it (see docs/merging.md). 'peer' flips it
+    # for a file reached outside 'requires:' (a later top-level/side-loaded
+    # file), which amends instead of losing.
+    def _merge_settings(self, entry, newentry, appends=lambda setting: False,
+                        skip=(), peer=False):
         for setting in newentry:
             if setting == BuildCmd.ORIGINS or setting in skip:
                 continue
             if appends(setting) and setting in entry:
                 entry[setting] = self._added(entry[setting], newentry[setting])
                 self._take_origin(entry, newentry, setting)
-            elif setting not in entry:
+            elif setting not in entry or peer:
                 entry[setting] = newentry[setting]
                 self._take_origin(entry, newentry, setting)
 
@@ -841,20 +852,23 @@ class BuildCmd(Cmd):
         name = entry.get("name")
         return name if type(name) == type("") else None
 
-    # direction: asking file wins (docs/merging.md).
-    def _merge_packages(self, spec):
+    # direction: asking file wins within 'requires:', peer amends
+    # instead (docs/merging.md).
+    def _merge_packages(self, spec, peer=False):
         if "packages" not in spec:
             return
         if "packages" not in self.spec:
             self.spec["packages"] = spec["packages"]
             return
         self._merge_named_list(self.spec["packages"], spec["packages"],
-                               self._package_name, self._merge_package)
+                               self._package_name,
+                               lambda e, n: self._merge_package(e, n, peer=peer))
 
     # Merged by the source package name, the same as 'packages' -- a
     # board file naming an architecture a base file's entry did not, say.
     #
-    # direction: asking file wins (docs/merging.md).
+    # direction: asking file wins within 'requires:', peer amends
+    # instead (docs/merging.md).
     # 'vendor:' is a list of asks in an ordinary file -- merged below, by
     # name, the way every other named list is. In a lock file it is
     # instead a dict, keyed by suite, of what a resolve already froze
@@ -864,7 +878,7 @@ class BuildCmd(Cmd):
     # with vendor.py's own parse()) keeps seeing a plain list of asks.
     # Last suite entry loaded wins, matching a lock file being the whole
     # truth for the suites it names.
-    def _merge_vendor(self, spec):
+    def _merge_vendor(self, spec, peer=False):
         if "vendor" not in spec:
             return
         incoming = spec["vendor"]
@@ -875,7 +889,8 @@ class BuildCmd(Cmd):
             self.spec["vendor"] = incoming
             return
         self._merge_named_list(self.spec["vendor"], incoming,
-                               self._vendor_name, self._merge_settings)
+                               self._vendor_name,
+                               lambda e, n: self._merge_settings(e, n, peer=peer))
 
     def _vendor_name(self, entry):
         if type(entry) != type({}):
@@ -995,15 +1010,15 @@ class BuildCmd(Cmd):
                 if type(kernel) != type("") or "://" in kernel
                 or kernel in built]
 
-    # direction: asking file wins, 'extends:' recurses the same way
-    # (docs/merging.md).
-    def _merge_package(self, package, newpackage):
+    # direction: asking file wins within 'requires:', peer amends
+    # instead; 'extends:' recurses the same way (docs/merging.md).
+    def _merge_package(self, package, newpackage, peer=False):
         skip = set()
         if "extends" in newpackage and type(package.get("extends")) == type({}):
             self._merge_extends(package["extends"], newpackage["extends"],
-                                package, newpackage)
+                                package, newpackage, peer=peer)
             skip.add("extends")
-        self._merge_settings(package, newpackage, skip=skip)
+        self._merge_settings(package, newpackage, skip=skip, peer=peer)
 
     # A setting and the file that wrote it move together. Taking a setting
     # whole takes what is under it: copying an 'extends' block no file had
@@ -1020,9 +1035,10 @@ class BuildCmd(Cmd):
     # and two files describing the same kernel are describing the same
     # 'kernel' entry rather than replacing each other's.
     #
-    # direction: asking file wins, unless _appends() says the setting is
-    # additive instead (docs/merging.md).
-    def _merge_extends(self, extends, newextends, package, newpackage):
+    # direction: asking file wins within 'requires:', peer amends
+    # instead, unless _appends() says the setting is additive either way
+    # (docs/merging.md).
+    def _merge_extends(self, extends, newextends, package, newpackage, peer=False):
         if type(newextends) != type({}):
             return
         for kind in newextends:
@@ -1040,7 +1056,7 @@ class BuildCmd(Cmd):
                         kind, setting)
                     self._take_origin(package, newpackage,
                                       "extends.%s.%s" % (kind, setting))
-                elif setting not in extends[kind]:
+                elif setting not in extends[kind] or peer:
                     extends[kind][setting] = newextends[kind][setting]
                     self._take_origin(package, newpackage,
                                       "extends.%s.%s" % (kind, setting))
@@ -1149,9 +1165,9 @@ class BuildCmd(Cmd):
                     part["flags"].append(flag)
         return part
 
-    # direction: asking file wins, 'flags' additive instead
-    # (docs/merging.md).
-    def _merge_part_or_vol(self, part, newpart, kind):
+    # direction: asking file wins within 'requires:', peer amends
+    # instead; 'flags' additive either way (docs/merging.md).
+    def _merge_part_or_vol(self, part, newpart, kind, peer=False):
         for setting in newpart:
             if setting == "flags":
                 if "flags" in part:
@@ -1161,31 +1177,32 @@ class BuildCmd(Cmd):
                     for flag in newpart["flags"]:
                         if not flag.startswith("~"):
                             part["flags"].append(flag)
-            elif setting not in part:
+            elif setting not in part or peer:
                 part[setting] = newpart[setting]
         return part
 
-    # direction: asking file wins, matched by 'label' (docs/merging.md).
-    def _merge_parts_or_vols(self, spec, kind):
+    # direction: asking file wins within 'requires:', peer amends
+    # instead, matched by 'label' (docs/merging.md).
+    def _merge_parts_or_vols(self, spec, kind, peer=False):
         parts = self.spec["image"][kind]
         for newpart in spec["image"][kind]:
             part = self._lookup_named_part_or_vol(parts, newpart["label"], kind)
             if part is None:
                 parts.append(newpart)
             else:
-                part = self._merge_part_or_vol(part, newpart, kind)
+                part = self._merge_part_or_vol(part, newpart, kind, peer=peer)
                 parts = self._update_named_part_or_vol(parts, part, kind)
         self.spec["image"][kind] = parts
 
     # direction: most-specific file wins for a plain setting;
     # 'partitions'/'volumes' route to _merge_parts_or_vols instead, which
-    # goes the other way -- asking file wins, matched by 'label'
-    # (docs/merging.md).
-    def _merge_image(self, spec):
+    # goes the other way -- asking file wins within 'requires:', peer
+    # amends instead, matched by 'label' (docs/merging.md).
+    def _merge_image(self, spec, peer=False):
         if "image" in self.spec:
             for setting in spec["image"]:
                 if (setting == "partitions" or setting == "volumes") and (setting in self.spec["image"]):
-                    self._merge_parts_or_vols(spec, setting)
+                    self._merge_parts_or_vols(spec, setting, peer=peer)
                 else:
                     self.spec["image"][setting] = spec["image"][setting]
         elif "image" not in self.spec:
@@ -1204,18 +1221,21 @@ class BuildCmd(Cmd):
             if pattern not in patterns:
                 patterns.append(pattern)
 
-    def merge(self, spec):
+    # 'peer' is True for a file with nothing reaching for it -- a
+    # top-level CLI file after the first, or a side-loaded fragment --
+    # as opposed to one reached via 'requires:' (see _load()).
+    def merge(self, spec, peer=False):
         self._merge_redact(spec)
         self._merge_distro(spec)
         self._merge_imager(spec)
         self._merge_defaults(spec)
-        self._merge_packages(spec)
-        self._merge_vendor(spec)
+        self._merge_packages(spec, peer=peer)
+        self._merge_vendor(spec, peer=peer)
         self._merge_vendor_exclude(spec)
-        self._merge_playbooks(spec)
-        self._merge_tests(spec)
+        self._merge_playbooks(spec, peer=peer)
+        self._merge_tests(spec, peer=peer)
         if "image" in spec:
-            self._merge_image(spec)
+            self._merge_image(spec, peer=peer)
         return self.spec
 
     def parse(self):
