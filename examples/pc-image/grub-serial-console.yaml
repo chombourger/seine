@@ -15,3 +15,4 @@ playbook:
                 path: /etc/default/grub
                 regexp: '^GRUB_CMDLINE_LINUX='
                 line: 'GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200"'
+                create: true
