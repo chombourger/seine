@@ -4,6 +4,7 @@
 import contextlib
 import functools
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -37,6 +38,7 @@ class Image:
         self.targetBootstrap = None
         self._from = None
         self._image = None
+        self._initrd_output = None
         self._keep = options["keep"]
         self._output = None
         self._tarball = None
@@ -68,6 +70,9 @@ class Image:
     def parse(self, spec):
         distro = utils.distribution(spec)
 
+        if "image" in spec and "initrd" in spec:
+            raise ValueError("'image' and 'initrd' sections are mutually exclusive!")
+
         if "image" in spec:
             image = spec["image"]
             if "filename" not in image:
@@ -83,6 +88,16 @@ class Image:
                 os.makedirs(deploy, exist_ok=True)
                 filename = os.path.join(deploy, filename)
             self._output = filename
+        elif "initrd" in spec:
+            initrd = spec["initrd"]
+            if "filename" not in initrd:
+                raise ValueError("output 'filename' not specified in 'initrd' section!")
+            filename = initrd["filename"]
+            if os.path.isabs(filename) == False:
+                deploy = os.path.join(ContainerEngine.deploy_root(), distro["release"])
+                os.makedirs(deploy, exist_ok=True)
+                filename = os.path.join(deploy, filename)
+            self._initrd_output = filename
         else:
             # No 'image:' section: nothing to partition, so the root
             # file-system tarball built for it is this build's real
@@ -416,6 +431,14 @@ class Image:
             SBOM(distro, self.options).task(self),
         ]
 
+        # 'initrd:' section: nothing built here is an image at all, just
+        # the one file this build exists to produce -- stop after pulling
+        # it out of the tarball, same shortcut '--rootfs-only' takes below.
+        if "initrd" in self.spec:
+            return common + [
+                Task("deploy-initrd", self._deploy_initrd, needs=["tarball"]),
+            ]
+
         # No 'image:' section: the tarball built above is this build's
         # real output, moved to its deploy path instead of staying the
         # scratch file __del__ would otherwise discard. Needs 'sbom' too:
@@ -442,6 +465,24 @@ class Image:
     # so there is nothing left there for __del__ to find.
     def _deploy_tarball(self):
         os.rename(self._tarball, self._output)
+        self._tarball = None
+
+    # Pulled out of the built tarball rather than the tarball itself:
+    # more than one match is the same build-time error the imager's own
+    # kernel/initrd pairing check makes of it (imager.py's _boot_files()).
+    def _deploy_initrd(self):
+        with tarfile.open(self._tarball) as tar:
+            matches = [m for m in tar.getmembers()
+                       if m.name.lstrip("./").startswith("boot/initrd.img-")]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "expected exactly one 'initrd.img-*' under '/boot' in "
+                    "the built root file-system, found %d (%s)"
+                    % (len(matches), ", ".join(m.name for m in matches)))
+            with tar.extractfile(matches[0]) as src, \
+                 open(self._initrd_output, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        self._unlink(self._tarball, "root file-system as a tarball")
         self._tarball = None
 
     # What a build is made of, and what each step waits for -- shared_tasks()
