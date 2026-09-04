@@ -165,18 +165,25 @@ class PartitionHandler:
         else:
             return self.size
 
-    def distribute(self, f):
+    # 'source' names which tarball 'f' came from -- 'None' for the
+    # specification's own (today's only case), or a declared 'multiconfig:'
+    # group otherwise. Only a mount/bootlet with the matching 'source' is a
+    # candidate, so two groups' same-named files never fight over one size.
+    def distribute(self, f, source=None):
         if f.name.startswith("/") == False:
             name = "/" + f.name
         else:
             name = f.name
 
-        for bootlet in self.bootlets:
-            if name == bootlet["file"]:
-                bootlet["_size"] = f.size
-                break
+        if source is None:
+            for bootlet in self.bootlets:
+                if name == bootlet["file"]:
+                    bootlet["_size"] = f.size
+                    break
 
         for mount in self.mounts:
+            if mount.get("source") != source:
+                continue
             if mount["_prefix"] is not None and name.startswith(mount["_prefix"]):
                 mount["_size"] = mount["_size"] + self._size_file(f, mount)
                 return mount
@@ -285,5 +292,34 @@ class PartitionHandler:
             image["volumes"] = sorted(self.volumes, key=lambda p: p["priority"])
 
         self.mounts = sorted(self.mounts, key=lambda vol: vol["_depth"], reverse=True)
+        self._validate_sources(spec)
         return spec
+
+    # A partition/volume's 'source:' routes its content to a declared
+    # 'multiconfig:' group's rootfs instead of this specification's own
+    # ('source' absent, the default). A group nothing yet names is left
+    # alone; a group some mount does name needs exactly one root
+    # ('where: "/"') among them -- groups are side-by-side OSes, not
+    # partitions of one, so zero or more than one is an error here.
+    def _validate_sources(self, spec):
+        groups = spec.get("multiconfig") or {}
+        referenced = {}
+        for mount in self.mounts:
+            source = mount.get("source")
+            if source is None:
+                continue
+            if source not in groups:
+                raise ValueError(
+                    "'%s' names 'source: %s', which is not one of the "
+                    "declared 'multiconfig:' groups (%s)"
+                    % (mount["label"], source,
+                       ", ".join(sorted(groups)) if groups else "none"))
+            referenced.setdefault(source, []).append(mount)
+        for name, mounts in referenced.items():
+            roots = [m for m in mounts if m["_prefix"] == "/"]
+            if len(roots) != 1:
+                raise ValueError(
+                    "'multiconfig:' group '%s' needs exactly one partition "
+                    "or volume with 'source: %s' and 'where: \"/\"' (found %d)"
+                    % (name, name, len(roots)))
 
