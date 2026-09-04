@@ -74,7 +74,22 @@ class GrubBootloader(Bootloader):
         g.write_append(self._cfg_path, entry.encode())
 
 
-REGISTRY = [GrubBootloader]
+# A Unified Kernel Image needs no boot entry written anywhere: the Boot
+# Loader Specification finds '/boot/EFI/Linux/*.efi' by itself, on the
+# XBOOTLDR partition ('/boot') if there is one and the root filesystem
+# otherwise -- so add_entry() has nothing to do, ever.
+class SystemdBootBootloader(Bootloader):
+    def detect(self, g):
+        return g.is_file("/usr/bin/bootctl")
+
+    def install(self, g, esp_mount, **opts):
+        g.sh("bootctl install --esp-path=%s --boot-path=/boot" % esp_mount)
+
+    def add_entry(self, g, **opts):
+        pass
+
+
+REGISTRY = [GrubBootloader, SystemdBootBootloader]
 
 
 def detect(g, device):

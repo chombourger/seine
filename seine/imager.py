@@ -29,6 +29,7 @@ STAGING_TYPE = "ext4"
 # GPT partition type GUIDs.
 GPT_TYPE_ESP = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
 GPT_TYPE_LVM = "E6D6D379-F507-44C2-A23C-238F2A3DF928"
+GPT_TYPE_XBOOTLDR = "BC13C2FF-59E6-4262-A352-B275FD6F7172"
 
 # Fallback hypervisor per architecture, used to boot a genuine target-arch
 # appliance when cross-building and 'imager: hypervisor:' is not set in the
@@ -179,6 +180,8 @@ class Imager:
                 g.part_set_gpt_type(DEVICE, index, GPT_TYPE_ESP)
             elif "lvm" in flags:
                 g.part_set_gpt_type(DEVICE, index, GPT_TYPE_LVM)
+            elif "xbootldr" in flags:
+                g.part_set_gpt_type(DEVICE, index, GPT_TYPE_XBOOTLDR)
         elif "boot" in flags:
             g.part_set_bootable(DEVICE, index, True)
         return DEVICE + str(index)
