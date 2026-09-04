@@ -345,6 +345,10 @@ class BuildCmd(Cmd):
         self._names = []
         self._prober = None
         self._probed = set()
+        # 'multiconfig:' groups this specification declares, name -> the
+        # BuildCmd that parsed it -- see _parse_multiconfig(). Empty for
+        # a specification with none.
+        self.subbuilds = {}
 
     # A specification handed over as text, rather than as a tree of files to
     # walk: there is nothing to probe, so it renders against the
@@ -682,6 +686,20 @@ class BuildCmd(Cmd):
                     self.spec["imager"][setting] = spec["imager"][setting]
             else:
                 self.spec["imager"] = spec["imager"]
+
+    # A group's file list, like 'imager's settings: a file naming the
+    # same group again replaces its file list outright rather than
+    # extending it, so a board file overriding what a shared fragment
+    # asked 'main' to load says the whole of it.
+    #
+    # direction: most-specific file wins (docs/merging.md).
+    def _merge_multiconfig(self, spec):
+        if "multiconfig" in spec:
+            if "multiconfig" in self.spec:
+                for name in spec["multiconfig"]:
+                    self.spec["multiconfig"][name] = spec["multiconfig"][name]
+            else:
+                self.spec["multiconfig"] = spec["multiconfig"]
 
     # Merged by name, reusing _merge_named_list()/_merge_settings(): a
     # fragment reached twice via two 'requires:' paths (conf-accounts's
@@ -1228,6 +1246,7 @@ class BuildCmd(Cmd):
         self._merge_redact(spec)
         self._merge_distro(spec)
         self._merge_imager(spec)
+        self._merge_multiconfig(spec)
         self._merge_defaults(spec)
         self._merge_packages(spec, peer=peer)
         self._merge_vendor(spec, peer=peer)
@@ -1260,7 +1279,19 @@ class BuildCmd(Cmd):
             distro = distribution(self.spec)
             vendor.suites(vendor.parse(self.spec), distro)
             vendor.exclusions(self.spec)
+        self._parse_multiconfig()
         return self.spec
+
+    # Loads every 'multiconfig:' group as its own sub-build, the way
+    # multiconfig._load() already loads a CLI '--' group. A sub-group's
+    # own 'image:', if it has one, never reaches this specification's --
+    # only self.spec's own 'image:' owns the disk.
+    def _parse_multiconfig(self):
+        from seine import multiconfig
+        self.subbuilds = {
+            name: multiconfig._load(files, self.options)
+            for name, files in (self.spec.get("multiconfig") or {}).items()}
+        self.image.subbuilds = self.subbuilds
 
     def build(self, reporter=None):
         if self.spec is None or self.image is None:
