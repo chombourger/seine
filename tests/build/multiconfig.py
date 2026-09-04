@@ -490,3 +490,151 @@ class MultiGroupSharesPackagesWithinAnArchCohort(avocado.Test):
         blamed_one = self.seine(space, ["analyze", "blame"] + one, "blame-one")
         self.assertIn("one:rootfs", blamed_one)
         self.assertNotIn("two:rootfs", blamed_one)
+
+# The 'multiconfig:' spec key -- an outer specification's own named
+# sub-builds, each loaded the way multiconfig._load() already loads one
+# of the CLI's own '--' groups, but owned by the one outer BuildCmd
+# instead of a top-level group of its own.
+def _written(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+def _subgroup(path, package, release="trixie", architecture="amd64"):
+    return _written(path,
+        "distribution:\n"
+        "    release: %s\n"
+        "    architecture: %s\n"
+        "    uri: http://example.com/debian\n"
+        "packages:\n"
+        "    - source: apt://%s\n" % (release, architecture, package))
+
+class MulticonfigKeyParsesEachGroupAsItsOwnSubBuild(avocado.Test):
+    def setUp(self):
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["SEINE_BUILD_DIR"] = self.workdir
+        self.main = _subgroup(os.path.join(self.workdir, "main.yaml"), "busybox")
+        self.recovery = _subgroup(
+            os.path.join(self.workdir, "recovery.yaml"), "dropbear")
+
+    def outer(self):
+        build = BuildCmd()
+        build.loads("""
+distribution:
+    release: trixie
+    architecture: amd64
+    uri: http://example.com/debian
+multiconfig:
+    main:
+        - %s
+    recovery:
+        - %s
+image:
+    filename: disk.img
+    partitions:
+        - label: rootfs
+          where: /
+""" % (self.main, self.recovery))
+        build.parse()
+        return build
+
+    def test_each_declared_group_is_its_own_sub_build(self):
+        build = self.outer()
+        self.assertEqual(set(build.subbuilds), {"main", "recovery"})
+        self.assertIsNotNone(build.subbuilds["main"].image.spec)
+        self.assertEqual(len(build.subbuilds["main"].image.packages), 1)
+
+    def test_the_outer_disk_is_unaffected(self):
+        build = self.outer()
+        labels = [p["label"] for p in build.spec["image"]["partitions"]]
+        self.assertEqual(labels, ["rootfs"])
+
+    # A sub-group may have an 'image:' of its own (parsed by its own
+    # Image, above) -- it is never the outer specification's, which owns
+    # the disk.
+    def test_a_sub_groups_own_image_section_is_ignored(self):
+        _subgroup(self.main, "busybox")
+        with open(self.main, "a") as f:
+            f.write(
+                "image:\n"
+                "    filename: main-alone.img\n"
+                "    partitions:\n"
+                "        - label: main-only\n"
+                "          where: /\n")
+        build = self.outer()
+        labels = [p["label"] for p in build.spec["image"]["partitions"]]
+        self.assertEqual(labels, ["rootfs"])
+
+    def test_the_merged_task_graph_labels_each_group_by_its_declared_name(self):
+        names = {t.name for t in self.outer().image.tasks()}
+        for label in ["main", "recovery"]:
+            self.assertIn("%s:rootfs" % label, names)
+            self.assertIn("%s:tarball" % label, names)
+            self.assertIn("%s:deploy-rootfs" % label, names)
+            # A group has no 'image:' of its own once pulled in this way
+            # (the field test above), so own_tasks() never adds a disk.
+            self.assertNotIn("%s:disk" % label, names)
+
+class MulticonfigLabelOverride(avocado.Test):
+    def test_a_declared_name_wins_over_a_derived_one(self):
+        build = _group("something-else.img")
+        self.assertEqual(multiconfig._label(build, name="main"), "main")
+
+    def test_with_no_override_nothing_changes(self):
+        build = _group("something-else.img")
+        self.assertEqual(multiconfig._label(build), "something-else")
+
+# A later file naming the same group replaces its file list outright --
+# the same "most-specific file wins" direction '_merge_imager()' already
+# takes for a plain setting.
+class MulticonfigKeyMergeIsOverrideByGroupName(avocado.Test):
+    def test_a_later_file_replaces_an_earlier_groups_file_list(self):
+        build = BuildCmd()
+        build.loads("multiconfig:\n    main:\n        - a.yaml\n")
+        build.loads("multiconfig:\n    main:\n        - b.yaml\n")
+        self.assertEqual(build.spec["multiconfig"], {"main": ["b.yaml"]})
+
+    def test_a_different_group_name_is_added_not_replaced(self):
+        build = BuildCmd()
+        build.loads("multiconfig:\n    main:\n        - a.yaml\n")
+        build.loads("multiconfig:\n    recovery:\n        - b.yaml\n")
+        self.assertEqual(build.spec["multiconfig"],
+                         {"main": ["a.yaml"], "recovery": ["b.yaml"]})
+
+# End to end, through the CLI: 'seine plan --dry-run' on a specification
+# with a 'multiconfig:' key shows both groups' own task graphs, merged
+# into the outer specification's, each labeled by its declared name.
+class MulticonfigKeyDryRunThroughTheCLI(avocado.Test):
+    def test(self):
+        base = self.workdir
+        main = _subgroup(os.path.join(base, "main.yaml"), "busybox")
+        recovery = _subgroup(os.path.join(base, "recovery.yaml"), "dropbear")
+        outer = _written(os.path.join(base, "disk.yaml"), """
+distribution:
+    release: trixie
+    architecture: amd64
+    uri: http://example.com/debian
+multiconfig:
+    main:
+        - %s
+    recovery:
+        - %s
+image:
+    filename: disk.img
+    partitions:
+        - label: rootfs
+          where: /
+""" % (main, recovery))
+
+        environment = dict(os.environ)
+        environment["SEINE_CACHE_DIR"] = tempfile.mkdtemp(
+            dir=base, prefix="cache-")
+        result = subprocess.run(
+            [sys.executable, "./seine.py", "plan", "--tasks-only", outer],
+            cwd=path_to_sources, env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("main:rootfs", result.stdout)
+        self.assertIn("main:deploy-rootfs", result.stdout)
+        self.assertIn("recovery:rootfs", result.stdout)
+        self.assertIn("recovery:deploy-rootfs", result.stdout)
+        self.assertNotIn("main:disk", result.stdout)

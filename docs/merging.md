@@ -98,6 +98,7 @@ between two real files on disk.
 | `redact` | exact pattern string | additive, deduplicated | order doesn't matter, only presence |
 | `distribution` | scalar setting | last-loaded wins | except `feeds`, merged by `suite` (a feed named by two files still ends up last-loaded-wins per field, via `dict.update`), and `architectures`, additive/deduplicated like `vendor-exclude` below (`architecture`, singular, still overwrites) |
 | `imager` | scalar setting | last-loaded wins | |
+| `multiconfig` | group name | last-loaded wins | a group named again replaces its whole file list outright, the same as `imager`'s own settings -- not appended to |
 | `defaults` (`packages` only) | source package | last-loaded wins | deliberately the opposite of `packages` |
 | `packages` | name, else parsed from `source:` | first-loaded wins within `requires:`, peer amends by field | `extends:` merges kind-by-kind the same way, some settings (`derived-flavours`, `kernel.configs`, a module's own kernel list) are additive instead |
 | `vendor` | `name` | first-loaded wins within `requires:`, peer amends by field | same shape as `packages`, without `extends:`; a lock file's own `vendor:` (a dict, not a list) is a different case entirely -- always last-loaded wins, see `_merge_vendor()` |

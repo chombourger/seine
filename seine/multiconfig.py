@@ -65,13 +65,19 @@ def _load(files, options):
 # construction -- see _check_filenames() -- and the one thing about a
 # group a person building several of them together already has in mind.
 #
+# 'name' is a declared override -- a specification's own 'multiconfig:'
+# key names its groups itself, rather than leaving them to whatever a
+# group's own output happens to be called.
+#
 # A group with no 'image:' section (a vendor-only one -- see
 # BuildCmd.parse()'s own comment) writes no output at all, so there is
 # no filename to take this from; its own release is the next most
 # distinct thing about it, and the TUI's Context.use() (unlike this
 # module's own real multi-group callers, see the header comment) reaches
 # this even for a single, image-less group.
-def _label(build):
+def _label(build, name=None):
+    if name is not None:
+        return name
     if build.image._output is None:
         return build.spec["distribution"]["release"]
     return os.path.splitext(os.path.basename(build.image._output))[0]

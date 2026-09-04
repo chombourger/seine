@@ -49,6 +49,11 @@ class Image:
         # reaching into a spec that was never parsed.
         self.packages = []
         self.spec = None
+        # A specification's own 'multiconfig:' groups (BuildCmd.
+        # _parse_multiconfig()), name -> the BuildCmd that parsed it.
+        # Empty for a specification with none -- tasks() below then adds
+        # nothing beyond what it always built.
+        self.subbuilds = {}
 
     def __del__(self):
         if self._tarball:
@@ -420,6 +425,15 @@ class Image:
         shared = self.shared_tasks()
         all_tasks = shared if self.options.get("packages_only") \
             else shared + self.own_tasks()
+        # Every 'multiconfig:' group's own tasks, namespaced under its
+        # declared name -- the same graph a build of that group alone
+        # would run, merged in rather than run separately (multiconfig.
+        # merged_tasks() is what does that for the CLI's own '--' groups).
+        if len(self.subbuilds) > 0:
+            from seine import multiconfig
+            for name, build in self.subbuilds.items():
+                all_tasks += tasks.namespaced(
+                    build.image.tasks(), multiconfig._label(build, name=name))
         # '--target' narrows the graph further still, to one task and
         # what it needs -- 'packages_only'/'rootfs_only' already say
         # where the *usual* stopping points are; this names any task at
