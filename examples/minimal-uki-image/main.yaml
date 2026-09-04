@@ -1,0 +1,57 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# ./seine.py build examples/minimal-initrd/main.yaml
+# ./seine.py build --packages-only examples/minimal-uki/main.yaml
+# ./seine.py build examples/minimal-uki-image/main.yaml
+#
+# Boots from examples/minimal-uki/'s linux-uki-amd64 via systemd-boot's
+# Boot Loader Spec auto-discovery -- no linux-image, no grub, and no
+# 'add_entry()' either: the .efi under /boot/EFI/Linux/ on the XBOOTLDR
+# partition is all a boot needs to find.
+
+requires:
+    - ../common/trixie
+    - ../common/debian
+    - ../common/conf-accounts
+    - ../common/conf-locales
+    - ../common/conf-timezone
+    - ../common/sshd
+
+distribution:
+    architecture: amd64
+    architectures:
+        - amd64
+
+image:
+    filename: minimal-uki.img
+    table: gpt
+    partitions:
+        - label: esp
+          type: vfat
+          size: 64MiB
+          where: /efi
+          flags: [boot]
+        - label: xbootldr
+          type: vfat
+          size: 128MiB
+          where: /boot
+          flags: [xbootldr]
+        - label: root
+          type: ext4
+          size: 768MiB
+          where: /
+
+playbook:
+    - name: uki boot packages
+      priority: 800
+      tasks:
+          - name: install systemd-boot, udev, kmod and the uki package
+            apt:
+                name:
+                    - systemd-boot-efi
+                    - systemd-boot-tools
+                    - udev
+                    - kmod
+                    - linux-uki-amd64
+                state: present
