@@ -1189,8 +1189,14 @@ class App(avocado.Test):
 
             class FakeResult:
                 returncode = 0
+                stdout = ""
 
-            def fake_run(argv):
+            # Mounting the app also shells out to git (Overview's
+            # baseline recall) -- accept and skip that call so it
+            # doesn't crash or land in calls[0]/calls[1] below.
+            def fake_run(argv, **kwargs):
+                if argv and argv[0] == "git":
+                    return FakeResult()
                 calls.append(argv)
                 return FakeResult()
 
