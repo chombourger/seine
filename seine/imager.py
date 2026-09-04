@@ -10,6 +10,7 @@ import tempfile
 
 import guestfs
 
+from seine.bootloader        import detect as detect_bootloader
 from seine.imager_appliance import ImagerAppliance
 from seine.imager_kernel    import ImagerKernel
 from seine.imager_extra_tools import ExtraImagerTools
@@ -472,16 +473,11 @@ class Imager:
 
                 self._label_selinux(g, mount_order)
 
-                if g.is_file("/usr/sbin/grub-install"):
+                bootloader = detect_bootloader(g, DEVICE)
+                if bootloader:
                     print("Installing grub...")
-                    options = ""
-                    if g.is_dir("/usr/lib/grub/x86_64-efi"):
-                        options = "--target x86_64-efi --efi-directory=/efi"
-                    g.sh("grub-install %s %s" % (options, DEVICE))
-                    if g.is_dir("/usr/lib/grub/x86_64-efi"):
-                        g.mkdir_p("/efi/EFI/boot")
-                        g.mv("/efi/EFI/debian/grubx64.efi", "/efi/EFI/boot/bootx64.efi")
-                    g.sh("update-grub")
+                    bootloader.install(g, "/efi")
+                    bootloader.add_entry(g)
 
                 built_sizes = self._build_ro_images(g, ph, mount_devices)
 
