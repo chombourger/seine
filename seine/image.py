@@ -241,14 +241,48 @@ class Image:
             # dangling -- so it happens once, when the build is done and
             # holds nothing, and only if no other build is running.
 
+    # Every 'source:' a partition/volume names, once each -- what
+    # _size_partitions()/Imager.create() both walk to know which tarball(s)
+    # besides this specification's own (source=None) they need.
+    def _referenced_sources(self):
+        return sorted({m["source"] for m in self.partitionHandler.mounts
+                       if m.get("source") is not None})
+
+    # The tarball a mount's 'source' points at. 'None' is this
+    # specification's own. A declared group's is its sub-build's --
+    # already moved to '_output' by 'deploy-rootfs', unless that
+    # sub-build has its own 'image:' (ignored for the outer disk), in
+    # which case it never runs that step and is read from '_tarball'.
+    def _tarball_for(self, source):
+        if source is None:
+            return self._tarball
+        build = self.subbuilds[source]
+        if "image" in build.spec:
+            return build.image._tarball
+        return build.image._output
+
     def _size_partitions(self):
-        tar = tarfile.open(self._tarball, "r")
-        files = tar.getmembers()
-        for f in files:
-            self.partitionHandler.distribute(f)
-        tar.close()
+        for source in [None] + self._referenced_sources():
+            tar = tarfile.open(self._tarball_for(source), "r")
+            for f in tar.getmembers():
+                self.partitionHandler.distribute(f, source=source)
+            tar.close()
         self.partitionHandler.compute_sizes()
         self.partitionHandler.print_stats()
+
+    # Names the task that leaves a referenced group's tarball ready to
+    # read (Image.tasks()'s own '<label>:<name>' naming). 'disk' waits
+    # on these too, so a group's tarball is never read while still being
+    # written or renamed away.
+    def _source_task_names(self):
+        from seine import multiconfig
+        names = []
+        for source in self._referenced_sources():
+            build = self.subbuilds[source]
+            label = multiconfig._label(build, name=source)
+            terminal = "tarball" if "image" in build.spec else "deploy-rootfs"
+            names.append("%s:%s" % (label, terminal))
+        return names
 
     # Beside the image it is about to become, and not in the scratch space
     # with the rest: the imager finishes by renaming this to the filename the
@@ -382,13 +416,10 @@ class Image:
             SBOM(distro, self.options).task(self),
         ]
 
-        # No 'image:' section: there are no partitions to size a disk
-        # from, so the tarball built above is this build's real output --
-        # moved to its deploy path (parse()'s own _rootfs_output())
-        # instead of staying the scratch file build_tarball() left for
-        # __del__ to discard. Needs 'sbom' too: both it and this read
-        # '_tarball', and it must finish extracting from it before this
-        # renames it away.
+        # No 'image:' section: the tarball built above is this build's
+        # real output, moved to its deploy path instead of staying the
+        # scratch file __del__ would otherwise discard. Needs 'sbom' too:
+        # both read '_tarball', and it must finish before this renames it.
         if "image" not in self.spec:
             return common + [
                 Task("deploy-rootfs", self._deploy_tarball,
@@ -402,7 +433,8 @@ class Image:
             return common
 
         return common + [
-            Task("disk", self._prepare_disk, needs=["tarball"]),
+            Task("disk", self._prepare_disk,
+                needs=["tarball"] + self._source_task_names()),
         ] + Imager(self).tasks(needs_packages)
 
     # The rootfs tarball, made permanent -- build_tarball() leaves it a

@@ -5,11 +5,13 @@
 import atexit
 import avocado
 import glob
+import io
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 
 path_to_self    = os.path.realpath(__file__)
@@ -638,3 +640,142 @@ image:
         self.assertIn("recovery:rootfs", result.stdout)
         self.assertIn("recovery:deploy-rootfs", result.stdout)
         self.assertNotIn("main:disk", result.stdout)
+
+# 'source:' on a partition routes it to a declared 'multiconfig:' group's
+# own rootfs -- Image._referenced_sources()/_source_task_names() are what
+# 'disk' (own_tasks()) and _size_partitions()/Imager.create() (image.py/
+# imager.py) both read to know which groups' tarballs the outer disk
+# actually needs.
+class SourcedPartitionsRouteEachGroupsOwnTarball(avocado.Test):
+    def setUp(self):
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["SEINE_BUILD_DIR"] = self.workdir
+        self.main = _subgroup(os.path.join(self.workdir, "main.yaml"), "busybox")
+        self.recovery = _subgroup(
+            os.path.join(self.workdir, "recovery.yaml"), "dropbear")
+
+    def outer(self):
+        build = BuildCmd()
+        build.loads("""
+distribution:
+    release: trixie
+    architecture: amd64
+    uri: http://example.com/debian
+multiconfig:
+    main:
+        - %s
+    recovery:
+        - %s
+image:
+    filename: disk.img
+    partitions:
+        - label: main-root
+          source: main
+          where: /
+        - label: recovery-root
+          source: recovery
+          where: /
+""" % (self.main, self.recovery))
+        build.parse()
+        return build
+
+    def test_referenced_sources_are_found_from_the_partition_table(self):
+        self.assertEqual(
+            self.outer().image._referenced_sources(), ["main", "recovery"])
+
+    # Both groups here have no 'image:' of their own, so their tarballs
+    # only become safe to read once 'deploy-rootfs' has moved them to
+    # '_output' -- reading straight after '<label>:tarball' would race
+    # that rename (see Image._tarball_for()'s own comment).
+    def test_the_disk_task_waits_on_each_groups_deploy_rootfs(self):
+        by_name = {t.name: t for t in self.outer().image.tasks()}
+        self.assertIn("main:deploy-rootfs", by_name["disk"].needs)
+        self.assertIn("recovery:deploy-rootfs", by_name["disk"].needs)
+
+    def test_a_plain_disk_has_no_source_tasks_to_wait_on(self):
+        build = _group("plain.img")
+        self.assertEqual(build.image._source_task_names(), [])
+
+class UndeclaredSourceIsRejectedThroughTheFullParse(avocado.Test):
+    def test(self):
+        try:
+            build = BuildCmd()
+            build.loads("""
+distribution:
+    release: trixie
+    architecture: amd64
+    uri: http://example.com/debian
+image:
+    filename: disk.img
+    partitions:
+        - label: rootfs
+          source: main
+          where: /
+""")
+            build.parse()
+            self.fail("an undeclared 'source:' group was accepted!")
+        except ValueError as e:
+            self.assertIn("main", str(e))
+
+# '_size_partitions()' is what actually reads each group's own tarball --
+# a fake one per group/for the outer specification stands in for a real
+# rootfs export, since sizing only reads tar member names/sizes.
+class SizePartitionsReadsEachGroupsOwnTarball(avocado.Test):
+    def _tar(self, path, names):
+        with open(path, "wb"):
+            pass
+        with tarfile.open(path, "w") as tar:
+            for name in names:
+                info = tarfile.TarInfo(name)
+                info.size = 4096
+                tar.addfile(info, io.BytesIO(b"\0" * 4096))
+
+    def test(self):
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["SEINE_BUILD_DIR"] = self.workdir
+        main = _subgroup(os.path.join(self.workdir, "main.yaml"), "busybox")
+        recovery = _subgroup(
+            os.path.join(self.workdir, "recovery.yaml"), "dropbear")
+        outer = _written(os.path.join(self.workdir, "disk.yaml"), """
+distribution:
+    release: trixie
+    architecture: amd64
+    uri: http://example.com/debian
+multiconfig:
+    main:
+        - %s
+    recovery:
+        - %s
+image:
+    filename: %s
+    partitions:
+        - label: main-root
+          source: main
+          where: /
+        - label: recovery-root
+          source: recovery
+          where: /
+""" % (main, recovery, os.path.join(self.workdir, "disk.img")))
+
+        build = BuildCmd()
+        build.options["files"] = [outer]
+        build.load_all([outer])
+        build.parse()
+
+        outer_tar = os.path.join(self.workdir, "outer.tar")
+        self._tar(outer_tar, [])
+        build.image._tarball = outer_tar
+
+        main_tar = os.path.join(self.workdir, "main.tar")
+        self._tar(main_tar, ["etc/hostname"])
+        build.image.subbuilds["main"].image._output = main_tar
+
+        recovery_tar = os.path.join(self.workdir, "recovery.tar")
+        self._tar(recovery_tar, [])
+        build.image.subbuilds["recovery"].image._output = recovery_tar
+
+        build.image._size_partitions()
+
+        mounts = {m["label"]: m for m in build.image.partitionHandler.mounts}
+        self.assertGreater(mounts["main-root"]["_size"], mounts["recovery-root"]["_size"],
+                           "main's own file never reached its own partition")

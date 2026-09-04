@@ -126,8 +126,8 @@ class Imager:
             blocks.append("\n".join(current))
         return "\n\n".join(blocks) + "\n"
 
-    def _restore_xattrs(self, g):
-        with tarfile.open(self.source._tarball) as tar:
+    def _restore_xattrs(self, g, tarball):
+        with tarfile.open(tarball) as tar:
             known_files = set()
             xattr_member = None
             for member in tar.getmembers():
@@ -231,13 +231,17 @@ class Imager:
 
     # Deepest mount first, so a packed mount's own children are already
     # unmounted (an empty dir, not live content) by the time it's read.
-    def _build_ro_images(self, g, ph, mount_devices):
+    # 'mounts' is one group's own currently-mounted list (create() mounts
+    # one group at a time), not every mount on the disk -- unmounting a
+    # sibling group's own child here would reach for a path nothing has
+    # mounted yet.
+    def _build_ro_images(self, g, mounts, mount_devices):
         built_sizes = {}
-        ro_mounts = [m for m in ph.mounts if m["type"] in RO_FSTYPES]
+        ro_mounts = [m for m in mounts if m["type"] in RO_FSTYPES]
         if not ro_mounts:
             return built_sizes
 
-        mounted = {id(m) for m in ph.mounts}
+        mounted = {id(m) for m in mounts}
         tools_dir = "/.imager-extra-tools"
         g.mkdir_p(tools_dir)
         for host_path in self._extra_tools_files:
@@ -247,7 +251,7 @@ class Imager:
 
         for m in sorted(ro_mounts, key=lambda m: m["_depth"], reverse=True):
             print("Building %s image for '%s'..." % (m["type"], m["label"]))
-            for child in ph.mounts:
+            for child in mounts:
                 if child is not m and id(child) in mounted \
                    and child["_prefix"].startswith(m["_prefix"]):
                     g.umount(child["_prefix"])
@@ -436,57 +440,79 @@ class Imager:
                     self._mkfs(g, vol, voldev)
                     vol_devices[id(vol)] = voldev
 
-                print("Mounting target file-systems...")
-                mount_order = sorted(ph.mounts, key=lambda m: m["_depth"])
-                mount_devices = {}
-                for m in mount_order:
-                    dev = part_devices.get(id(m)) or vol_devices.get(id(m))
-                    mount_devices[id(m)] = dev
-                    if m["_prefix"] != "/":
-                        prefix = m["_prefix"].rstrip("/")
-                        parent = os.path.dirname(prefix)
-                        if parent and parent != "/":
-                            g.mkdir_p(parent)
-                        g.mkmountpoint(prefix)
-                    g.mount(dev, m["_prefix"])
+                # Grouped by 'source': 'None' is this specification's own
+                # (so a spec with no 'multiconfig:' key takes this loop
+                # once, unchanged). A declared group's own mounts never
+                # overlap another's in guestfs -- groups are side-by-side,
+                # non-overlapping OSes, mounted and unmounted one at a
+                # time instead of all at once.
+                by_source = {}
+                for m in ph.mounts:
+                    by_source.setdefault(m.get("source"), []).append(m)
+                sources = ([None] if None in by_source else []) + \
+                    sorted(name for name in by_source if name is not None)
 
-                print("Extracting root file-system...")
-                g.tar_in(self.source._tarball, "/")
+                for source in sources:
+                    mounts = sorted(by_source[source], key=lambda m: m["_depth"])
+                    print("Mounting %s file-systems..."
+                          % (("'%s'" % source) if source else "the image's own"))
+                    mount_devices = {}
+                    for m in mounts:
+                        dev = part_devices.get(id(m)) or vol_devices.get(id(m))
+                        mount_devices[id(m)] = dev
+                        if m["_prefix"] != "/":
+                            prefix = m["_prefix"].rstrip("/")
+                            parent = os.path.dirname(prefix)
+                            if parent and parent != "/":
+                                g.mkdir_p(parent)
+                            g.mkmountpoint(prefix)
+                        g.mount(dev, m["_prefix"])
 
-                print("Restoring extended attributes...")
-                self._restore_xattrs(g)
+                    print("Extracting root file-system...")
+                    tarball = self.source._tarball_for(source)
+                    g.tar_in(tarball, "/")
 
-                print("Writing fstab...")
-                self._write_fstab(g, mount_order, mount_devices, part_index)
+                    print("Restoring extended attributes...")
+                    self._restore_xattrs(g, tarball)
 
-                print("Copying bootlets...")
-                for bootlet in ph.bootlets:
-                    data = g.read_file(bootlet["file"])
-                    g.pwrite_device(DEVICE, data, bootlet["_seek"] * 1024)
+                    print("Writing fstab...")
+                    self._write_fstab(g, mounts, mount_devices, part_index)
 
-                self._label_selinux(g, mount_order)
+                    if source is None:
+                        print("Copying bootlets...")
+                        for bootlet in ph.bootlets:
+                            data = g.read_file(bootlet["file"])
+                            g.pwrite_device(DEVICE, data, bootlet["_seek"] * 1024)
 
-                bootloader = detect_bootloader(g, DEVICE)
-                if bootloader:
-                    print("Installing grub...")
-                    bootloader.install(g, "/efi")
-                    bootloader.add_entry(g)
+                    self._label_selinux(g, mounts)
 
-                built_sizes = self._build_ro_images(g, ph, mount_devices)
+                    # A boot entry per group is Phase D -- for now, exactly
+                    # today's single 'update-grub' call, only ever reached
+                    # by the group that owns '/' among the mounts just
+                    # extracted (today, the only group there is).
+                    if any(m["_prefix"] == "/" for m in mounts):
+                        bootloader = detect_bootloader(g, DEVICE)
+                        if bootloader:
+                            print("Installing grub...")
+                            bootloader.install(g, "/efi")
+                            bootloader.add_entry(g)
 
-                print("Disk usage:")
-                for m in mount_order:
-                    if m["type"] in RO_FSTYPES:
-                        print("%s\t%s (%s)" % (
-                            m["_prefix"], ph._to_human_size(built_sizes[id(m)]), m["type"]))
-                        continue
-                    st = g.statvfs(m["_prefix"])
-                    total = st["blocks"] * st["frsize"]
-                    used = total - st["bfree"] * st["frsize"]
-                    print("%s\t%s used / %s total" % (
-                        m["_prefix"], ph._to_human_size(used), ph._to_human_size(total)))
+                    built_sizes = self._build_ro_images(g, mounts, mount_devices)
 
-                g.umount_all()
+                    print("Disk usage:")
+                    for m in mounts:
+                        if m["type"] in RO_FSTYPES:
+                            print("%s\t%s (%s)" % (
+                                m["_prefix"], ph._to_human_size(built_sizes[id(m)]), m["type"]))
+                            continue
+                        st = g.statvfs(m["_prefix"])
+                        total = st["blocks"] * st["frsize"]
+                        used = total - st["bfree"] * st["frsize"]
+                        print("%s\t%s used / %s total" % (
+                            m["_prefix"], ph._to_human_size(used), ph._to_human_size(total)))
+
+                    g.umount_all()
+
                 g.shutdown()
                 g.close()
                 print("Done.")
