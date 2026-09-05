@@ -111,6 +111,51 @@ class RoFsRequiresGptTable(avocado.Test):
         except Exception as e:
             self.fail("parsing caused an unknown error: %s" % str(type(e)))
 
+class BootAndXbootldrRequireVfat(avocado.Test):
+    def _refused(self, flag, fstype):
+        try:
+            build = BuildCmd()
+            build.loads("""
+                image:
+                    filename: simple-test.img
+                    table: gpt
+                    partitions:
+                        - label: p
+                          where: /boot
+                          type: %s
+                          flags: [%s]
+                        - label: rootfs
+                          where: /
+            """ % (fstype, flag))
+            build.parse()
+            self.fail("parsing should have failed ('%s' needs 'vfat')!" % flag)
+        except ValueError as e:
+            if "can only read from a 'vfat' partition" not in str(e):
+                self.fail("parsing did not return the error we expected: %s" % e)
+
+    def test_boot_flag_needs_vfat(self):
+        self._refused("boot", "ext4")
+
+    def test_xbootldr_flag_needs_vfat(self):
+        self._refused("xbootldr", "ext4")
+
+    def test_vfat_is_accepted(self):
+        for flag in ("boot", "xbootldr"):
+            build = BuildCmd()
+            build.loads("""
+                image:
+                    filename: simple-test.img
+                    table: gpt
+                    partitions:
+                        - label: p
+                          where: /boot
+                          type: vfat
+                          flags: [%s]
+                        - label: rootfs
+                          where: /
+            """ % flag)
+            build.parse()
+
 class RoFsOnGptTableIsAccepted(avocado.Test):
     def test(self):
         try:
