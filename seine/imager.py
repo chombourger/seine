@@ -16,6 +16,7 @@ from seine.imager_kernel    import ImagerKernel
 from seine.imager_extra_tools import ExtraImagerTools
 from seine.packages          import FALLBACK_EPOCH
 from seine.partition        import RO_FSTYPES
+from seine.partition        import VERITY_HASH_TYPE
 from seine.tasks import Task
 from seine.utils            import ContainerEngine
 from seine.utils            import HOST_ARCH
@@ -53,6 +54,24 @@ GPT_TYPE_VAR = "4D21B016-B534-45C2-A9FB-5C16E091FD2D"
 GPT_TYPE_VAR_TMP = "7EC6F557-3BC5-4ACA-B293-16EF5DF639D1"
 GPT_TYPE_HOME = "933AC7E1-2EB4-4F13-B844-0E14E2AEF915"
 GPT_TYPE_SRV = "3B8F8425-20E0-4F3B-907F-1A25A76F98E8"
+
+# DPS's paired Verity types for root/'/usr' -- the only mountpoints it
+# defines auto-discovered dm-verity partitions for. No signature-
+# partition or 'usrhash='/'roothash=' cmdline support yet: imager.py
+# sets each pair's own GPT GUID to the root hash's two halves instead
+# (_build_verity()), the same scheme systemd-repart uses.
+GPT_TYPE_ROOT_VERITY = {
+    "amd64": "2C7357ED-EBD2-46D9-AEC1-23D437EC2BF5",
+    "arm64": "DF3300CE-D69F-4C92-978C-9BFB0F38D820",
+    "armhf": "7386CDF2-203C-47A9-A498-F2ECCE45A2D6",
+    "i386":  "D13C5D3B-B5D1-422A-B29F-9454FDC89D76",
+}
+GPT_TYPE_USR_VERITY = {
+    "amd64": "77FF5F63-E7B6-4633-ACF4-1565B864C0E6",
+    "arm64": "6E11A4E7-FBCA-4DED-B9E9-E1A512BB664E",
+    "armhf": "C215D751-7BCD-4649-BE90-6627490A4C05",
+    "i386":  "8F461B0D-14EE-4E81-9AA9-049B6FB97ABD",
+}
 
 # Fallback hypervisor per architecture, used to boot a genuine target-arch
 # appliance when cross-building and 'imager: hypervisor:' is not set in the
@@ -196,7 +215,11 @@ class Imager:
         "/srv/":      GPT_TYPE_SRV,
     }
 
-    def _dps_gpt_type(self, part, target_arch):
+    def _dps_gpt_type(self, part, target_arch, partitions_by_label):
+        if part.get("type") == VERITY_HASH_TYPE:
+            data = partitions_by_label[part["verity-for"]]
+            roles = GPT_TYPE_ROOT_VERITY if data["_prefix"] == "/" else GPT_TYPE_USR_VERITY
+            return roles.get(target_arch)
         prefix = part.get("_prefix")
         if prefix == "/":
             return GPT_TYPE_ROOT.get(target_arch)
@@ -204,7 +227,7 @@ class Imager:
             return GPT_TYPE_USR.get(target_arch)
         return self.DPS_UNIVERSAL_ROLES.get(prefix)
 
-    def _partition_device(self, g, table, part, index, target_arch):
+    def _partition_device(self, g, table, part, index, target_arch, partitions_by_label):
         start_sect = part["_start_mib"] * 2048
         end_sect = part["_end_mib"] * 2048 - 1
         flags = part.get("flags", [])
@@ -224,7 +247,7 @@ class Imager:
             elif "xbootldr" in flags:
                 g.part_set_gpt_type(DEVICE, index, GPT_TYPE_XBOOTLDR)
             else:
-                dps_type = self._dps_gpt_type(part, target_arch)
+                dps_type = self._dps_gpt_type(part, target_arch, partitions_by_label)
                 if dps_type is not None:
                     g.part_set_gpt_type(DEVICE, index, dps_type)
         elif "boot" in flags:
@@ -241,6 +264,12 @@ class Imager:
     def _write_fstab(self, g, mount_order, mount_devices, part_index):
         fstab = []
         for m in mount_order:
+            # Activated by systemd-veritysetup-generator + gpt-auto (paired
+            # via the two partitions' own GPT GUIDs -- see
+            # _build_verity()), not by fstab: an fstab entry here would
+            # mount the raw, unverified partition straight past dm-verity.
+            if m.get("verity"):
+                continue
             dev = mount_devices[id(m)]
             ro = m["type"] in RO_FSTYPES
             if m["_lvm"]:
@@ -315,13 +344,64 @@ class Imager:
                 parts.append(m.group(1).strip())
         return " ".join(parts)
 
+    # DPS/systemd-repart's self-describing scheme: a Verity pair's root
+    # hash IS the two partitions' own GPT GUIDs, concatenated back
+    # together -- data partition's GUID is the high 128 bits, hash
+    # partition's the low 128. Not authentication by itself: pinning the
+    # hash still needs a signed UKI (uki.py).
+    def _hex_to_gpt_guid(self, hexstr):
+        return "%s-%s-%s-%s-%s" % (
+            hexstr[0:8], hexstr[8:12], hexstr[12:16], hexstr[16:20], hexstr[20:32])
+
+    # Runs before 'hp's own partition is written -- veritysetup needs
+    # 'scratch' as a plain file, and the root hash decides both
+    # partitions' GPT GUIDs. squashfs (unlike erofs) doesn't pad to
+    # veritysetup's 4096-byte block size, so a trailing partial block is
+    # zero-padded here.
+    def _build_verity(self, g, tools_dir, m, scratch, hp, part_index):
+        print("Building verity hash tree for '%s'..." % m["label"])
+        block_size = 4096
+        size = g.filesize(scratch)
+        aligned = -(-size // block_size) * block_size
+        if aligned != size:
+            g.truncate_size(scratch, aligned)
+
+        run = "LD_LIBRARY_PATH=%s %s/veritysetup" % (tools_dir, tools_dir)
+        hash_scratch = "/%s.verity.img" % hp["label"]
+        roothash_file = "/%s.roothash" % hp["label"]
+        g.sh("%s format --root-hash-file=%s %s %s"
+             % (run, roothash_file, scratch, hash_scratch))
+        roothash = g.read_file(roothash_file).decode().strip()
+        g.rm(roothash_file)
+        if len(roothash) != 64:
+            raise RuntimeError(
+                "'veritysetup format' for '%s' produced a %d-hex-digit root "
+                "hash, expected 64 (sha256) -- only the default hash "
+                "algorithm is supported" % (m["label"], len(roothash)))
+
+        data_guid = self._hex_to_gpt_guid(roothash[0:32])
+        hash_guid = self._hex_to_gpt_guid(roothash[32:64])
+        g.part_set_gpt_guid(DEVICE, part_index[id(m)], data_guid)
+        g.part_set_gpt_guid(DEVICE, part_index[id(hp)], hash_guid)
+
+        built = g.filesize(hash_scratch)
+        cap = (hp["_end_mib"] - hp["_start_mib"]) * 1024 * 1024
+        if built > cap:
+            raise RuntimeError(
+                "built verity hash tree for '%s' is %d bytes, larger than "
+                "its %d-byte partition '%s'"
+                % (m["label"], built, cap, hp["label"]))
+        g.copy_file_to_device(
+            hash_scratch, DEVICE, destoffset=hp["_start_mib"] * 1024 * 1024)
+        g.rm(hash_scratch)
+
     # Deepest mount first, so a packed mount's own children are already
     # unmounted (an empty dir, not live content) by the time it's read.
     # 'mounts' is one group's own currently-mounted list (create() mounts
     # one group at a time), not every mount on the disk -- unmounting a
     # sibling group's own child here would reach for a path nothing has
     # mounted yet.
-    def _build_ro_images(self, g, mounts, mount_devices):
+    def _build_ro_images(self, g, mounts, mount_devices, part_index, hash_part_for):
         built_sizes = {}
         ro_mounts = [m for m in mounts if m["type"] in RO_FSTYPES]
         if not ro_mounts:
@@ -365,6 +445,16 @@ class Imager:
 
             built = g.filesize(scratch)
             built_sizes[id(m)] = built
+
+            # Still while 'm' is mounted: g.sh() chroots into whatever's
+            # currently mounted at '/' to find its own '/bin/sh' -- on a
+            # usrmerged target that's a symlink into '/usr', so building
+            # the hash tree after unmounting 'm' (its data still fine as a
+            # plain file either way) leaves no '/bin/sh' for g.sh() to run.
+            hp = hash_part_for.get(m["label"])
+            if hp is not None:
+                self._build_verity(g, tools_dir, m, scratch, hp, part_index)
+
             g.umount(m["_prefix"])
             mounted.discard(id(m))
 
@@ -469,10 +559,12 @@ class Imager:
         self._extra_tools_files = self._prepare_extra_tools(self._output_dir)
 
     def _prepare_extra_tools(self, output_dir):
-        if not any(m["type"] in RO_FSTYPES for m in self.source.partitionHandler.mounts):
+        mounts = self.source.partitionHandler.mounts
+        if not any(m["type"] in RO_FSTYPES for m in mounts):
             return []
         print("Preparing read-only file-system tools...")
-        tools = ExtraImagerTools(self.source)
+        need_verity = any(m.get("verity") for m in mounts)
+        tools = ExtraImagerTools(self.source, need_verity=need_verity)
         tools.create()
         return tools.extract(output_dir)
 
@@ -506,16 +598,20 @@ class Imager:
                 print("Partitioning (%s)..." % ph._table)
                 g.part_init(DEVICE, ph._table)
                 target_arch = self.source.spec["distribution"]["architecture"]
+                partitions_by_label = {p["label"]: p for p in ph.partitions}
+                hash_part_for = {p["verity-for"]: p for p in ph.partitions
+                                 if p["type"] == VERITY_HASH_TYPE}
                 part_devices = {}
                 part_index = {}
                 index = 1
                 for part in ph.partitions:
-                    dev = self._partition_device(g, ph._table, part, index, target_arch)
+                    dev = self._partition_device(
+                        g, ph._table, part, index, target_arch, partitions_by_label)
                     part_devices[id(part)] = dev
                     part_index[id(part)] = index
                     if part["_lvm"]:
                         g.pvcreate(dev)
-                    else:
+                    elif part["type"] != VERITY_HASH_TYPE:
                         self._mkfs(g, part, dev)
                     index = index + 1
 
@@ -636,7 +732,8 @@ class Imager:
                                         root_label=entry["root_label"],
                                         cmdline=entry["cmdline"])
 
-                    built_sizes = self._build_ro_images(g, mounts, mount_devices)
+                    built_sizes = self._build_ro_images(
+                        g, mounts, mount_devices, part_index, hash_part_for)
 
                     print("Disk usage:")
                     for m in mounts:

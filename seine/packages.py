@@ -1527,8 +1527,17 @@ class Builder:
             digest.update(package.uki_linux_image.encode())
             digest.update(package.uki_cmdline.encode())
             initrd = uki.initrd_path(self.distro, package.uki_initrd)
-            with open(initrd, "rb") as f:
-                digest.update(f.read())
+            # The initrd may not be deployed yet -- digests are computed
+            # for the whole task graph up front, including an
+            # 'after:'-ordered uki package whose predecessor hasn't built.
+            # A missing file can't be up to date, so a placeholder (never
+            # equal to a real hash) forces one rebuild instead of a wrong
+            # cache hit.
+            if os.path.isfile(initrd):
+                with open(initrd, "rb") as f:
+                    digest.update(f.read())
+            else:
+                digest.update(b"<initrd not yet built>")
 
         # A package built against another has to be rebuilt when that one
         # changes: it was compiled and linked against what that package

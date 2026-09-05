@@ -342,5 +342,159 @@ class DistributeScopesBySource(avocado.Test):
         self.assertEqual(recovery_root["_size"], recovery_before,
                          "recovery's own partition grew from main's content")
 
+# 'verity: true' pairs a read-only partition with a 'verity-hash' one --
+# see PartitionHandler._validate_verity()/parse's own comment there.
+class VerityHashPartitionIsAccepted(avocado.Test):
+    def test(self):
+        ph = PartitionHandler()
+        ph.parse({
+            "image": {
+                "filename": "disk.img",
+                "table": "gpt",
+                "partitions": [
+                    {"label": "usr", "where": "/usr", "type": "erofs",
+                     "verity": True},
+                    {"label": "usr-verity", "type": "verity-hash",
+                     "verity-for": "usr", "size": "64MiB"},
+                    {"label": "rootfs", "where": "/"},
+                ],
+            },
+        })
+        self.assertNotIn("usr-verity", [m["label"] for m in ph.mounts],
+                         "a verity-hash partition should never be a mount")
+
+class VerityHashIsNeverMounted(avocado.Test):
+    def test(self):
+        try:
+            PartitionHandler().parse({
+                "image": {
+                    "filename": "disk.img",
+                    "table": "gpt",
+                    "partitions": [
+                        {"label": "usr", "where": "/usr", "type": "erofs",
+                         "verity": True},
+                        {"label": "usr-verity", "type": "verity-hash",
+                         "verity-for": "usr", "size": "64MiB", "where": "/oops"},
+                        {"label": "rootfs", "where": "/"},
+                    ],
+                },
+            })
+            self.fail("a mounted 'verity-hash' partition was accepted!")
+        except ValueError as e:
+            self.assertIn("never mounted", str(e))
+
+class VerityHashNeedsVerityForField(avocado.Test):
+    def test(self):
+        try:
+            PartitionHandler().parse({
+                "image": {
+                    "filename": "disk.img",
+                    "table": "gpt",
+                    "partitions": [
+                        {"label": "usr-verity", "type": "verity-hash", "size": "64MiB"},
+                        {"label": "rootfs", "where": "/"},
+                    ],
+                },
+            })
+            self.fail("a 'verity-hash' partition with no 'verity-for' was accepted!")
+        except ValueError as e:
+            self.assertIn("verity-for", str(e))
+
+class VerityHashNeedsSize(avocado.Test):
+    def test(self):
+        try:
+            PartitionHandler().parse({
+                "image": {
+                    "filename": "disk.img",
+                    "table": "gpt",
+                    "partitions": [
+                        {"label": "usr", "where": "/usr", "type": "erofs",
+                         "verity": True},
+                        {"label": "usr-verity", "type": "verity-hash",
+                         "verity-for": "usr"},
+                        {"label": "rootfs", "where": "/"},
+                    ],
+                },
+            })
+            self.fail("a 'verity-hash' partition with no 'size' was accepted!")
+        except ValueError as e:
+            self.assertIn("'size' of verity-hash partition", str(e))
+
+class VerityNeedsAReadOnlyType(avocado.Test):
+    def test(self):
+        try:
+            PartitionHandler().parse({
+                "image": {
+                    "filename": "disk.img",
+                    "table": "gpt",
+                    "partitions": [
+                        {"label": "usr", "where": "/usr", "type": "ext4",
+                         "verity": True},
+                        {"label": "usr-verity", "type": "verity-hash",
+                         "verity-for": "usr", "size": "64MiB"},
+                        {"label": "rootfs", "where": "/"},
+                    ],
+                },
+            })
+            self.fail("'verity: true' on an 'ext4' partition was accepted!")
+        except ValueError as e:
+            self.assertIn("needs a read-only type", str(e))
+
+class VerityOnlySupportedOnRootOrUsr(avocado.Test):
+    def test(self):
+        try:
+            PartitionHandler().parse({
+                "image": {
+                    "filename": "disk.img",
+                    "table": "gpt",
+                    "partitions": [
+                        {"label": "opt", "where": "/opt", "type": "erofs",
+                         "verity": True},
+                        {"label": "opt-verity", "type": "verity-hash",
+                         "verity-for": "opt", "size": "64MiB"},
+                        {"label": "rootfs", "where": "/"},
+                    ],
+                },
+            })
+            self.fail("'verity: true' on '/opt' was accepted!")
+        except ValueError as e:
+            self.assertIn("only supported on '/' or '/usr'", str(e))
+
+class VerityHashMustNameAnExistingVerityPartition(avocado.Test):
+    def test(self):
+        try:
+            PartitionHandler().parse({
+                "image": {
+                    "filename": "disk.img",
+                    "table": "gpt",
+                    "partitions": [
+                        {"label": "usr-verity", "type": "verity-hash",
+                         "verity-for": "no-such-partition", "size": "64MiB"},
+                        {"label": "rootfs", "where": "/"},
+                    ],
+                },
+            })
+            self.fail("'verity-for' naming an undeclared partition was accepted!")
+        except ValueError as e:
+            self.assertIn("not one of the declared partitions", str(e))
+
+class VerityWithNoHashPartitionIsAnError(avocado.Test):
+    def test(self):
+        try:
+            PartitionHandler().parse({
+                "image": {
+                    "filename": "disk.img",
+                    "table": "gpt",
+                    "partitions": [
+                        {"label": "usr", "where": "/usr", "type": "erofs",
+                         "verity": True},
+                        {"label": "rootfs", "where": "/"},
+                    ],
+                },
+            })
+            self.fail("'verity: true' with no paired 'verity-hash' partition was accepted!")
+        except ValueError as e:
+            self.assertIn("no 'verity-hash' partition names", str(e))
+
 if __name__ == "__main__":
     avocado.main()

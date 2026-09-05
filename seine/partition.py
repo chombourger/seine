@@ -7,6 +7,13 @@ import re
 
 RO_FSTYPES = {"squashfs", "erofs"}
 
+# Never mounted, never mkfs'd -- a raw dm-verity hash tree, written directly
+# by the imager once the read-only image it protects ('verity-for:') has
+# been built. Only paired with a '/' or '/usr' mount: those are the only
+# mountpoints the Discoverable Partitions Specification defines an
+# auto-discovered Verity partition type GUID for.
+VERITY_HASH_TYPE = "verity-hash"
+
 class PartitionHandler:
 
     START_OFFSET_KB  = 1 * 1024
@@ -120,17 +127,32 @@ class PartitionHandler:
 
         part = self._parse_common(part)
         part["_lvm"] = False
+        is_verity_hash = part["type"] == VERITY_HASH_TYPE
 
         if "flags" in part:
             self._parse_part_flags(part)
 
-        if "where" not in part and part["_lvm"] == False:
+        if "where" not in part and part["_lvm"] == False and not is_verity_hash:
             raise ValueError("'where' not defined in partition '%s'!" % label)
+        if is_verity_hash and "where" in part:
+            raise ValueError(
+                "partition '%s' has type 'verity-hash', which is never "
+                "mounted -- drop its 'where'" % label)
         if part["type"] in RO_FSTYPES and part["_lvm"] == False and self._table != "gpt":
             raise ValueError(
                 "partition '%s' has a read-only type ('%s'), which needs a 'gpt' "
                 "partition table to be identified in /etc/fstab (this image's "
                 "table is '%s')" % (label, part["type"], self._table))
+        if is_verity_hash and self._table != "gpt":
+            raise ValueError(
+                "partition '%s' has type 'verity-hash', which needs a 'gpt' "
+                "partition table (this image's table is '%s')"
+                % (label, self._table))
+        if is_verity_hash and part["_lvm"]:
+            raise ValueError(
+                "partition '%s' has type 'verity-hash' and flag 'lvm', "
+                "which may not be used together -- a verity-hash partition "
+                "is always a plain GPT partition" % label)
         if part["_lvm"] == True:
             if "group" not in part:
                 raise ValueError("target 'group' not defined for partition '%s'!" % label)
@@ -140,6 +162,30 @@ class PartitionHandler:
                 raise ValueError("'size' of LVM partition '%s' was not defined!" % label)
             else:
                 part["_size"] = part["size"]
+        if is_verity_hash:
+            if "verity-for" not in part:
+                raise ValueError(
+                    "partition '%s' has type 'verity-hash', which needs a "
+                    "'verity-for' naming the partition it protects" % label)
+            if "size" not in part:
+                raise ValueError(
+                    "'size' of verity-hash partition '%s' was not defined "
+                    "(its hash tree's size is only known once built, so it "
+                    "cannot be inferred)" % label)
+            part["_size"] = part["size"]
+        if "verity" in part:
+            if type(part["verity"]) != type(True):
+                raise ValueError("partition '%s': 'verity' shall be true or false" % label)
+            if part["verity"] and part["type"] not in RO_FSTYPES:
+                raise ValueError(
+                    "partition '%s' has 'verity: true', which needs a "
+                    "read-only type ('squashfs'/'erofs') (this one is '%s')"
+                    % (label, part["type"]))
+            if part["verity"] and part.get("identify") == "partuuid":
+                raise ValueError(
+                    "partition '%s' has 'verity: true', which is never "
+                    "identified in /etc/fstab (it has no fstab entry at all "
+                    "-- drop 'identify: partuuid')" % label)
         return part
 
     def _parse_vol(self, vol):
@@ -234,6 +280,16 @@ class PartitionHandler:
                 mount["_size"] = mount["size"]
             self._min_size = self._min_size + mount["_size"]
 
+        # A physical partition with no mount (an LVM PV container, or a
+        # verity-hash partition) skips the loop above -- its '_size' is
+        # already final from _parse_part(), so just add it here. Missing
+        # this under-sized the disk for one of these to actually fit,
+        # caught by a real verity build.
+        mounted = {id(m) for m in self.mounts}
+        for part in self.partitions:
+            if id(part) not in mounted:
+                self._min_size = self._min_size + self._to_rounded_mib(part["_size"]) * 1024 * 1024
+
         # compute the physical placement (start/end, in MiB) of each partition
         # on the device now that every partition's final _size is known (note
         # self.mounts and self.partitions share the same dicts for mountable
@@ -298,6 +354,7 @@ class PartitionHandler:
 
         self.mounts = sorted(self.mounts, key=lambda vol: vol["_depth"], reverse=True)
         self._validate_sources(spec)
+        self._validate_verity(spec)
         return spec
 
     # A partition/volume's 'source:' routes its content to a declared
@@ -327,4 +384,54 @@ class PartitionHandler:
                     "'multiconfig:' group '%s' needs exactly one partition "
                     "or volume with 'source: %s' and 'where: \"/\"' (found %d)"
                     % (name, name, len(roots)))
+
+    # Every 'verity: true' partition needs exactly one 'verity-hash'
+    # partition naming it back via 'verity-for:', sharing its 'source:',
+    # and mounted at '/' or '/usr' -- the only mountpoints DPS defines an
+    # auto-discovered Verity partition type GUID for (see imager.py's
+    # GPT_TYPE_ROOT_VERITY/GPT_TYPE_USR_VERITY).
+    def _validate_verity(self, spec):
+        by_label = {p["label"]: p for p in self.partitions}
+        protected = {p["label"] for p in self.partitions if p.get("verity")}
+        paired = set()
+        for part in self.partitions:
+            if part["type"] != VERITY_HASH_TYPE:
+                continue
+            label = part["label"]
+            target = part["verity-for"]
+            data = by_label.get(target)
+            if data is None:
+                raise ValueError(
+                    "partition '%s' names 'verity-for: %s', which is not "
+                    "one of the declared partitions" % (label, target))
+            if not data.get("verity"):
+                raise ValueError(
+                    "partition '%s' names 'verity-for: %s', which does not "
+                    "have 'verity: true' set" % (label, target))
+            if target in paired:
+                raise ValueError(
+                    "partition '%s' has more than one 'verity-hash' "
+                    "partition naming it in 'verity-for:'" % target)
+            paired.add(target)
+            if data.get("source") != part.get("source"):
+                raise ValueError(
+                    "partition '%s' and '%s' must share the same 'source:' "
+                    "to be verity-paired" % (label, target))
+            if data["_prefix"] not in ("/", "/usr/"):
+                raise ValueError(
+                    "'verity: true' is only supported on '/' or '/usr' "
+                    "partitions (DPS defines no auto-discovered Verity "
+                    "partition type for '%s')" % data["_prefix"])
+            if data["_lvm"]:
+                raise ValueError(
+                    "'verity: true' is not supported on '%s': it is an LVM "
+                    "logical volume, which has no GPT partition UUID for "
+                    "DPS auto-discovery to pair a verity-hash partition "
+                    "against" % target)
+        missing = protected - paired
+        if missing:
+            raise ValueError(
+                "the following partitions have 'verity: true' but no "
+                "'verity-hash' partition names them in 'verity-for:': %s"
+                % ", ".join(sorted(missing)))
 
