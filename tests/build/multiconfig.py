@@ -65,6 +65,82 @@ class SplitOnDashDash(avocado.Test):
         except ValueError:
             pass
 
+class AMulticonfigGroupsValueIsAFileListOrAMapping(avocado.Test):
+    def test_a_bare_list_names_no_ordering(self):
+        self.assertEqual(multiconfig._parse_group("main", ["a.yaml"]),
+                         (["a.yaml"], [], []))
+
+    def test_a_mapping_reads_after_and_before(self):
+        self.assertEqual(
+            multiconfig._parse_group(
+                "uki", {"files": ["a.yaml"], "after": ["initrd"],
+                        "before": ["image"]}),
+            (["a.yaml"], ["initrd"], ["image"]))
+
+    def test_a_mapping_with_no_after_or_before_defaults_both_empty(self):
+        self.assertEqual(
+            multiconfig._parse_group("uki", {"files": ["a.yaml"]}),
+            (["a.yaml"], [], []))
+
+    def test_a_mapping_with_no_files_is_rejected(self):
+        try:
+            multiconfig._parse_group("uki", {"after": ["initrd"]})
+            self.fail("a mapping with no 'files:' was accepted!")
+        except ValueError:
+            pass
+
+    def test_after_must_be_a_list(self):
+        try:
+            multiconfig._parse_group("uki", {"files": ["a.yaml"], "after": "initrd"})
+            self.fail("a bare string 'after:' was accepted!")
+        except ValueError:
+            pass
+
+# Only the ordering half (multiconfig.resolve_order()) is under test here
+# -- Image.tasks() (tests/image/multiconfig.py, a real build) is what
+# actually wires the result into a task graph.
+class MulticonfigGroupsCanBeOrdered(avocado.Test):
+    def test_no_ordering_at_all(self):
+        parsed = {"main": (["a.yaml"], [], [])}
+        self.assertEqual(multiconfig.resolve_order(parsed), {"main": set()})
+
+    def test_after_names_a_predecessor(self):
+        parsed = {"initrd": (["a.yaml"], [], []),
+                  "uki": (["b.yaml"], ["initrd"], [])}
+        self.assertEqual(multiconfig.resolve_order(parsed),
+                         {"initrd": set(), "uki": {"initrd"}})
+
+    def test_before_is_folded_into_the_named_groups_after(self):
+        parsed = {"initrd": (["a.yaml"], [], ["uki"]),
+                  "uki": (["b.yaml"], [], [])}
+        self.assertEqual(multiconfig.resolve_order(parsed),
+                         {"initrd": set(), "uki": {"initrd"}})
+
+    def test_after_naming_an_undeclared_group_is_rejected(self):
+        parsed = {"uki": (["b.yaml"], ["initrd"], [])}
+        try:
+            multiconfig.resolve_order(parsed)
+            self.fail("'after:' naming an undeclared group was accepted!")
+        except ValueError:
+            pass
+
+    def test_after_naming_itself_is_rejected(self):
+        parsed = {"uki": (["b.yaml"], ["uki"], [])}
+        try:
+            multiconfig.resolve_order(parsed)
+            self.fail("'after:' naming itself was accepted!")
+        except ValueError:
+            pass
+
+    def test_a_circle_is_rejected(self):
+        parsed = {"a": (["a.yaml"], ["b"], []),
+                  "b": (["b.yaml"], ["a"], [])}
+        try:
+            multiconfig.resolve_order(parsed)
+            self.fail("a circular 'after:' was accepted!")
+        except ValueError:
+            pass
+
 # One group of each of: a plain image, and one naming a package -- enough
 # to build a build.image with '.packages' and an output filename, without
 # 'requires' or anything else a group here does not need.

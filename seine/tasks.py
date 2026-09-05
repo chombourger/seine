@@ -138,6 +138,13 @@ def namespaced(tasks, prefix):
                         for need in task.needs])
             for task in tasks]
 
+# Every task nothing else in 'tasks' needs -- what "this list is done"
+# means to something waiting on it from outside. Read before namespacing:
+# 'needs' here is still this list's own, unprefixed names.
+def sinks(tasks):
+    needed = {need for task in tasks for need in task.needs}
+    return [task.name for task in tasks if task.name not in needed]
+
 # Every task in 'tasks' that 'names' need, directly or by way of
 # another -- what a group's own tasks stood on, for a caller wanting
 # one group's own slice of a merged run rather than all of it. Includes
