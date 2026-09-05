@@ -55,6 +55,12 @@ image:
           size: 2048MiB
           source: image
           where: /usr
+          verity: true
+        - label: usr-verity
+          type: verity-hash
+          size: 64MiB
+          source: image
+          verity-for: usr
         - label: root
           type: ext4
           size: 1536MiB
