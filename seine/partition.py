@@ -27,6 +27,7 @@ class PartitionHandler:
         self.groups = []
         self.mounts = []
         self.partitions = []
+        self.secure_boot = None
         self.volumes = []
         self.size = None
 
@@ -93,6 +94,24 @@ class PartitionHandler:
             bootlet["priority"] = 500
 
         return bootlet
+
+    # A disk's own signing identity, not a partition's own setting -- one
+    # key/cert signs whichever UKI(s) the imager anchors (currently only
+    # a 'where: /usr' 'verity: true' mount). Paths are resolved relative
+    # to the current working directory a build is run from, like
+    # 'multiconfig: files:', not like 'patches:'.
+    def _parse_secure_boot(self, secure_boot):
+        if type(secure_boot) != type({}):
+            raise ValueError("'image: secure-boot' shall be a mapping")
+        for field in ("private-key", "public-cert"):
+            if field not in secure_boot:
+                raise ValueError(
+                    "'image: secure-boot' needs both 'private-key' and "
+                    "'public-cert' -- '%s' is missing" % field)
+            if type(secure_boot[field]) != type(""):
+                raise ValueError(
+                    "'image: secure-boot: %s' shall be a string" % field)
+        return secure_boot
 
     def _parse_common(self, part):
         part["_blksz"] = 4096
@@ -335,6 +354,9 @@ class PartitionHandler:
                 self.bootlets.append(bootlet)
             self.bootlets = sorted(self.bootlets, key=lambda b: b["priority"])
         image["bootlets"] = self.bootlets
+
+        if "secure-boot" in image:
+            self.secure_boot = self._parse_secure_boot(image["secure-boot"])
 
         partitions = image["partitions"]
         for part in partitions:

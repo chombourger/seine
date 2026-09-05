@@ -151,6 +151,19 @@ def _write(path, content):
     with open(path, "w") as f:
         f.write(content)
 
+# Shared between package-build (extend(), templated into debian/rules --
+# shell/make syntax like '"$$vmlinuz"') and image-build time (imager.py,
+# real paths) -- one place for a 'ukify build' invocation, so a future
+# change only touches one function. Quoting is the caller's job:
+# pre-quoted for a shell-rendered caller, plain for an argv-based one.
+def ukify_argv(linux, initrd, cmdline, output, extra=()):
+    argv = ["ukify", "build", "--linux=%s" % linux, "--initrd=%s" % initrd]
+    if cmdline:
+        argv.append("--cmdline=%s" % cmdline)
+    argv.extend(extra)
+    argv.append("--output=%s" % output)
+    return argv
+
 def extend(builder, package, sourcedir, epoch):
     if package.uki == False:
         return
@@ -184,6 +197,10 @@ def extend(builder, package, sourcedir, epoch):
         "efi_arch": efi_arch,
         "cmdline_arg": ("--cmdline=%s" % _sh_quote(package.uki_cmdline)
                         if package.uki_cmdline else ""),
+        "ukify_cmd": " ".join(ukify_argv(
+            '"$$vmlinuz"', INITRD_NAME,
+            _sh_quote(package.uki_cmdline) if package.uki_cmdline else "",
+            "debian/$(PACKAGE)/boot/EFI/Linux/$(PACKAGE).efi")),
     }
     for name, template in uki_packaging(package.uki_tool).items():
         _write(os.path.join(debian, name),

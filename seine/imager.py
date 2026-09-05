@@ -18,6 +18,7 @@ from seine.packages          import FALLBACK_EPOCH
 from seine.partition        import RO_FSTYPES
 from seine.partition        import VERITY_HASH_TYPE
 from seine.tasks import Task
+from seine.uki               import ukify_argv
 from seine.utils            import ContainerEngine
 from seine.utils            import HOST_ARCH
 
@@ -394,6 +395,79 @@ class Imager:
         g.copy_file_to_device(
             hash_scratch, DEVICE, destoffset=hp["_start_mib"] * 1024 * 1024)
         g.rm(hash_scratch)
+        return roothash
+
+    # 'usrhash=<roothash>' is what makes '/usr' mount at all once
+    # verity-protected -- gpt-auto-generator refuses an unanchored pair
+    # outright. Signed only if 'image: secure-boot:' was given. Scoped
+    # to '/usr' for now; runs while 'm' and its siblings are still
+    # mounted, before _build_ro_images()'s own loop unmounts them.
+    def _anchor_uki(self, g, mounts, mounted, m, roothash):
+        if m["_prefix"] != "/usr/":
+            return
+        efi_dirs = []
+        for other in mounts:
+            if id(other) not in mounted:
+                continue
+            efi_dir = "%s/EFI/Linux" % other["_prefix"].rstrip("/")
+            if g.is_dir(efi_dir):
+                efi_dirs.append(efi_dir)
+
+        for efi_dir in efi_dirs:
+            for name in sorted(g.ls(efi_dir)):
+                if name.endswith(".efi"):
+                    self._anchor_one_uki(g, efi_dir, name, roothash)
+
+    # None of objcopy/ukify/sbsign need the live guest filesystem -- they
+    # run as container commands against 'self._extra_tools.name' rather
+    # than inside the appliance, on a copy of the '.efi' downloaded to a
+    # scratch dir under 'self._output_dir'.
+    def _anchor_one_uki(self, g, efi_dir, name, roothash):
+        print("Anchoring '%s' with usrhash=%s..." % (name, roothash))
+        efi_path = "%s/%s" % (efi_dir, name)
+        workdir = tempfile.mkdtemp(dir=self._output_dir, prefix="uki-anchor-")
+        original = os.path.join(workdir, "original.efi")
+        g.download(efi_path, original)
+
+        def run(args):
+            ContainerEngine.run(
+                ["container", "run", "--rm", "-v", "%s:/work" % workdir,
+                 "-w", "/work", self._extra_tools.name] + args, check=True)
+
+        # A single objcopy invocation dumps all three sections,
+        # byte-identical to what went into the UKI at build time -- no
+        # need to know which 'linux-image'/'initrd:' produced them.
+        # '/dev/null' as the discard output makes objcopy itself exit 1
+        # despite succeeding, so a throwaway regular file is used instead.
+        run(["objcopy",
+             "--dump-section", ".linux=linux.bin",
+             "--dump-section", ".initrd=initrd.bin",
+             "--dump-section", ".cmdline=cmdline.txt",
+             "original.efi", "discard.efi"])
+
+        base_cmdline = open(os.path.join(workdir, "cmdline.txt")).read().strip()
+        cmdline = ("%s usrhash=%s" % (base_cmdline, roothash)) if base_cmdline \
+            else "usrhash=%s" % roothash
+
+        # A real 'ukify build', not an 'objcopy --update-section' patch --
+        # deliberately, so a future PCR-policy pass only has to add
+        # '--pcr-private-key='/'--phases='-shaped entries to 'extra' here,
+        # not grow a second code path (see uki.ukify_argv()'s own comment).
+        run(ukify_argv("linux.bin", "initrd.bin", cmdline, "rebuilt.efi"))
+
+        secure_boot = self.source.partitionHandler.secure_boot
+        result = "rebuilt.efi"
+        if secure_boot is not None:
+            ContainerEngine.run(
+                ["container", "run", "--rm", "-v", "%s:/work" % workdir,
+                 "-v", "%s:/work-key:ro" % os.path.abspath(secure_boot["private-key"]),
+                 "-v", "%s:/work-cert:ro" % os.path.abspath(secure_boot["public-cert"]),
+                 "-w", "/work", self._extra_tools.name,
+                 "sbsign", "--key", "/work-key", "--cert", "/work-cert",
+                 "--output", "signed.efi", "rebuilt.efi"], check=True)
+            result = "signed.efi"
+
+        g.upload(os.path.join(workdir, result), efi_path)
 
     # Deepest mount first, so a packed mount's own children are already
     # unmounted (an empty dir, not live content) by the time it's read.
@@ -453,7 +527,8 @@ class Imager:
             # plain file either way) leaves no '/bin/sh' for g.sh() to run.
             hp = hash_part_for.get(m["label"])
             if hp is not None:
-                self._build_verity(g, tools_dir, m, scratch, hp, part_index)
+                roothash = self._build_verity(g, tools_dir, m, scratch, hp, part_index)
+                self._anchor_uki(g, mounts, mounted, m, roothash)
 
             g.umount(m["_prefix"])
             mounted.discard(id(m))
@@ -561,11 +636,18 @@ class Imager:
     def _prepare_extra_tools(self, output_dir):
         mounts = self.source.partitionHandler.mounts
         if not any(m["type"] in RO_FSTYPES for m in mounts):
+            self._extra_tools = None
             return []
         print("Preparing read-only file-system tools...")
         need_verity = any(m.get("verity") for m in mounts)
         tools = ExtraImagerTools(self.source, need_verity=need_verity)
         tools.create()
+        # Kept beyond this method (unlike its own 'extract()' output,
+        # already captured in '_extra_tools_files'): the finalize-UKI step
+        # in _build_ro_images() runs 'objcopy'/'ukify'/'sbsign' as ordinary
+        # container commands against this same already-built image
+        # (tools.name), not by extracting binaries out of it.
+        self._extra_tools = tools
         return tools.extract(output_dir)
 
     def _build(self):
