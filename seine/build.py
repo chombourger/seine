@@ -1298,12 +1298,24 @@ class BuildCmd(Cmd):
     # multiconfig._load() already loads a CLI '--' group. A sub-group's
     # own 'image:', if it has one, never reaches this specification's --
     # only self.spec's own 'image:' owns the disk.
+    #
+    # A group's value is a bare file list, or {files:, after:, before:} --
+    # see multiconfig._parse_group(). 'after'/'before' are resolved into
+    # one 'after' set per group (multiconfig.resolve_order()) before any
+    # group is loaded, so Image.tasks() has it ready when it wires each
+    # group's own tasks to the 'needs' of whichever group(s) it named.
     def _parse_multiconfig(self):
         from seine import multiconfig
+        groups = self.spec.get("multiconfig") or {}
+        parsed = {name: multiconfig._parse_group(name, value)
+                  for name, value in groups.items()}
+        after = multiconfig.resolve_order(parsed)
         self.subbuilds = {
-            name: multiconfig._load(files, self.options)
-            for name, files in (self.spec.get("multiconfig") or {}).items()}
+            name: multiconfig._load(files, self.options,
+                                    defer_uki_check=len(after[name]) > 0)
+            for name, (files, _after, _before) in parsed.items()}
         self.image.subbuilds = self.subbuilds
+        self.image.multiconfig_after = after
 
     def build(self, reporter=None):
         if self.spec is None or self.image is None:

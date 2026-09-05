@@ -14,7 +14,7 @@ sys.path.append(path_to_sources)
 
 from seine.bootstrap import HostBootstrap
 from seine.build import BuildCmd
-from seine.tasks import Task, namespaced, ordered, run
+from seine.tasks import Task, namespaced, ordered, run, sinks
 
 # Nothing under here may write into the machine's own cache. These build
 # Builder objects directly, and asking one for a stamp or an index makes
@@ -137,6 +137,26 @@ class NamespacedTasksAreRenamedAndReordered(avocado.Test):
             self.fail("two tasks of the same name were accepted!")
         except ValueError:
             pass
+
+# Image.tasks() reads this before namespacing a 'multiconfig:' group, to
+# know which of that group's own tasks something waiting on the whole
+# group from outside has to 'need'.
+class SinksAreWhatNothingElseNeeds(avocado.Test):
+    def test_a_straight_line_has_one_sink(self):
+        self.assertEqual(
+            sinks([task("bootstrap-target"),
+                   task("rootfs", ["bootstrap-target"])]),
+            ["rootfs"])
+
+    def test_several_independent_tasks_are_all_sinks(self):
+        self.assertEqual(
+            sorted(sinks([task("a"), task("b")])), ["a", "b"])
+
+    def test_a_need_outside_the_list_does_not_count(self):
+        # 'packages' is not itself in this list -- the same barrier
+        # namespaced()'s own test names -- so it must not make 'rootfs'
+        # look like something else in the list still needs.
+        self.assertEqual(sinks([task("rootfs", ["packages"])]), ["rootfs"])
 
 class AncestorsWalksNeedsBackwards(avocado.Test):
     def test(self):
