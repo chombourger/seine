@@ -291,10 +291,27 @@ class AnsibleContainerRunner:
             os.unlink(ansiblefile.name)
             os.unlink(inventoryfile.name)
 
+    # Rebuilds every kernel's initrd against whatever the playbooks just
+    # finished changing (added modules, crypttab entries, and the like) --
+    # generator-agnostic, since a spec is free to swap the distribution's
+    # default 'initramfs-tools' for 'dracut' (Debian's dracut package
+    # Conflicts: initramfs-tools, so at most one of the two is ever
+    # installed). dracut's own filename convention ('/boot/initrd.img-
+    # <version>', not its own default '/boot/initramfs-<version>.img') is
+    # spelled out here to match what Debian's own kernel postinst hook
+    # already wrote earlier in the build -- 'imager.py's _deploy_initrd()
+    # and Imager.create()'s '_boot_files()' both look for that name.
     def _finalize(self):
         self._exec(["sh", "-c",
-            "if ls /boot/vmlinuz-* >/dev/null 2>&1; then "
-            "update-initramfs -c -k all; fi"])
+            "for k in /boot/vmlinuz-*; do "
+            "[ -e \"$k\" ] || continue; "
+            "v=${k#/boot/vmlinuz-}; "
+            "if command -v update-initramfs >/dev/null 2>&1; then "
+            "update-initramfs -c -k \"$v\"; "
+            "elif command -v dracut >/dev/null 2>&1; then "
+            "dracut --force \"/boot/initrd.img-$v\" \"$v\"; "
+            "fi; "
+            "done"])
         self._exec(["sh", "-c",
             "mkdir -p /var/lib/seine && "
             "getfattr -Rh -m '' -d -e hex $(find / -mindepth 1 -maxdepth 1 "
