@@ -532,44 +532,61 @@ class DiscoverablePartitionsAreIdentifiedByRole(avocado.Test):
     def test_root_is_architecture_specific(self):
         for architecture, guid in self.root.items():
             self.assertEqual(
-                self.imager._dps_gpt_type({"_prefix": "/"}, architecture), guid)
+                self.imager._dps_gpt_type({"_prefix": "/"}, architecture, {}), guid)
 
     def test_usr_is_architecture_specific(self):
         for architecture, guid in self.usr.items():
             self.assertEqual(
-                self.imager._dps_gpt_type({"_prefix": "/usr/"}, architecture), guid)
+                self.imager._dps_gpt_type({"_prefix": "/usr/"}, architecture, {}), guid)
 
     def test_var_is_universal(self):
         for architecture in self.root:
             self.assertEqual(
-                self.imager._dps_gpt_type({"_prefix": "/var/"}, architecture), self.var)
+                self.imager._dps_gpt_type({"_prefix": "/var/"}, architecture, {}), self.var)
 
     def test_home_is_universal(self):
         from seine.imager import GPT_TYPE_HOME
         for architecture in self.root:
             self.assertEqual(
-                self.imager._dps_gpt_type({"_prefix": "/home/"}, architecture), GPT_TYPE_HOME)
+                self.imager._dps_gpt_type({"_prefix": "/home/"}, architecture, {}), GPT_TYPE_HOME)
 
     def test_srv_is_universal(self):
         from seine.imager import GPT_TYPE_SRV
         for architecture in self.root:
             self.assertEqual(
-                self.imager._dps_gpt_type({"_prefix": "/srv/"}, architecture), GPT_TYPE_SRV)
+                self.imager._dps_gpt_type({"_prefix": "/srv/"}, architecture, {}), GPT_TYPE_SRV)
 
     def test_var_tmp_is_universal_and_distinct_from_var(self):
         from seine.imager import GPT_TYPE_VAR_TMP
         for architecture in self.root:
             self.assertEqual(
-                self.imager._dps_gpt_type({"_prefix": "/var/tmp/"}, architecture), GPT_TYPE_VAR_TMP)
+                self.imager._dps_gpt_type({"_prefix": "/var/tmp/"}, architecture, {}), GPT_TYPE_VAR_TMP)
         self.assertNotEqual(GPT_TYPE_VAR_TMP, self.var)
 
     def test_an_unrecognised_mountpoint_gets_no_role(self):
         self.assertIsNone(
-            self.imager._dps_gpt_type({"_prefix": "/opt/"}, "amd64"))
+            self.imager._dps_gpt_type({"_prefix": "/opt/"}, "amd64", {}))
 
     def test_an_unknown_architecture_gets_no_role(self):
         self.assertIsNone(
-            self.imager._dps_gpt_type({"_prefix": "/"}, "riscv64"))
+            self.imager._dps_gpt_type({"_prefix": "/"}, "riscv64", {}))
+
+    def test_verity_hash_partition_takes_its_role_from_its_pair(self):
+        from seine.imager import GPT_TYPE_ROOT_VERITY, GPT_TYPE_USR_VERITY
+        by_label = {
+            "usr": {"_prefix": "/usr/"},
+            "root": {"_prefix": "/"},
+        }
+        for architecture, guid in GPT_TYPE_USR_VERITY.items():
+            self.assertEqual(
+                self.imager._dps_gpt_type(
+                    {"type": "verity-hash", "verity-for": "usr"}, architecture, by_label),
+                guid)
+        for architecture, guid in GPT_TYPE_ROOT_VERITY.items():
+            self.assertEqual(
+                self.imager._dps_gpt_type(
+                    {"type": "verity-hash", "verity-for": "root"}, architecture, by_label),
+                guid)
 
 class CarriedCache(avocado.Test):
     """

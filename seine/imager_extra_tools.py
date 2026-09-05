@@ -13,12 +13,17 @@ from seine.utils import IMAGER_KIND
 # excluded from extraction -- a version-skewed libc.so.6 loaded under the
 # target's own (unreplaced) dynamic linker caused a real "stack smashing
 # detected" abort; every target already has a working glibc of its own.
+#
+# 'cryptsetup-bin' (veritysetup) is only pulled in when a 'verity: true'
+# mount asks for it -- the installed-package list is part of the
+# Dockerfile text Bootstrap.digest() hashes, so the image is rebuilt (not
+# silently reused) whenever a spec starts or stops needing it.
 EXTRA_IMAGER_TOOLS_SCRIPT = """
 FROM {0}
 {1}RUN apt-get update -qqy && \\
-    apt-get install -qqy --no-install-recommends squashfs-tools erofs-utils && \\
+    apt-get install -qqy --no-install-recommends {2} && \\
     mkdir -p /extra-tools && \\
-    for bin in /usr/bin/mksquashfs /usr/bin/mkfs.erofs; do \\
+    for bin in {3}; do \\
         cp --parents "$bin" /extra-tools; \\
         for lib in $(ldd "$bin" 2>/dev/null | grep -oE '/[^ ]+'); do \\
             case "$lib" in \\
@@ -33,11 +38,18 @@ FROM {0}
 CMD /bin/true
 """
 
+APT_PACKAGES = ["squashfs-tools", "erofs-utils"]
+BINARIES = ["/usr/bin/mksquashfs", "/usr/bin/mkfs.erofs"]
+
+VERITY_APT_PACKAGES = ["cryptsetup-bin"]
+VERITY_BINARIES = ["/usr/sbin/veritysetup"]
+
 class ExtraImagerTools(Bootstrap):
     kind = IMAGER_KIND
 
-    def __init__(self, source):
+    def __init__(self, source, need_verity=False):
         self.source = source
+        self.need_verity = need_verity
         distro = source.spec["distribution"]
         super().__init__(distro, source.options)
 
@@ -46,9 +58,13 @@ class ExtraImagerTools(Bootstrap):
                             self.distro["release"], self.distro["architecture"])
 
     def create(self):
+        apt_packages = APT_PACKAGES + (VERITY_APT_PACKAGES if self.need_verity else [])
+        binaries = BINARIES + (VERITY_BINARIES if self.need_verity else [])
         return self.build(
-            EXTRA_IMAGER_TOOLS_SCRIPT.format(self.source.targetBootstrap.name,
-                                             packages.apt_setup_layer(self.distro)),
+            EXTRA_IMAGER_TOOLS_SCRIPT.format(
+                self.source.targetBootstrap.name,
+                packages.apt_setup_layer(self.distro),
+                " ".join(apt_packages), " ".join(binaries)),
             base=self.source.targetBootstrap.name,
             options=packages.build_volumes(self.distro))
 
