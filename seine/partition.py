@@ -59,6 +59,11 @@ class PartitionHandler:
                 raise ValueError("'%s' is not a valid partition flag!" % f)
             if f == "lvm":
                 part["_lvm"] = True
+            if f in ("boot", "xbootldr") and part["type"] != "vfat":
+                raise ValueError(
+                    "partition '%s' has flag '%s', which UEFI firmware can "
+                    "only read from a 'vfat' partition (this one is '%s')"
+                    % (part["label"], f, part["type"]))
 
         for set in incompatible_flags:
             matched = []
