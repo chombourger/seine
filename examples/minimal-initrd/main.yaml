@@ -5,10 +5,34 @@
 #
 # Nothing here is meant to be installed or booted on its own; only its
 # /boot/initrd.img is, once 'initrd:' extracts and deploys it.
+#
+# Built by dracut, not the distribution's default initramfs-tools: only
+# dracut's systemd module runs the gpt-auto-generator that lets
+# examples/minimal-uki/'s cmdline say 'root=gpt-auto' instead of a
+# fixed PARTUUID. Installed before ../common/amd64's playbook (priority
+# 800) pulls in the kernel, so dracut (Provides: linux-initramfs-tool)
+# already satisfies its 'initramfs-tools | linux-initramfs-tool'
+# dependency and initramfs-tools is never installed at all -- apt would
+# otherwise leave both hooks registered, and initramfs-tools' alphabetically
+# runs last, overwriting dracut's own /boot/initrd.img-<version>.
+# 'dracut-config-generic' turns off host-only mode, which would otherwise
+# build an initrd around this build container's own storage rather than
+# whatever the produced image is booted on.
 
 requires:
     - ../common/amd64
     - ../common/trixie
+
+playbook:
+    - name: build the initrd with dracut instead of initramfs-tools
+      priority: 700
+      tasks:
+          - name: install dracut and its generic (non-host-only) config
+            apt:
+                name:
+                    - dracut
+                    - dracut-config-generic
+                state: present
 
 initrd:
     filename: minimal.img
