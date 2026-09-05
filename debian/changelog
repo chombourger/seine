@@ -1,3 +1,40 @@
+seine (0.2-1) unstable; urgency=medium
+
+  * Add squashfs/erofs support for read-only partitions and volumes: the
+    imager stages and builds them itself, with no tooling needed on the
+    target.
+  * Add a 'multiconfig:' key to declare named sub-builds inside one
+    specification file, each with its own packages and playbook.
+  * Add 'source:' on partitions/volumes, routing a mount to a declared
+    'multiconfig:' group's own root filesystem, for several
+    independently-packaged operating systems on one disk.
+  * Author one GRUB menu entry per 'multiconfig:' group sharing a disk,
+    with a configurable boot-owner group.
+  * Add an 'initrd:' output section to build and deploy a standalone
+    initramfs artifact, without partitioning or an image.
+  * Add 'extends: uki:' packaging, wrapping a kernel and deployed initrd
+    into an installable Unified Kernel Image package (ukify or
+    efibootguard backend).
+  * Add a systemd-boot bootloader backend, booting Unified Kernel Images
+    through the Boot Loader Specification's own auto-discovery.
+  * Give root, /usr, /var, /var/tmp, /home and /srv partitions their own
+    Discoverable Partition Specification GPT type, so a UKI can boot
+    with root=/dev/gpt-auto.
+  * Add 'multiconfig: after:'/'before:' ordering, chaining groups (e.g.
+    initrd, then UKI, then rootfs) so one 'seine build' runs the whole
+    pipeline.
+  * Add dm-verity support for read-only partitions: pair a
+    'verity: true' partition with a 'type: verity-hash' one, and the
+    imager derives both partitions' GPT GUIDs from the built root hash.
+  * Anchor a verity-protected UKI with 'usrhash=' once the root hash is
+    known, and sign it with 'image: secure-boot:' if given.
+  * Render each 'multiconfig:' group's own sub-build in the TUI's spec
+    tree, and let /side-load and /side-unload target a named group.
+  * Fix peer files (given on the command line or side-loaded) to amend
+    an earlier file field by field instead of losing to it.
+
+ -- Cedric Hombourger <chombourger@gmail.com>  Sat, 05 Sep 2026 21:43:02 +0200
+
 seine (0.1-3) unstable; urgency=medium
 
   * Add seine-oci-<release>-<hostarch> packages: prebuilt bootstrap,
