@@ -50,8 +50,13 @@ image:
           size: 1024MiB
           source: image
           where: /var
+        - label: usr
+          type: erofs
+          size: 2048MiB
+          source: image
+          where: /usr
         - label: root
           type: ext4
-          size: 4096MiB
+          size: 1536MiB
           source: image
           where: /
