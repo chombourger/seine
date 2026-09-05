@@ -63,13 +63,14 @@ class MergePartitionWithAdditionalAttributes(avocado.Test):
             image:
                 filename: simple-test.img
                 partitions:
-                    - label: rootfs
-                      where: /
+                    - label: boot
+                      type: vfat
+                      where: /boot
         """)
         build.loads("""
             image:
                 partitions:
-                    - label: rootfs
+                    - label: boot
                       flags:
                           - boot
                           - primary
@@ -77,15 +78,15 @@ class MergePartitionWithAdditionalAttributes(avocado.Test):
         """)
         spec = build.parse()
         parts = spec["image"]["partitions"]
-        if len(parts) != 1 or parts[0]["label"] != "rootfs":
-            self.fail("expected 1 partition: 'rootfs' (got %s)" % parts)
+        if len(parts) != 1 or parts[0]["label"] != "boot":
+            self.fail("expected 1 partition: 'boot' (got %s)" % parts)
         part = parts[0]
         if len(part["flags"]) != 2:
             self.fail("expected 2 partition flags: got %s" % part["flags"])
         if part["size"] != 256 * 1024 * 1024:
             self.fail("expected size of 256MiB: got %s" % part["size"])
-        if part["where"] != "/":
-            self.fail("expected 'where' to be '/': got %s" % part["where"])
+        if part["where"] != "/boot":
+            self.fail("expected 'where' to be '/boot': got %s" % part["where"])
 
 class MergePartitionFlags(avocado.Test):
     def test(self):
@@ -94,23 +95,24 @@ class MergePartitionFlags(avocado.Test):
             image:
                 filename: simple-test.img
                 partitions:
-                    - label: rootfs
-                      where: /
+                    - label: boot
+                      where: /boot
+                      type: vfat
                       flags:
                           - boot
         """)
         build.loads("""
             image:
                 partitions:
-                    - label: rootfs
+                    - label: boot
                       flags:
                           - boot
                           - primary
         """)
         spec = build.parse()
         parts = spec["image"]["partitions"]
-        if len(parts) != 1 or parts[0]["label"] != "rootfs":
-            self.fail("expected 1 partition: 'rootfs' (got %s)" % parts)
+        if len(parts) != 1 or parts[0]["label"] != "boot":
+            self.fail("expected 1 partition: 'boot' (got %s)" % parts)
         part = parts[0]
         if len(part["flags"]) != 2:
             self.fail("expected 2 partition flags: got %s" % part["flags"])
