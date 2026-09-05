@@ -2,9 +2,10 @@
 # SPDX-License-Identifier Apache-2.0
 
 # The 'image' stage of main.yaml's pipeline -- a real root file-system
-# with '/var' split onto its own partition. Pulled in by 'multiconfig:
+# with '/var' split onto its own partition and '/usr' protected by
+# dm-verity (the 'usr'/'usr-verity' pair). Pulled in by 'multiconfig:
 # image:', so any 'image:' section here would be ignored: main.yaml's
-# outer one is what actually describes the disk.
+# outer one owns the disk.
 
 requires:
     - ../common/trixie
@@ -28,6 +29,7 @@ playbook:
                 name:
                     - systemd-boot-efi
                     - systemd-boot-tools
+                    - systemd-cryptsetup
                     - udev
                     - kmod
                     - linux-uki-amd64
