@@ -512,6 +512,65 @@ class TheHypervisorFollowsTheArchitecture(avocado.Test):
         self.assertEqual(self.hypervisors["arm64"],
                          "/usr/bin/qemu-system-aarch64")
 
+# Discoverable Partition Specification roles ('root', '/usr', '/var') are
+# identified by GPT type GUID, so tooling that reads the partition table
+# (systemd-boot, gpt-auto-generator) can find them without 'root=' on the
+# kernel command line -- root and '/usr' are architecture-specific, since a
+# mixed-architecture disk must not have either auto-discovered under the
+# wrong kernel.
+class DiscoverablePartitionsAreIdentifiedByRole(avocado.Test):
+    def setUp(self):
+        try:
+            from seine.imager import Imager, GPT_TYPE_ROOT, GPT_TYPE_USR, GPT_TYPE_VAR
+        except ImportError as e:
+            self.cancel("python3-guestfs is missing: %s" % e)
+        self.imager = Imager.__new__(Imager)
+        self.root = GPT_TYPE_ROOT
+        self.usr = GPT_TYPE_USR
+        self.var = GPT_TYPE_VAR
+
+    def test_root_is_architecture_specific(self):
+        for architecture, guid in self.root.items():
+            self.assertEqual(
+                self.imager._dps_gpt_type({"_prefix": "/"}, architecture), guid)
+
+    def test_usr_is_architecture_specific(self):
+        for architecture, guid in self.usr.items():
+            self.assertEqual(
+                self.imager._dps_gpt_type({"_prefix": "/usr/"}, architecture), guid)
+
+    def test_var_is_universal(self):
+        for architecture in self.root:
+            self.assertEqual(
+                self.imager._dps_gpt_type({"_prefix": "/var/"}, architecture), self.var)
+
+    def test_home_is_universal(self):
+        from seine.imager import GPT_TYPE_HOME
+        for architecture in self.root:
+            self.assertEqual(
+                self.imager._dps_gpt_type({"_prefix": "/home/"}, architecture), GPT_TYPE_HOME)
+
+    def test_srv_is_universal(self):
+        from seine.imager import GPT_TYPE_SRV
+        for architecture in self.root:
+            self.assertEqual(
+                self.imager._dps_gpt_type({"_prefix": "/srv/"}, architecture), GPT_TYPE_SRV)
+
+    def test_var_tmp_is_universal_and_distinct_from_var(self):
+        from seine.imager import GPT_TYPE_VAR_TMP
+        for architecture in self.root:
+            self.assertEqual(
+                self.imager._dps_gpt_type({"_prefix": "/var/tmp/"}, architecture), GPT_TYPE_VAR_TMP)
+        self.assertNotEqual(GPT_TYPE_VAR_TMP, self.var)
+
+    def test_an_unrecognised_mountpoint_gets_no_role(self):
+        self.assertIsNone(
+            self.imager._dps_gpt_type({"_prefix": "/opt/"}, "amd64"))
+
+    def test_an_unknown_architecture_gets_no_role(self):
+        self.assertIsNone(
+            self.imager._dps_gpt_type({"_prefix": "/"}, "riscv64"))
+
 class CarriedCache(avocado.Test):
     """
     :avocado: disable

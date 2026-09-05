@@ -31,6 +31,28 @@ GPT_TYPE_ESP = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
 GPT_TYPE_LVM = "E6D6D379-F507-44C2-A23C-238F2A3DF928"
 GPT_TYPE_XBOOTLDR = "BC13C2FF-59E6-4262-A352-B275FD6F7172"
 
+# Discoverable Partition Specification: root and '/usr' are architecture-
+# specific (a mixed-architecture disk must not have either auto-discovered
+# under the wrong kernel); '/var', '/var/tmp', '/home' and '/srv' are
+# universal. Keyed by seine's own 'distribution: architecture:' names, same
+# as DEFAULT_HYPERVISORS above.
+GPT_TYPE_ROOT = {
+    "amd64": "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709",
+    "arm64": "B921B045-1DF0-41C3-AF44-4C6F280D3FAE",
+    "armhf": "69DAD710-2CE4-4E3C-B16C-21A1D49ABED3",
+    "i386":  "44479540-F297-41B2-9AF7-D131D5F0458A",
+}
+GPT_TYPE_USR = {
+    "amd64": "8484680C-9521-48C6-9C11-B0720656F69E",
+    "arm64": "B0E01050-EE5F-4390-949A-9101B17104E9",
+    "armhf": "7D0359A3-02B3-4F0A-865C-654403E70625",
+    "i386":  "75250D76-8CC6-458E-BD66-BD47CC81A812",
+}
+GPT_TYPE_VAR = "4D21B016-B534-45C2-A9FB-5C16E091FD2D"
+GPT_TYPE_VAR_TMP = "7EC6F557-3BC5-4ACA-B293-16EF5DF639D1"
+GPT_TYPE_HOME = "933AC7E1-2EB4-4F13-B844-0E14E2AEF915"
+GPT_TYPE_SRV = "3B8F8425-20E0-4F3B-907F-1A25A76F98E8"
+
 # Fallback hypervisor per architecture, used to boot a genuine target-arch
 # appliance when cross-building and 'imager: hypervisor:' is not set in the
 # specification (e.g. building an arm64 image on an amd64 host: the imager
@@ -163,7 +185,25 @@ class Imager:
         if "label" in part:
             g.set_label(dev, part["label"])
 
-    def _partition_device(self, g, table, part, index):
+    # DPS role GUID for a plain (non-ESP/LVM/XBOOTLDR) mounted partition --
+    # 'None' for a mountpoint DPS gives no role to (left at parted's own
+    # default, the generic Linux-filesystem-data GUID).
+    DPS_UNIVERSAL_ROLES = {
+        "/var/":      GPT_TYPE_VAR,
+        "/var/tmp/":  GPT_TYPE_VAR_TMP,
+        "/home/":     GPT_TYPE_HOME,
+        "/srv/":      GPT_TYPE_SRV,
+    }
+
+    def _dps_gpt_type(self, part, target_arch):
+        prefix = part.get("_prefix")
+        if prefix == "/":
+            return GPT_TYPE_ROOT.get(target_arch)
+        if prefix == "/usr/":
+            return GPT_TYPE_USR.get(target_arch)
+        return self.DPS_UNIVERSAL_ROLES.get(prefix)
+
+    def _partition_device(self, g, table, part, index, target_arch):
         start_sect = part["_start_mib"] * 2048
         end_sect = part["_end_mib"] * 2048 - 1
         flags = part.get("flags", [])
@@ -182,6 +222,10 @@ class Imager:
                 g.part_set_gpt_type(DEVICE, index, GPT_TYPE_LVM)
             elif "xbootldr" in flags:
                 g.part_set_gpt_type(DEVICE, index, GPT_TYPE_XBOOTLDR)
+            else:
+                dps_type = self._dps_gpt_type(part, target_arch)
+                if dps_type is not None:
+                    g.part_set_gpt_type(DEVICE, index, dps_type)
         elif "boot" in flags:
             g.part_set_bootable(DEVICE, index, True)
         return DEVICE + str(index)
@@ -454,11 +498,12 @@ class Imager:
 
                 print("Partitioning (%s)..." % ph._table)
                 g.part_init(DEVICE, ph._table)
+                target_arch = self.source.spec["distribution"]["architecture"]
                 part_devices = {}
                 part_index = {}
                 index = 1
                 for part in ph.partitions:
-                    dev = self._partition_device(g, ph._table, part, index)
+                    dev = self._partition_device(g, ph._table, part, index, target_arch)
                     part_devices[id(part)] = dev
                     part_index[id(part)] = index
                     if part["_lvm"]:
