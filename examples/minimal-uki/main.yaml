@@ -8,6 +8,12 @@
 # examples/minimal-initrd/ deploys into one Unified Kernel Image, once
 # per 'tool:' backend. Needs the initrd built first: 'extends: uki:
 # initrd:' names a deployed 'initrd:' artifact, not one this spec builds.
+#
+# 'root=gpt-auto' rather than a PARTUUID: examples/minimal-initrd/'s
+# dracut-built initrd runs systemd's gpt-auto-generator, which finds the
+# root partition by its Discoverable Partition Specification GPT type
+# GUID (Imager._dps_gpt_type()) instead of needing one baked into the
+# cmdline.
 
 requires:
     - ../common/amd64
@@ -21,7 +27,7 @@ packages:
               tool: ukify
               linux-image: linux-image-amd64
               initrd: minimal.img
-              cmdline: "console=ttyS0 ro"
+              cmdline: "console=ttyS0 root=gpt-auto ro"
     - name: linux-uki-efibootguard-amd64
       version: "1"
       extends:
@@ -29,4 +35,4 @@ packages:
               tool: efibootguard
               linux-image: linux-image-amd64
               initrd: minimal.img
-              cmdline: "console=ttyS0 ro"
+              cmdline: "console=ttyS0 root=gpt-auto ro"
