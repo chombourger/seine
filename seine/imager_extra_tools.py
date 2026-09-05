@@ -38,7 +38,12 @@ FROM {0}
 CMD /bin/true
 """
 
-APT_PACKAGES = ["squashfs-tools", "erofs-utils"]
+# 'systemd-ukify'/'systemd-boot-efi'/'binutils'/'sbsigntool' aren't
+# ldd-copied like BINARIES below -- imager.py runs them as container
+# commands against this image itself, not the guest. 'systemd-boot-efi'
+# ships the '.stub' file 'ukify build' needs.
+APT_PACKAGES = ["squashfs-tools", "erofs-utils",
+                "systemd-ukify", "systemd-boot-efi", "binutils", "sbsigntool"]
 BINARIES = ["/usr/bin/mksquashfs", "/usr/bin/mkfs.erofs"]
 
 VERITY_APT_PACKAGES = ["cryptsetup-bin"]
