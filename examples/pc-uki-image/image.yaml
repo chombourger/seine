@@ -1,0 +1,46 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# The 'image' stage of main.yaml's pipeline -- a real root file-system,
+# with '/var' split onto its own partition (both get their own
+# Discoverable Partition Specification GPT type GUID -- Imager.
+# _dps_gpt_type()), not just enough to prove the UKI boots. Pulled in by
+# 'multiconfig: image:', so its own 'image:' section, if it had one,
+# would be ignored -- main.yaml's outer 'image:' is what actually
+# describes the disk.
+
+requires:
+    - ../common/trixie
+    - ../common/debian
+    - ../common/conf-accounts
+    - ../common/conf-locales
+    - ../common/conf-timezone
+    - ../common/sshd
+
+distribution:
+    architecture: amd64
+    architectures:
+        - amd64
+
+playbook:
+    - name: uki boot packages
+      priority: 800
+      tasks:
+          - name: install systemd-boot, udev, kmod and the uki package
+            apt:
+                name:
+                    - systemd-boot-efi
+                    - systemd-boot-tools
+                    - udev
+                    - kmod
+                    - linux-uki-amd64
+                state: present
+    - name: a few real-hardware conveniences
+      priority: 850
+      tasks:
+          - name: install common utilities
+            apt:
+                name:
+                    - vim
+                    - iputils-ping
+                state: present

@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+
+import avocado
+import os
+import shutil
+import subprocess
+import sys
+
+path_to_self    = os.path.realpath(__file__)
+path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
+sys.path.append(path_to_sources)
+
+from seine.utils import HOST_ARCH
+
+SPEC = os.path.join("examples", "pc-uki-image", "main.yaml")
+
+PLAN = os.environ.get("SEINE_TEST_PLAN", "")
+
+# examples/pc-uki-image/ built end to end from a single 'seine build' --
+# the point of 'multiconfig: after:' (docs/building.md's "Ordering
+# groups that are not side-by-side OSes"): initrd, then the UKI, then
+# the real-hardware-sized root file-system, none of them pre-built.
+# Static content only, guestfs-inspected, as tests/image/minimal_uki_
+# image.py's own -- no QEMU/mtda in this environment to actually boot it.
+class PcUkiImageBuilds(avocado.Test):
+    """
+    :avocado: tags=full,container
+    """
+    timeout = 3600
+
+    def setUp(self):
+        if PLAN != "full":
+            self.cancel("SEINE_TEST_PLAN=full builds an image; this takes a while")
+        if HOST_ARCH != "amd64":
+            self.cancel("systemd-boot's EFI support is amd64-only here")
+        if shutil.which("podman") is None:
+            self.cancel("podman is needed to build an image")
+        try:
+            import guestfs
+        except ImportError as e:
+            self.cancel("python3-guestfs is missing: %s" % e)
+
+    # No 'SEINE_BUILD_DIR' override: that would put podman's own rootless
+    # container storage under 'self.workdir' too, and avocado cannot clean
+    # that up afterwards (subuid-mapped files a plain rmtree cannot
+    # remove -- the same reason a real build's own './build' is never
+    # 'rm -rf'd directly). A side-loaded peer file redirecting only
+    # 'image: filename:' is what tests/image/minimal_uki_image.py already
+    # does for the same reason.
+    def test_the_whole_pipeline_builds_from_one_call(self):
+        disk = os.path.join(self.workdir, "disk.img")
+        filename = os.path.join(self.workdir, "filename.yml")
+        with open(filename, "w") as f:
+            f.write("image:\n    filename: %s\n" % disk)
+
+        log = os.path.join(self.outputdir, "build.log")
+        with open(log, "w") as f:
+            built = subprocess.run(
+                [sys.executable, "-u", "./seine.py", "build", "-v", SPEC, filename],
+                cwd=path_to_sources, stdout=f, stderr=subprocess.STDOUT)
+        self.assertEqual(built.returncode, 0,
+                         "building the pipeline failed, see %s" % log)
+        self.assertTrue(os.path.isfile(disk), "no disk image at %s" % disk)
+
+        import guestfs
+        g = guestfs.GuestFS(python_return_dict=True)
+        g.add_drive_opts(disk, format="raw", readonly=True)
+        g.launch()
+        try:
+            parts = g.part_list("/dev/sda")
+            guids = {p["part_num"]: g.part_get_gpt_type("/dev/sda", p["part_num"])
+                     for p in parts}
+            # sda1 esp, sda2 xbootldr, sda3 var, sda4 root -- declaration
+            # order, all default priority (PartitionHandler.parse()).
+            self.assertEqual(guids[1], "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+                             "partition 1 is not an ESP")
+            self.assertEqual(guids[2], "BC13C2FF-59E6-4262-A352-B275FD6F7172",
+                             "partition 2 is not an XBOOTLDR partition")
+            self.assertEqual(guids[3], "4D21B016-B534-45C2-A9FB-5C16E091FD2D",
+                             "partition 3 is not a DPS '/var' partition")
+            self.assertEqual(guids[4], "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709",
+                             "partition 4 is not a DPS x86-64 root partition")
+            self.assertEqual(g.vfs_type("/dev/sda2"), "vfat",
+                             "XBOOTLDR is not vfat -- UEFI firmware cannot read it")
+
+            g.mount_ro("/dev/sda2", "/")
+            self.assertTrue(g.is_file("/EFI/Linux/linux-uki-amd64.efi"),
+                            "no UKI under XBOOTLDR's /EFI/Linux/")
+            g.umount("/")
+
+            g.mount_ro("/dev/sda4", "/")
+            fstab = g.read_file("/etc/fstab").decode()
+            self.assertIn("/var/", fstab, "no separate '/var' mount in fstab")
+            g.umount("/")
+        finally:
+            g.close()
+        os.remove(disk)
+
+if __name__ == "__main__":
+    avocado.main()

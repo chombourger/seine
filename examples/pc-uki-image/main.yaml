@@ -1,0 +1,68 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier Apache-2.0
+
+# A disk sized and packaged for a real PC, not just qemu -- built with
+# one 'seine build' call rather than the three examples/minimal-uki-image/
+# needs run by hand, in the right order, using 'multiconfig: after:' (see
+# docs/building.md's "Ordering groups that are not side-by-side OSes"):
+# examples/minimal-initrd/'s dracut initrd, examples/minimal-uki/'s UKI
+# wrapping it, and this directory's own root file-system, each waiting
+# for the one before it. Run from the repository's own root -- like every
+# other 'multiconfig:' group's file list, these are read relative to the
+# current directory, not to this file:
+#
+#   seine build examples/pc-uki-image/main.yaml
+#
+# The UKI is unsigned (seine does not sign one yet -- see uki.py's own
+# comment): a real board with Secure Boot enabled has to have it turned
+# off, or the firmware refuses it before systemd-boot ever runs.
+#
+#   dd if=build/deploy/trixie/pc-uki.img of=/dev/sdX bs=4M status=progress conv=fsync
+
+distribution:
+    release: trixie
+    architecture: amd64
+
+multiconfig:
+    initrd:
+        - examples/minimal-initrd/main.yaml
+    uki:
+        files:
+            - examples/minimal-uki/main.yaml
+        after:
+            - initrd
+    image:
+        files:
+            - examples/pc-uki-image/image.yaml
+        after:
+            - uki
+
+imager:
+    boot: image
+
+image:
+    filename: pc-uki.img
+    table: gpt
+    partitions:
+        - label: esp
+          type: vfat
+          size: 256MiB
+          source: image
+          where: /efi
+          flags: [boot]
+        - label: xbootldr
+          type: vfat
+          size: 512MiB
+          source: image
+          where: /boot
+          flags: [xbootldr]
+        - label: var
+          type: ext4
+          size: 1024MiB
+          source: image
+          where: /var
+        - label: root
+          type: ext4
+          size: 4096MiB
+          source: image
+          where: /
