@@ -1,10 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
-# A real-PC-sized disk, built with one 'seine build' call chaining
-# initrd -> UKI -> rootfs via 'multiconfig: after:' (docs/building.md).
-# Unsigned UKI: disable Secure Boot on real hardware, or the firmware
-# refuses it before systemd-boot ever runs.
+# A real-PC-sized disk chaining initrd -> UKI -> rootfs in one 'seine
+# build' call (multiconfig: after:, docs/building.md). Signed with a
+# throwaway test key ('keys/'); Secure Boot still needs to be off.
 #   seine build examples/pc-uki-image/main.yaml
 #   dd if=build/deploy/trixie/pc-uki.img of=/dev/sdX bs=4M status=progress conv=fsync
 
@@ -32,6 +31,9 @@ imager:
 image:
     filename: pc-uki.img
     table: gpt
+    secure-boot:
+        private-key: examples/pc-uki-image/keys/db.key
+        public-cert: examples/pc-uki-image/keys/db.crt
     partitions:
         - label: esp
           type: vfat
