@@ -1232,9 +1232,12 @@ Disk partitions are defined with the following attributes:
 | type        | no       | File-system type (e.g. `ext4`)           |
 | compression | no       | Compression, for a read-only `type`      |
 | identify    | no       | How a read-only `type` is found at boot  |
+| verity      | no       | Protect a read-only `type` with dm-verity |
+| verity-for  | no       | Label of the partition a `verity-hash` protects |
 | where       | yes*     | Where to mount the partition file-system |
 
-(*) Required unless the partition is a LVM physical volume
+(*) Required unless the partition is a LVM physical volume or has
+    `type: verity-hash`
 
 `type` may also be `squashfs` or `erofs`, in which case the partition is built
 read-only and needs a `gpt` partition `table` (see [image](#image) above): the
@@ -1246,6 +1249,29 @@ exist on a `msdos` table. `identify: partuuid` uses `PARTUUID=` instead.
 its own copy of `mksquashfs`/`mkfs.erofs`, transiently -- the specification
 does not need `squashfs-tools`/`erofs-utils` installed, and nothing from
 building them is left in the produced image.
+
+##### Protecting a read-only partition with dm-verity
+
+`verity: true` on a `/` or `/usr` partition (the only mountpoints the
+[Discoverable Partitions Specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/)
+defines an auto-discovered Verity partition type for) needs a second
+partition of `type: verity-hash`, naming the protected partition back with
+`verity-for: <label>`. A `verity-hash` partition is never mounted (no
+`where`) and has no filesystem of its own -- it holds a raw dm-verity hash
+tree, built by the imager with its own transient copy of `veritysetup`
+after the protected partition's read-only image is built. Its `size` must
+be given explicitly (there's no way to estimate a hash tree's size before
+building it); the build fails if it turns out too small.
+
+The imager sets both partitions' own GPT GUIDs to the built root hash's two
+halves (the same self-describing scheme `systemd-repart` uses, see
+`repart.d(5)`), so `systemd-gpt-auto-generator`/`systemd-veritysetup-generator`
+find and activate the pair with no kernel command line change. A protected
+partition gets no `/etc/fstab` entry: the generators mount it, not fstab
+(an fstab entry would mount the raw partition straight past dm-verity).
+This does not by itself authenticate the root hash against a hostile
+disk -- that needs a signed UKI pinning `usrhash=`/`roothash=`, which
+seine does not build yet (see `uki.py`'s own comment on signing).
 
 A partition may have the following flags:
 
@@ -1308,6 +1334,26 @@ image:
       where: /usr/local      # nested under /usr, its own writable partition
       type: ext4
       size: 128MiB
+```
+
+#### Example: a dm-verity-protected `/usr`
+
+```yaml
+image:
+  filename: example.img
+  table: gpt
+  partitions:
+    - label: root
+      where: /
+      type: ext4
+    - label: usr
+      where: /usr
+      type: erofs
+      verity: true
+    - label: usr-verity
+      type: verity-hash
+      verity-for: usr
+      size: 64MiB          # must be given -- unknown until the hash tree is built
 ```
 
 ### test
