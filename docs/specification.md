@@ -1194,6 +1194,7 @@ created in the disk image. The following top-level attributes are supported:
  * `filename`
  * `bootlets`
  * `partitions`
+ * `secure-boot`
  * `size`
  * `table`
  * `volumes`
@@ -1202,6 +1203,27 @@ An `image` shall have at least one partition defined and an output `filename`
 specified. The `size` of the disk `image` may be omitted and it will then be
 estimated (as the sum of the various partition sizes plus some overhead). The
 partition `table` may either be `gpt` or `msdos`.
+
+#### secure-boot
+
+A disk's signing identity, used to sign a UKI the imager finds and
+anchors for dm-verity (see [Protecting a read-only partition with
+dm-verity](#protecting-a-read-only-partition-with-dm-verity) below) --
+a property of the image as a whole, not of any one partition, since one
+key signs whichever UKI(s) are on the disk regardless of which mount(s)
+they anchor.
+
+| Attribute    | Required | Description                              |
+| ------------ |:--------:| ----------------------------------------- |
+| private-key  | yes      | Key to sign the anchored UKI with        |
+| public-cert  | yes      | Certificate to sign the anchored UKI with |
+
+Both are paths, resolved relative to the current working directory a
+build is run from (like `multiconfig: <group>: files:`, not like
+`patches:`). Omit `secure-boot` entirely to leave an anchored UKI
+unsigned -- correct for a board that has Secure Boot turned off, which
+any board using this today has to (nothing here enrolls a certificate
+into real firmware).
 
 #### bootlets
 
@@ -1269,9 +1291,29 @@ halves (the same self-describing scheme `systemd-repart` uses, see
 find and activate the pair with no kernel command line change. A protected
 partition gets no `/etc/fstab` entry: the generators mount it, not fstab
 (an fstab entry would mount the raw partition straight past dm-verity).
-This does not by itself authenticate the root hash against a hostile
-disk -- that needs a signed UKI pinning `usrhash=`/`roothash=`, which
-seine does not build yet (see `uki.py`'s own comment on signing).
+
+Pairing the two partitions by GUID is not enough on its own: without an
+externally-supplied root hash, `systemd-gpt-auto-generator` refuses to
+activate a Verity pair at all -- it does not fall back to plain-mounting
+the data partition, so a `where: /usr` partition with `verity: true` and
+no anchor **does not boot**. The imager closes this by finding any UKI
+already installed under `EFI/Linux/` on the same disk (built by an
+`extends: uki:` package elsewhere in the specification -- see
+[Bring your own modules](kernels.md#bring-your-own-modules)) and
+rebuilding it with `usrhash=`/`roothash=` appended to its cmdline, once
+the real root hash is known. This happens unconditionally for any
+`verity: true` mount -- `usrhash=` is what makes `/usr` mountable at
+all, signed or not.
+
+An `image: secure-boot:` (see [secure-boot](#secure-boot) above)
+additionally signs the rebuilt UKI (`sbsign`), so Secure Boot's own
+signature verification transitively authenticates the anchored cmdline:
+a forged `/usr` (with its own re-derived GUIDs) no longer matches the
+pinned hash, and the generator refuses it instead of silently
+activating it. Currently only `where: /usr` is supported (`/` verity
+roots have no anchor mechanism yet), and only a UKI built with `extends:
+uki: tool: ukify` (not `efibootguard`, which has no equivalent
+PE-section layout to rebuild from).
 
 A partition may have the following flags:
 
@@ -1342,6 +1384,9 @@ image:
 image:
   filename: example.img
   table: gpt
+  secure-boot:            # optional -- signs the anchored UKI; omit to stay unsigned
+    private-key: keys/db.key
+    public-cert: keys/db.crt
   partitions:
     - label: root
       where: /
