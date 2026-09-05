@@ -291,10 +291,22 @@ class AnsibleContainerRunner:
             os.unlink(ansiblefile.name)
             os.unlink(inventoryfile.name)
 
+    # Rebuilds every kernel's initrd, whichever generator is installed --
+    # Debian's dracut package Conflicts: initramfs-tools, so only one is
+    # ever present. dracut's own default filename differs, so the name
+    # is spelled out here to match what imager.py's _deploy_initrd()/
+    # _boot_files() expect.
     def _finalize(self):
         self._exec(["sh", "-c",
-            "if ls /boot/vmlinuz-* >/dev/null 2>&1; then "
-            "update-initramfs -c -k all; fi"])
+            "for k in /boot/vmlinuz-*; do "
+            "[ -e \"$k\" ] || continue; "
+            "v=${k#/boot/vmlinuz-}; "
+            "if command -v update-initramfs >/dev/null 2>&1; then "
+            "update-initramfs -c -k \"$v\"; "
+            "elif command -v dracut >/dev/null 2>&1; then "
+            "dracut --force \"/boot/initrd.img-$v\" \"$v\"; "
+            "fi; "
+            "done"])
         self._exec(["sh", "-c",
             "mkdir -p /var/lib/seine && "
             "getfattr -Rh -m '' -d -e hex $(find / -mindepth 1 -maxdepth 1 "
