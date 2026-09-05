@@ -5,10 +5,42 @@
 #
 # Nothing here is meant to be installed or booted on its own; only its
 # /boot/initrd.img is, once 'initrd:' extracts and deploys it.
+#
+# Built by dracut, not the default initramfs-tools: only dracut's
+# systemd module runs the gpt-auto-generator examples/minimal-uki/'s
+# 'root=gpt-auto' cmdline needs. Installed before the kernel (priority
+# 700 vs 800) so dracut's own Provides pre-empts initramfs-tools --
+# both installed would let its hook overwrite dracut's initrd.
 
 requires:
     - ../common/amd64
     - ../common/trixie
+
+playbook:
+    - name: build the initrd with dracut instead of initramfs-tools
+      priority: 700
+      tasks:
+          # 'dracut-config-generic' disables host-only mode, else the
+          # initrd only works on this build container. 'systemd'/
+          # 'systemd-cryptsetup' are explicit since dracut only includes
+          # those modules when the binaries are present while generating.
+          - name: install dracut and its generic (non-host-only) config
+            apt:
+                name:
+                    - dracut
+                    - dracut-config-generic
+                    - systemd
+                    - systemd-cryptsetup
+                state: present
+          # Not auto-included just by installing the packages above --
+          # Debian's dracut ships these as inactive template profiles.
+          # Must be written before '../common/amd64's priority-800
+          # kernel install triggers dracut.
+          - name: force dracut to include the systemd and verity generators
+            lineinfile:
+                path: /etc/dracut.conf.d/60-uki-verity.conf
+                line: add_dracutmodules+=" systemd systemd-veritysetup "
+                create: true
 
 initrd:
     filename: minimal.img
