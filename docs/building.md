@@ -312,6 +312,47 @@ own single-rootfs GRUB support.
 built this way -- `seine build examples/main-recovery-image/disk.yaml`
 produces the whole disk.
 
+### Ordering groups that are not side-by-side OSes
+
+The dual-OS pair above needs no ordering between `main` and `recovery`:
+neither reads anything the other produces. A pipeline does -- building a
+Unified Kernel Image needs its `initrd:` deployed first, and installing
+that UKI into a root file-system needs the UKI package built first.
+Write each stage as its own group, and say which one has to come first:
+
+```yaml
+multiconfig:
+    initrd:
+        - examples/minimal-initrd/main.yaml
+    uki:
+        files:
+            - examples/minimal-uki/main.yaml
+        after:
+            - initrd
+```
+
+A group's value is still a bare file list when it names no ordering (as
+`main`/`recovery` above); naming one switches it to a mapping with
+`files:` and `after:` and/or `before:`, each a list of other groups'
+names -- the same two words, and the same "both directions say one
+thing" relationship, that `packages: after:`/`before:` already has
+between packages within one `packages:` list. Naming a group that is not
+one of this specification's own `multiconfig:` keys, naming a group
+itself, or a circle of groups naming each other, is a parse-time error.
+
+Ordering a group `after:` another only serializes the two groups' own
+task graphs against each other -- coarse, not "wait for this one file",
+so a heavier predecessor still costs the same wall-clock time it would
+running alone. `extends: uki: initrd:` is deliberately lenient about
+*when* its named `initrd:` artifact has to exist: a group with no
+declared predecessor still has this checked as soon as the specification
+is parsed, the same fail-fast behaviour `extends: kernel`/`module` get;
+a group `after:` another is trusted to have it by the time it actually
+builds instead, and gets the same error then if it does not.
+
+One `seine build a-multiconfig-disk.yaml` runs the whole pipeline, each
+group in the order its `after:`/`before:` declares.
+
 ### Where the time went
 
 Every build records what each of its steps cost, and `seine analyze`

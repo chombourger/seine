@@ -2553,7 +2553,7 @@ def unvouched(packages):
                           "upstream-sha256"))
     return found
 
-def parse(spec):
+def parse(spec, check_uki=True):
     packages = spec.get("packages", [])
     if type(packages) != type([]):
         raise ValueError("'packages' shall be a list of source packages!")
@@ -2577,7 +2577,11 @@ def parse(spec):
     module.depend_on_kernels(parsed)
     ordered = propagate(order(parsed))
     module.check_kernels(ordered, spec)
-    uki.check_initrds(ordered, spec)
+    # Skipped for a 'multiconfig:' group this specification's own 'after:'
+    # declared a predecessor for -- see multiconfig._load()'s own comment.
+    # uki.extend() still checks for real once the package actually builds.
+    if check_uki:
+        uki.check_initrds(ordered, spec)
     return ordered
 
 # Carries a package's scope down to what it is built after.

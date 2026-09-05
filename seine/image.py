@@ -56,6 +56,11 @@ class Image:
         # Empty for a specification with none -- tasks() below then adds
         # nothing beyond what it always built.
         self.subbuilds = {}
+        # Each group's own 'after' set, name -> the other groups' names it
+        # named ('before' already folded in -- multiconfig.resolve_order()).
+        # tasks() below reads this to wire a group's own root tasks to the
+        # 'needs' of whichever group(s) it has to build after.
+        self.multiconfig_after = {}
 
     def __del__(self):
         if self._tarball:
@@ -106,7 +111,11 @@ class Image:
 
         # Validated here so a bad 'packages' section is reported when the
         # specification is parsed rather than once the build reaches it.
-        self.packages = packages.parse(spec)
+        # 'defer_uki_check' (multiconfig._load()) skips only the
+        # 'extends: uki: initrd:' half of that for a 'multiconfig:' group
+        # whose own predecessor -- not yet built -- is what will deploy it.
+        self.packages = packages.parse(
+            spec, check_uki=not self.options.get("defer_uki_check"))
 
         # And so is 'vendor:', for the same reason -- 'seine build' never
         # acts on it, but a specification with a typo in it should not
@@ -502,11 +511,33 @@ class Image:
         # declared name -- the same graph a build of that group alone
         # would run, merged in rather than run separately (multiconfig.
         # merged_tasks() is what does that for the CLI's own '--' groups).
+        #
+        # A group's own 'after' (self.multiconfig_after, 'before' already
+        # folded in) is wired in before namespacing: every root task of
+        # this group -- one with no 'needs' of its own, so everything else
+        # in it already depends on one by construction -- is made to need
+        # every sink task (tasks.sinks(), also read before namespacing) of
+        # each named predecessor. Coarse (whole group after whole group,
+        # not just the one task that actually reads the other's output),
+        # but correct, and simple: no seine task name needs to be known by
+        # a specification author for this to work.
         if len(self.subbuilds) > 0:
             from seine import multiconfig
-            for name, build in self.subbuilds.items():
-                all_tasks += tasks.namespaced(
-                    build.image.tasks(), multiconfig._label(build, name=name))
+            raw = {name: build.image.tasks()
+                   for name, build in self.subbuilds.items()}
+            labels = {name: multiconfig._label(build, name=name)
+                      for name, build in self.subbuilds.items()}
+            sinks = {name: tasks.sinks(group) for name, group in raw.items()}
+            for name, deps in self.multiconfig_after.items():
+                if len(deps) == 0:
+                    continue
+                predecessors = ["%s:%s" % (labels[dep], sink)
+                                for dep in sorted(deps) for sink in sinks[dep]]
+                for task in raw[name]:
+                    if len(task.needs) == 0:
+                        task.needs = predecessors
+            for name, group in raw.items():
+                all_tasks += tasks.namespaced(group, labels[name])
         # '--target' narrows the graph further still, to one task and
         # what it needs -- 'packages_only'/'rootfs_only' already say
         # where the *usual* stopping points are; this names any task at

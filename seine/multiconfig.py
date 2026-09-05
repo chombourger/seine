@@ -49,16 +49,94 @@ def split(args):
 # options every group is given: it is filled in by load_all() itself, per
 # fragment, and a list shared between groups would carry one group's
 # fragments into another's ansible run.
-def _load(files, options):
+#
+# 'defer_uki_check' skips 'extends: uki: initrd:'s usual parse-time check
+# that the 'initrd:' artifact it names is already deployed (see
+# packages.parse()) -- set for a group this specification's own
+# 'multiconfig:' declared 'after:' another, whose own build (in this same
+# 'seine build') is what will deploy it. uki.extend() still checks this
+# for real once the package actually builds; only the early, friendlier
+# parse-time error is skipped, and only for a group with a declared
+# predecessor to trust instead.
+def _load(files, options, defer_uki_check=False):
     build = BuildCmd()
     build.options = dict(options, ansible_library=[])
     # Named the way a top-level 'seine build' names it (BuildCmd.main()),
     # so a group with no 'image:' of its own can still name its tarball
     # after the file that asked for it (Image._rootfs_output()).
     build.options["files"] = files
+    if defer_uki_check:
+        build.options["defer_uki_check"] = True
     build.load_all(files)
     build.parse()
     return build
+
+# One 'multiconfig:' group's declared value -- either a bare list of
+# specification files (no ordering -- today's only shape, and still the
+# common one), or {files: [...], after: [...], before: [...]} naming the
+# other groups (by their own 'multiconfig:' key) this one has to build
+# after/before, the same words and the same both-directions-say-one-thing
+# relationship 'packages: after:'/'before:' already has between packages
+# (see packages.order()). Returns (files, after, before); resolve_order()
+# below folds the two into one 'after' set per group once every group's
+# own value has been read this way.
+def _parse_group(name, value):
+    if isinstance(value, list):
+        return value, [], []
+    if isinstance(value, dict) and isinstance(value.get("files"), list):
+        after = value.get("after", [])
+        before = value.get("before", [])
+        for key, setting in (("after", after), ("before", before)):
+            if isinstance(setting, list) == False:
+                raise ValueError(
+                    "'multiconfig: %s: %s' shall be a list of group names"
+                    % (name, key))
+        return value["files"], after, before
+    raise ValueError(
+        "'multiconfig: %s' shall be a list of specification files, or a "
+        "mapping with a 'files:' list" % name)
+
+# 'before' folded into the group it names, so Image.tasks() only has one
+# direction ('after') to wire a 'needs' from. Naming a group that
+# 'multiconfig:' does not declare, or naming itself, is a typo worth
+# reporting rather than a constraint worth ignoring -- the build would
+# otherwise go ahead in an order the specification did not ask for.
+def resolve_order(parsed):
+    after = {name: set(entry[1]) for name, entry in parsed.items()}
+    for name, (_files, _after, before) in parsed.items():
+        for other in before:
+            _check_referenced(parsed, name, "before", other)
+            after[other].add(name)
+    for name, deps in after.items():
+        for other in deps:
+            _check_referenced(parsed, name, "after", other)
+    _check_no_cycles(after)
+    return after
+
+def _check_referenced(parsed, name, setting, other):
+    if other == name:
+        raise ValueError("'multiconfig: %s: %s' names itself" % (name, setting))
+    if other not in parsed:
+        raise ValueError(
+            "'multiconfig: %s: %s' names '%s', which is not one of the "
+            "declared 'multiconfig:' groups (%s)"
+            % (name, setting, other, ", ".join(sorted(parsed)) or "none"))
+
+# Kahn's algorithm, only to report a circle clearly -- left unchecked, a
+# circular 'after' would only surface once Image.tasks() wired it into a
+# 'needs' and tasks.py's own scheduler found it, as the much less specific
+# "tasks wait on each other and none can run".
+def _check_no_cycles(after):
+    remaining = dict(after)
+    while len(remaining) > 0:
+        ready = [name for name, deps in remaining.items()
+                 if len(deps & remaining.keys()) == 0]
+        if len(ready) == 0:
+            raise ValueError(
+                "'multiconfig:' groups depend on each other in a circle: %s"
+                % ", ".join(sorted(remaining)))
+        for name in ready:
+            del remaining[name]
 
 # What a group is called in a task name and in a message naming it: the
 # output it would write, without its directory or extension. Distinct by
