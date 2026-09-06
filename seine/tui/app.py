@@ -447,7 +447,7 @@ class SeineApp(App):
             self.screen.refresh_data()
 
     # Refreshes every chip regardless of which one a caller actually
-    # changed -- ConsoleAdapter.on_event() (target.py) needs
+    # changed -- ConsoleAdapter.on_event() (console.py) needs
     # TargetIndicator kept current too, not just Indicators.
     def refresh_indicators(self):
         if isinstance(self.screen, BaseScreen):

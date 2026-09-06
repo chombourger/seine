@@ -171,7 +171,7 @@ class TargetScreen(BaseScreen):
         # state transitions, not worth their own signalling path).
         self._status_timer = self.set_interval(1.0, self._redraw_status)
         # Console pane: a bounded-rate poll of ConsoleAdapter.dirty, not
-        # a push per incoming chunk -- see target.py's ConsoleAdapter
+        # a push per incoming chunk -- see console.py's ConsoleAdapter
         # for why a push-per-chunk design was the actual cause of a
         # boot log looking like it was printing one character at a time.
         # ~30/s (measured ~4ms per render_console() call, plenty of

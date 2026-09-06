@@ -55,7 +55,7 @@ class RunContext:
         # a suite's own per-test setup/teardown makes.
         self.console_log_path = os.path.join(outdir, "console.log") if outdir else None
         # Asciinema v2 recording of the same stream -- replayable evidence
-        # next to console.log (see seine.tui.target.ConsoleAdapter).
+        # next to console.log (see seine.tui.console.ConsoleAdapter).
         self.console_cast_path = os.path.join(outdir, "console.cast") if outdir else None
         # One cast per test (see start_test()) -- supporting evidence that
         # stays scoped to a single test rather than the whole run.
