@@ -677,39 +677,8 @@ class Imager:
             try:
                 g.launch()
 
-                print("Partitioning (%s)..." % ph._table)
-                g.part_init(DEVICE, ph._table)
-                target_arch = self.source.spec["distribution"]["architecture"]
-                partitions_by_label = {p["label"]: p for p in ph.partitions}
-                hash_part_for = {p["verity-for"]: p for p in ph.partitions
-                                 if p["type"] == VERITY_HASH_TYPE}
-                part_devices = {}
-                part_index = {}
-                index = 1
-                for part in ph.partitions:
-                    dev = self._partition_device(
-                        g, ph._table, part, index, target_arch, partitions_by_label)
-                    part_devices[id(part)] = dev
-                    part_index[id(part)] = index
-                    if part["_lvm"]:
-                        g.pvcreate(dev)
-                    elif part["type"] != VERITY_HASH_TYPE:
-                        self._mkfs(g, part, dev)
-                    index = index + 1
-
-                for group in ph.groups:
-                    pvs = [part_devices[id(p)] for p in ph.partitions
-                           if p["_lvm"] and p.get("group") == group]
-                    if not pvs:
-                        raise RuntimeError("no physical volume found for LVM group '%s'!" % group)
-                    g.vgcreate(group, pvs)
-
-                vol_devices = {}
-                for vol in ph.volumes:
-                    g.lvcreate(vol["label"], vol["group"], ph._to_rounded_mib(vol["size"]))
-                    voldev = "/dev/%s/%s" % (vol["group"], vol["label"])
-                    self._mkfs(g, vol, voldev)
-                    vol_devices[id(vol)] = voldev
+                part_devices, part_index, hash_part_for = self._create_partitions(g, ph)
+                vol_devices = self._create_volumes(g, ph, part_devices)
 
                 # Grouped by 'source': 'None' is this specification's own
                 # (so a spec with no 'multiconfig:' key takes this loop
@@ -738,97 +707,13 @@ class Imager:
                 boot_entries = []
                 for source in sources:
                     mounts = sorted(by_source[source], key=lambda m: m["_depth"])
-                    print("Mounting %s file-systems..."
-                          % (("'%s'" % source) if source else "the image's own"))
-                    mount_devices = {}
-                    for m in mounts:
-                        dev = part_devices.get(id(m)) or vol_devices.get(id(m))
-                        mount_devices[id(m)] = dev
-                        if m["_prefix"] != "/":
-                            prefix = m["_prefix"].rstrip("/")
-                            parent = os.path.dirname(prefix)
-                            if parent and parent != "/":
-                                g.mkdir_p(parent)
-                            g.mkmountpoint(prefix)
-                        g.mount(dev, m["_prefix"])
-
-                    print("Extracting root file-system...")
-                    tarball = self.source._tarball_for(source)
-                    g.tar_in(tarball, "/")
-
-                    print("Restoring extended attributes...")
-                    self._restore_xattrs(g, tarball)
-
-                    print("Writing fstab...")
-                    self._write_fstab(g, mounts, mount_devices, part_index)
-
-                    if source is None:
-                        print("Copying bootlets...")
-                        for bootlet in ph.bootlets:
-                            data = g.read_file(bootlet["file"])
-                            g.pwrite_device(DEVICE, data, bootlet["_seek"] * 1024)
-
-                    self._label_selinux(g, mounts)
-
-                    # source is None keeps today's single update-grub call
-                    # unchanged. A declared 'multiconfig:' group instead
-                    # records its own boot info now; the boot-owner group
-                    # (last in 'sources') writes every group's menuentry,
-                    # itself first so it stays the static default.
-                    root_m = next((m for m in mounts if m["_prefix"] == "/"), None)
-                    if root_m is not None and source is None:
-                        bootloader = detect_bootloader(g, DEVICE)
-                        if bootloader:
-                            print("Installing grub...")
-                            bootloader.install(g, "/efi")
-                            bootloader.add_entry(g)
-                    elif root_m is not None:
-                        boot_files = self._boot_files(g)
-                        if boot_files is not None:
-                            if id(root_m) not in part_index:
-                                raise RuntimeError(
-                                    "'multiconfig:' group '%s' has an LVM root -- "
-                                    "a per-group GRUB boot entry needs a GPT "
-                                    "partition, not a logical volume" % source)
-                            kernel, initrd = boot_files
-                            boot_entries.append({
-                                "label": source,
-                                "kernel": kernel,
-                                "initrd": initrd,
-                                "root_partuuid": self._partuuid(g, part_index, root_m),
-                                "root_label": root_m["label"],
-                                "cmdline": self._grub_cmdline(g),
-                            })
-                        if source == boot_owner:
-                            bootloader = detect_bootloader(g, DEVICE)
-                            if bootloader:
-                                print("Installing grub...")
-                                bootloader.install(g, "/efi", boot_directory="/efi")
-                                ordered = [e for e in boot_entries if e["label"] == boot_owner] + \
-                                    [e for e in boot_entries if e["label"] != boot_owner]
-                                for entry in ordered:
-                                    bootloader.add_entry(
-                                        g, group_label=entry["label"],
-                                        kernel=entry["kernel"], initrd=entry["initrd"],
-                                        root_partuuid=entry["root_partuuid"],
-                                        root_label=entry["root_label"],
-                                        cmdline=entry["cmdline"])
-
+                    mount_devices = self._populate_source(
+                        g, ph, source, mounts, part_devices, vol_devices, part_index)
+                    self._install_boot_entry(
+                        g, part_index, source, mounts, boot_owner, boot_entries)
                     built_sizes = self._build_ro_images(
                         g, mounts, mount_devices, part_index, hash_part_for)
-
-                    print("Disk usage:")
-                    for m in mounts:
-                        if m["type"] in RO_FSTYPES:
-                            print("%s\t%s (%s)" % (
-                                m["_prefix"], ph._to_human_size(built_sizes[id(m)]), m["type"]))
-                            continue
-                        st = g.statvfs(m["_prefix"])
-                        total = st["blocks"] * st["frsize"]
-                        used = total - st["bfree"] * st["frsize"]
-                        print("%s\t%s used / %s total" % (
-                            m["_prefix"], ph._to_human_size(used), ph._to_human_size(total)))
-
+                    self._print_disk_usage(g, ph, mounts, built_sizes)
                     g.umount_all()
 
                 g.shutdown()
@@ -841,3 +726,133 @@ class Imager:
                 print("keeping '%s' (imager kernel files) as requested" % output_dir)
             else:
                 shutil.rmtree(output_dir, ignore_errors=True)
+
+    def _create_partitions(self, g, ph):
+        print("Partitioning (%s)..." % ph._table)
+        g.part_init(DEVICE, ph._table)
+        target_arch = self.source.spec["distribution"]["architecture"]
+        partitions_by_label = {p["label"]: p for p in ph.partitions}
+        hash_part_for = {p["verity-for"]: p for p in ph.partitions
+                         if p["type"] == VERITY_HASH_TYPE}
+        part_devices = {}
+        part_index = {}
+        index = 1
+        for part in ph.partitions:
+            dev = self._partition_device(
+                g, ph._table, part, index, target_arch, partitions_by_label)
+            part_devices[id(part)] = dev
+            part_index[id(part)] = index
+            if part["_lvm"]:
+                g.pvcreate(dev)
+            elif part["type"] != VERITY_HASH_TYPE:
+                self._mkfs(g, part, dev)
+            index = index + 1
+        return part_devices, part_index, hash_part_for
+
+    def _create_volumes(self, g, ph, part_devices):
+        for group in ph.groups:
+            pvs = [part_devices[id(p)] for p in ph.partitions
+                   if p["_lvm"] and p.get("group") == group]
+            if not pvs:
+                raise RuntimeError("no physical volume found for LVM group '%s'!" % group)
+            g.vgcreate(group, pvs)
+
+        vol_devices = {}
+        for vol in ph.volumes:
+            g.lvcreate(vol["label"], vol["group"], ph._to_rounded_mib(vol["size"]))
+            voldev = "/dev/%s/%s" % (vol["group"], vol["label"])
+            self._mkfs(g, vol, voldev)
+            vol_devices[id(vol)] = voldev
+        return vol_devices
+
+    def _populate_source(self, g, ph, source, mounts, part_devices, vol_devices, part_index):
+        print("Mounting %s file-systems..."
+              % (("'%s'" % source) if source else "the image's own"))
+        mount_devices = {}
+        for m in mounts:
+            dev = part_devices.get(id(m)) or vol_devices.get(id(m))
+            mount_devices[id(m)] = dev
+            if m["_prefix"] != "/":
+                prefix = m["_prefix"].rstrip("/")
+                parent = os.path.dirname(prefix)
+                if parent and parent != "/":
+                    g.mkdir_p(parent)
+                g.mkmountpoint(prefix)
+            g.mount(dev, m["_prefix"])
+
+        print("Extracting root file-system...")
+        tarball = self.source._tarball_for(source)
+        g.tar_in(tarball, "/")
+
+        print("Restoring extended attributes...")
+        self._restore_xattrs(g, tarball)
+
+        print("Writing fstab...")
+        self._write_fstab(g, mounts, mount_devices, part_index)
+
+        if source is None:
+            print("Copying bootlets...")
+            for bootlet in ph.bootlets:
+                data = g.read_file(bootlet["file"])
+                g.pwrite_device(DEVICE, data, bootlet["_seek"] * 1024)
+
+        self._label_selinux(g, mounts)
+        return mount_devices
+
+    def _install_boot_entry(self, g, part_index, source, mounts, boot_owner, boot_entries):
+        # source is None keeps today's single update-grub call
+        # unchanged. A declared 'multiconfig:' group instead
+        # records its own boot info now; the boot-owner group
+        # (last in 'sources') writes every group's menuentry,
+        # itself first so it stays the static default.
+        root_m = next((m for m in mounts if m["_prefix"] == "/"), None)
+        if root_m is not None and source is None:
+            bootloader = detect_bootloader(g, DEVICE)
+            if bootloader:
+                print("Installing grub...")
+                bootloader.install(g, "/efi")
+                bootloader.add_entry(g)
+        elif root_m is not None:
+            boot_files = self._boot_files(g)
+            if boot_files is not None:
+                if id(root_m) not in part_index:
+                    raise RuntimeError(
+                        "'multiconfig:' group '%s' has an LVM root -- "
+                        "a per-group GRUB boot entry needs a GPT "
+                        "partition, not a logical volume" % source)
+                kernel, initrd = boot_files
+                boot_entries.append({
+                    "label": source,
+                    "kernel": kernel,
+                    "initrd": initrd,
+                    "root_partuuid": self._partuuid(g, part_index, root_m),
+                    "root_label": root_m["label"],
+                    "cmdline": self._grub_cmdline(g),
+                })
+            if source == boot_owner:
+                bootloader = detect_bootloader(g, DEVICE)
+                if bootloader:
+                    print("Installing grub...")
+                    bootloader.install(g, "/efi", boot_directory="/efi")
+                    ordered = [e for e in boot_entries if e["label"] == boot_owner] + \
+                        [e for e in boot_entries if e["label"] != boot_owner]
+                    for entry in ordered:
+                        bootloader.add_entry(
+                            g, group_label=entry["label"],
+                            kernel=entry["kernel"], initrd=entry["initrd"],
+                            root_partuuid=entry["root_partuuid"],
+                            root_label=entry["root_label"],
+                            cmdline=entry["cmdline"])
+
+    def _print_disk_usage(self, g, ph, mounts, built_sizes):
+        print("Disk usage:")
+        for m in mounts:
+            if m["type"] in RO_FSTYPES:
+                print("%s\t%s (%s)" % (
+                    m["_prefix"], ph._to_human_size(built_sizes[id(m)]), m["type"]))
+                continue
+            st = g.statvfs(m["_prefix"])
+            total = st["blocks"] * st["frsize"]
+            used = total - st["bfree"] * st["frsize"]
+            print("%s\t%s used / %s total" % (
+                m["_prefix"], ph._to_human_size(used), ph._to_human_size(total)))
