@@ -1366,6 +1366,40 @@ class Builder:
     def stamp(self, package, architecture=None, depends=None):
         architecture = architecture or self.distro["architecture"]
         digest = hashlib.sha256()
+        self._stamp_core(digest, package, architecture)
+
+        # Patches and kernel configuration fragments count by content, not
+        # by name: editing one without touching the specification has to be
+        # enough to ask for a rebuild, all the more for a kernel, where the
+        # alternative is silently keeping one built from the fragment as it
+        # used to read.
+        for path in package.referenced_files():
+            with open(path, "rb") as f:
+                digest.update(f.read())
+
+        self._stamp_kernel_graft(digest, package)
+        self._stamp_module(digest, package)
+        self._stamp_cross_headers(digest, package)
+        self._stamp_uki(digest, package)
+
+        # A package built against another has to be rebuilt when that one
+        # changes: it was compiled and linked against what that package
+        # installed. Folding the dependency's digest in says so, and says
+        # it transitively, since that digest already carries its own.
+        for name in sorted(depends or {}):
+            digest.update(depends[name].encode())
+
+        # The architecture is in the name, not only in the digest: one
+        # repository holds every architecture's stamps, and what a stamp
+        # is looked up by is the build it belongs to. Without it the
+        # amd64 build of a package would find the arm64 build's stamp
+        # when asking what it left behind last time, and take its .debs
+        # away as superseded.
+        return os.path.join(self._stamps(), "%s_%s_%s"
+                            % (package.name, architecture,
+                               digest.hexdigest()[:16]))
+
+    def _stamp_core(self, digest, package, architecture):
         # Sets, not sequences: which patches are kept and which are dropped
         # does not depend on the order they were written in, and a digest
         # that says otherwise costs a kernel build to reorder two lines.
@@ -1478,15 +1512,8 @@ class Builder:
                               for name in sorted(package.module_make_vars)),
                      str(package.upstream_version)]:
             digest.update(part.encode())
-        # Patches and kernel configuration fragments count by content, not
-        # by name: editing one without touching the specification has to be
-        # enough to ask for a rebuild, all the more for a kernel, where the
-        # alternative is silently keeping one built from the fragment as it
-        # used to read.
-        for path in package.referenced_files():
-            with open(path, "rb") as f:
-                digest.update(f.read())
 
+    def _stamp_kernel_graft(self, digest, package):
         # A grafted kernel is built from what the rules kept of the
         # distribution's series, so those rules decide what comes out as
         # surely as a fragment does. By content, for the same reason:
@@ -1497,7 +1524,8 @@ class Builder:
             digest.update(kernel.kernel_rules().content)
             digest.update(str(kernel.GRAFT_VERSION).encode())
 
-        # And a module is built by the packaging seine writes for it, so
+    def _stamp_module(self, digest, package):
+        # A module is built by the packaging seine writes for it, so
         # that packaging decides what comes out as surely as a patch
         # does. By content, for the same reason: editing the rules has to
         # be enough to ask for a rebuild, or the modules go on being the
@@ -1505,6 +1533,7 @@ class Builder:
         if package.module:
             digest.update(module.module_packaging()[1])
 
+    def _stamp_cross_headers(self, digest, package):
         # A cross headers package is of one kernel and made by one
         # packaging, and neither is anything the settings above describe:
         # it was made up rather than asked for. The kernel's release
@@ -1517,11 +1546,12 @@ class Builder:
             digest.update(package.cross_kernel.headers.encode())
             digest.update(module.cross_packaging()[1])
 
+    def _stamp_uki(self, digest, package):
         # A uki package is built from these settings plus the named
-        # 'initrd:' artifact's own bytes, none of which the 'for part in
-        # [...]' loop above catches. Without this, a changed cmdline/
-        # tool/linux-image, or a rebuilt initrd with the same filename
-        # but new content, would keep reusing a stale cached UKI.
+        # 'initrd:' artifact's own bytes, none of which '_stamp_core'
+        # catches. Without this, a changed cmdline/tool/linux-image, or
+        # a rebuilt initrd with the same filename but new content, would
+        # keep reusing a stale cached UKI.
         if package.uki:
             digest.update(package.uki_tool.encode())
             digest.update(package.uki_linux_image.encode())
@@ -1538,23 +1568,6 @@ class Builder:
                     digest.update(f.read())
             else:
                 digest.update(b"<initrd not yet built>")
-
-        # A package built against another has to be rebuilt when that one
-        # changes: it was compiled and linked against what that package
-        # installed. Folding the dependency's digest in says so, and says
-        # it transitively, since that digest already carries its own.
-        for name in sorted(depends or {}):
-            digest.update(depends[name].encode())
-
-        # The architecture is in the name, not only in the digest: one
-        # repository holds every architecture's stamps, and what a stamp
-        # is looked up by is the build it belongs to. Without it the
-        # amd64 build of a package would find the arm64 build's stamp
-        # when asking what it left behind last time, and take its .debs
-        # away as superseded.
-        return os.path.join(self._stamps(), "%s_%s_%s"
-                            % (package.name, architecture,
-                               digest.hexdigest()[:16]))
 
     # A file 'stamp()' hashed, written the way the specification wrote
     # it -- relative to whichever file actually declared it
