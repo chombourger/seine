@@ -9,8 +9,7 @@ import yaml
 from seine                      import packages
 from seine.transport_bootstrap import TransportBootstrap
 from seine import tasks
-from seine.utils                import ContainerEngine
-from seine.utils                import spawn_own_pgroup
+from seine.container import ContainerEngine, spawn_own_pgroup
 from seine.utils                import feeds
 from seine.utils                import offline_apt_script
 from seine.utils                import vendor_mountpoint

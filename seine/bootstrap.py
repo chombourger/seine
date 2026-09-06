@@ -10,7 +10,7 @@ import tempfile
 from seine.cache_index import IMAGE, Index, say, since
 from seine.oci_bundle import import_bundled
 from seine.tasks import Task
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import HOST_ARCH
 from seine.utils import INPUTS_LABEL
 from seine.utils import KIND_LABEL

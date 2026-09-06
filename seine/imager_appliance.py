@@ -5,7 +5,7 @@ import os
 
 from seine           import packages
 from seine.bootstrap import Bootstrap
-from seine.utils     import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import IMAGER_KIND
 
 # Files libguestfs expects in a LIBGUESTFS_PATH "fixed appliance" directory.

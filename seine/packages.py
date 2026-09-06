@@ -33,7 +33,7 @@ from seine.utils  import locked
 from seine.utils  import offline_apt_script
 from seine.utils  import offline_suites
 from seine.utils  import vendor_mountpoint
-from seine.utils  import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils  import GIT_EMAIL
 from seine.utils  import GIT_NAME
 from seine.utils  import HOST_ARCH

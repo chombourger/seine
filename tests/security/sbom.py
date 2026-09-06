@@ -15,7 +15,8 @@ sys.path.append(path_to_sources)
 from seine            import sbom as sbom_module
 from seine.bootstrap  import HostBootstrap, TargetBootstrap
 from seine.sbom       import SBOM, installed_packages, wanted
-from seine.utils      import ContainerEngine, HOST_ARCH
+from seine.container import ContainerEngine
+from seine.utils import HOST_ARCH
 
 # A root file-system as 'container export' hands one over: the few files
 # debsbom reads, and a good deal of what it does not.

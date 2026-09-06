@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 # What seine has cached, when it was made and when it was last used.
 #

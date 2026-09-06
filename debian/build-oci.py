@@ -45,7 +45,7 @@ SOURCE = "debian"
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import HOST_ARCH
 
 HOSTARCH = os.environ.get("HOSTARCH", HOST_ARCH)

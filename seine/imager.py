@@ -19,7 +19,7 @@ from seine.partition        import RO_FSTYPES
 from seine.partition        import VERITY_HASH_TYPE
 from seine.tasks import Task
 from seine.uki               import ukify_argv
-from seine.utils            import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils            import HOST_ARCH
 
 DEVICE = "/dev/sda"

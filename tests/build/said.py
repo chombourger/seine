@@ -10,7 +10,7 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
 from seine.tasks import Failed
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 # What a failing container command wrote, kept where a person reading the
 # error will find it. 'returned non-zero exit status 255' is a number:

@@ -198,7 +198,7 @@ class ToolTable(avocado.Test):
     # No 'files=[...]' -- reading a pulled source needs no active
     # specification, same as source-list.
     def test_read_reaches_a_file_under_the_workbench_with_no_active_spec(self):
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
         path = os.path.join(ContainerEngine.workbench(), "bash-5.14", "debian", "control")
         os.makedirs(os.path.dirname(path))
         with open(path, "w") as f:
@@ -208,7 +208,7 @@ class ToolTable(avocado.Test):
         self.assertEqual(text, "Source: bash\n")
 
     def test_read_of_a_missing_workbench_file_is_an_error_not_a_crash(self):
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
         path = os.path.join(ContainerEngine.workbench(), "nope", "control")
         app = self.SeineApp()
         text = self.ai.TOOLS["read"].run(app, {"path": path})

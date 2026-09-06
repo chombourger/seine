@@ -231,7 +231,7 @@ class ToolTable(avocado.Test):
     # an instance.
     def _fake_bash(self, output="", returncode=0):
         from seine import sources
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
         saved_create = sources.HostBootstrap.create
         saved_run = ContainerEngine.run_captured
         sources.HostBootstrap.create = lambda self: self

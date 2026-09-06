@@ -20,7 +20,7 @@ from seine import secscan
 from seine.build import diff, recall
 from seine.progress import elapsed
 from seine.sbuild import BuilderImage
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 def render_overview(context):
     if not context.active:

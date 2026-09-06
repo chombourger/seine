@@ -18,7 +18,8 @@ from seine.image      import Image
 from seine.cmd        import Cmd
 from seine.partition  import PartitionHandler
 from seine.tasks      import Interrupted
-from seine.utils      import ContainerEngine, digest, distribution, locked
+from seine.container import ContainerEngine
+from seine.utils import digest, distribution, locked
 from seine.utils      import lock_sibling, redact, redactions
 
 # Specifications are rendered before they are parsed, so that one file can

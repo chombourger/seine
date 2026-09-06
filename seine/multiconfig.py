@@ -21,7 +21,8 @@ from seine import utils
 from seine.bootstrap import HostBootstrap
 from seine.build     import BuildCmd, remember
 from seine.sbuild    import BuilderImage
-from seine.utils     import ContainerEngine, locked
+from seine.container import ContainerEngine
+from seine.utils import locked
 
 # The command line's file arguments, split on '--' into the groups they
 # name. Not getopt's own end-of-options handling: options are already

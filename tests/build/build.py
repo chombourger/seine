@@ -19,7 +19,7 @@ from seine import analyze
 from seine import settings
 from seine import tasks
 from seine.build import BuildCmd
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 # BuildCmd's jobs default: 1 unless a persisted setting overrides it;
 # an explicit -j/--jobs still wins either way.

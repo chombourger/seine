@@ -9,7 +9,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 # A container removed on the way out of a failed build takes with it what
 # podman recorded about the execs that ran in it. SEINE_KEEP_DEAD_CONTAINERS

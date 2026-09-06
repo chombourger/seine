@@ -15,7 +15,7 @@ def import_bundled():
     _attempted = True
     if os.path.isdir(BUNDLE_DIR) == False:
         return
-    from seine.utils import ContainerEngine
+    from seine.container import ContainerEngine
     for release in sorted(os.listdir(BUNDLE_DIR)):
         release_dir = os.path.join(BUNDLE_DIR, release)
         images = os.path.join(release_dir, "images.tar.gz")

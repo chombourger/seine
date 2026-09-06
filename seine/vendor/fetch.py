@@ -11,7 +11,7 @@ import shutil
 import subprocess
 
 from seine.cache_index import VENDOR, Index, say
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import locked
 from seine import snapshot
 

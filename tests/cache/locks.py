@@ -90,7 +90,7 @@ class SharedHoldersDoNotWaitForEachOther(avocado.Test):
 class DifferentImagesBuildTogether(avocado.Test):
     def setUp(self):
         from seine.bootstrap import Bootstrap
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
 
         self.environment = dict(os.environ)
         os.environ["SEINE_BUILD_DIR"] = os.path.join(self.workdir, "build")
@@ -174,7 +174,7 @@ class DifferentImagesBuildTogether(avocado.Test):
 class TheStorageIsSweptWhenABuildIsDone(avocado.Test):
     def setUp(self):
         from seine.build import BuildCmd
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
 
         self.environment = dict(os.environ)
         os.environ["SEINE_BUILD_DIR"] = os.path.join(self.workdir, "build")

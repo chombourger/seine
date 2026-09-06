@@ -6,17 +6,16 @@
 # (RESOLVE_SCRIPT) run inside it to do the actual 'apt-get source'/
 # download-only dry run (VendorResolver).
 
-import collections
 import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 
 from seine.bootstrap import Bootstrap
 from seine.sbuild import SbuildChroot
-from seine.utils import ContainerEngine, feeds, apt_sources
+from seine.container import ContainerEngine
+from seine.utils import feeds, apt_sources
 from seine.utils import APT_CLEANUP
 from seine.utils import PRIVILEGED_RUN_OPTIONS
 

@@ -108,7 +108,7 @@ class AuditTrail(avocado.Test):
         self.assertNotIn("n=0 ", text)
 
     def test_audit_file_lands_under_the_configured_audit_dir(self):
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
         self._register_fake_tool()
         self.ai.confirm = lambda app, tool, arguments, preview: True
         app = self.SeineApp()

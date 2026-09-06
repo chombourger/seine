@@ -8,7 +8,7 @@ import subprocess
 from seine.bootstrap   import Bootstrap
 from seine.cache_index import CHROOT, Index, say, since
 from seine.oci_bundle  import import_bundled
-from seine.utils     import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils     import apt_sources
 from seine.utils     import apt_sources_dockerfile
 from seine.utils     import APT_CLEANUP

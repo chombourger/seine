@@ -18,7 +18,7 @@ import time
 from seine.bootstrap import Bootstrap, HostBootstrap
 from seine.cmd       import Cmd
 from seine.utils     import apt_sources
-from seine.utils     import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils     import SOURCE_KIND
 
 INDEX_FILE = "index.json"

@@ -27,7 +27,7 @@ from seine.transport_bootstrap import TransportBootstrap
 from seine.sbom           import SBOM
 from seine.sbuild         import BuilderImage
 from seine.tasks          import Task
-from seine.utils          import ContainerEngine
+from seine.container import ContainerEngine
 
 class Image:
     def __init__(self, partitionHandler, options=None):

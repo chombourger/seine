@@ -14,7 +14,8 @@ sys.path.append(path_to_sources)
 
 from seine import sources
 from seine.sources import SourceCmd
-from seine.utils import ContainerEngine, HOST_ARCH
+from seine.container import ContainerEngine
+from seine.utils import HOST_ARCH
 from tests.native_image import native_image
 
 DISTRO = {"source": "debian", "release": "bookworm", "architecture": HOST_ARCH,
@@ -341,7 +342,7 @@ class Cli(avocado.Test):
 # directly on the class (both are called through the class, never an
 # instance, so a plain function works either way) rather than swapped
 # module references -- bash() reaches ContainerEngine through
-# 'from seine.utils import ContainerEngine', the same class object, so
+# 'from seine.container import ContainerEngine', the same class object, so
 # patching the attribute on the class is what actually takes effect.
 class Bash(avocado.Test):
     def setUp(self):

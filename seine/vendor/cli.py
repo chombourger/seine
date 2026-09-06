@@ -16,7 +16,7 @@ import time
 from seine.cache_index import VENDOR, Index, say
 from seine.cmd import Cmd
 from seine.tasks import Task
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import lock_sibling
 from seine import settings
 from seine import signing

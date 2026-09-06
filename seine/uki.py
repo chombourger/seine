@@ -15,7 +15,7 @@ from email.utils import format_datetime
 
 import jinja2
 
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import GIT_EMAIL
 from seine.utils import GIT_NAME
 from seine.utils import distribution

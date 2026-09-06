@@ -1481,7 +1481,7 @@ class AFailedBuildKeepsItsLog(avocado.Test):
     def test(self):
         from seine import packages as module
         from seine.packages import Builder
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
 
         class Image:
             def exec(self, args, architecture=None, volumes=None, workdir=None,

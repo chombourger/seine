@@ -20,7 +20,7 @@ from seine.testing import loader
 # the same logs root a multi-group build's own logs land under
 # (multiconfig.py's own _logs()), one timestamped directory per run.
 def default_outdir():
-    from seine.utils import ContainerEngine
+    from seine.container import ContainerEngine
     base = os.path.join(ContainerEngine.logs_root(), "tests")
     return os.path.join(base, time.strftime("%Y%m%d-%H%M%S", time.gmtime()))
 

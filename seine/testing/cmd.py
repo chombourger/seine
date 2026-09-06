@@ -31,7 +31,7 @@ is where a 'Log In' keyword reused by every board 'requires:'-ing it
 belongs. '--tags' runs only tests carrying at least one of the given
 tags. '--outdir' is where output.xml and any captured screen/image
 artifacts land, default a fresh directory under the container engine's
-own logs root (see seine.utils.ContainerEngine.logs_root). '--dry-run'
+own logs root (see seine.container.ContainerEngine.logs_root). '--dry-run'
 is Robot Framework's own dry run: every step's keyword is resolved and
 its arguments checked, but no keyword body actually runs -- nothing
 touches real hardware, the way a syntax/reference check on a

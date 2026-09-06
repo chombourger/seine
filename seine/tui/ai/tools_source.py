@@ -5,7 +5,7 @@
 
 import os
 
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 from . import Preview, Tool, _no_args, _single_group, NO_SINGLE_GROUP
 

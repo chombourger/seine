@@ -148,7 +148,8 @@ class ClearingIsBestEffort(Caches):
 # images that build is standing on.
 class ClearingWaitsForNoBuild(Caches):
     def test_a_running_build_stops_a_clear(self):
-        from seine.utils import ContainerEngine, locked
+        from seine.container import ContainerEngine
+        from seine.utils import locked
 
         with locked(ContainerEngine.storage_lock(), shared=True):
             code, reported = self.run_cmd_failing(["clear"])
@@ -622,7 +623,7 @@ class EveryImageSaysWhatItIs(avocado.Test):
 # Which of a storage's images go into a tar, decided by what each says it is.
 class OnlyWhatAnotherMachineCanUseIsCarried(avocado.Test):
     def setUp(self):
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
         self.asked = ContainerEngine.check_output
         storage = [
             {"Names": ["localhost/bootstrap/debian/trixie/all:latest"],
@@ -646,7 +647,7 @@ class OnlyWhatAnotherMachineCanUseIsCarried(avocado.Test):
             lambda cmd: json.dumps(storage).encode()
 
     def tearDown(self):
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
         ContainerEngine.check_output = self.asked
 
     def test(self):

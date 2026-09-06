@@ -17,7 +17,7 @@ from typing import NamedTuple
 from seine.cmd import Cmd
 from seine import settings
 from seine.sbom import DEBSBOM_IMAGE, output_path
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 # One finding: a single CVE against a single (source) package. 'urgency'
 # is Debian's own triage label (high/medium/low/unimportant/end-of-life/

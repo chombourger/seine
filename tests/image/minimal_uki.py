@@ -12,7 +12,7 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import HOST_ARCH
 
 INITRD = os.path.join(path_to_sources, "examples", "minimal-initrd")

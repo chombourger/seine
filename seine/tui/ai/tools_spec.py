@@ -8,7 +8,7 @@
 import glob
 import os
 
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 from . import (Plan, Preview, Tool, _detect_indent, _doc_sources, _no_args,
                _redacted_diff, _single_group, _socket_send, NO_SINGLE_GROUP)

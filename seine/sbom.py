@@ -6,7 +6,7 @@ import tarfile
 import tempfile
 
 from seine.tasks import Task
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 # debsbom, run from the image its authors publish. Preferred over a
 # generic scanner because it reports the source package every binary was

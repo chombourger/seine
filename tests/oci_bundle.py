@@ -10,7 +10,7 @@ path_to_sources = os.path.join(os.path.dirname(path_to_self), "..")
 sys.path.append(path_to_sources)
 
 import seine.oci_bundle as oci_bundle
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 
 class ABundleIsImportedBeforeBuilding(avocado.Test):
     def setUp(self):

@@ -13,7 +13,8 @@ import re
 import yaml
 
 from seine.cache_index import VENDOR, Index
-from seine.utils import ContainerEngine, feeds, apt_sources
+from seine.container import ContainerEngine
+from seine.utils import feeds
 
 
 # One entry of the 'vendor:' section: a source package to vendor, plus the

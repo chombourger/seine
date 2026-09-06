@@ -35,7 +35,7 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 
 from seine import settings
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import redact, redactions
 
 # Same duck-typing as seine.tui.target's own _socket_send(): 'app' here
@@ -593,7 +593,7 @@ class AIState:
         import datetime
         import json
         import time
-        from seine.utils import ContainerEngine
+        from seine.container import ContainerEngine
         if self.chat_file is None:
             chats = ContainerEngine.chats()
             os.makedirs(chats, exist_ok=True)

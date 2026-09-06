@@ -11,7 +11,7 @@ import time
 
 from seine.cmd      import Cmd
 from seine.progress import elapsed
-from seine.utils    import ContainerEngine
+from seine.container import ContainerEngine
 
 # What a build spent, step by step, kept so that it can be read once the
 # build is over.

@@ -19,7 +19,7 @@ import contextlib
 from seine       import analyze
 from seine       import cache_index
 from seine.cmd   import Cmd
-from seine.utils import ContainerEngine
+from seine.container import ContainerEngine
 from seine.utils import locked
 from seine.utils import KIND_LABEL
 from seine.utils import BUILDER_KIND

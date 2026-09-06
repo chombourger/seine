@@ -13,7 +13,8 @@ import subprocess
 from seine import settings
 from seine.imager import DEFAULT_HYPERVISORS
 from seine.sbom import DEBSBOM_IMAGE
-from seine.utils import ContainerEngine, HOST_ARCH
+from seine.container import ContainerEngine
+from seine.utils import HOST_ARCH
 
 class Check:
     def __init__(self, group, name, status, detail):
@@ -45,12 +46,12 @@ def _binary(group, name, argv=None):
     version = _first_line(result.stdout) if result is not None else path
     return Check(group, name, "ok", version or path)
 
-GROUP_ENGINE = "Container engine (seine.utils.ContainerEngine)"
+GROUP_ENGINE = "Container engine (seine.container.ContainerEngine)"
 GROUP_IMAGING = "Imaging (seine.imager)"
 GROUP_ANSIBLE = "Ansible (seine.ansible_runner)"
 GROUP_SIGNING = "Signing (seine.signing)"
 GROUP_SBOM = "SBOM (seine.sbom)"
-GROUP_STORAGE = "Storage (seine.utils.ContainerEngine.build_dir)"
+GROUP_STORAGE = "Storage (seine.container.ContainerEngine.build_dir)"
 GROUP_AI = "Optional AI integration (seine.tui.ai)"
 GROUP_TARGET = "Optional remote target (seine.tui.target)"
 GROUP_TESTING = "Optional test automation (seine.testing)"
