@@ -5,7 +5,7 @@
 # against kernels this specification builds, or ones the distribution
 # ships, with packaging seine writes for it.
 #
-# Above seine/kernel.py rather than beside it: a module is built against a
+# Above seine/kernel rather than beside it: a module is built against a
 # kernel, names one, and is versioned by the ABI that kernel ended up with.
 # The names are imported rather than the module itself -- 'kernel' is what
 # a local variable is called all through here.

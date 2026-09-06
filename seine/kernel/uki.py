@@ -126,9 +126,9 @@ def check_initrds(packages, spec):
 def _sh_quote(value):
     return "'" + value.replace("'", "'\\''") + "'"
 
-UKI_PACKAGING = os.path.join(os.path.dirname(__file__), "data", "uki-ukify")
-EFIBOOTGUARD_PACKAGING = os.path.join(
-    os.path.dirname(__file__), "data", "uki-efibootguard")
+_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+UKI_PACKAGING = os.path.join(_DATA_DIR, "uki-ukify")
+EFIBOOTGUARD_PACKAGING = os.path.join(_DATA_DIR, "uki-efibootguard")
 UKI_FILES = ["changelog", "control", "rules"]
 
 @functools.lru_cache(maxsize=None)

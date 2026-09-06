@@ -18,7 +18,7 @@ from seine.packages          import FALLBACK_EPOCH
 from seine.partition        import RO_FSTYPES
 from seine.partition        import VERITY_HASH_TYPE
 from seine.tasks import Task
-from seine.uki               import ukify_argv
+from seine.kernel.uki        import ukify_argv
 from seine.container import ContainerEngine
 from seine.utils            import HOST_ARCH
 
@@ -349,7 +349,7 @@ class Imager:
     # hash IS the two partitions' own GPT GUIDs, concatenated back
     # together -- data partition's GUID is the high 128 bits, hash
     # partition's the low 128. Not authentication by itself: pinning the
-    # hash still needs a signed UKI (uki.py).
+    # hash still needs a signed UKI (seine/kernel/uki.py).
     def _hex_to_gpt_guid(self, hexstr):
         return "%s-%s-%s-%s-%s" % (
             hexstr[0:8], hexstr[8:12], hexstr[12:16], hexstr[16:20], hexstr[20:32])

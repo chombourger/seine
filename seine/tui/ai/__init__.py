@@ -93,7 +93,7 @@ def _lookup_context_max(model, api_base, api_key):
 # Plain text, not a Python string -- editing wording (or feeding a
 # frontier model both this file and a batch of real transcripts,
 # ContainerEngine.chats() below, to suggest a better one) needs no code
-# change either way. Read fresh each call ('seine/kernel.py's own
+# change either way. Read fresh each call ('seine/kernel's own
 # 'KERNEL_RULES' follows the same "a path constant, opened by whoever
 # needs it" shape), not cached at import -- a person iterating on the
 # wording sees the next question pick it up without restarting.

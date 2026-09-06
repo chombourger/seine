@@ -18,9 +18,9 @@ from datetime import timezone
 from email.utils import format_datetime
 
 from seine        import kernel
+from seine.kernel import uki
 from seine        import module
 from seine        import signing
-from seine        import uki
 from seine.cache_index import PACKAGE, Index, say, since
 from seine.sbuild import BuilderImage
 from seine.tasks  import Task
@@ -71,7 +71,7 @@ DEFAULT_SCOPE = ["target"]
 ANY_RELEASE = None
 
 # Build types 'extends' knows about, and the settings each of them takes.
-# Each build type is a module of its own -- seine/kernel.py and the rest --
+# Each build type is a module of its own -- seine/kernel and the rest --
 # holding the settings it takes, what it does to a source, and the checks
 # that go with it. What is left here is what a source package is regardless
 # of what is built from it.
