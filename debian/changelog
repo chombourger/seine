@@ -1,5 +1,7 @@
 seine (0.2-1) unstable; urgency=medium
 
+  * Add a 'seine podman' command, a dumb passthrough to podman pointed at
+    seine's own storage.
   * Add squashfs/erofs support for read-only partitions and volumes: the
     imager stages and builds them itself, with no tooling needed on the
     target.

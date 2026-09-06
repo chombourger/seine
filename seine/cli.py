@@ -9,6 +9,7 @@ from seine.analyze import AnalyzeCmd
 from seine.build import BuildCmd, PlanCmd
 from seine.cache import CacheCmd
 from seine.cmd import Cmd
+from seine.container import ContainerEngine
 from seine.gists import GistCmd
 from seine.vendor import VendorCmd
 from seine.progress import interactive
@@ -271,6 +272,15 @@ does not have yet.
             sys.exit(3)
         print(build.changed(args, spec))
 
+# Dumb passthrough to podman, pointed at seine's own storage.
+class PodmanCmd(Cmd):
+    NAME = "podman"
+
+    def main(self, argv):
+        cmd = ContainerEngine._podman_cmd(list(argv))
+        env = ContainerEngine._podman_env()
+        os.execvpe(cmd[0], cmd, env)
+
 # What seine can be asked to do. Each command says the rest for itself, with
 # '-h' -- there is no point restating a command's flags here, where they
 # would go out of date the day one is added.
@@ -287,6 +297,7 @@ COMMANDS = {
     "inspect": (InspectCmd, "browse a finished image, read-only"),
     "doctor": (DoctorCmd, "say whether this machine has what a build needs"),
     "diff":   (DiffCmd, "diff a specification, or two SBOMs, package by package"),
+    "podman": (PodmanCmd, "run podman itself against seine's own storage"),
     "test":   (TestCmd, "run a test suite against a real target (needs the 'test' extra)"),
     "tui":    (TuiCmd, "open the interactive TUI (needs the 'tui' extra)"),
 }
