@@ -56,7 +56,7 @@ setup(
         # console pane (seine/tui/target.py) -- no C extension, small
         # enough to sit alongside textual rather than its own extra.
         'tui': ['textual', 'rich<14', 'pyte'],
-        # The optional AI chat, seine/tui/ai.py -- never a dependency of
+        # The optional AI chat, seine/tui/ai -- never a dependency of
         # 'tui' itself, only of the one module that imports it.
         'ai': ['litellm', 'jsonpath-ng', 'ruamel.yaml'],
         # 'seine test' (seine/testing/) -- unlike mtda (a system package,

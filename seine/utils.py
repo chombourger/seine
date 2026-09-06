@@ -706,7 +706,7 @@ class ContainerEngine:
     def logs_root():
         return os.environ.get("SEINE_LOG_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "logs")
-    # One JSON file per conversation with the AI chat (seine/tui/ai.py,
+    # One JSON file per conversation with the AI chat (seine/tui/ai,
     # which owns what goes in it) -- this only says where.
     # SEINE_CHAT_DIR names it outright; unset, it is under
     # SEINE_BUILD_DIR, the same as everything else in this family.
@@ -715,7 +715,7 @@ class ContainerEngine:
         return os.environ.get("SEINE_CHAT_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "chats")
     # One append-only JSONL file per day, every gated AI tool call
-    # (seine/tui/ai.py's own '_audit()') -- across conversations, unlike
+    # (seine/tui/ai's own '_audit()') -- across conversations, unlike
     # chats() above, since "did the AI ever run source-rm today" cuts
     # across them. Kept apart from scratch()/cache the same way
     # logs_root() is: 'seine cache clear' must not eat it.

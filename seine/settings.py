@@ -10,7 +10,7 @@ import json
 import os
 
 # Every default is "do nothing different" -- None means no override.
-# llm_model unset means the AI chat (seine/tui/ai.py) is off.
+# llm_model unset means the AI chat (seine/tui/ai) is off.
 # sbom2cve_program unset means seine/secscan.py runs debsbom's own
 # container image rather than an external scanner. history_pruning
 # unset means seine.tui.history's own default (30 days); '0' turns

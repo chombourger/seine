@@ -67,7 +67,7 @@ def installed_packages(tarball):
 # if options say --sbom was asked for right now" gate: this is a plain
 # lookup ("did a prior build already leave one here"), not a decision
 # about whether the build being loaded *right now* would produce one --
-# seine/tui/ai.py's own read tool wants that gate (a build's own
+# seine/tui/ai's own read tool wants that gate (a build's own
 # options currently NOT asking for --sbom hides an SBOM that may exist
 # from an earlier, differently-configured run) and keeps its own,
 # separate lookup for that reason; this one is for every caller that

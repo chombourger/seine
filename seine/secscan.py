@@ -72,7 +72,7 @@ def cache_path(sbom_path):
 # the cache (missing, unreadable, not what json.load() expects) is
 # treated the same as "no cache yet": scan() runs a fresh one rather
 # than raising. Public (not '_read_cache') so a caller that must never
-# trigger a real scan itself -- seine/tui/ai.py's own read-only 'issues'
+# trigger a real scan itself -- seine/tui/ai's own read-only 'issues'
 # tool, a container run or an external program being too consequential
 # for it to start on its own -- can read the cache without going
 # through scan() at all.
