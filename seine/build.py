@@ -890,7 +890,7 @@ class BuildCmd(Cmd):
     # 'vendor:' is a list of asks in an ordinary file -- merged below, by
     # name, the way every other named list is. In a lock file it is
     # instead a dict, keyed by suite, of what a resolve already froze
-    # (see seine/vendor.py's own manifest shape) -- told apart by type()
+    # (see seine/vendor's own manifest shape) -- told apart by type()
     # since the two are never the same shape, and kept out of
     # self.spec["vendor"] itself so every existing reader of it (starting
     # with vendor.py's own parse()) keeps seeing a plain list of asks.

@@ -200,7 +200,7 @@ class SbuildChroot:
 
     # 'offline' bakes the chroot's own sources.list from the local vendor
     # repository instead of the network, for a real 'packages:' rebuild
-    # under 'apt-pull-mode: offline'. Left False by seine/vendor.py's own
+    # under 'apt-pull-mode: offline'. Left False by seine/vendor's own
     # base_chroot(), which shares this same cache entry (see 'key' above)
     # to compute a vendor's build-dependency closure -- going offline
     # there would have it read a vendor repository that its own resolve is

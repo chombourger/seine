@@ -479,7 +479,7 @@ SOURCE_KIND = "source"        # host-arch, dpkg-dev -- where sources are pulled
 # though still an unprivileged one in the kernel's eyes -- uid 0 in it is
 # the user seine runs as, so what it can reach is that user's own files,
 # not the machine's. Used by seine/sbuild.py's BuilderImage (both to make
-# a chroot and to build in one) and by seine/vendor.py's resolver (to make
+# a chroot and to build in one) and by seine/vendor's resolver (to make
 # the chroot its base_chroot() reads).
 PRIVILEGED_RUN_OPTIONS = [
     "--cap-add=sys_admin",
@@ -685,7 +685,7 @@ class ContainerEngine:
     def deploy_root():
         return os.environ.get("SEINE_DEPLOY_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "deploy")
-    # A vendor repository (seine/vendor.py's own deploy_repository()) is
+    # A vendor repository (seine/vendor's own deploy_repository()) is
     # unlike the rest of deploy_root(): a shared, machine-independent
     # *input* -- the same fetched .debs regardless of which spec or which
     # machine last built against them -- rather than a build's own local

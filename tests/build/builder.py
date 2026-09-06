@@ -199,7 +199,7 @@ class OfflineFetchInjectsTheVendorSourceAtExecTime(avocado.Test):
 # The buildd chroot sbuild unpacks bakes its own sources.list at creation
 # time (mmdebstrap), so it is the other half of honouring 'apt-pull-mode'
 # -- see SbuildChroot._create()'s own comment for why base_chroot() (in
-# seine/vendor.py) never passes 'offline' here, unlike a real rebuild.
+# seine/vendor) never passes 'offline' here, unlike a real rebuild.
 class ChrootBakesOfflineSourcesAndDigestsDifferently(avocado.Test):
     def create(self, distro, offline):
         from seine.sbuild import SbuildChroot

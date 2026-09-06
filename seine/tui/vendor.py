@@ -44,7 +44,7 @@ class VendorState:
         # Session-relative download total: 'repo_size' polled at reset()
         # is the baseline every later sample() subtracts back out, since
         # a suite's repository is durable across runs (see
-        # seine/vendor.py's own 'repository()' comment) -- what this run
+        # seine/vendor's own 'repository()' comment) -- what this run
         # itself added, not what was already there from a previous one.
         self._baseline = 0
         self.repo_size = 0

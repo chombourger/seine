@@ -2424,7 +2424,7 @@ class VendorStateBehaviour(avocado.Test):
         self.assertIn("✘", state.render())
 
     # A retried task is a new Task named '<base>#<attempt>' (see
-    # MAX_ATTEMPTS in seine/vendor.py) -- counted as it starts, not
+    # MAX_ATTEMPTS in seine/vendor) -- counted as it starts, not
     # derived from 'rows' afterwards.
     def test_a_retry_attempt_is_counted(self):
         state = self.VendorState()
