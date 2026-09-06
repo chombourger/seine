@@ -110,7 +110,7 @@ class History:
 
     # Anything short of a JSON array of {"line", "ts", "scope"} objects
     # is no history rather than an error -- same "unreadable counts as
-    # empty" rule 'seine.build.recall()' already follows for a lost
+    # empty" rule 'seine.diffing.recall()' already follows for a lost
     # baseline. No migration from an older format: it simply doesn't
     # match this shape, so it is read as empty, same as any other
     # stale/foreign content here.

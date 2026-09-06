@@ -17,7 +17,7 @@ from seine import analyze
 from seine import packages
 from seine import sbom
 from seine import secscan
-from seine.build import diff, recall
+from seine.diffing import diff, recall
 from seine.progress import elapsed
 from seine.sbuild import BuilderImage
 from seine.container import ContainerEngine

@@ -461,7 +461,8 @@ def _side_load_preview(app, arguments):
         return Preview(False, "side-load needs exactly one active group -- "
                        "multi-group specifications ('/use a -- b') aren't "
                        "supported here yet")
-    from seine.build import BuildCmd, diff
+    from seine.build import BuildCmd
+    from seine.diffing import diff
     scratch = BuildCmd()
     scratch.options = dict(scratch.options, ansible_library=[])
     try:
@@ -498,7 +499,7 @@ def _tool_side_load(app, arguments):
         return "could not side-load: %s" % e
     app.call_from_thread(app.refresh_screens)
     after = context.builds[0]
-    from seine.build import diff
+    from seine.diffing import diff
     changes = diff(before, after.dump(after.spec), color=False)
     return "side-loaded %s\n\n%s" % (fragment, changes)
 
@@ -520,7 +521,8 @@ def _side_unload_preview(app, arguments):
                        "aren't supported here yet")
     if fragment not in context.groups[0]:
         return Preview(False, "'%s' isn't currently loaded" % fragment)
-    from seine.build import BuildCmd, diff
+    from seine.build import BuildCmd
+    from seine.diffing import diff
     scratch = BuildCmd()
     scratch.options = dict(scratch.options, ansible_library=[])
     remaining = [f for f in context.groups[0] if f != fragment]
@@ -550,7 +552,7 @@ def _tool_side_unload(app, arguments):
         return "could not side-unload: %s" % e
     app.call_from_thread(app.refresh_screens)
     after = context.builds[0]
-    from seine.build import diff
+    from seine.diffing import diff
     changes = diff(before, after.dump(after.spec), color=False)
     return "side-unloaded %s\n\n%s" % (fragment, changes)
 

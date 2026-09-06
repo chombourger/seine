@@ -10,8 +10,9 @@ path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from seine.build import ADDED, REMOVED, RESET, BuildCmd, PlanCmd
-from seine.build import diff, recall, remember
+from seine.build import BuildCmd, PlanCmd
+from seine.diffing import ADDED, REMOVED, RESET
+from seine.diffing import diff, recall, remember
 from seine.image import Image
 
 SPEC = """
