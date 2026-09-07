@@ -10,9 +10,7 @@ import platform
 import re
 import subprocess
 
-# Debian architecture of the machine seine itself runs on. Anything the
-# specification asks for that differs from this is a cross build, whether
-# that means emulating the target or compiling for it.
+# Debian arch of the machine seine runs on. Anything else is a cross build.
 HOST_MACHINE_TO_ARCH = {
     "x86_64":  "amd64",
     "aarch64": "arm64",
@@ -21,45 +19,30 @@ HOST_MACHINE_TO_ARCH = {
 }
 HOST_ARCH = HOST_MACHINE_TO_ARCH.get(platform.machine(), platform.machine())
 
-# Where the source of a package is fetched and, later, built. Everything
-# happens inside the builder container: the tools involved (apt-get source,
-# dget, git) are installed there rather than on the machine seine runs on,
-# and the working directory is a host-side directory bind-mounted into it so
-# the fetched source outlives the container that fetched it.
-#
-# Here rather than in seine/packages.py because what a kernel or a module
-# does to a source happens in the same directory, and neither of those
-# modules may import the one that drives them.
+# Host dir bind-mounted into the builder container, where package sources
+# are fetched and built. Kept here (not packages.py) since kernel/module
+# code shares this same dir and can't import packages.py.
 WORKDIR = "/src"
 
-# Identity the patch commits are made under. Fixed, like their date: a
-# commit made by whoever happens to be running the build is a commit whose
-# hash cannot be reproduced by anyone else.
+# Fixed identity for patch commits, so their hash is reproducible by anyone.
 GIT_NAME  = "seine"
 GIT_EMAIL = "seine@localhost"
 
-# The 'distribution' section, defaulted and validated once so that two
-# callers -- Image.parse() and VendorCmd, which shares nothing else with
-# it -- do not each keep their own copy of what a bare 'distribution:'
-# means.
+# Defaults/validates the 'distribution' section once, shared by
+# Image.parse() and VendorCmd.
 def distribution(spec):
     distro = spec["distribution"] if "distribution" in spec else {}
     if "source" not in distro:
         distro["source"] = "debian"
-    # 'buster' until 2026-08-30: it went EOL, dropped off
-    # deb.debian.org entirely, and a bootstrap naming it as a fallback
-    # nobody actually configured now fails outright rather than quietly
-    # building something stale. 'bookworm' is oldstable as of this
-    # writing -- still served -- and the fallback's whole job is a
-    # release that exists, not a particular one.
+    # 'bookworm': current oldstable, still served. 'buster' was tried before
+    # but went EOL and dropped off deb.debian.org, breaking builds silently.
     if "release" not in distro:
         distro["release"] = "bookworm"
     if "architecture" not in distro:
         distro["architecture"] = "amd64"
     if "uri" not in distro:
         distro["uri"] = "http://ftp.debian.org/debian"
-    # Build profiles/options for Build-Depends evaluation (DEB_BUILD_PROFILES
-    # / DEB_BUILD_OPTIONS). Optional, defaults to no extra profiles.
+    # DEB_BUILD_PROFILES / DEB_BUILD_OPTIONS for Build-Depends. Optional.
     for key in ("build-options", "build-profiles"):
         if key in distro:
             val = distro[key]
@@ -70,40 +53,20 @@ def distribution(spec):
             distro[key] = val
     spec["distribution"] = distro
 
-    # Validated here rather than when a bootstrap first reads them, so a
-    # mistyped feed is reported against the specification instead of
-    # halfway through building an image from it.
+    # Validate now, so a bad feed is reported against the spec, not
+    # halfway through a build.
     feeds(distro)
     return distro
 
-# The apt feeds a system is built from. A specification lists them
-# explicitly rather than having suites guessed for it: which of -updates
-# and -security a release has, and where they are served from, differs
-# between distributions and between a release and its development
-# version, and a suite that does not exist fails every build that follows.
+# The apt feeds a system is built from, listed explicitly rather than
+# guessed (suites like -updates/-security differ per release). No
+# 'feeds:' means the release itself is the only feed.
 #
-# With none listed, the release itself is the one feed, which is what
-# seine did before feeds could be listed at all.
-#
-# Each feed is assumed to carry sources as well as binaries, since that
-# is what an archive normally serves and what rebuilding a package needs.
-# 'sources: false' says otherwise, for the vendor feeds that ship
-# binaries alone.
-#
-# 'valid-until: false' is for archives meant to stay expired -- a
-# snapshot.debian.org timestamp, or a frozen mirror -- which apt would
-# otherwise refuse.
-#
-# 'release:' groups a pocket with the release it belongs to -- unset, a
-# feed is its own, single-member group. A base feed needs nothing (its
-# own 'suite' already names its release); one of its pockets
-# ('trixie-security', 'bookworm-backports') names the base explicitly
-# (examples/common/debian.yaml's own template does, for every feed but
-# the base one). Never guessed from the suite's name -- 'oldstable-
-# security' or a snapshot-tagged suite would defeat any naming
-# convention, and a wrong guess would silently leak one release's
-# packages into another's build-dependency closure (seine vendor's own
-# feeds_for_suite() is what this exists for -- see its own comment).
+# 'sources: false' is for vendor feeds with binaries only. 'valid-until:
+# false' is for archives meant to stay expired (snapshot.debian.org,
+# frozen mirrors). 'release:' groups a pocket (e.g. 'bookworm-backports')
+# with its base release; never guessed from the suite name, since that
+# could silently mix releases in a build-dependency closure.
 def feeds(distro):
     entries = distro.get("feeds")
     if entries is None:
@@ -128,9 +91,7 @@ def feeds(distro):
             "uri":         entry.get("uri", distro["uri"]),
             "suite":       entry["suite"],
             "release":     entry.get("release", entry["suite"]),
-            # A distribution-wide default, so a file needing a component --
-            # firmware for a board, say -- says so once without naming the
-            # suites. A feed saying otherwise still decides for itself.
+            # falls back to the distribution-wide default component(s)
             "components":  entry.get("components",
                                      distro.get("components", "main")),
             "sources":     entry.get("sources", True),
@@ -138,9 +99,8 @@ def feeds(distro):
         })
     return parsed
 
-# The feed a root file-system bootstraps from: the one for the release
-# itself, not whichever feed a fragment happened to list first -- merge
-# order puts 'requires'-added feeds (backports, say) ahead of it.
+# The feed for the release itself (not the first one merge order lists),
+# which a root file-system bootstraps from.
 def base_feed(distro):
     release = distro["release"]
     for feed in feeds(distro):
@@ -148,24 +108,11 @@ def base_feed(distro):
             return feed
     raise ValueError("no feed for suite '%s'!" % release)
 
-# Those feeds as apt would write them down. 'sources' adds a deb-src line
-# for every feed that has said it carries any. 'entries' overrides which
-# feeds to use (base_feed()'s alone, say); unset is every feed, as before.
-#
-# An expired feed says so in the entry rather than in an apt.conf.d
-# fragment: these lines reach every container a build talks to an archive
-# from, and the option stays scoped to the feed that asked for it.
-#
-# 'offline' is an explicit opt-in, never inferred from
-# 'distro.get("apt-pull-mode")' here: this one function backs every
-# container that ever calls apt -- the host/target bootstraps, the
-# sbuild-capable builder 'packages:' rebuilds in, and that same builder
-# reused by 'seine vendor' itself to *populate* the local repository this
-# would otherwise point a resolve/fetch container back at. Only
-# seine/ansible_runner.py's own feed configuration for the running target
-# container -- what 'apt-pull-mode: offline' actually means, installing
-# what the specification asks for without reaching the network -- passes
-# it.
+# Those feeds as apt would write them down. 'sources' adds deb-src lines
+# for feeds that carry them. 'entries' overrides which feeds to use (else
+# all of them). 'offline' must be passed explicitly by the one caller that
+# means it (ansible_runner.py); every other caller of this function still
+# wants the network.
 def apt_sources(distro, sources=False, entries=None, offline=False):
     lines = []
     for feed in entries if entries is not None else feeds(distro):
@@ -179,31 +126,25 @@ def apt_sources(distro, sources=False, entries=None, offline=False):
             lines.append("deb-src %(options)s%(uri)s %(suite)s %(components)s" % feed)
     return lines
 
-# Where an image built by a Dockerfile RUN instruction writes the feeds
-# it bakes in -- kept apart from FEEDS_LIST (ansible_runner.py), which
-# names the same thing for a container reconfigured after it is already
-# running, not while it is being built.
+# Where a Dockerfile RUN instruction writes its baked-in feeds. Separate
+# from FEEDS_LIST (ansible_runner.py), which is for a container already
+# running, not being built.
 DOCKERFILE_SOURCES_LIST = "/etc/apt/sources.list.d/seine.list"
 
-# apt's package lists: stale as soon as the next 'apt-get update' runs,
-# never needed once an image is built. Safe everywhere, even on an image
-# that becomes part of what a build ships.
+# apt's package lists, stale right after 'apt-get update' and never
+# needed once an image is built. Safe to remove anywhere.
 APT_LISTS_CLEANUP = "rm -rf /var/lib/apt/lists/*"
 
-# Doc/info/man pages a human would read, on top of APT_LISTS_CLEANUP.
-# Only for a tooling image seine itself uses and never ships -- a
-# TargetBootstrap-derived image (TransportBootstrap, say) keeps them:
-# whatever it carries there is part of what a build hands the user, not
-# seine's own tooling to trim.
+# Doc/info/man pages, on top of APT_LISTS_CLEANUP. Only for seine's own
+# tooling images, never for images (TransportBootstrap etc.) that a build
+# ships to the user.
 APT_CLEANUP = "rm -rf /usr/share/doc /usr/share/info /usr/share/man && " \
              + APT_LISTS_CLEANUP
 
-# The '&&'-joined shell fragment a Dockerfile RUN instruction chains
-# ahead of its own 'apt-get update': writes 'entries' into a fresh
-# sources.list.d file so the image reads the specification's own feed
-# instead of whatever the base image happened to ship with. 'true' when
-# there is nothing to add, so a caller can chain it unconditionally
-# rather than special-case an empty list.
+# Shell fragment a Dockerfile RUN chains before 'apt-get update': writes
+# 'entries' so the image uses the spec's own feeds instead of the base
+# image's. 'true' when there's nothing to add, so callers can chain it
+# unconditionally.
 def apt_sources_dockerfile(distro, entries, sources=False, offline=False):
     lines = apt_sources(distro, sources=sources, entries=entries, offline=offline)
     if len(lines) == 0:
@@ -211,31 +152,24 @@ def apt_sources_dockerfile(distro, entries, sources=False, offline=False):
     return " && ".join("echo '%s' >> %s" % (line, DOCKERFILE_SOURCES_LIST)
                        for line in lines)
 
-# base_feed()'s uri/components, folded into a short tag: TargetBootstrap
-# and TransportBootstrap both bake base_feed() into a Dockerfile without
-# spelling it out anywhere else in their name, so two specifications
-# differing only there would otherwise collide on one image tag.
+# base_feed()'s uri/components as a short tag, so two specs that differ
+# only there don't collide on one image tag.
 def feed_digest(distro):
     return hashlib.sha256(
         repr(sorted(base_feed(distro).items())).encode()).hexdigest()[:8]
 
-# Where a suite's vendor repository is reached from inside a container,
-# once 'apt-pull-mode: offline' has turned a feed into one -- bind-mounted
-# there by whoever calls apt_sources(), the same way 'packages:'s own
-# repository is mounted at sbuild.py's REPOSITORY. One mountpoint per
-# suite, since two feeds going offline in the same container each need
-# their own tree: a single shared path could only ever hold one of them.
+# Where an offline feed's vendor repository is bind-mounted inside a
+# container. One mountpoint per suite, since two offline feeds in the
+# same container each need their own tree.
 VENDOR_MOUNTPOINT = "/vendor-repo"
 
 def vendor_mountpoint(suite):
     return "%s/%s" % (VENDOR_MOUNTPOINT, suite)
 
-# A feed rewritten to read from its own suite's local vendor instead of
-# the network. Verified with 'signed-by' when the vendor carries a key --
-# 'seine vendor --vendor-sign-key' signed it precisely so a rebuild years
-# from now, on another machine, can still tell its packages were not
-# tampered with on the way -- and trusted outright, the way 'packages:'s
-# own unsigned repository is, only when it was never signed at all.
+# A feed rewritten to read from its suite's local vendor instead of the
+# network. Uses 'signed-by' if the vendor was signed
+# ('--vendor-sign-key'), else trusts it outright like an unsigned
+# 'packages:' repository.
 def _offline_feed(feed, sources):
     from seine import vendor
     where = vendor_mountpoint(feed["suite"])
@@ -250,26 +184,18 @@ def _offline_feed(feed, sources):
         lines.append("deb-src %s file:%s %s extra" % (options, where, feed["suite"]))
     return lines
 
-# The suites a set of feeds would read from offline -- what a caller
-# building the podman command around apt_sources() has to bind-mount,
-# without re-deriving it from the same feeds a second time. Empty unless
-# 'apt-pull-mode: offline' is actually set, so a caller can bind-mount
-# unconditionally on what this returns.
+# Suites to bind-mount for offline feeds. Empty unless 'apt-pull-mode:
+# offline' is set, so callers can bind-mount unconditionally.
 def offline_suites(distro, entries=None):
     if distro.get("apt-pull-mode") != "offline":
         return []
     return sorted({feed["suite"] for feed
                   in (entries if entries is not None else feeds(distro))})
 
-# A shell fragment writing 'entries' into 'target' inside a container --
-# shared by ansible_runner.py (the running target container) and sbuild.py
-# (a throwaway builder container), the two places that turn a feed list
-# into what a container's own apt actually reads. 'offline' is passed
-# through to apt_sources() unchanged, same opt-in-only rule as there.
-#
-# Going offline replaces what is already in /etc/apt rather than adding to
-# it: a baked-in entry left standing would still reach for the network
-# right beside the one just written for it.
+# Shell fragment writing 'entries' into 'target' inside a container,
+# shared by ansible_runner.py and sbuild.py. Going offline replaces
+# /etc/apt's existing sources rather than adding to them, so no baked-in
+# entry is left still reaching for the network.
 def offline_apt_script(distro, entries, target, offline=False):
     lines = apt_sources(distro, sources=True, entries=entries, offline=offline)
     script = ""
@@ -280,23 +206,14 @@ def offline_apt_script(distro, entries, target, offline=False):
     script += "".join("echo '%s' >> %s; " % (line, target) for line in lines)
     return script
 
-# One build at a time for the things two builds share.
+# One build at a time for a cache two builds share, so two writers don't
+# race and leave a half-written file behind. The lock sits beside the
+# thing it guards.
 #
-# seine's caches are keyed by what they are made from, so two builds
-# wanting the same one want the same bytes. What they must not do is
-# write it at the same time: two mmdebstraps producing one tarball leave
-# a file that is neither, and the build that trips over it does so much
-# later and for no visible reason. The lock file sits beside the thing it
-# guards and is held only while it is written.
-#
-# 'shared' is for what many may do at once but none may do while one does
-# something else: several builds may add images to a storage together, and
-# a prune that removes what none of them has tagged yet may not run while
-# any of them is.
-#
-# 'blocking' says what to do when it is not free. Unset, wait; set, raise
-# BlockingIOError rather than queue behind something long, for work that
-# another holder will end up doing anyway.
+# 'shared' is for many readers at once but no writer meanwhile (e.g. a
+# prune must not run while any build is still tagging images). 'blocking'
+# False raises BlockingIOError instead of waiting, for work another
+# holder will do anyway.
 @contextlib.contextmanager
 def locked(path, shared=False, blocking=True):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -308,19 +225,16 @@ def locked(path, shared=False, blocking=True):
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
-# What names a set of specification files, for whatever is filed per
-# specification: its last plan, its logs. The names rather than the contents,
-# which change with every edit -- the very thing those are compared across.
+# Digest of a set of spec file names (not contents, which change with
+# every edit), used to file things per-specification: last plan, logs.
 def digest(files, length=None):
     named = "\0".join(_portable_name(f) for f in files)
     return hashlib.sha256(named.encode()).hexdigest()[:length]
 
-# A file's name, made independent of where its workspace was checked out --
-# a raw abspath() would give the same specification a different digest() on
-# every machine or clone. A file inside a git repository is named relative
-# to that repo's remote (falling back to its toplevel directory's basename
-# if it has no remote), so the same checkout content hashes the same way
-# everywhere; anything else keeps its absolute path.
+# A file's name independent of where it was checked out (a raw abspath()
+# would give the same spec a different digest per clone). Named relative
+# to its git remote (or toplevel dir name if no remote); anything outside
+# git keeps its absolute path.
 def _portable_name(f):
     abspath = os.path.abspath(f)
     toplevel = _git_toplevel(os.path.dirname(abspath))
@@ -339,9 +253,8 @@ def _git_toplevel(directory):
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
-# 'origin' if there is one, else whichever remote sorts first -- picking a
-# remote deterministically matters more than which one, since it only has
-# to agree with itself across machines that cloned the same repository.
+# 'origin' if there is one, else whichever remote sorts first. Which one
+# doesn't matter, only that it's picked the same way everywhere.
 @functools.lru_cache(maxsize=None)
 def _git_remote(toplevel):
     try:
@@ -372,35 +285,26 @@ def _normalize_remote(url):
     host, path = match.groups()
     return "%s/%s" % (host.lower(), path.strip("/"))
 
-# The lock file a specification pairs with, kas style: 'foo.yaml' always
-# pairs with 'foo.lock.yaml', full stop -- no field asks for it, and a
-# file already named '*.lock.yaml' does not get a lock of its own.
-# Generic, not vendor-specific: 'BuildCmd.load_all()' auto-loads whatever
-# this names if it exists, and any top-level key a lock file carries
-# ('vendor:' today) is merged by its own existing per-key merge function.
+# The lock file a spec pairs with, kas style: 'foo.yaml' pairs with
+# 'foo.lock.yaml'. A file already named '*.lock.yaml' gets no lock of its
+# own. Generic, not vendor-specific: BuildCmd.load_all() auto-loads
+# whatever this names if it exists.
 def lock_sibling(yaml_file):
     base, ext = os.path.splitext(yaml_file)
     if base.endswith(".lock"):
         return None
     return base + ".lock" + (ext or ".yaml")
 
-# What is printed in place of a secret, with a digest of what it stands
-# for. A constant would have a plan call a changed password no change at
-# all: the baseline it compares against is a dump too, so both sides
-# would read the same. The digest changes with the secret and says
-# nothing about it.
-#
-# Kept here rather than on BuildCmd: packages.py wants it too (to redact
-# a package's own digest excerpt), and cannot import build.py without a
-# cycle (build.py already imports image.py, which imports packages.py).
+# Printed in place of a secret, with a digest of it so a plan can still
+# tell a changed secret from an unchanged one. Kept here (not on
+# BuildCmd) so packages.py can use it too without a circular import.
 REDACTED = "<redacted:%s>"
 
 def _redacted_match(match):
     return REDACTED % hashlib.sha256(match.group(0).encode()).hexdigest()[:8]
 
-# The 'redact' section as expressions to match with. Compiled here so
-# that a pattern that is not one is reported against the section that
-# holds it, rather than as a traceback out of the middle of a dump.
+# The 'redact' section, compiled to regexes here so a bad pattern is
+# reported against the spec, not as a traceback mid-dump.
 def redactions(spec):
     patterns = []
     for pattern in (spec or {}).get("redact") or []:
@@ -411,10 +315,8 @@ def redactions(spec):
                              % (pattern, e)) from e
     return patterns
 
-# A value with every match of those patterns replaced. What matches is
-# replaced and not the string holding it, so a pattern can name the
-# secret inside a larger value -- the password of an ansible task whose
-# other arguments are worth reading.
+# A value with every pattern match replaced, so a pattern can target just
+# the secret inside a larger string and leave the rest readable.
 def redact(value, patterns):
     if type(value) == type({}):
         return {k: redact(v, patterns) for k, v in value.items()}
@@ -428,17 +330,12 @@ def redact(value, patterns):
 # Label carrying the digest of what an image was built from.
 INPUTS_LABEL = "seine.inputs"
 
-# Label saying what an image is, which decides whether it is worth carrying
-# to another machine. Every image seine builds says so for itself: a label is
-# inherited by whatever is built FROM an image, so an image that said nothing
-# would answer with whatever its base said -- and the imager's kernel, built
-# on the target bootstrap, would call itself a root file-system.
+# Label saying what an image is. Every image seine builds sets it itself,
+# since labels are inherited from the base image otherwise (an imager
+# built on a rootfs would else be mislabeled as one).
 KIND_LABEL = "seine.kind"
 
-# The kinds there are. Two of them can be used by another machine as they
-# are; the rest stand on the root file-system, which is not carried, and an
-# image whose base is not the same image is rebuilt whatever else happens to
-# it.
+# The kinds there are.
 TOOLING_KIND = "tooling"      # apt and mmdebstrap: what makes the rest
 BUILDER_KIND = "builder"      # where packages are built, holding the chroot
 ROOTFS_KIND = "rootfs"        # what mmdebstrap made of the archive
@@ -446,35 +343,17 @@ IMAGER_KIND = "imager"        # the kernel libguestfs boots, and its appliance
 TRANSPORT_KIND = "transport"  # a baseline plus what ansible needs
 SOURCE_KIND = "source"        # host-arch, dpkg-dev -- where sources are pulled
 
-# Building an sbuild chroot (mmdebstrap) or a source package inside one
-# (sbuild's "unshare" backend, the one Debian's own buildds use) needs no
-# schroot, no daemon and no root, just user namespaces -- but nesting one
-# inside podman's own needs four things a plain 'podman run' does not
-# give us, each found by hitting the failure it causes:
-#
-#  * the container has to run as root (uid 0, i.e. the unprivileged user
-#    seine runs as). A non-root container user cannot use newuidmap at all:
-#    every write to uid_map comes back EPERM, even with the setuid bit
-#    intact and CAP_SETUID added to the container.
-#
-#  * /etc/subuid and /etc/subgid have to cover 65534. apt drops privileges
-#    to _apt/nobody inside the chroot and setgroups(65534) fails with
-#    EINVAL when that id falls outside the mapped range, which shows up as
-#    an unexplained 'apt-get update' failure.
-#
-#  * CAP_SYS_ADMIN, because sbuild-usernsexec calls sethostname() and
-#    podman's default capability set does not include it.
-#
-#  * an unmasked /proc: podman covers several paths under /proc, and the
-#    kernel refuses to mount a fresh procfs inside a nested user namespace
-#    while the parent's procfs has submounts hiding parts of it.
-#
-# The result is a container more privileged than the others seine builds,
-# though still an unprivileged one in the kernel's eyes -- uid 0 in it is
-# the user seine runs as, so what it can reach is that user's own files,
-# not the machine's. Used by seine/sbuild.py's BuilderImage (both to make
-# a chroot and to build in one) and by seine/vendor's resolver (to make
-# the chroot its base_chroot() reads).
+# sbuild's user-namespace backend needs no root, but nesting it inside
+# podman's own user namespace needs extra options a plain 'podman run'
+# doesn't give:
+#  * root (uid 0) inside the container -- else newuidmap fails on every
+#    uid_map write with EPERM.
+#  * CAP_SYS_ADMIN, since sbuild-usernsexec calls sethostname().
+#  * an unmasked /proc, else the kernel refuses to mount a fresh procfs
+#    inside the nested namespace.
+# Still unprivileged from the kernel's point of view: uid 0 here is just
+# the host user seine runs as. Used by sbuild.py's BuilderImage and by
+# seine/vendor's resolver.
 PRIVILEGED_RUN_OPTIONS = [
     "--cap-add=sys_admin",
     "--security-opt", "unmask=ALL",

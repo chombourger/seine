@@ -8,10 +8,9 @@ import os
 
 from . import Plan, Preview, Tool, _no_args, _redacted_diff
 
-# 'gist-list' reads no active spec -- a gist lives outside any one
-# project, under gists.default_dir() regardless of what (if anything)
-# is loaded right now. Each line carries the absolute path too, so a
-# side-load call right after doesn't need a follow-up lookup for it.
+# A gist lives outside any project, so this reads no active spec. Each
+# line carries the absolute path too, so side-load doesn't need a
+# follow-up lookup.
 def _tool_gist_list(app, arguments):
     from seine import gists
     found = gists.list_gists()
@@ -33,11 +32,10 @@ def _tool_gist_show(app, arguments):
     except (OSError, ValueError) as e:
         return "could not read: %s" % e
 
-# gist-create's own plan, same "brand new file, diff against nothing"
-# shape as spec-create's -- but writing under gists.default_dir()
-# instead of beside a loaded file: a gist lives outside any one
-# project, so there is no build to confine it next to, and no
-# 'redact:' patterns to apply (spec=None -- see _redacted_diff()).
+# Same "brand new file, diff against nothing" shape as spec-create's,
+# but writing under gists.default_dir() instead of beside a loaded
+# file -- a gist lives outside any project, so there's no 'redact:'
+# to apply (spec=None).
 def _gist_create_plan(app, arguments):
     name = arguments.get("name")
     description = arguments.get("description")
@@ -68,10 +66,8 @@ def _tool_gist_create_preview(app, arguments):
     plan = _gist_create_plan(app, arguments)
     return Preview(plan.ok, plan.message)
 
-# Recomputes the plan rather than trusting anything cached from preview
-# -- another gist of the same name could have appeared since, same
-# discipline _tool_spec_update() follows for a file. The real write
-# still goes through gists.create() itself, not a copy of its logic.
+# Recomputes the plan rather than trusting the preview -- another gist
+# of the same name could have appeared since.
 def _tool_gist_create(app, arguments):
     plan = _gist_create_plan(app, arguments)
     if not plan.ok:

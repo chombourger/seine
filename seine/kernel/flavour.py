@@ -9,31 +9,19 @@ import re
 import tomllib
 
 
-# Says in the source that this kernel is not a signed one, which a
-# grafted kernel cannot be. Debian's Secure Boot support is not in its
-# packaging: CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT comes from the
-# features/all/lockdown patches, which change C source and so are not
-# among the patches kept, and the build stops in a check that is right
-# to stop it. DEBIAN_KERNEL_DISABLE_SIGNED does not reach that check
-# -- it is read when debian/control is generated, here, and the check
-# runs later inside the chroot -- so it is said in debian/config,
-# where everything downstream of it agrees.
-#
-# Nothing is lost that was there to lose: the kernel Debian signs is
-# built from a source package of its own, from a key we do not have.
-# An image wanting the lockdown behaviour needs those patches kept
-# and rebased.
+# Marks the source as unsigned, which a grafted kernel cannot be (Secure
+# Boot lockdown comes from patches we don't keep). Set in debian/config
+# rather than a kconfig symbol, since that's where gencontrol.py reads it
+# when generating debian/control.
 def _disable_signed(package, sourcedir, architecture):
     defines = os.path.join(sourcedir, "debian", "config", architecture,
                            "defines.toml")
     if os.path.isfile(defines):
         _toml_set(defines, "build", "enable_signed", "false")
 
-# gencontrol.py picks the '[[debianrelease]]' whose 'name_regex' matches
-# the changelog distribution (which stays UNRELEASED) and takes its
-# 'abi_suffix' as the kernel's ABI. Rewriting that value, not the match,
-# is enough: debian/control, the maintainer scripts and the ABINAME the
-# build compiles modules under all read it back from the same place.
+# gencontrol.py picks the '[[debianrelease]]' matching the changelog
+# distribution (always UNRELEASED for us) and takes its 'abi_suffix' as
+# the kernel's ABI; rewriting that value is enough.
 def _set_abi_suffix(package, sourcedir):
     path = os.path.join(sourcedir, "debian", "config", "defines.toml")
     with open(path, "r") as f:
@@ -63,14 +51,9 @@ def _set_abi_suffix(package, sourcedir):
     with open(path, "w") as f:
         f.writelines(lines)
 
-# Cuts the build down to the one kernel asked for. Debian builds every
-# featureset and flavour an architecture has, and for the kernel each
-# of those is a full build -- on amd64, a cloud flavour and a realtime
-# kernel besides the one an appliance wants.
-#
-# Debian described its kernels in an ini-like debian/config/*/defines
-# and moved to a defines.toml. Both are still in the archive at once,
-# so which one the source carries decides, not the release built for.
+# Cuts the build down to the one flavour/featureset asked for. Debian
+# builds every flavour of an architecture by default; the source may use
+# the older ini defines or the newer defines.toml -- whichever it has.
 def _restrict_flavour(package, sourcedir, architecture):
     config = os.path.join(sourcedir, "debian", "config")
     defines = os.path.join(config, architecture, "defines.toml")
@@ -79,20 +62,15 @@ def _restrict_flavour(package, sourcedir, architecture):
 
     _restrict_flavour_toml(package, defines, architecture,
                            ["flavour", "featureset"])
-    # The featuresets again, where they are declared for every
-    # architecture at once. Disabling one for amd64 alone leaves the
-    # packages that do not depend on an architecture -- the headers
-    # every flavour of a kernel shares -- still being built for it,
-    # and a featureset whose patches the graft dropped cannot be.
+    # Featuresets are also declared at the top level, for every
+    # architecture at once -- disable there too, or arch-independent
+    # packages (e.g. shared headers) still build for a dropped featureset.
     _restrict_flavour_toml(package, os.path.join(config, "defines.toml"),
                            architecture, ["featureset"])
 
-# The toml describes flavours and featuresets as arrays of tables, each
-# taking an 'enable' that defaults to true, and a kernel is built only
-# when every level of the hierarchy says so. So the entries not wanted
-# are said false rather than removed: deleting table blocks means
-# getting the boundaries of a nested one right or building something
-# else silently.
+# Flavours/featuresets are arrays of tables each taking an 'enable' that
+# defaults true; unwanted entries are set false rather than deleted, since
+# deleting a nested table block correctly is fiddlier than flipping a flag.
 def _restrict_flavour_toml(package, path, architecture, kinds):
     with open(path, "rb") as f:
         defines = tomllib.load(f)
@@ -113,7 +91,8 @@ def _restrict_flavour_toml(package, path, architecture, kinds):
         lines = f.readlines()
     blocks = _toml_blocks(lines)
 
-    # Back to front, so the edits do not move the blocks still to come.
+    # Back to front, so edits don't shift the position of blocks not yet
+    # processed.
     for position in reversed(range(len(blocks) - 1)):
         kind, start = blocks[position]
         end = blocks[position + 1][1]
@@ -131,17 +110,13 @@ def _restrict_flavour_toml(package, path, architecture, kinds):
     with open(path, "w") as f:
         f.writelines(lines)
 
-# For every base named in 'derived-flavours' that is this architecture's,
-# copies its flavour block once per name derived, each pointed at a
-# kconfig fragment of its own; every original block is then disabled,
-# base or not. What belongs to this architecture is worked out from its
-# own defines.toml, since one dictionary may name bases from several.
+# For every base named in 'derived-flavours' that belongs to this
+# architecture, copies its flavour block once per derived name, each
+# pointed at its own kconfig fragment; every original block is disabled.
 def _add_derived_flavours(package, sourcedir, architecture):
     path = os.path.join(sourcedir, "debian", "config", architecture,
                         "defines.toml")
     if os.path.isfile(path) == False:
-        # The ini format's flavour list is just names, with nowhere to
-        # hang a fragment of its own the way '[flavour.build]' does.
         raise ValueError(
             "package '%s': 'derived-flavours' needs the toml defines "
             "format, which architecture '%s' does not have"
@@ -150,7 +125,6 @@ def _add_derived_flavours(package, sourcedir, architecture):
         lines = f.readlines()
     blocks = _toml_blocks(lines)
 
-    # Every '[[flavour]]' block's position and content, keyed by name.
     positions = []
     originals = {}
     for position in range(len(blocks) - 1):
@@ -161,19 +135,16 @@ def _add_derived_flavours(package, sourcedir, architecture):
         positions.append((start, end))
         originals[_toml_value(lines, start, end, "name")] = list(lines[start:end])
 
-    # 'derived-flavours' flattened to one name-to-(base, fragments) map.
-    # A base is not always an original Debian flavour: it may be another
-    # name in this map, one flavour derived from one already derived.
+    # 'derived-flavours' flattened to name -> (base, fragments). A base
+    # may itself be another derived name, not just an original Debian one.
     flat = {}
     for base, derived in package.kernel_derived_flavours.items():
         for name, fragments in derived.items():
             flat[name] = (base, fragments)
 
-    # A name is for this architecture only if its base -- directly, or
-    # through a chain of other derived names -- eventually resolves to
-    # one of this architecture's own originals. 'seen' guards a cycle:
-    # neither end of one resolves to anything, so a cycle is simply not
-    # for this architecture rather than an infinite recursion.
+    # A name belongs to this architecture only if its base chain
+    # eventually resolves to one of this architecture's originals.
+    # 'seen' guards against a cycle, which just resolves to False.
     def resolves_here(base, seen=()):
         if base in originals:
             return True
@@ -182,15 +153,15 @@ def _add_derived_flavours(package, sourcedir, architecture):
         return resolves_here(flat[base][0], seen + (base,))
     scope = set(name for name in flat if resolves_here(flat[name][0]))
 
-    # Nothing here is this architecture's: leave every original as
-    # Debian shipped it. '_check_flavour' catches the mismatch -- a
-    # cycle, a missing base, and this all look the same from here.
+    # Nothing here belongs to this architecture: leave it untouched.
+    # '_check_flavour' will report the mismatch (missing base, cycle,
+    # wrong architecture all look the same from here).
     if len(scope) == 0:
         package.kernel_derived_flavours_built = set()
         return
 
-    # Depth-first over the names in scope, so a base is always
-    # materialized before what derives from it copies it.
+    # Depth-first so a base is always materialized before what derives
+    # from it copies it.
     order = []
     def visit(name):
         if name in order or name not in scope:
@@ -215,9 +186,8 @@ def _add_derived_flavours(package, sourcedir, architecture):
             made[base], 0, len(made[base]), name,
             "%s/%s" % (architecture, fragment_name))
 
-    # Every original is disabled, base or not: it is replaced, not kept
-    # beside its derived flavours. Back to front, so editing one block
-    # never moves the line numbers of one still to come.
+    # Every original is disabled, base or not -- it's replaced, not kept
+    # beside its derived flavours. Back to front so line numbers stay valid.
     new_lines = list(lines)
     shift = 0
     for start, end in reversed(positions):
@@ -239,18 +209,14 @@ def _add_derived_flavours(package, sourcedir, architecture):
     with open(path, "w") as f:
         f.writelines(new_lines)
 
-    # What was actually derived for this architecture, for
-    # '_check_flavour' to compare debian/control against -- it cannot
-    # work this out itself: by the time it runs, the edits above are
-    # already made, and the dictionary alone does not say which
-    # architecture a name was for.
+    # What was actually derived for this architecture -- '_check_flavour'
+    # needs this since it can't work it out from the spec alone.
     package.kernel_derived_flavours_built = set(order)
 
 # One copy of a '[[flavour]]' block, renamed and pointed at a config
-# fragment of its own through '[flavour.build] config'. Appended to an
-# existing 'config' list rather than opening a second '[flavour.build]'
-# when the base already has one -- a base flavour that is itself derived
-# from another, like 'cloud-amd64', already carries one.
+# fragment through '[flavour.build] config'. Appends to an existing
+# 'config' list rather than opening a second '[flavour.build]', since a
+# base flavour that's itself derived (e.g. 'cloud-amd64') may already have one.
 def _derive_flavour_block(lines, start, end, name, config_path):
     block = list(lines[start:end])
     idx = _toml_line(block, 0, len(block), "name")
@@ -276,9 +242,9 @@ def _derive_flavour_block(lines, start, end, name, config_path):
             r"\]\s*\n?$", ", '%s']\n" % config_path, block[existing])
     return block
 
-# A '[flavour.<name>]' sub-table within a '[[flavour]]' block's own line
-# range -- '_toml_blocks' does not return these, a dotted header being a
-# table nested within the block rather than one of its own.
+# A '[flavour.<name>]' sub-table nested within a '[[flavour]]' block's own
+# line range. '_toml_blocks' doesn't return these -- a dotted header is
+# nested, not a block of its own.
 def _toml_subtable(lines, start, end, name):
     header = "[%s]" % name
     for i in range(start, end):
@@ -289,11 +255,9 @@ def _toml_subtable(lines, start, end, name):
             return i, end
     return None
 
-# Every table header, with the block it opens. A dotted name --
-# [flavour.defs] under [[flavour]] -- is a table within the block
-# rather than one of its own; an undotted one always starts a block,
-# including the [[flavour]] that follows another [[flavour]]. The last
-# entry has no name and marks where the file ends.
+# Every top-level table header (undotted, including repeated [[array]]
+# headers), with the block it opens. The last entry has no name and marks
+# end of file.
 def _toml_blocks(lines):
     blocks = []
     for index, line in enumerate(lines):
@@ -368,12 +332,12 @@ def _restrict_flavour_ini(package, sourcedir, architecture):
     _defines_replace(os.path.join(root, "defines"), "featuresets",
                      [package.kernel_featureset])
     _defines_replace(defines, "flavours", [package.kernel_flavour])
-    # Both may name a flavour that has just been removed.
+    # Both may still name a flavour that was just removed.
     _defines_set(defines, "default-flavour", package.kernel_flavour)
     _defines_set(defines, "quick-flavour", package.kernel_flavour)
 
-# debian/config/*/defines are ini-like, with list values written one
-# per line and indented under their key.
+# debian/config/*/defines are ini-like: list values written one per line,
+# indented under their key.
 def _defines_list(path, key):
     values = []
     collecting = False

@@ -13,10 +13,9 @@ from seine.container import ContainerEngine
 from . import Preview, Tool, _no_args, _single_group, NO_SINGLE_GROUP
 from .tools_spec import SPEC_DUMP_CHUNK_LINES, _text_chunk
 
-# 'matching' (a regex) is the AI-tool equivalent of 'seine cache info
-# --entries-matching' -- not run through _render_tool() like the other
-# with_context=False tools, since that always calls its render_*()
-# with no arguments at all.
+# 'matching' is the AI-tool equivalent of 'seine cache info
+# --entries-matching'. Not run through _render_tool(): that always
+# calls render_*() with no arguments.
 def _tool_cache(app, arguments):
     from seine.tui import render
     pattern = arguments.get("matching")
@@ -27,12 +26,9 @@ def _tool_cache(app, arguments):
             return "'%s' is not a usable pattern: %s" % (pattern, e)
     return render.render_cache(matching=pattern)
 
-# render_vendor()/render_vendor_why() are text already, same as every
-# other render_*() -- chunked here (SPEC_DUMP_CHUNK_LINES/_text_chunk,
-# defined further down, beside spec-dump) the same way spec-dump/docs
-# are, rather than handed back whole: a large closure's own summary can
-# run to one line per suite plus per-package reasons, no different in
-# kind from a merged spec dump.
+# Chunked the same way spec-dump/docs are (SPEC_DUMP_CHUNK_LINES) --
+# a full vendor summary can run to one line per suite plus per-package
+# reasons, too much to hand back whole.
 def _tool_vendor(app, arguments):
     from seine.tui import render
     text = render.render_vendor(app.context, suite=arguments.get("suite"))
@@ -58,8 +54,8 @@ def _tool_vendor_why(app, arguments):
         return "'start'/'end' must be line numbers (1-indexed)"
     return _text_chunk(lines, start, end, SPEC_DUMP_CHUNK_LINES, "the answer")
 
-# The build this TUI session itself started, not any spec's own history
-# (analyze covers that) -- the same text BuildScreen's stage list renders.
+# The build this TUI session started, not any spec's history (analyze
+# covers that) -- same text BuildScreen's stage list renders.
 def _tool_build_status(app, arguments):
     return app.build_state.render()
 
@@ -93,8 +89,8 @@ def _tool_task_log(app, arguments):
                 with open(path, "rb") as f:
                     data = f.read()
             except OSError:
-                # A named step with no log yet is worth saying so; one
-                # among many during an all-steps search is just skipped.
+                # A named step with no log yet is worth reporting; one
+                # among many in an all-steps search is just skipped.
                 if task:
                     return "no log for '%s' yet" % task
                 continue
@@ -130,10 +126,8 @@ def _tool_task_log(app, arguments):
     lines = data.decode("utf-8", "replace").splitlines()
     return "\n".join(lines[-LOG_TAIL_LINES:])
 
-# Tail of today's gated-tool audit trail (ContainerEngine.audit(),
-# written by the package's own '_audit()') -- capped the same way
-# task-log's own tail is, newest activity kept when there's more than
-# fits.
+# Tail of today's gated-tool audit trail (written by _audit()) --
+# capped like task-log, newest activity kept.
 AUDIT_LOG_MAX_ROWS = 50
 
 def _tool_audit_log(app, arguments):
@@ -173,11 +167,9 @@ def _tool_sbom_diff(app, arguments):
     except (OSError, ValueError) as e:
         return "error: %s" % e
 
-# 'name' filters over the full list from dpkg's own status file -- every
-# package actually installed, not just the default's largest-30. The
-# reliable way to answer "is package X in my image": a build log names
-# the task an apt module ran under, not the packages it installed, and
-# the spec only says what's declared, not what a dependency pulled in.
+# Filters over dpkg's own status file -- every installed package, not
+# just the default largest-30. More reliable than a build log (task
+# names, not package names) or the spec (declared, not installed).
 def _tool_installed_packages(app, arguments):
     build = _single_group(app)
     if build is None:
@@ -205,19 +197,14 @@ def _tool_installed_packages(app, arguments):
     lines = ["%-40s %-20s %8d KiB" % (pkg, version, kib) for pkg, version, kib in packages[:30]]
     return "\n".join(lines)
 
-# Capped the same way task-log/spec-query are -- a real scan can easily
-# run into four figures of findings (examples/pc-image's own SBOM had
-# 1664, seen live while secscan.py was written).
+# Capped like task-log/spec-query -- a real scan can run into four
+# figures of findings.
 ISSUES_MAX_ROWS = 50
 
-# Never scans itself: seine/secscan.py's own scan() would, on a missing
-# or stale cache, run a container (or an external program) with
-# '--update-db' -- a real network fetch, exactly the kind of
+# Never scans itself: that would be a real network fetch, the kind of
 # consequential action [GATED] reserves for a confirmed call, not an
-# always-available read tool. read_cache() only ever reads back what
-# '/issues' (or 'seine issues') already scanned and cached -- 'name'/
-# 'min_urgency' then narrow that cached list the same way
-# installed-packages' own 'name' does.
+# always-available read tool. Only reads back what '/issues' or
+# 'seine issues' already scanned and cached.
 def _tool_issues(app, arguments):
     build = _single_group(app)
     if build is None:
@@ -243,10 +230,7 @@ def _tool_issues(app, arguments):
                  % (len(findings) - ISSUES_MAX_ROWS))
     return text
 
-# The scan 'issues' above can only read back -- gated like 'source-pull',
-# for the same reason 'issues' stays read-only (a container run, or the
-# configured external program, downloading a security-tracker database:
-# real network activity a person should confirm).
+# Gated like source-pull -- a real network fetch a person should confirm.
 def _issues_scan_preview(app, arguments):
     build = _single_group(app)
     if build is None:
@@ -281,13 +265,12 @@ def _tool_issues_scan(app, arguments):
             "read them" % len(findings))
 
 # Marks the build as the AI chat's own -- only a build started this way
-# gets the unprompted notify_build_finished() turn, never one begun by
-# '/build' or the Build screen. Set right after start_build() (whose
-# reset() clears it), so a race with an early finished_ok() can't miss it.
+# gets the unprompted notify_build_finished() turn. Set right after
+# start_build() (whose reset() clears it) to avoid a race with an
+# early finished_ok().
 def _start_ai_build(app, build, packages_only, target):
     from seine.tui.build import start_build
-    # Same as '/build' (seine/tui/commands.py) -- installed-packages and
-    # read's own SBOM lookup both need one to have been produced.
+    # Same as '/build' -- installed-packages/read's SBOM lookup need one.
     build.options["sbom"] = True
     start_build(app, app.build_state, build,
                 packages_only=packages_only, target=target)
@@ -304,11 +287,9 @@ def _tool_start_build(app, arguments):
     # reach build.image.tasks() as a real, invalid task name.
     target = arguments.get("target") or None
     try:
-        # start_build() touches Indicators, so it crosses back through
-        # call_from_thread, same boundary TextualReporter crosses. An
-        # unknown 'target' surfaces here too, as a ValueError -- raised
-        # by build.image.tasks() inside start_build()'s own reset(),
-        # which runs before the worker thread does.
+        # start_build() touches Indicators, so it crosses through
+        # call_from_thread. An unknown 'target' surfaces here as a
+        # ValueError from build.image.tasks() inside its own reset().
         app.call_from_thread(_start_ai_build, app, build, packages_only, target)
     except (RuntimeError, ValueError) as e:
         return "could not start: %s" % e
@@ -324,18 +305,14 @@ def _tool_cancel_build(app, arguments):
     tasks.interrupt()
     return "cancelling -- waiting for running steps to finish"
 
-# Refuses before ConfirmAction ever opens when there is nothing to
-# cancel -- without this, confirming "cancel the build?" against an
-# already-finished build only then reveals there was nothing running.
+# Refuses before ConfirmAction opens when there's nothing to cancel.
 def _cancel_build_preview(app, arguments):
     if not app.build_state.running:
         return Preview(False, "no build is running")
     return Preview(True, "would cancel the running build")
 
-# Marks the run as the AI chat's own -- only one started this way gets
-# the unprompted notify_vendor_finished() turn, never one begun by
-# '/vendor' or the Vendor screen. Set right after start_vendor() (whose
-# reset() clears it), the same race-avoidance _start_ai_build() needs.
+# notify_vendor_finished()'s twin of _start_ai_build() above -- same
+# marking, same race-avoidance.
 def _start_ai_vendor(app, distro, entries, exclude, wanted, extra_archs):
     from seine.tui.vendor import start_vendor
     start_vendor(app, app.vendor_state, distro, entries, exclude, wanted,
@@ -353,8 +330,8 @@ def _tool_start_vendor(app, arguments):
     except ValueError as e:
         return "could not start: %s" % e
     try:
-        # Crosses back through call_from_thread the same boundary
-        # TextualReporter does -- start_vendor() touches Indicators.
+        # start_vendor() touches Indicators, so it crosses through
+        # call_from_thread.
         app.call_from_thread(_start_ai_vendor, app, distro, entries, exclude,
                              wanted, extra_archs)
     except RuntimeError as e:
@@ -362,11 +339,9 @@ def _tool_start_vendor(app, arguments):
     app.call_from_thread(app.show, "vendor")
     return "vendor started (%s)" % ", ".join(wanted)
 
-# Refuses before ConfirmAction ever opens for the same reasons
-# start_vendor() itself would raise or prepare() would error -- a bad
-# 'suite', a specification with no 'vendor:' section, one already
-# running, or a build in the way. Without this, approving "start a
-# vendor run?" only then reveals it was never going to work.
+# Refuses before ConfirmAction opens for the same reasons start_vendor()/
+# prepare() would error: a bad 'suite', no 'vendor:' section, one
+# already running, or a build in the way.
 def _start_vendor_preview(app, arguments):
     build = _single_group(app)
     if build is None:

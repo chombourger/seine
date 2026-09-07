@@ -1,21 +1,11 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# What 'extends: kernel:' means: rebuilding the distribution's kernel with
-# a configuration of one's own, and grafting its packaging onto a tree it
-# was not written for.
-#
-# The functions here take the Builder as their first argument where they
-# need one at all, rather than living on it: what a kernel is is one
-# subject, and seine/packages.py is about source packages in general.
-#
-# Split by concern: this file holds the shared rules/constants every
-# other one needs (kernel_rules(), build_files(), the architecture
-# tables); config.py reads 'extends: kernel:' onto a package; upstream.py
-# fetches and grafts an 'upstream:' tree; apply.py is extend(), the
-# build-time hook; flavour.py restricts/derives flavours and edits the
-# toml/ini files that takes. Every name below is re-exported so
-# 'from seine import kernel; kernel.<name>' keeps working unchanged.
+# 'extends: kernel:' rebuilds the distro kernel with a custom config, then
+# grafts its packaging onto another tree. Split by concern: this file holds
+# shared constants; config.py parses settings; upstream.py fetches/grafts;
+# apply.py is the build-time hook; flavour.py handles flavours. Names are
+# re-exported here so 'kernel.<name>' keeps working.
 
 import collections
 import functools
@@ -24,43 +14,24 @@ import re
 import yaml
 
 
-# What 'extends: kernel:' takes. A kernel is configured rather than
-# patched: Debian builds its kernels from a stack of kconfig files under
-# debian/, so a fragment appended to the right one is both easier to write
-# and less likely to conflict with the next point release than a patch
-# would be.
+# Keys accepted under 'extends: kernel:'.
 SETTINGS = ["abi-suffix", "build-files", "configs", "derived-flavours",
             "drop-patches", "featureset", "flavour", "fragments",
             "keep-patches", "upstream", "upstream-sha256"]
 
-# A literal 'extends: kernel: configs:' entry, checked against here rather
-# than left for oldconfig to catch: a typo in a group meant for hardware
-# nobody has tested yet would otherwise only surface as a symbol that
-# silently never got set. Two forms are accepted: an assignment, and
-# kconfig's own way of writing a disabled one -- the second so that a
-# fragment excerpt (like the one 'config:' itself is documented with) can
-# be pasted into a group unchanged rather than rewritten to '=n' first.
-# 'CONFIG_X=n' is accepted too, translated to the comment form when the
-# line is written into the fragment (config.py's own '_config_line')
-# -- kconfig itself does not understand '=n' as an assignment at all.
+# A literal 'CONFIG_X=value' assignment, or kconfig's own disabled form
+# '# CONFIG_X is not set'. Both are accepted in 'configs:' so a fragment
+# excerpt can be pasted in unchanged.
 CONFIG_LINE = re.compile(r"^CONFIG_[A-Za-z0-9_]+=.+$")
 CONFIG_LINE_DISABLED = re.compile(r"^# CONFIG_[A-Za-z0-9_]+ is not set$")
 
-# What the graft makes of a tree, beyond the packaging it copies across.
-# The rules seine writes are hashed by content; what seine *does* to a tree
-# is code, and code is in no digest -- so bump this when that changes, or a
-# kernel grafted before it stays as it was.
+# Bump when what the graft *does* to a tree changes (not just the rules
+# file), so a kernel grafted before stays as it was.
 GRAFT_VERSION = 1
 
-# Debian generates module.lds during the kernel build, installs it under
-# arch/<arch>/, and carries a kbuild patch to look for it there. A tree
-# that has moved that rule leaves the patch inapplicable, so the graft
-# drops it -- and then nothing links a module at all: the '%.ko' rule wants
-# a file no package installs, and make says it has no rule to make it.
-#
-# The patch is written again for the tree in hand rather than shipped as
-# one to rebase. It touches scripts/ alone, which is what seine already
-# counts as packaging.
+# Debian installs its generated module.lds under arch/<arch>/, via a kbuild
+# patch. A tree that moved this leaves out-of-tree modules unable to link.
+# The graft drops that patch; seine rewrites it for the tree in hand.
 MODFINAL = "scripts/Makefile.modfinal"
 MODULE_LDS = re.compile(r"\$\(objtree\)/scripts/module\.lds")
 MODULE_LDS_PATCH = "debian/module-lds-under-arch-directory.patch"
@@ -68,14 +39,8 @@ MODULE_LDS_FALLBACK = (
     "ARCH_MODULE_LDS := $(word 1,$(wildcard $(objtree)/scripts/module.lds "
     "$(objtree)/arch/$(SRCARCH)/module.lds))")
 
-# What a Debian architecture is called by the kernel, and what uname
-# would have called it. Two answers to one question, and a tree wants
-# whichever its own build system asks for -- the kernel's for ARCH, and
-# uname's for anything that would otherwise have run uname.
-#
-# Kept here rather than in the packaging that uses them, so that adding
-# an architecture is one edit rather than three: the make tables in both
-# rules files are rendered from these.
+# Debian's architecture name vs uname's machine name: the kernel build
+# wants the former for ARCH, uname callers want the latter.
 KERNEL_ARCHITECTURES = {
     "amd64":   "x86_64",
     "arm64":   "arm64",
@@ -98,10 +63,6 @@ KERNEL_MACHINES = {
     "s390x":   "s390x",
 }
 
-# The kernel's name for an architecture, or nothing if seine has never
-# been told. Answered rather than guessed: an empty ARCH handed to a tree
-# that falls back to uname is the builder's architecture, and a module
-# built for the wrong one is a module that builds.
 def kernel_architecture(architecture):
     kernel = KERNEL_ARCHITECTURES.get(architecture)
     if kernel is None:
@@ -111,38 +72,22 @@ def kernel_architecture(architecture):
             % architecture)
     return kernel
 
-# Where a kernel tree comes from when it is not the one the distribution
-# packages: 'extends: kernel: upstream:'. The distribution's debian/ is
-# kept and grafted onto that tree, so what comes out carries Debian's
-# package names, maintainer scripts and headers layout -- a replacement
-# for the distribution's kernel rather than a parallel one beside it.
-#
-# The same notation a package's 'source' uses, minus apt://, which names
-# a source package rather than a tree:
-#
-#   https://cdn.kernel.org/.../linux-<version>.tar.xz  a release tarball
-#   git://host/bsp.git;rev=<commit>                    a tree, BSP or not
+# Scheme/suffix accepted for 'extends: kernel: upstream:', same notation as
+# a package 'source' minus apt://. git URIs must be pinned with ';rev='.
 UPSTREAM_SCHEMES = ["git", "https"]
 TARBALL_SUFFIXES = [".tar.xz", ".tar.gz", ".tar.bz2"]
 
-# What seine knows about Debian's kernel patches -- which of them are
-# packaging, and which are never kept -- lives beside the code in a data
-# file, so that moving with the distribution is an edit rather than a
-# patch. What each setting means is written down there.
-#
-# Everything outside debian/ is dropped rather than fought with, which
-# needs no data to say: bugfix/* against a newer tree is a backport it
-# already has, and features/* is keyed to config symbols that oldconfig
-# drops along with the patch.
+# What seine knows about Debian's kernel patches (kept vs. always dropped)
+# lives in this data file instead of code, so tracking a new release is a
+# data edit, not a patch.
 KERNEL_RULES = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "kernel.yml")
 
 KernelRules = collections.namedtuple("KernelRules",
                                      ["build_files", "drop_patches", "content"])
 
-# Read once, and kept with the bytes it was read from: those bytes are
-# part of what decides whether a grafted kernel needs rebuilding, so a
-# change to the rules is a change to the kernel they produce.
+# Cached with the raw bytes: those bytes affect whether a grafted kernel
+# needs rebuilding.
 @functools.lru_cache(maxsize=None)
 def kernel_rules():
     with open(KERNEL_RULES, "rb") as f:
@@ -154,27 +99,18 @@ def kernel_rules():
                              % (KERNEL_RULES, setting))
     return KernelRules(rules["build-files"], rules["drop-patches"], content)
 
-# The rules' patterns and whatever the specification added to them, as one
-# expression. Added rather than replacing: what makes a kernel build is
-# the same wherever the tree came from, and a packaging reaching
-# somewhere else reaches there as well as here, not instead of it.
-#
-# 'extra' is a tuple so that this can be cached: the expression is the
-# same for every patch in the series.
+# Rules' build-file patterns plus whatever the spec added, compiled once.
+# 'extra' is a tuple so lru_cache can hash it.
 @functools.lru_cache(maxsize=None)
 def build_files(extra=()):
     return re.compile("|".join(list(kernel_rules().build_files) + list(extra)))
 
-# Debian identifies a kernel by architecture, featureset and flavour, and
-# a flavour name only means something within its featureset -- amd64's
-# realtime kernel and its ordinary one are both the 'amd64' flavour, of
-# the 'rt' and 'none' featuresets. So both have to be named to pick one,
-# and 'none' is the one nearly everything wants.
+# Debian names a kernel by architecture, featureset and flavour; 'none' is
+# the default featureset nearly everything wants.
 DEFAULT_FEATURESET = "none"
 
-# Debian's build profiles for a kernel's tools. The first drops
-# linux-kbuild with them, which a module built against that kernel needs;
-# the second drops the same tools and keeps it.
+# Debian build profiles for kernel tools: NO_TOOLS drops linux-kbuild
+# entirely, MIN_TOOLS drops the extra tools but keeps it.
 NO_TOOLS = "pkg.linux.notools"
 MIN_TOOLS = "pkg.linux.mintools"
 

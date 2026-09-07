@@ -1,10 +1,10 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# The Vendor cockpit: a live view over 'seine vendor' running in an
-# App-level worker, the same shape build.py's own BuildState/BuildScreen
-# already use for a real build -- VendorCmd._run() drives the same three
-# waves (resolve/fetch/index) either way, this only adds a display.
+# Vendor cockpit: a live view over 'seine vendor' running in an
+# App-level worker, mirroring build.py's BuildState/BuildScreen shape.
+# VendorCmd._run() drives the same three waves either way; this just
+# adds a display.
 
 import os
 import time
@@ -21,11 +21,9 @@ from seine.tui.reporter import TextualReporter
 from seine.tui.spectree import SpecTree
 
 # What the Vendor screen renders, kept apart from the widgets the same
-# way BuildState is -- testable without a running App. Unlike BuildState,
-# the task list is not known up front: which suites resolve, which
-# sources/binaries fetch, is only known wave by wave (see vendor.py's
-# own 'three waves, each its own tasks.run()' comment), so 'order'/'rows'
-# grow as tasks actually start rather than being precomputed by reset().
+# way BuildState is. Unlike BuildState, the task list isn't known up
+# front: which suites resolve and which sources/binaries fetch is only
+# known wave by wave, so 'order'/'rows' grow as tasks start.
 class VendorState:
     def __init__(self):
         self.wanted = []
@@ -37,25 +35,18 @@ class VendorState:
         self.error = False
         self.done = False
         self.retries = 0
-        # The wave currently running's own log directory -- see
-        # TextualReporter.wave_logs()/VendorCmd._run_wave()'s own
-        # comment for why this cannot just be one stable path.
+        # Log directory of the wave currently running; changes per wave.
         self.logs = None
-        # Session-relative download total: 'repo_size' polled at reset()
-        # is the baseline every later sample() subtracts back out, since
-        # a suite's repository is durable across runs (see
-        # seine/vendor's own 'repository()' comment) -- what this run
-        # itself added, not what was already there from a previous one.
+        # 'repo_size' at reset() is the baseline every sample() subtracts
+        # back out, since a suite's repository persists across runs --
+        # this tracks what the current run itself added.
         self._baseline = 0
         self.repo_size = 0
         self.bytes_downloaded_session = 0
-        # Set once, for the App's own lifetime, the same as
-        # BuildState.on_finished -- "a vendor run just finished, redraw
-        # if anyone is looking".
+        # Set once by App, same role as BuildState.on_finished.
         self.on_finished = None
-        # Set by ai.py's 'start-vendor' tool, never by '/vendor' -- same
-        # role as BuildState's own, reset() below so it never survives
-        # past the run that set it.
+        # Set by ai.py's 'start-vendor' tool, never by '/vendor'. Same
+        # role as BuildState's own; reset() clears it each run.
         self.notify_ai = False
 
     @property
@@ -81,20 +72,14 @@ class VendorState:
         from seine.vendor import repository
         return sum(size_of(repository(suite)) for suite in self.wanted)
 
-    # Polled by the screen's own tick, not pushed: nothing in
-    # fetch_source()/fetch_binary() reports live bytes (apt runs '-qq',
-    # no progress stream to read -- see the commit that added this its
-    # own note), so a suite's own repository directory size is sampled
-    # instead, same idea as BuildState.sampled() polling load/cpu.
+    # Polled by the screen's tick, not pushed: apt gives no progress
+    # stream, so the repository directory size is sampled instead.
     def sample_repo(self):
         self.repo_size = self._repo_bytes()
         self.bytes_downloaded_session = max(0, self.repo_size - self._baseline)
 
-    # Reporter sink: task_started/task_finished/say are called on the UI
-    # thread already (TextualReporter crossed back from the worker
-    # thread by the time these run) -- same three methods BuildState
-    # implements, wave_logs is the one addition (see its own comment on
-    # TextualReporter).
+    # Reporter sink, called on the UI thread. Same three methods
+    # BuildState implements; wave_logs is the one addition.
     def task_started(self, name):
         if name not in self.rows:
             self.order.append(name)
@@ -103,12 +88,8 @@ class VendorState:
         row["state"] = "running"
         row["started"] = time.time()
         self.current = name
-        # A retried task is a new Task named '<base>#<attempt>' (see
-        # MAX_ATTEMPTS/'_run_wave()' retryable branch in vendor.py) --
-        # counted here rather than derived from 'rows' at render time,
-        # so it stays right even once an earlier attempt's own row has
-        # been superseded by nothing (there is no separate "attempt 1"
-        # row to compare against; the name itself is the tell).
+        # A retried task is a new Task named '<base>#<attempt>'; counted
+        # here rather than derived from 'rows' at render time.
         if "#" in name:
             self.retries += 1
 
@@ -127,11 +108,8 @@ class VendorState:
     def wave_logs(self, path):
         self.logs = path
 
-    # Not overwritten by finished_ok(): _run()'s own final 'say()' (a
-    # per-suite "vendored N source package(s)" summary) already set the
-    # message a run actually wants shown -- see vendor.py's own comment
-    # on that call. finished_failed() still sets it: an exception's own
-    # text outweighs whatever partial-progress message came before it.
+    # Message not overwritten here: _run()'s final say() already set the
+    # per-suite summary a successful run wants shown.
     def finished_ok(self):
         self.done = True
         if self.on_finished:
@@ -177,11 +155,10 @@ class VendorState:
         lines.append("repository size: %s" % human(self.repo_size))
         return "\n".join(lines) + "\n"
 
-# Shared by '/vendor' (commands.py) and the AI chat's 'start-vendor'
-# tool: a build's own 'vendor:' section, validated the same way
-# VendorCmd.main() does on the real CLI, narrowed to 'suite' alone when
-# given. Raises ValueError with a message fit to show straight to
-# whoever asked -- both callers just relay it.
+# Shared by '/vendor' and the AI chat's 'start-vendor' tool: validates
+# a build's 'vendor:' section the same way VendorCmd.main() does,
+# narrowed to 'suite' when given. Raises ValueError with a message fit
+# to show straight to whoever asked.
 def prepare(build, suite=None):
     from seine import vendor, utils
     entries = vendor.parse(build.spec)
@@ -207,13 +184,9 @@ def prepare(build, suite=None):
             % (", ".join(unknown), "has" if len(unknown) == 1 else "have"))
     return distro, entries, exclude, wanted, extra_archs
 
-# Starts 'seine vendor' in an App-level thread worker, wired to 'state'
-# through a TextualReporter -- the same shape start_build() already
-# uses, VendorCmd._run() standing in for Image.build(). Raises if one is
-# already running, and refuses to start beside a real build: both
-# ultimately drive seine.tasks.run(), which keeps its own progress in
-# module-level globals (interrupted/running/display -- see its own
-# comment), never designed for two independent job graphs at once.
+# Starts 'seine vendor' in an App-level thread worker, mirroring
+# start_build(). Refuses to start beside a real build: both drive
+# seine.tasks.run(), which isn't built for two job graphs at once.
 def start_vendor(app, state, distro, entries, exclude, wanted, refresh=False,
                  extra_archs=()):
     if state.running:
@@ -225,11 +198,8 @@ def start_vendor(app, state, distro, entries, exclude, wanted, refresh=False,
 
     from seine.vendor import VendorCmd
     cmd = VendorCmd()
-    # fetch_source()/fetch_binary()'s own progress ("vendor source X
-    # made"/"reused") is gated behind 'verbose' (seine/cache_index.py's
-    # say()) -- apt itself runs '-qq', silent by design, so without this
-    # the screen's own log tail has nothing at all to show for the
-    # fetch wave, task rows notwithstanding.
+    # fetch_source()/fetch_binary() progress is gated behind 'verbose';
+    # without it the log tail has nothing to show during the fetch wave.
     cmd.options["verbose"] = True
 
     def run():
@@ -250,12 +220,9 @@ def start_vendor(app, state, distro, entries, exclude, wanted, refresh=False,
 class VendorScreen(BaseScreen):
     HINT_ADD = [("complete", "cancel", "'/cancel' stops")]
 
-    # Same split as BuildScreen: spec tree + stats panel on top, log
-    # tail + task list below -- 50/50 both rows (own ids, own CSS, see
-    # SeineApp.CSS) rather than reusing '#spectree'/'#tail'/'#cmd'/
-    # '#tasks', which are 2:1 -- a person watching a vendor run cares
-    # about the stats panel and the task list as much as the tree/log,
-    # unlike a build's tasklist, which is secondary to its own output.
+    # Same split as BuildScreen but 50/50 (own ids/CSS, not '#spectree'
+    # etc which are 2:1): the stats panel and task list matter here as
+    # much as the tree/log.
     def compose(self):
         yield Horizontal(
             SpecTree(id="vendorspectree"),
@@ -274,8 +241,7 @@ class VendorScreen(BaseScreen):
         self._tail = Tail()
         super().on_mount()
         self._timer = self.set_interval(1.0, self._tick)
-        # See BuildScreen.on_mount: seed a blank line to dodge textual's
-        # empty-RichLog click crash.
+        # See BuildScreen.on_mount: dodges textual's empty-RichLog click crash.
         self.query_one("#vendortail", RichLog).write("")
 
     def on_unmount(self):
@@ -304,10 +270,9 @@ class VendorScreen(BaseScreen):
         if state.message:
             self.say(state.message, error=state.error)
 
-    # Only the current wave's own log directory is known (see
-    # VendorState.wave_logs()) -- tails whichever task is 'current',
-    # same "one file, not several merged" choice BuildScreen's own
-    # _follow() makes, for the same reason (see its own ponytail note).
+    # Tails whichever task is 'current' in the current wave's log
+    # directory -- same "one file, not several merged" choice as
+    # BuildScreen._follow().
     def _follow(self):
         state = self.app.vendor_state
         name = state.current

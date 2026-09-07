@@ -8,16 +8,9 @@ from seine.bootstrap import Bootstrap
 from seine.container import ContainerEngine
 from seine.utils import IMAGER_KIND
 
-# Built FROM the target bootstrap: g.sh() in imager.py chroots into the
-# mounted target, never the appliance's own filesystem. glibc itself is
-# excluded from extraction -- a version-skewed libc.so.6 loaded under the
-# target's own (unreplaced) dynamic linker caused a real "stack smashing
-# detected" abort; every target already has a working glibc of its own.
-#
-# 'cryptsetup-bin' (veritysetup) is only pulled in when a 'verity: true'
-# mount asks for it -- the installed-package list is part of the
-# Dockerfile text Bootstrap.digest() hashes, so the image is rebuilt (not
-# silently reused) whenever a spec starts or stops needing it.
+# Built FROM the target bootstrap since g.sh() chroots into the target,
+# not the appliance. glibc is skipped: loading a mismatched libc.so.6
+# under the target's own dynamic linker caused "stack smashing detected".
 EXTRA_IMAGER_TOOLS_SCRIPT = """
 FROM {0}
 {1}RUN apt-get update -qqy && \\
@@ -38,10 +31,8 @@ FROM {0}
 CMD /bin/true
 """
 
-# 'systemd-ukify'/'systemd-boot-efi'/'binutils'/'sbsigntool' aren't
-# ldd-copied like BINARIES below -- imager.py runs them as container
-# commands against this image itself, not the guest. 'systemd-boot-efi'
-# ships the '.stub' file 'ukify build' needs.
+# systemd-ukify/systemd-boot-efi/binutils/sbsigntool run as container
+# commands in this image, not copied out like BINARIES below.
 APT_PACKAGES = ["squashfs-tools", "erofs-utils",
                 "systemd-ukify", "systemd-boot-efi", "binutils", "sbsigntool"]
 BINARIES = ["/usr/bin/mksquashfs", "/usr/bin/mkfs.erofs"]
@@ -73,10 +64,8 @@ class ExtraImagerTools(Bootstrap):
             base=self.source.targetBootstrap.name,
             options=packages.build_volumes(self.distro))
 
-    # Real paths like /usr/bin aren't a safe upload target: on a usrmerged
-    # system they're under /usr, often the very mount being packed away.
-    # imager.py uploads these flat under a scratch dir outside every mount
-    # instead, with LD_LIBRARY_PATH pointed at it.
+    # Extracted flat (not to real paths like /usr/bin) since /usr may be
+    # the mount being packed away on a usrmerged system.
     def extract(self, output_dir):
         ContainerEngine.extractImage(self.name, output_dir, lambda n: n.startswith("extra-tools/"))
         root = os.path.join(output_dir, "extra-tools")

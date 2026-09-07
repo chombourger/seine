@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Always-visible left-hand pane: the active context's merged spec(s)
-# ('build.spec', the same dict '/plan'/'/artifacts' etc. already read),
-# as a collapsed Tree -- a map of shape, not meant to be read top to
-# bottom. One root per active group, named via multiconfig._label().
+# ('build.spec', the same dict '/plan'/'/artifacts' read), as a
+# collapsed Tree. One root per active group, named via multiconfig._label().
 
 from rich.text import Text
 from textual.widgets import Tree
@@ -13,19 +12,19 @@ from seine import multiconfig
 from seine.utils import redact as redact_value
 from seine.utils import redactions
 
-# A list item's own name, matched the same fields BuildCmd.diff() uses
-# (name/label/suite/package), so an entry reads the same here as there.
+# A list item's own name, matched to the same fields BuildCmd.diff()
+# uses (name/label/suite/package), so an entry reads the same here.
 def _item_label(item, index):
     if isinstance(item, dict):
         for key in ("name", "label", "suite", "package"):
             if key in item:
                 return str(item[key])
-    # '[0]', not '0' -- a bare number reads like a value, not a position.
+    # '[0]', not '0': a bare number reads like a value, not a position.
     return "[%d]" % index
 
 # 'old': this key/item's value before /side-load (or /side-unload)
-# changed the active spec, or NO_DIFF when the caller isn't diffing at
-# all. MISSING means the key/item is entirely new.
+# changed the active spec, or NO_DIFF when not diffing at all. MISSING
+# means the key/item is entirely new.
 NO_DIFF = object()
 MISSING = object()
 
@@ -39,7 +38,7 @@ def _populate(node, key, value, old, changed, redact):
                 old = {}
         for k, v in value.items():
             # '_'-prefixed: seine's own bookkeeping (_origins), never
-            # shown -- same convention BuildCmd.dump() reads.
+            # shown, same convention BuildCmd.dump() reads.
             if isinstance(k, str) and k.startswith("_"):
                 continue
             child_old = old.get(k, MISSING) if diffing else NO_DIFF
@@ -66,18 +65,18 @@ def _populate(node, key, value, old, changed, redact):
                 if diffing and str(item) not in old_by_label:
                     changed.append(leaf)
     else:
-        # Diffed on the real value, redacted only for display -- a
-        # secret that changed still shows as changed even though both
-        # sides render the same '<redacted:...>' placeholder.
+        # Diffed on the real value, redacted only for display: a
+        # changed secret still shows as changed even though both sides
+        # render the same '<redacted:...>' placeholder.
         text = "%s: %s" % (key, redact(value))
         leaf = node.add_leaf(text, data=text)
         if diffing and (old is MISSING or old != value):
             changed.append(leaf)
 
 # Each 'multiconfig:' group's own resolved spec, nested under a
-# 'multiconfig' branch and keyed by its declared name -- not diffed
-# against a previous build, since /side-load has no way to reach a
-# sub-build's own file list yet.
+# 'multiconfig' branch and keyed by its declared name; not diffed
+# against a previous build, since /side-load can't reach a sub-build's
+# file list yet.
 def _populate_multiconfig(node, subbuilds, changed):
     branch = node.add("multiconfig", expand=True, data="multiconfig")
     for name, subbuild in subbuilds.items():
@@ -91,9 +90,9 @@ def _populate_multiconfig(node, subbuilds, changed):
             section_redact = (lambda v: v) if key == "redact" else redact
             _populate(subgroup, key, value, NO_DIFF, changed, section_redact)
 
-# Prefixed onto a node's label while a running build is touching it --
-# a separate axis from the BUILD OUTPUT tasklist's own step marks (one
-# step can touch several nodes, or none).
+# Prefixed onto a node's label while a running build is touching it, a
+# separate axis from the BUILD OUTPUT tasklist's step marks (one step
+# can touch several nodes, or none).
 ACTIVE_MARK = "▶ "
 ACTIVE_STYLE = "bold orange1"
 
@@ -107,9 +106,9 @@ class SpecTree(Tree):
     def __init__(self, **kwargs):
         super().__init__("spec", **kwargs)
         self.show_root = False
-        # One path per active key (a seine Task name, or build.py's own
-        # Ansible play/task key), so --jobs > 1 lights several branches
-        # at once. Innermost node last in each path.
+        # One path per active key (a seine Task name, or an Ansible
+        # play/task key), so --jobs > 1 lights several branches at once.
+        # Innermost node last in each path.
         self._active = {}
         # Refcounts: how many active keys still need a node
         # expanded/marked, so a shared ancestor stays open until every
@@ -118,15 +117,15 @@ class SpecTree(Tree):
         self._expanded = {}
         self._marked = {}
         # Nodes /side-load or /side-unload marked changed/new, rebuilt
-        # wholesale by every load() -- not refcounted like _marked above.
+        # wholesale by every load(), not refcounted like _marked above.
         self._changed = set()
 
-    # Rebuilt from scratch every call -- a spec tree is small enough
-    # that diffing old against new isn't worth it.
+    # Rebuilt from scratch every call: a spec tree is small enough that
+    # diffing old against new isn't worth it.
     #
     # previous_spec: the active group's build.spec just before the most
     # recent /side-load or /side-unload, or None otherwise. Only ever
-    # diffed against the first group -- both refuse more than one
+    # diffed against the first group, since both refuse more than one
     # active group.
     def load(self, context, previous_spec=None):
         self.clear()
@@ -144,18 +143,17 @@ class SpecTree(Tree):
             # single root would need an extra Enter to show anything.
             label = multiconfig._label(build)
             group = self.root.add(label, expand=True, data=label)
-            # Same redact: patterns/substitution 'seine plan'/'--dump'
-            # already apply -- one redaction rule, not a second one
-            # invented for the TUI.
+            # Same redact patterns/substitution 'seine plan'/'--dump'
+            # apply: one redaction rule, not a second invented for the TUI.
             patterns = redactions(build.spec)
             redact = lambda value, patterns=patterns: redact_value(value, patterns)
             old = previous_spec if (previous_spec is not None and index == 0) else NO_DIFF
             for key, value in build.spec.items():
                 if isinstance(key, str) and key.startswith("_"):
                     continue
-                # A spec's own 'multiconfig:' key names sub-builds by
-                # group -- rendered as each group's own resolved spec
-                # (build.subbuilds), not the raw file list it names.
+                # A spec's 'multiconfig:' key names sub-builds by group,
+                # rendered as each group's resolved spec (build.subbuilds),
+                # not the raw file list it names.
                 if key == "multiconfig" and build.subbuilds:
                     _populate_multiconfig(group, build.subbuilds, changed)
                     continue
@@ -169,7 +167,7 @@ class SpecTree(Tree):
             self._render(node)
             self._reveal(node)
 
-    # Matched on 'data' (the label a node was built with), not the
+    # Matched on 'data' (the label a node was built with), not its
     # currently rendered/marked text.
     @staticmethod
     def _child(node, label):
@@ -184,8 +182,7 @@ class SpecTree(Tree):
     #
     # 'key' is whatever the caller tracks this path under; a shared
     # node stays expanded/marked as long as any key still needs it.
-    # Idempotent per key, so a screen can call this every tick without
-    # flicker.
+    # Idempotent per key, so a screen can call this every tick with no flicker.
     def set_active(self, key, labels):
         if len(self.root.children) == 0:
             self.clear_active(key)
@@ -261,18 +258,15 @@ class SpecTree(Tree):
         self._render(node)
 
     # Expands every ancestor of 'node' (expand() reveals a node's own
-    # children, and it's 'node' itself that needs revealing in its
-    # parent). A whole new section marks every node under it too, so it
-    # opens up in full rather than one collapsed node the user has to
-    # click into.
+    # children; it's 'node' itself that needs revealing in its parent).
     def _reveal(self, node):
         parent = node.parent
         while parent is not None:
             parent.expand()
             parent = parent.parent
 
-    # A node's label is set from its own stable 'data' plus whichever
-    # mark applies -- active beats changed beats neither.
+    # A node's label is set from its stable 'data' plus whichever mark
+    # applies: active beats changed beats neither.
     def _render(self, node):
         text = node.data
         if self._marked.get(node, 0) > 0:
@@ -282,9 +276,9 @@ class SpecTree(Tree):
         else:
             node.set_label(text)
 
-# What each seine Task is doing, in top-level branch labels. Steps left
-# out (tarball/sbom/appliance) package what an earlier step already
-# built, not their own bit of spec -- nothing lights up for them.
+# What each seine Task is doing, in top-level branch labels. Steps
+# left out (tarball/sbom/appliance) package what an earlier step
+# already built, not their own bit of spec, so nothing lights up.
 TASK_BRANCHES = {
     "bootstrap-host": ("distribution",),
     "bootstrap-target": ("distribution",),
@@ -296,8 +290,8 @@ TASK_BRANCHES = {
 }
 
 # Every per-package/per-source task name packages.Builder.tasks() gives
-# itself. With --jobs > 1 several can run at once; all still light up
-# the same 'packages' branch.
+# itself. With --jobs > 1 several can run at once; all light up the
+# same 'packages' branch.
 PACKAGE_TASK_PREFIXES = ("package:", "prepare:", "deploy:", "fetch:", "fetch-upstream:")
 
 def _branch_for(name):
@@ -306,9 +300,9 @@ def _branch_for(name):
         return branch
     if name.startswith(PACKAGE_TASK_PREFIXES):
         return ("packages",)
-    # A spec's own 'multiconfig:' group namespaces its tasks
-    # ("<group>:<name>", tasks.namespaced()) -- resolved one level in,
-    # then nested under that group's own branch in the tree.
+    # A spec's 'multiconfig:' group namespaces its tasks as
+    # "<group>:<name>", resolved one level in, then nested under that
+    # group's own branch.
     if ":" in name:
         prefix, rest = name.split(":", 1)
         branch = _branch_for(rest)
@@ -322,9 +316,8 @@ def _branch_for(name):
 ROOTFS_ANSIBLE_KEY = "rootfs:ansible"
 
 # Several branches can be lit at once (--jobs > 1); auto-scroll picks
-# one -- packages first (what --jobs actually parallelises), then
-# playbook/Ansible, everything else last. Ties break on key name so the
-# choice doesn't jump around tick to tick.
+# one: packages first, then playbook/Ansible, everything else last.
+# Ties break on key name so the choice doesn't jump tick to tick.
 def _priority(key):
     if key in (ROOTFS_ANSIBLE_KEY, "rootfs"):
         return 1
@@ -333,10 +326,9 @@ def _priority(key):
     return 2
 
 # Highlights every Task actually running, refined to the Ansible
-# play/task for rootfs specifically. Shared by every screen (BaseScreen's
-# tick), not only Build's, so a build kept running while the person
-# navigated elsewhere still lights up wherever their spec tree is.
-# Returns the keys now wanted active, for scroll_to_active() below.
+# play/task for rootfs specifically. Shared by every screen's tick, not
+# only Build's, so a running build stays highlighted after navigating
+# away. Returns the keys now wanted active, for scroll_to_active() below.
 def highlight_active(tree, state):
     if state.done:
         for key in tree.active_keys():
@@ -351,8 +343,8 @@ def highlight_active(tree, state):
             if state.ansible_task:
                 labels += ["tasks", state.ansible_task]
         else:
-            # The specific packages: [i] entry when resolvable, falling
-            # back to the whole branch otherwise.
+            # The specific packages: [i] entry when resolvable, else
+            # the whole branch.
             path = state.package_paths.get(name)
             if path is not None:
                 key, labels = name, list(path)
@@ -370,9 +362,8 @@ def highlight_active(tree, state):
 
 # A running test's spec-tree path, keyed by its fully qualified Robot
 # name ('<suite>.<case name>', the same key TestState.rows uses).
-# suite_name() (seine.testing.loader) decides the '<suite>' half,
-# imported lazily so core TUI never pulls in the optional 'test' extra
-# just to compute a name.
+# suite_name() is imported lazily so core TUI never pulls in the
+# optional 'test' extra just to compute a name.
 def test_paths(spec):
     from seine.testing.loader import suite_name
     entries = (spec or {}).get("test") or []
@@ -385,12 +376,10 @@ def test_paths(spec):
             paths[qualified] = ["test", entry_label, "tests", _item_label(case, j)]
     return paths
 
-# highlight_active()'s own shape, for TestState instead of BuildState:
-# 'state.rows' is the same {name: {"state": ...}} shape either way, but
-# a test's path comes from 'state.test_paths' (precomputed at reset())
-# rather than a package/Ansible-specific lookup -- clears only the keys
-# this function itself ever sets (state.rows' own), not every active
-# key in the tree, so a build highlighted at the same time is untouched.
+# highlight_active()'s shape, for TestState instead of BuildState: a
+# test's path comes from 'state.test_paths' (precomputed at reset())
+# rather than a package/Ansible lookup. Clears only the keys this
+# function sets, so a build highlighted at the same time is untouched.
 def highlight_active_test(tree, state):
     if state.done:
         for key in list(state.rows):
@@ -410,10 +399,10 @@ def highlight_active_test(tree, state):
             tree.clear_active(key)
     return wanted
 
-# Auto-scrolls to whichever active node _priority() picks, only when the
-# pick changed since the last call -- doesn't fight a user who scrolled
-# elsewhere. 'scrolled_to' is the caller's own memory, passed in and
-# returned rather than kept here.
+# Auto-scrolls to whichever active node _priority() picks, only when
+# the pick changed since the last call, so it doesn't fight a user who
+# scrolled elsewhere. 'scrolled_to' is the caller's memory, passed in
+# and returned rather than kept here.
 def scroll_to_active(tree, wanted, scrolled_to):
     if len(wanted) == 0:
         return None

@@ -7,11 +7,8 @@ import re
 
 RO_FSTYPES = {"squashfs", "erofs"}
 
-# Never mounted, never mkfs'd -- a raw dm-verity hash tree, written directly
-# by the imager once the read-only image it protects ('verity-for:') has
-# been built. Only paired with a '/' or '/usr' mount: those are the only
-# mountpoints the Discoverable Partitions Specification defines an
-# auto-discovered Verity partition type GUID for.
+# Raw dm-verity hash tree, never mounted or mkfs'd. Only valid paired with
+# a '/' or '/usr' mount (the only types DPS gives an auto-discovered GUID).
 VERITY_HASH_TYPE = "verity-hash"
 
 class PartitionHandler:
@@ -95,10 +92,8 @@ class PartitionHandler:
 
         return bootlet
 
-    # A disk's own signing identity, not a partition's own setting -- one
-    # key/cert signs whichever UKI(s) the imager anchors (currently only
-    # a 'where: /usr' 'verity: true' mount). Paths are resolved relative
-    # to the current working directory a build is run from, like
+    # Disk-wide signing key/cert, used for any UKI the imager anchors.
+    # Paths resolve relative to the build's working directory, like
     # 'multiconfig: files:', not like 'patches:'.
     def _parse_secure_boot(self, secure_boot):
         if type(secure_boot) != type({}):
@@ -235,10 +230,9 @@ class PartitionHandler:
         else:
             return self.size
 
-    # 'source' names which tarball 'f' came from -- 'None' for the
-    # specification's own (today's only case), or a declared 'multiconfig:'
-    # group otherwise. Only a mount/bootlet with the matching 'source' is a
-    # candidate, so two groups' same-named files never fight over one size.
+    # 'source' picks which 'multiconfig:' group's rootfs 'f' came from
+    # ('None' = this spec's own). Only mounts/bootlets with a matching
+    # 'source' can claim the file, so groups never share one size.
     def distribute(self, f, source=None):
         if f.name.startswith("/") == False:
             name = "/" + f.name
@@ -260,59 +254,47 @@ class PartitionHandler:
         return None
 
     def compute_sizes(self):
-        # check if all bootlets were found
         for bootlet in self.bootlets:
             if "_size" not in bootlet:
                 raise RuntimeError("bootlet '%s' was not found in the image!" % bootlet["file"])
 
-        # start offset for bootlets/partitions
         if self._table == "msdos":
-            start = 1      # MBR is 512 bytes long, round up to 1 KiB
+            start = 1      # MBR: 512 bytes, rounded up to 1 KiB
         elif self._table == "gpt":
-            start = 34 * 4 # 34 LBAs of 4KiB each
+            start = 34 * 4 # GPT: 34 LBAs of 4KiB each
         else:
             raise RuntimeError("'%s' is not a supported partition table!" % self._table)
 
-        # compute start offset for each bootlet (set internal "_seek" attribute)
         for bootlet in self.bootlets:
-            start = self._align_up(start, bootlet["_align"]) # honor "align" setting
-            bootlet["_seek"] = start                         # start of this bootlet (with requested alignment)
-            size = math.ceil(bootlet["_size"] / 1024)        # size in KiB
-            start = start + size                             # start of bootlet/partition following this bootlet
+            start = self._align_up(start, bootlet["_align"])
+            bootlet["_seek"] = start
+            size = math.ceil(bootlet["_size"] / 1024) # KiB
+            start = start + size
 
-        # make sure partitions do not start before START_OFFSET_KB
-        # (start offset still in KiB at this point)
         if start < PartitionHandler.START_OFFSET_KB:
             start = PartitionHandler.START_OFFSET_KB
 
-        # compute offset to first partition in bytes and rounded to the next MiB
         start = self._to_rounded_mib(start)
         self._start_offset = start
 
-        # keep 1MiB at the end of the media to hold a backup copy of the partition table
+        # +1 MiB at the end of the disk for the backup GPT
         self._min_size = (start + 1) * 1024 * 1024
 
-        # add estimated size of each partition
         for mount in self.mounts:
             mount["_size"] = self._to_rounded_mib(mount["_size"]) * 1024 * 1024
             if "size" in mount and mount["size"] > mount["_size"]:
                 mount["_size"] = mount["size"]
             self._min_size = self._min_size + mount["_size"]
 
-        # A physical partition with no mount (an LVM PV container, or a
-        # verity-hash partition) skips the loop above -- its '_size' is
-        # already final from _parse_part(), so just add it here. Missing
-        # this under-sized the disk for one of these to actually fit,
-        # caught by a real verity build.
+        # Unmounted partitions (LVM PV, verity-hash) have no entry in
+        # self.mounts, so add their already-final '_size' here too.
         mounted = {id(m) for m in self.mounts}
         for part in self.partitions:
             if id(part) not in mounted:
                 self._min_size = self._min_size + self._to_rounded_mib(part["_size"]) * 1024 * 1024
 
-        # compute the physical placement (start/end, in MiB) of each partition
-        # on the device now that every partition's final _size is known (note
-        # self.mounts and self.partitions share the same dicts for mountable
-        # partitions, so the rounding above already updated part["_size"] too)
+        # self.mounts and self.partitions share the same dicts, so
+        # every part's '_size' is now final -- lay out start/end in MiB.
         layout_start = self._start_offset
         for part in self.partitions:
             part["_start_mib"] = layout_start
@@ -379,12 +361,9 @@ class PartitionHandler:
         self._validate_verity(spec)
         return spec
 
-    # A partition/volume's 'source:' routes its content to a declared
-    # 'multiconfig:' group's rootfs instead of this specification's own
-    # ('source' absent, the default). A group nothing yet names is left
-    # alone; a group some mount does name needs exactly one root
-    # ('where: "/"') among them -- groups are side-by-side OSes, not
-    # partitions of one, so zero or more than one is an error here.
+    # Each 'multiconfig:' group a mount's 'source:' names needs exactly
+    # one root ('where: "/"') -- groups are side-by-side OSes, not
+    # partitions of one, so zero or several roots is an error.
     def _validate_sources(self, spec):
         groups = spec.get("multiconfig") or {}
         referenced = {}
@@ -407,11 +386,9 @@ class PartitionHandler:
                     "or volume with 'source: %s' and 'where: \"/\"' (found %d)"
                     % (name, name, len(roots)))
 
-    # Every 'verity: true' partition needs exactly one 'verity-hash'
-    # partition naming it back via 'verity-for:', sharing its 'source:',
-    # and mounted at '/' or '/usr' -- the only mountpoints DPS defines an
-    # auto-discovered Verity partition type GUID for (see imager.py's
-    # GPT_TYPE_ROOT_VERITY/GPT_TYPE_USR_VERITY).
+    # Every 'verity: true' partition needs one 'verity-hash' partition
+    # naming it via 'verity-for:', sharing its 'source:', mounted at
+    # '/' or '/usr' (see imager.py's GPT_TYPE_ROOT_VERITY/_USR_VERITY).
     def _validate_verity(self, spec):
         by_label = {p["label"]: p for p in self.partitions}
         protected = {p["label"] for p in self.partitions if p.get("verity")}

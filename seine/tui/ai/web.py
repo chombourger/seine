@@ -8,24 +8,14 @@ from html.parser import HTMLParser
 from . import Tool
 from .tools_spec import SPEC_DUMP_CHUNK_LINES, _text_chunk
 
-# Read-only outbound fetch, restricted to a small whitelist of trusted
-# domains -- the ai-tool equivalent of source-pull/bash reading real
-# upstream state instead of training data, but for a page rather than a
-# package's own source. Ungated like bash: the whitelist below is the
-# whole blast radius, nothing local is ever touched. [EXTERNAL-REFS]
-# (external-refs.txt) is what tells the model to reach for this, and
-# only once spec-query/read/docs/source-pull/bash can't answer.
-#
-# debian.org for the primary, authoritative source (BTS, package
-# database, security tracker); opencve.io for the EPSS score alongside
-# CVSS on one page -- Debian's own security tracker (seen live, above)
-# carries no severity/exploitability field at all.
+# Read-only fetch, ungated like bash -- the whitelist is the whole
+# blast radius. debian.org for the authoritative source; opencve.io
+# for CVSS+EPSS together, since Debian's own tracker lacks severity.
 WEB_FETCH_ALLOWED_DOMAINS = ("debian.org", "opencve.io")
 WEB_FETCH_MAX_BYTES = 2_000_000
 
-# Stdlib only (no bs4/html2text among the 'ai' extra's own deps) --
-# script/style content is dropped, everything else kept as plain text,
-# one chunk per text node.
+# Stdlib only (no bs4/html2text) -- script/style content is dropped,
+# everything else kept as plain text.
 class _TextExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -51,8 +41,8 @@ def _strip_html(markup):
     extractor.feed(markup)
     return "\n".join(extractor.chunks)
 
-# Chunked the same way spec-dump/docs are -- a fetched page can easily
-# run past what's worth spending one reply's context on.
+# Chunked like spec-dump/docs -- a fetched page can easily run past
+# what's worth one reply's context.
 def _tool_web_fetch(app, arguments):
     url = arguments.get("url")
     if not url:

@@ -22,9 +22,9 @@ from seine.utils import PRIVILEGED_RUN_OPTIONS
 from .manifest import _suite_distro
 
 
-# The resolver image: a slim container holding the tools needed to resolve
-# a package's closure using libapt-pkg. Independently bootstrapped per
-# suite so its dpkg status exactly matches the suite's own archive.
+# A slim container holding the tools to resolve a package's closure with
+# libapt-pkg, bootstrapped per suite so its dpkg status matches that
+# suite's own archive.
 class VendorResolverImage(Bootstrap):
     kind = "resolver"
 
@@ -103,17 +103,9 @@ REQUEST_FILE = "request.json"
 RESPONSE_FILE = "response.json"
 
 # Run inside the suite's builder container as 'python3 /vendor/resolve.py'.
-# Reads RESOLVE_MOUNT/REQUEST_FILE, writes RESOLVE_MOUNT/RESPONSE_FILE, and
-# never raises past its own 'main()' -- an apt failure is reported in the
-# response rather than as a podman exit code, so the host can say which
-# package it was about, not just that 'python3' failed.
-#
-# Foreign architectures are asked of every apt call with
-# '-o APT::Architectures::=' rather than a persisted 'dpkg
-# --add-architecture': each of BuilderImage.exec()'s invocations is a
-# throwaway container, and only what is bind-mounted (the suite's apt
-# lists, seeded by the first 'apt-get update' this script runs) survives
-# between them.
+# Reads/writes RESOLVE_MOUNT's request/response files and never raises
+# past 'main()' -- an apt failure is reported in the response rather than
+# a bare podman exit code, so the host knows which package it was about.
 RESOLVE_SCRIPT = r'''
 import apt
 import apt_pkg
@@ -121,12 +113,8 @@ import collections, json, os, subprocess, traceback
 
 MOUNT = "/vendor"
 
-# The exact files a source's own stanza says belong to it -- 'Files:'
-# (md5) and 'Checksums-Sha256:' name the same set, so either alone is
-# enough; read both and dedupe rather than assume one is always there.
-# This is what lets a fetch be skipped by name on the host, before a
-# container is even spawned for it, instead of only ever finding out
-# once apt itself is asked and shrugs.
+# A source's own files, read from both 'Files:' and 'Checksums-Sha256:'
+# and deduped, since either alone should list the same set.
 def _source_files(record):
     section = apt_pkg.TagSection(record)
     files = set()
@@ -145,12 +133,8 @@ def main():
     exclude = set(request["exclude"])
     base = {arch: set(names) for arch, names in request["base_chroot"].items()}
 
-    # A foreign 'archs' entry needs its own Packages/Sources indices
-    # before 'apt-get update' below can fetch them -- 'dpkg
-    # --add-architecture' persists that for the rest of this one
-    # process (unlike fetch_binary()'s own per-call '-o
-    # APT::Architectures::=', which is throwaway by necessity). Safe to
-    # call for the native architecture too: dpkg already carries it.
+    # Needed before 'apt-get update' can fetch a foreign arch's own
+    # Packages/Sources indices. Harmless for the native arch too.
     for arch in archs:
         subprocess.run(["dpkg", "--add-architecture", arch], check=True)
 
@@ -185,16 +169,11 @@ def main():
     queued_bins = set()
     warnings = []
 
-    # Provenance for the dependency graph (see vendor-graph/vendor-why):
-    # 'depths' is a source's own BFS depth from the nearest root, assigned
-    # once when it is first queued -- roots start at 0. 'edges' records
-    # one row per (source, Build-Depends binary) survivor of pruning below,
-    # 'to' filled in once every source is resolved (a binary's owning
-    # source is only known once its own stanza has been read, which may
-    # happen after the edge naming it). 'bin_origin_depth' remembers, for
-    # a build-dep binary, the depth its first-discovering source would
-    # hand to whatever source ends up owning it -- bin_queue processing
-    # (below) does not otherwise know which source asked for it.
+    # Provenance for the dependency graph (vendor-graph/vendor-why):
+    # 'depths' is BFS depth from the nearest root (roots start at 0);
+    # 'edges' is one row per surviving (source, build-dep binary), 'to'
+    # filled in once every source is resolved; 'bin_origin_depth' carries
+    # a build-dep binary's depth over to whichever source ends up owning it.
     depths = {name: 0 for name, _, _ in queue}
     edges = []
     pruned_base = []
@@ -215,10 +194,9 @@ def main():
 
             print("resolving %s%s..." % (name, "" if direct else " (build-dep)"))
 
-            # Find matches in SourceRecords via lookup (SourceRecords is not iterable)
-            # lookup(name) also finds sources that provide a binary named `name`
-            # (e.g. lookup("ecj") finds eclipse-jdt-core), so filter to
-            # package == name to get the source itself.
+            # SourceRecords isn't iterable, only lookup()-able. lookup(name)
+            # also matches a binary named 'name' (e.g. "ecj" finds
+            # eclipse-jdt-core), so filter to package == name.
             candidates = []
             src_records.restart()
             while src_records.lookup(name):
@@ -259,18 +237,11 @@ def main():
             
             for binpkg in binaries_list:
                 per_arch = {}
-                # Looked up per arch, qualified 'binpkg:arch' -- an
-                # unqualified 'bin_cache[binpkg]' only ever resolves to
-                # apt's *native* architecture's own Package object, so
-                # reusing its '.candidate' for every arch in a loop (as
-                # this used to) silently copied the native version into
-                # every foreign arch's slot instead of actually
-                # resolving one. Correct by construction for an
-                # 'Architecture: all' binary (apt gives every
-                # configured arch the same candidate for one of those
-                # anyway) and now correct for an arch-specific one too;
-                # a 'binpkg:arch' apt has no candidate for (built for
-                # some archs and not others) is simply skipped, not
+                # Qualified 'binpkg:arch' lookup -- an unqualified
+                # 'bin_cache[binpkg]' only ever resolves apt's native
+                # arch, which would silently copy that version into every
+                # foreign arch's slot instead. An arch with no candidate
+                # (built for some archs, not others) is skipped, not
                 # fabricated.
                 for arch in archs:
                     qualified = "%s:%s" % (binpkg, arch)
@@ -292,7 +263,6 @@ def main():
                 for binpkg in entry["binaries"]:
                     if binpkg in exclude: continue
                     try:
-                        # high-level apt.Cache: source_name via candidate
                         pkg_obj = bin_cache[binpkg]
                         cand = pkg_obj.candidate
                         source = cand.source_name if cand else binpkg
@@ -303,11 +273,9 @@ def main():
                     queued[source] = False
                     depths.setdefault(source, depths.get(name, 0))
 
-                # Build-Depends are binary packages with arch and profile qualifiers.
-                # Evaluate per wanted arch using apt_pkg.parse_src_depends with
-                # the suite's configured build-profiles/options (DEB_BUILD_PROFILES
-                # / DEB_BUILD_OPTIONS). Profiles/options are joined into
-                # APT::Build-Profiles as apt expects.
+                # Build-Depends carry arch and profile qualifiers, evaluated
+                # per wanted arch with the suite's build-profiles/options
+                # set as APT::Build-Profiles.
                 profiles = " ".join(request.get("build_profiles", []) + request.get("build_options", []))
                 apt_pkg.config.set("APT::Build-Profiles", profiles)
                 section = apt_pkg.TagSection(record)
@@ -338,17 +306,12 @@ def main():
                                         {"source": name, "name": dep_name, "arch": arch,
                                          "field": key, "reason": "already in sbuild chroot"})
                                     continue
-                                # Recorded for this source regardless of
-                                # whether another source's build-deps
-                                # already queued it -- seen_bins/queued_bins
-                                # dedup the fetch queue, not which sources
-                                # actually depend on it, and index()'s
+                                # Recorded per source even if another
+                                # source already queued it -- index()'s
                                 # gocode closure walks this list per source.
                                 dep_bins.add(dep_name)
-                                # 'to' is filled in once every source is
-                                # resolved (see bin_owner below) -- the
-                                # binary's owning source may not have been
-                                # read yet.
+                                # 'to' fills in later, once every source
+                                # is resolved (see bin_owner below).
                                 edges.append(
                                     {"from": name, "to": None, "via": dep_name,
                                      "arch": arch, "field": key, "raw": raw,
@@ -377,8 +340,8 @@ def main():
                 source = cand.source_name
                 if source in exclude or source in seen or source in queued:
                     continue
-                # suite remains the resolver's suite; arch is carried via the binary's candidate (native arch for now).
-                # If the same source was already queued via another binary, dedup via queued/seen.
+                # Deduped via queued/seen if another binary already
+                # queued the same source.
                 queue.append((source, None, False))
                 queued[source] = False
                 depths.setdefault(source, bin_origin_depth.get(bin_name, 1))
@@ -386,11 +349,10 @@ def main():
                 warnings.append("'%s' is not in this suite" % bin_name)
                 continue
 
-    # 'to' names the source owning 'via' -- only known now that every
-    # source's own 'binaries' (its Binary: field) has been read. An edge
-    # whose binary never resolved to any source (excluded from bin_cache,
-    # apt had nothing for it) is dropped rather than shipped with a null
-    # target -- vendor-why has nothing useful to say about it either way.
+    # 'to' names the source owning 'via', only known now that every
+    # source's own binaries have been read. An edge whose binary never
+    # resolved to a source is dropped rather than shipped with a null
+    # target.
     bin_owner = {}
     for src, ent in resolved.items():
         for binpkg in ent.get("binaries", {}):
@@ -425,9 +387,8 @@ except Exception as e:
 
 # One suite's resolve container: a BuilderImage of that suite's own feed,
 # standing on the shared host bootstrap. Kept apart from Builder
-# (seine/packages.py) since a vendor's own build-dependency closure needs
-# a suite of its own, not the release the rest of the specification
-# builds for.
+# (packages.py) since a vendor's closure needs a suite of its own, not
+# the release the rest of the spec builds for.
 class VendorResolver:
     def __init__(self, distro, suite, options):
         self.distro = distro
@@ -436,19 +397,15 @@ class VendorResolver:
         self.suite_distro = _suite_distro(distro, suite)
 
     def _builder(self, hostBootstrap):
-        # Suite-specific bootstrap so the resolver's dpkg status does not
-        # pollute candidate selection across releases -- built from the
-        # suite's own underlying release ('bookworm' for
-        # 'bookworm-security'), not the suite name itself: only a release
-        # is ever a Debian docker tag, and 'FROM debian:bookworm-security'
-        # pulls nothing that exists (docker.io publishes base and
-        # '-backports' tags, never '-security'/'-updates').
+        # Built from the suite's underlying release ('bookworm' for
+        # 'bookworm-security'), not the suite name -- only a release is
+        # ever a Debian docker tag; 'FROM debian:bookworm-security' pulls
+        # nothing that exists.
         release = next((f.get("release", f["suite"]) for f in feeds(self.distro)
                         if f["suite"] == self.suite), self.suite)
-        # Qualified rather than the bare name a plain 'from seine.bootstrap
-        # import HostBootstrap' would give: tests replace this by patching
-        # 'seine.vendor.HostBootstrap' (this package's own re-export), which
-        # a bare name here would never see.
+        # Qualified, not a bare import: tests patch 'seine.vendor.
+        # HostBootstrap' (this package's re-export), which a bare name
+        # here would never see.
         from seine import vendor
         _suiteBootstrap = vendor.HostBootstrap(
             dict(self.suite_distro, release=release), self.options, force_online=True)
@@ -457,27 +414,17 @@ class VendorResolver:
         builder.create(_suiteBootstrap)
         return builder
 
-    # The package names the specification's own buildd chroot already
-    # provides for 'arch', so the closure below does not chase past what
-    # a rebuild would already have installed. The specification's own
-    # release, not this suite's -- 'packages:' only ever rebuilds against
-    # the release being built, whichever suite a vendor entry is being
-    # resolved for, so deduping against anything else would compare
-    # against a chroot no real rebuild is ever going to use. Made (or
-    # reused) the same way 'packages:' would make it for a real build --
-    # see SbuildChroot.create() -- and so the same cache entry as one,
-    # when both are asked for.
+    # Package names the spec's own buildd chroot already provides for
+    # 'arch', so the closure doesn't chase past what a rebuild would
+    # already install. The spec's own release, not this suite's --
+    # 'packages:' only ever rebuilds against that release, whichever
+    # suite is being resolved.
     def base_chroot(self, builder, arch):
         chroot = SbuildChroot(self.distro, self.options, arch).create(builder)
         # './var/lib/dpkg/status', not 'var/lib/dpkg/status': mmdebstrap
-        # tars its root with 'tar -C rootfs .', which GNU tar always
-        # names with a leading './' -- '-xO' matches a member by its
-        # exact name, and the archive has no member named without it.
-        # Not 'architecture=arch': that mounts the chroot cache directory
-        # of 'builder's own distro (this suite's), while the chroot above
-        # was made under the specification's own release -- the two agree
-        # for an ordinary build, where the builder is that release's own,
-        # but not here.
+        # tars with a leading './', and '-xO' matches by exact name. Uses
+        # 'volumes=' rather than output()'s own 'architecture=', which
+        # would mount the wrong distro's chroot cache here.
         out = builder.output(
             ["tar", "--zstd", "-xO", "-f",
              "/root/.cache/sbuild/%s" % chroot.filename, "./var/lib/dpkg/status"],
@@ -485,9 +432,9 @@ class VendorResolver:
         return {m.group(1) for m in re.finditer(
             r"^Package:\s*(\S+)$", out.decode(), re.MULTILINE)}
 
-    # The suite's own resolved manifest: every source this suite's
-    # entries name, and their full build-dependency closure, each with
-    # the binaries (and per-architecture versions) a vendor of it needs.
+    # The suite's resolved manifest: every source its entries name, plus
+    # their full build-dependency closure, each with its binaries and
+    # per-arch versions.
     def resolve(self, hostBootstrap, entries, archs, exclude):
         builder = self._builder(hostBootstrap)
         base = {arch: sorted(self.base_chroot(builder, arch)) for arch in archs}
@@ -507,17 +454,10 @@ class VendorResolver:
             script = os.path.join(scratch, "resolve.py")
             with open(script, "w") as f:
                 f.write(RESOLVE_SCRIPT)
-            # apt's own lists, host-persisted per suite the same way
-            # downloads(suite) already is for /var/cache/apt/archives (see
-            # ContainerEngine.downloads_lists()) -- so a second resolve of
-            # this suite (an ordinary '--refresh') does not re-fetch the
-            # multi-MB Sources/Packages files a first one already did.
-            # '-u': unbuffered, so the progress this prints as it works
-            # reaches whoever is reading this task's own output -- live,
-            # over podman's pipe -- as it happens rather than in one
-            # block when the interpreter exits. Python fully buffers its
-            # stdout the moment it is not a terminal, which a container
-            # run through podman never is.
+            # apt's lists are host-persisted per suite, so a second
+            # '--refresh' doesn't re-fetch the multi-MB Sources/Packages.
+            # '-u': unbuffered, so progress streams live over podman's
+            # pipe instead of Python buffering it all until exit.
             builder.exec(["python3", "-u", "/vendor/resolve.py"],
                         volumes=[(scratch, RESOLVE_MOUNT),
                                  (ContainerEngine.downloads_lists(self.suite),

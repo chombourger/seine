@@ -3,8 +3,8 @@
 
 # /chat's widget half (ai.py holds the model-facing half: the tool
 # loop, AIState, ConfirmAction). Shaped like BuildScreen's cockpit: a
-# second row with #chatcol where #tail is, and a #stats pane (tokens
-# in/out, a context-fill meter) where #tasklist is.
+# second row with #chatcol where #tail is, #stats (tokens, context
+# meter) where #tasklist is.
 
 import time
 
@@ -19,21 +19,17 @@ from seine.tui.base import BaseScreen, StaticPane
 from seine.tui.render import render_chat_header
 from seine.tui.spectree import SpecTree
 
-# Same braille spinner progress.py's ANSI Display uses during a build --
-# always the fancy set, since Textual already assumes a capable terminal.
+# Same braille spinner progress.py's ANSI Display uses during a build.
 FRAMES = SPINNER[True]
 
 class ChatScreen(BaseScreen):
     DEFAULT_CSS = """
-    /* Scoped to this screen: #main's default background (Textual's
-       plain widget default) is a visibly lighter grey than #chatrow's
-       explicit $background, and the two halves of this screen clashed. */
+    /* Scoped to this screen: #main's default background is a visibly
+       lighter grey than #chatrow's, and the two halves clashed. */
     ChatScreen #main { background: $background; }
     ChatScreen #spectree { background: $background; }
     ChatScreen #cmd { background: $background; }
     #chatrow { height: 1fr; }
-    /* $border-blurred's default sits almost on top of $background, so an
-       explicit lighter grey is what makes the frame actually read as one. */
     #chatcol {
         width: 2fr; height: 100%;
         border: round $foreground 40%;
@@ -41,8 +37,7 @@ class ChatScreen(BaseScreen):
         border-subtitle-color: $warning;
         border-subtitle-align: right;
     }
-    /* 'background' alone doesn't reach the scrollbar -- a separate set
-       of properties, defaulting to a pure black track/corner. */
+    /* 'background' alone doesn't reach the scrollbar; set separately. */
     #chatlog {
         height: 1fr; border: none; background: $background;
         scrollbar-background: $background;
@@ -73,9 +68,8 @@ class ChatScreen(BaseScreen):
         yield Horizontal(
             Vertical(
                 VerticalScroll(id="chatlog"),
-                # Directly under the transcript, not a separate row
-                # spanning #stats too -- a reply-in-progress reads as
-                # the next line of the same conversation.
+                # Directly under the transcript so a reply-in-progress
+                # reads as the next line of the same conversation.
                 Static(id="draft", markup=False),
                 id="chatcol",
             ),
@@ -93,44 +87,28 @@ class ChatScreen(BaseScreen):
         super().on_mount()
         self._draft_text = ""
         self._spinner_frame = 0
-        # Which tool calls' rows are expanded -- reset every fresh mount.
+        # Which tool calls' rows are expanded; reset every fresh mount.
         self._expanded = set()
         state = self.app.ai_state
         state.on_change = self._rebuild_log
         state.on_delta = self._on_delta
         state.on_delta_done = self._on_delta_done
         state.on_stats = self._refresh_stats
-        # A fresh mount has no draft in progress yet.
         self.query_one("#draft", Static).display = False
         self._rebuild_log()
         self._refresh_stats()
-        # Called once here too, not left to wait for the first scheduled
-        # tick -- ask() switches to this screen the same moment it sets
-        # busy, and a mount showing nothing for half a second is visible.
+        # Called once here too rather than waiting for the first tick:
+        # ask() switches to this screen the moment it sets busy.
         self._tick_working()
         self.set_interval(0.5, self._tick_working)
 
-    # The one place #chatlog is written -- called on every messages/
-    # errors change and on a tool row click. Rebuilt whole (remove_children
-    # + remount) rather than patched, so a tool call's row can flip
-    # between collapsed/expanded after the fact.
-    #
-    # A person's line and tool-call rows are plain Static/Text -- dim,
-    # raw, never markdown-parsed (including expanded tool output, which
-    # is arbitrary command text, not prose). Only a model's own finished
-    # reply is a Markdown widget: it's the one thing here actually meant
-    # to be read as markdown. While that reply is still streaming it
-    # lives in #draft instead, as plain text -- swapping it in as
-    # Markdown only once the parser has the whole, well-formed string
-    # avoids re-parsing (and flickering on) broken mid-token syntax.
-    #
-    # One blank spacer between groups, never trailing after the last one
-    # -- it butts straight up against #draft so a streaming reply reads
-    # as the next line of the same log.
-    #
-    # A tool call with no matching 'role: tool' result yet gets its own
-    # row too, "— Working…" instead of the expand arrow, so a person can
-    # tell which tool is running rather than just seeing a generic spinner.
+    # The one place #chatlog is written: rebuilt whole on every message/
+    # error change or tool row click, so a row can flip between
+    # collapsed/expanded. A finished model reply renders as Markdown;
+    # everything else (user lines, tool rows) stays plain, dim text. A
+    # streaming reply lives in #draft as plain text until it's complete,
+    # to avoid flickering on broken mid-token markdown. A running tool
+    # call with no result yet shows "— Working…" instead of an arrow.
     def _rebuild_log(self):
         log = self.query_one("#chatlog", VerticalScroll)
         log.remove_children()
@@ -149,10 +127,8 @@ class ChatScreen(BaseScreen):
                                            style="dim"), markup=False)])
             elif role == "assistant":
                 widgets = []
-                # '.strip()': a reasoning model's own 'content' routinely
-                # starts (sometimes ends) with a blank line or two of its
-                # own -- seen live, repeatedly, against a real endpoint
-                # ('"\n\nFour."').
+                # '.strip()': a reasoning model's 'content' routinely
+                # starts or ends with a blank line or two of its own.
                 content = (message.get("content") or "").strip()
                 if content:
                     widgets.append(Markdown(content))
@@ -198,16 +174,14 @@ class ChatScreen(BaseScreen):
     def update_body(self):
         self.query_one("#body", Static).update(render_chat_header(self.app.context))
 
-    # The trailing block cursor is redrawn with every delta so it's
-    # always the last character streamed in, like a terminal cursor.
-    # display = True/False (both places here) is what actually reclaims
-    # the row -- height: auto on an empty Static still reports one row.
+    # The trailing block cursor is redrawn with every delta, like a
+    # terminal cursor. display = True/False is what reclaims the row --
+    # height: auto on an empty Static still reports one row.
     def _on_delta(self, text):
         self._draft_text += text
         draft = self.query_one("#draft", Static)
-        # lstrip() on what's shown, not self._draft_text itself -- the
-        # same reasoning-model leading-blank-line habit _rebuild_log()
-        # strips for a finished message, caught here before it's shown.
+        # lstrip() on what's shown, not self._draft_text: same leading-
+        # blank-line habit _rebuild_log() strips for a finished message.
         draft.update(self._draft_text.lstrip() + "▌")
         draft.display = True
 
@@ -217,10 +191,9 @@ class ChatScreen(BaseScreen):
         draft.update("")
         draft.display = False
 
-    # Ticks for the whole turn, not just the wait before the first token
-    # -- a tool round-trip after a first reply is still "working", not
-    # "done". #chatcol's own border_subtitle, not a row of its own, so
-    # it costs no space at all, busy or idle.
+    # Ticks for the whole turn, not just the wait before the first
+    # token: a tool round-trip after a first reply is still "working".
+    # Uses #chatcol's border_subtitle so it costs no space, busy or idle.
     def _tick_working(self):
         state = self.app.ai_state
         chatcol = self.query_one("#chatcol")

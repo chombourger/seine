@@ -1,10 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Diffing one specification's plan against the last real build of it:
-# the on-disk baseline a build leaves behind (recall()/remember()),
-# and the colored, YAML-shaped diff BuildCmd prints from it -- split
-# out of seine/build.py, which grew too large to navigate.
+# Compares a spec's plan to its last build (recall()/remember() store
+# the baseline on disk) and prints a colored YAML diff for BuildCmd.
 
 import difflib
 import os
@@ -16,9 +14,8 @@ from seine.container import ContainerEngine
 from seine.utils import digest
 
 
-# Full-width bars rather than a one-character marker: what a specification
-# gained and lost is read off the shape of the block. Green for a gained
-# line, red for a lost one.
+# Full-width bars, not a single marker char, so added/removed lines are
+# easy to spot. Green = added, red = removed.
 ADDED   = "\x1b[48;5;22m\x1b[97m"
 REMOVED = "\x1b[48;5;52m\x1b[97m"
 RESET   = "\x1b[0m"
@@ -28,8 +25,7 @@ def _baseline(files):
     return os.path.join(ContainerEngine.cache("plans"),
                         "%s.yml" % digest(files))
 
-# What these files last built, or None. Unreadable counts as never built: a
-# plan is still worth printing without a baseline.
+# Last build's spec for these files, or None if missing/unreadable.
 def recall(files):
     try:
         with open(_baseline(files)) as f:
@@ -50,16 +46,16 @@ def _bar(color, text, width):
     return "%s%s%s" % (color, text.ljust(width) if len(text) < width else text,
                        RESET)
 
-# One 'name: value' and everything under it. Rendered setting by setting
-# rather than by yaml.dump on the whole document, since every line needs a
-# mark of its own.
+# One 'name: value' plus everything under it. Rendered setting by
+# setting, not via yaml.dump on the whole doc, since each line needs
+# its own mark.
 def _pair(name, value, indent):
     pad = "  " * indent
     if isinstance(value, dict) and len(value) > 0:
         return [pad + "%s:" % name] + _body(value, indent + 1)
     if isinstance(value, list) and len(value) > 0:
-        # Items indented under their key, which YAML allows: folded context
-        # can then say which list a change is in.
+        # YAML allows items indented under their key. This lets folded
+        # context show which list a change is in.
         return [pad + "%s:" % name] + _items(value, indent + 2)
     return [pad + line for line in
             yaml.dump({name: value}, default_flow_style=False).splitlines()]
@@ -84,7 +80,7 @@ def _item(value, indent):
     return ["  " * (indent - 1) + "- " +
             yaml.dump(value, default_flow_style=False).splitlines()[0]]
 
-# The item's '-' on its first line, where a YAML reader looks for it.
+# Put the '-' on the item's first line, where YAML expects it.
 def _dashed(lines, indent):
     return ["  " * (indent - 1) + "- " + lines[0].lstrip()] + lines[1:]
 
@@ -92,19 +88,18 @@ def _dashed_marks(marked, indent):
     mark, text = marked[0]
     if mark == " ":
         return [(" ", "  " * (indent - 1) + "- " + text.lstrip())] + marked[1:]
-    # The item did not change, its contents did: keep the '-' on an unmarked
-    # line of its own, or it reads as the whole item added or removed.
+    # The item itself is unchanged, only its contents are. Keep the '-' on
+    # its own unmarked line, or it looks like the whole item was added/removed.
     return [(" ", "  " * (indent - 1) + "-")] + marked
 
 def _marked(mark, lines):
     return [(mark, line) for line in lines]
 
-# What a list item goes by, so a partition whose size changed reads as that
-# partition changed rather than one gone and another arrived.
+# Keys used to match list items across old/new, so e.g. a resized
+# partition reads as "changed" rather than "removed + added".
 #
-# ponytail: hard-coded keys, not something the sections declare. An item
-# nothing matches prints as one removed and one added, which is still true
-# -- add the section's own key here if that reads badly for it.
+# Hard-coded here, not per-section. An unmatched item still prints
+# correctly as removed+added; add a key here if that looks wrong.
 NAMES = ("name", "label", "filename", "where", "suite", "package")
 
 def _named(item, others):
@@ -117,8 +112,8 @@ def _named(item, others):
                     return other
     return None
 
-# Compared setting by setting rather than line by line: a line diff of YAML
-# calls an indentation that shifted a change.
+# Compare setting by setting, not line by line: a line diff would treat
+# a YAML indent shift as a change.
 def _changes(old, new, indent=0):
     lines = []
     for name in sorted(set(old) | set(new)):
@@ -139,12 +134,11 @@ def _changes(old, new, indent=0):
             lines += _marked("+", _pair(name, new[name], indent))
     return lines
 
-# Two lists, in the new one's order. Equal items match first, the rest by
-# the name they go by (NAMES) and are then compared as two of the same
-# thing.
+# Diff two lists, keeping the new list's order. Equal items match first;
+# the rest match by NAMES and are then diffed as the same item.
 def _listed(old, new, indent):
-    # repr because dicts cannot be hashed. Equal dicts have equal reprs
-    # here: they came out of yaml, which orders their keys the same way.
+    # repr() because dicts can't be hashed. Equal dicts give equal reprs
+    # here since yaml always orders their keys the same way.
     matcher = difflib.SequenceMatcher(None, [repr(item) for item in old],
                                       [repr(item) for item in new])
     lines = []
@@ -176,10 +170,9 @@ def _depth(text):
 # How much of what did not change is printed around what did.
 CONTEXT = 3
 
-# A specification is hundreds of lines and a change to it is a few, so what
-# did not change is folded away -- keeping the lines around a change and the
-# keys it sits under, so it still reads as a place in the specification.
-# With nothing changed there is nothing to fold around, so all of it stays.
+# A spec is hundreds of lines but a change is only a few, so we fold away
+# the unchanged parts -- keeping context lines and the keys they sit under,
+# so a change still reads as a place in the spec.
 def _folded(lines, context=CONTEXT):
     changed = [i for i, (mark, _) in enumerate(lines) if mark != " "]
     if len(changed) == 0:
@@ -221,9 +214,8 @@ def _folded(lines, context=CONTEXT):
                        % (hidden, "" if hidden == 1 else "s")))
     return folded
 
-# The new specification with what changed since the baseline marked, and
-# the rest folded away. Coloured for a terminal, a '+' or a '-' in column
-# one for a pipe or a file.
+# New spec with changes since the baseline marked, rest folded away.
+# Colored for a terminal; plain '+'/'-' prefix for a pipe or file.
 def diff(old, new, color=True, width=None):
     if width is None:
         width = shutil.get_terminal_size((80, 24)).columns
@@ -236,8 +228,8 @@ def diff(old, new, color=True, width=None):
         before = after
     lines = []
     for mark, text in _folded(_changes(before, after)):
-        # Marked even when coloured: a bar is lost in a paste, and not
-        # everyone can tell the two colours apart.
+        # Keep the +/- mark even when colored: color is lost when pasted,
+        # and not everyone can tell the two colors apart.
         text = mark + text
         if color == False:
             lines.append(text.rstrip())
@@ -249,8 +241,8 @@ def diff(old, new, color=True, width=None):
             lines.append(text)
     return "\n".join(lines) + "\n"
 
-# Colour for a terminal and nothing else. NO_COLOR is the convention;
-# '--no-color' is what someone reaches for without knowing it.
+# Color only for a real terminal. NO_COLOR is the standard env var;
+# '--no-color' is what people try even without knowing that convention.
 def colorless(options, stream=None):
     if options.get("color") == False:
         return True

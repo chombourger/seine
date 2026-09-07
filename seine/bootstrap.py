@@ -25,10 +25,9 @@ from seine.utils import TOOLING_KIND
 from seine.utils import vendor_mountpoint
 
 class Bootstrap(ABC):
-    # What this image is, as the label every image carries. Said by each
-    # class rather than left to be inherited: podman hands an image the
-    # labels of the one it was built FROM, so an image that did not say
-    # would answer with its base's answer.
+    # Each subclass sets its own 'kind' label rather than inheriting it:
+    # podman copies labels from the base image, so an unset kind would
+    # leak the base's kind instead.
     kind = TOOLING_KIND
 
     def __init__(self, distro, options):
@@ -45,27 +44,10 @@ class Bootstrap(ABC):
     def defaultName(self):
         pass
 
-    # What this image was built from: the Dockerfile seine would write for
-    # it now, and what the image it is built FROM was built from. Recorded on
-    # the image as a label, so an image is rebuilt when either has changed.
-    #
-    # Without it an image is only ever matched by name, and every image
-    # derived from another goes stale the moment that one is rebuilt --
-    # silently, since a stale image is a working image, just not one built
-    # from what the specification now says. An image built by a seine that
-    # did not label them has no label, and is rebuilt once.
-    #
-    # What the base was built from, rather than which bytes it came out as:
-    # its own label if it has one, and only otherwise its id. The two answer
-    # the same question on one machine and different questions across two,
-    # since two machines bootstrapping the same root file-system from the
-    # same specification do not produce the same bytes -- so keying on the
-    # id made every image standing on a bootstrapped one machine-specific.
-    # Keying on the label is what seine does everywhere else: a package's
-    # stamp and a chroot's digest say what went in, not what came out.
-    #
-    # An image pulled from a registry has no label of ours, and its id is
-    # already the same on both machines, so that is what is used for those.
+    # Hashes the Dockerfile plus the base image's own inputs digest (or its
+    # id, if it has none), stored as a label so a rebuild is triggered when
+    # either changes. Digest, not id, for the base: two machines bootstrap
+    # the same spec into different bytes, so id would be machine-specific.
     def digest(self, dockerfile, base=None):
         digest = hashlib.sha256()
         digest.update(dockerfile.encode())
@@ -79,12 +61,9 @@ class Bootstrap(ABC):
         return ContainerEngine.imageLabel(self.name, INPUTS_LABEL) \
                == self.digest(dockerfile, base)
 
-    # Builds the image from 'dockerfile' unless one built from the same
-    # inputs is already there -- or a 'seine-oci-<hostarch>' package left
-    # one under /usr/share/seine/oci with the same inputs, which is worth
-    # a look before building it here. A bundle whose inputs no longer
-    # match (an archive that moved since it was packaged) leaves 'current'
-    # false, and this builds it exactly as if there had been no bundle.
+    # Builds 'dockerfile' unless an image with matching inputs already
+    # exists, checking first for one bundled by a 'seine-oci-<hostarch>'
+    # package under /usr/share/seine/oci.
     def build(self, dockerfile, base=None, options=None):
         if self.current(dockerfile, base) == False:
             import_bundled()
@@ -97,18 +76,9 @@ class Bootstrap(ABC):
         written = tempfile.NamedTemporaryFile(mode="w", delete=False)
         written.write(dockerfile)
         written.close()
-        # One build at a time of one image, and as many different images at
-        # once as there are steps wanting them.
-        #
-        # The storage is held shared, which keeps out what sweeps it: a
-        # prune, or a 'seine cache clear' typed in another terminal, is
-        # free to take away the untagged intermediates this is standing on
-        # while it works. Held here rather than only by 'seine build',
-        # since an image can be asked for through the API as well.
-        #
-        # The image's own name is what two builds of the same image queue
-        # on. One lock for the whole storage was what this was, and it made
-        # every image on a machine wait for every other.
+        # Storage lock (shared) keeps a concurrent prune/cache-clear from
+        # sweeping this build's intermediates; the per-name lock only
+        # serializes builds of the same image, not all images.
         try:
             with locked(ContainerEngine.storage_lock(), shared=True), \
                  locked(os.path.join(ContainerEngine.root(), "images.d",
@@ -140,17 +110,12 @@ class Bootstrap(ABC):
     name = property(getName, setName)
 
 class HostBootstrap(Bootstrap):
-    # 'vendor_digest' is offline_dockerfile_digest()'s return: folded
-    # into the Dockerfile text so a vendor refresh invalidates the
-    # cached image (see create()'s own comment). None when the caller
-    # never computed one -- every test construction, and anything not
-    # going offline, which never reads it.
-    # 'force_online' is vendor.py's own resolve/fetch pipeline: it builds
-    # this same image before it can do anything, so it must never itself
-    # go looking for a repository it exists to fill. Named apart from a
-    # plain HostBootstrap (defaultName() below) so the two never thrash
-    # one another's cached tag when 'apt-pull-mode: offline' makes them
-    # genuinely different images.
+    # 'vendor_digest': folded into the Dockerfile so a vendor refresh
+    # invalidates the cached image; None outside offline builds.
+    # 'force_online': set by vendor.py's own fetch pipeline, which must
+    # build this image without going through the offline vendor path it
+    # exists to fill. Gets its own cache tag (see defaultName()) so it
+    # never collides with a plain offline HostBootstrap.
     def __init__(self, distro, options, vendor_digest=None, host_architecture=None,
                 force_online=False):
         self.vendor_digest = vendor_digest
@@ -158,10 +123,8 @@ class HostBootstrap(Bootstrap):
         self.force_online = force_online
         super().__init__(distro, options)
 
-    # The one step everything else waits for: the image every container
-    # seine builds is made from. 'needs' lets a caller make this wait on
-    # 'vendor' first -- see Image.shared_tasks()'s own comment on why
-    # that edge has to point this way round when going offline.
+    # The base image every seine container is built from. 'needs' lets a
+    # caller order this after 'vendor' when going offline.
     def task(self, needs=None):
         return Task("bootstrap-host", self.create, needs=needs)
 
@@ -195,10 +158,9 @@ class HostBootstrap(Bootstrap):
             _qemu_fetch(self.host_architecture, emulated),
             APT_CLEANUP), options=build_options)
 
-    # base_feed() alone, the same reasoning as TargetBootstrap's own
-    # dockerfile(): these packages need nothing from backports or
-    # -security, and a second feed would only cost this image its
-    # sharing with specifications that differ there.
+    # base_feed() alone: a second feed would only cost this image its
+    # sharing with specs that differ there, and nothing here needs
+    # backports or -security anyway.
     def _sources(self):
         return apt_sources_dockerfile(self.distro, [base_feed(self.distro)],
                                       offline=self._offline())
@@ -219,10 +181,9 @@ class TargetBootstrap(Bootstrap):
                     lambda: self.create(hostBootstrap),
                     needs=["bootstrap-host"])
 
-    # Bootstrapped from base_feed() alone, not every feed listed: a second
-    # feed costs this image its sharing with every specification that
-    # differs only there. Applied later, to the running container, by
-    # AnsibleContainerRunner._configure_feeds().
+    # Bootstrapped from base_feed() alone, same sharing reasoning as
+    # HostBootstrap._sources(); the rest of the feeds are applied later
+    # by AnsibleContainerRunner._configure_feeds().
     def create(self, hostBootstrap):
         self.hostBootstrap = hostBootstrap
         return self.build(self.dockerfile(), base=self.hostBootstrap.name)
@@ -246,19 +207,12 @@ class TargetBootstrap(Bootstrap):
                 self.distro["architecture"],
                 feed_digest(self.distro))
 
-# Which foreign-ISA qemu-user-static interpreter this host needs to
-# cross-bootstrap the other supported architectures -- native CPU compat
-# (amd64 running i386, arm64 running armhf) needs none, confirmed
-# deliberately rather than assumed (see packages.py's own SCOPES comment
-# on the same pairing). Keyed by HOST_ARCH since it is this machine's own
-# architecture, not the target's, that decides which interpreters a
-# cross bootstrap running on it will ever call for.
-#
-# That compat pairing is real silicon only: qemu-user ships each ISA as
-# its own binary (qemu-arm vs qemu-aarch64, qemu-i386 vs qemu-x86_64), so
-# an EMULATED host (built via --platform, not this machine's own arch)
-# gets none of its compat architecture's native support either and needs
-# that interpreter fetched too.
+# Foreign-ISA qemu-user-static interpreters this HOST_ARCH needs to
+# cross-bootstrap other architectures. Native CPU compat (amd64 running
+# i386, arm64 running armhf) needs none -- but that compat is real
+# silicon only, so an emulated host (built via --platform) needs its
+# compat architecture's interpreter fetched too, hence the *_EMULATED
+# table below.
 QEMU_ARCHS = {
     "amd64": ["aarch64", "arm"],
     "arm64": ["x86_64", "i386"],
@@ -268,16 +222,11 @@ QEMU_ARCHS_EMULATED = {
     "arm64": ["x86_64", "i386", "arm"],
 }
 
-# 'qemu-user'/'qemu-user-static' installed together are ~465MiB, covering
-# every architecture QEMU supports; this host ever needs at most two. The
-# split differs by release -- trixie's 'qemu-user-static' is only
-# compatibility symlinks into 'qemu-user', bookworm's is the real static
-# binaries -- so both names are downloaded (never installed) and
-# extracted into the same tree, and whichever one actually holds the
-# bytes resolves the symlinks either way, without asking which release
-# this is. 'true' for an architecture with nothing to cross-bootstrap
-# (there is none today, but an unlisted HOST_ARCH should build a host
-# bootstrap with no interpreters rather than fail one).
+# Downloads (never installs) both 'qemu-user' and 'qemu-user-static'
+# .debs and extracts them into one tree, since which package holds the
+# real static binaries vs. just symlinks differs by release. 'true' when
+# there is nothing to cross-bootstrap, so an unlisted HOST_ARCH still
+# builds rather than failing.
 def _qemu_fetch(architecture, emulated=False):
     table = QEMU_ARCHS_EMULATED if emulated else QEMU_ARCHS
     archs = table.get(architecture, [])

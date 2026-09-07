@@ -1,9 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# The Build cockpit: a live view over a build running in an App-level
-# worker, not a Screen-level one -- navigating away must not cancel a
-# build in progress.
+# Build cockpit: a live view over a build running in an App-level worker
+# (not a Screen-level one), so navigating away doesn't cancel it.
 
 import os
 import re
@@ -21,12 +20,10 @@ from seine.tui.spectree import SpecTree, _branch_for, _item_label
 
 MARKS = {"pending": "○", "running": "●", "done": "✔", "failed": "✘"}
 
-# The specific 'packages: [i]' node a package:/prepare:/deploy: task is
-# actually building -- computed once at build start via the same
-# packages.Builder.label()/.architectures() calls that named the task in
-# the first place, not pattern-matched from the name string. Not
-# attempted for fetch:/fetch-upstream: (named for a shared source, not a
-# single package) -- those fall back to the whole 'packages' branch.
+# Maps each package:/prepare:/deploy: task name to its 'packages: [i]'
+# spec tree node, computed once at build start. fetch:/fetch-upstream:
+# tasks name a shared source rather than one package, so they fall
+# back to the whole 'packages' branch instead.
 def _package_paths(build):
     from seine import packages
     from seine.sbuild import BuilderImage
@@ -34,8 +31,7 @@ def _package_paths(build):
     if len(source_packages) == 0:
         return {}
     spec_list = build.spec.get("packages") or []
-    # Matched by identity (id()), not equality -- two look-alike entries
-    # must not be confused.
+    # Matched by identity, not equality, so look-alike entries aren't confused.
     index_of = {id(item): i for i, item in enumerate(spec_list)}
     distro = build.spec["distribution"]
     builder = packages.Builder(distro, build.options, BuilderImage(distro, build.options))
@@ -52,9 +48,8 @@ def _package_paths(build):
         paths["deploy:%s" % package.name] = path
     return paths
 
-# Which Task's log the BUILD OUTPUT pane should tail right now --
-# packages first (oldest still running), then rootfs, then whatever else
-# is running, oldest first.
+# Which task's log the BUILD OUTPUT pane should tail: oldest running
+# package first, then rootfs, then whatever else is running.
 def _log_target(state):
     running = {name for name, row in state.rows.items()
               if row["state"] == "running"}
@@ -67,17 +62,16 @@ def _log_target(state):
         return "rootfs"
     return min(running, key=lambda name: state.rows[name]["started"] or 0)
 
-# ansible_runner.py pins ANSIBLE_STDOUT_CALLBACK=default, so this format
-# is guaranteed regardless of ansible.cfg.
+# ansible_runner.py pins ANSIBLE_STDOUT_CALLBACK=default, so this
+# format is guaranteed regardless of ansible.cfg.
 PLAY_RE = re.compile(r"^PLAY \[(.+)\] \*+\s*$")
 TASK_RE = re.compile(r"^TASK \[(.+)\] \*+\s*$")
-# The playbook run is over once this prints, though the rootfs Task
-# isn't yet (_save_downloads()/_finalize() still run) -- drops back to
-# the coarse 'playbook' branch rather than clearing the tree outright.
+# Playbook is done once this prints, though the rootfs task still has
+# work left (_save_downloads()/_finalize()).
 PLAY_RECAP_RE = re.compile(r"^PLAY RECAP \*+\s*$")
 
-# What the Build screen renders, kept apart from the widgets so it is
-# testable without a running App -- the same split as render.py.
+# What the Build screen renders, kept apart from the widgets so it's
+# testable without a running App.
 class BuildState:
     def __init__(self):
         self.build = None
@@ -88,31 +82,24 @@ class BuildState:
         self.message = None
         self.error = False
         self.done = False
-        # Only meaningful while current is 'rootfs' -- the play/task name
-        # scraped from the log tail (see ansible_runner.py's comment on
-        # ANSIBLE_STDOUT_CALLBACK for why it isn't piped through Python).
+        # Only meaningful while current is 'rootfs': the play/task name
+        # scraped from the log tail.
         self.play = None
         self.ansible_task = None
         # package:/prepare:/deploy: name -> spec tree path, see
         # _package_paths(). Computed once in reset(), not every tick.
         self.package_paths = {}
-        # Set once, for the App's own lifetime (seine/tui/app.py's
-        # __init__): "a build just finished, redraw if anyone is
-        # looking", fired from finished_ok()/finished_failed() below
-        # rather than polled.
+        # Set once by app.py: "a build just finished, redraw if
+        # anyone is looking", fired from finished_ok()/finished_failed().
         self.on_finished = None
-        # Set once too, the same way: lets App follow a build onto the
-        # vendor screen for the 'vendor' task Image._vendor_task() adds
-        # ahead of packages: (see task_started()/task_finished() below),
-        # then back once it is done. Unset for a build with no such task
-        # -- neither ever fires, and the screen is left exactly as
-        # '/build'/the 'start-build' tool already put it.
+        # Lets App follow a build onto the vendor screen for the
+        # 'vendor' task Image._vendor_task() adds, then back once it's
+        # done. Unset for a build with no such task.
         self.on_task_started = None
         self.on_task_finished = None
-        # Set by ai.py's 'start-build' tool, never by '/build' -- tells
-        # App._build_finished() whether this build's outcome is one the
-        # AI chat should get an unprompted turn to report on. Reset in
-        # reset() so it never survives past the build that set it.
+        # Set by ai.py's 'start-build' tool, never by '/build': tells
+        # App._build_finished() whether to give the AI chat an
+        # unprompted turn to report the outcome. Reset each build.
         self.notify_ai = False
 
     @property
@@ -136,14 +123,14 @@ class BuildState:
         self.package_paths = _package_paths(build)
 
     # Reporter sink: called on the UI thread (TextualReporter has already
-    # crossed back from the worker thread by the time these run).
+    # crossed back from the worker thread).
     def task_started(self, name):
         row = self.rows.setdefault(
             name, {"needs": [], "state": "pending", "started": None, "elapsed": None})
         row["state"] = "running"
         row["started"] = time.time()
         self.current = name
-        # Clear leftovers from a previous rootfs run (a retry after failure).
+        # Clear leftovers from a previous rootfs run (retry after failure).
         self.play = None
         self.ansible_task = None
         if self.on_task_started:
@@ -181,8 +168,7 @@ class BuildState:
         if self.on_finished:
             self.on_finished()
 
-    # Read off the Image itself (set at the start of Image.build()), one
-    # source of truth rather than tracked separately here.
+    # Read off the Image itself rather than tracked separately here.
     @property
     def logs(self):
         return getattr(self.build.image, "logs", None) if self.build else None
@@ -207,19 +193,14 @@ class BuildState:
 # a TextualReporter. Raises if one is already running.
 #
 # 'packages_only' and 'target' are one-shot overrides of
-# 'build.options["packages_only"/"target"]' -- set for this run alone and
-# put back afterwards, so a plain '/build' or another AI-started build
-# right after this one never inherits them by accident.
+# 'build.options["packages_only"/"target"]', restored after the run so a
+# later '/build' never inherits them by accident.
 def start_build(app, state, build, packages_only=False, target=None):
     if state.running:
         raise RuntimeError("a build is already running")
-    # Set before reset(), not inside run(): reset() calls
-    # build.image.tasks() synchronously, right here, to compute the step
-    # list this state (and 'build-status') shows -- set only once the
-    # worker thread starts, a packages-only/targeted run displayed the
-    # full step list anyway, none of which was ever going to run or
-    # finish. An unknown target raises here too (via tasks()), before
-    # the worker thread ever starts.
+    # Set before reset(): reset() calls build.image.tasks() synchronously
+    # to compute the step list shown here. An unknown target raises here,
+    # before the worker thread starts.
     previous_packages_only = build.options.get("packages_only")
     previous_target = build.options.get("target")
     build.options["packages_only"] = packages_only
@@ -242,14 +223,12 @@ def start_build(app, state, build, packages_only=False, target=None):
         app.call_from_thread(state.finished_ok)
 
     state.worker = app.run_worker(run, thread=True, exclusive=True, group="build")
-    # Status-bar "N build" chip's start edge -- BuildState.on_finished
-    # (app.py) covers the finish side.
+    # Start edge of the status-bar "N build" chip; on_finished covers the finish side.
     app.refresh_indicators()
 
-# Polls a growing log file (os.stat + seek) rather than watching it --
-# simplest thing that works, no new dependency. A fresh Tail per screen
-# mount: a remounted widget starts from the current log's beginning, not
-# wherever a discarded widget last left off.
+# Polls a growing log file (stat + seek) rather than watching it. A
+# fresh Tail per screen mount so a remounted widget starts from the
+# current log's beginning.
 class Tail:
     def __init__(self):
         self.path = None
@@ -277,16 +256,16 @@ class Tail:
 class BuildScreen(BaseScreen):
     HINT_ADD = [("complete", "cancel", "'/cancel' stops")]
 
-    # The only screen with a BUILD OUTPUT/TASKS row: spec tree + #cmd on
-    # top as usual, then a second row split the same 2/3 : 1/3 way.
+    # Only screen with a BUILD OUTPUT/TASKS row: spec tree + #cmd on top,
+    # then a second row split the same 2/3 : 1/3 way.
     def compose(self):
         yield Horizontal(
             SpecTree(id="spectree"),
             StaticPane(Static(id="body", markup=False), id="cmd"),
             id="main",
         )
-        # Focusable, unlike #tasklist: Tab cycles spec tree -> build
-        # output -> prompt while this screen is open.
+        # Focusable, unlike #tasklist: Tab cycles spec tree, build
+        # output, prompt.
         tail = RichLog(id="tail", markup=False, wrap=True, max_lines=4000)
         yield Horizontal(
             tail,
@@ -299,8 +278,7 @@ class BuildScreen(BaseScreen):
         self._tail = Tail()
         super().on_mount()
         self._timer = self.set_interval(1.0, self._tick)
-        # Empty RichLog crashes textual on click (indexes -1 into an
-        # empty list) -- seed a blank line to avoid it.
+        # Empty RichLog crashes textual on click; seed a blank line to avoid it.
         self.query_one("#tail", RichLog).write("")
 
     def on_unmount(self):
@@ -316,23 +294,21 @@ class BuildScreen(BaseScreen):
         self._redraw()
 
     def _tick(self):
-        # _follow() first: it updates state.play/ansible_task from
-        # whatever the log grew by; _redraw() turns that into #tasklist.
-        # The spec tree's own highlight is BaseScreen's tick, not this one.
+        # _follow() updates state.play/ansible_task from the log's
+        # growth; _redraw() turns that into #tasklist.
         self._follow()
         self._redraw()
 
-    # Not '_render': that name is Widget._render() (an internal Textual
-    # hook returning a Visual) -- shadowing it silently broke rendering.
+    # Not '_render': that's Widget._render(), an internal Textual hook;
+    # shadowing it silently broke rendering.
     def _redraw(self):
         state = self.app.build_state
         self.query_one("#tasklist", Static).update(state.render())
         if state.message:
             self.say(state.message, error=state.error)
 
-    # ponytail: one file, not every concurrently running task's log
-    # merged together -- _log_target() picks the single most relevant
-    # one. Add merged view if watching several at once turns out to matter.
+    # Tails one file, not every running task's log merged together;
+    # _log_target() picks the single most relevant one.
     def _follow(self):
         state = self.app.build_state
         name = _log_target(state)
@@ -345,9 +321,8 @@ class BuildScreen(BaseScreen):
             self.query_one("#tail", RichLog).write(text)
             self._scan_ansible(state, text)
 
-    # Scrapes 'PLAY [name] ***'/'TASK [name] ***' out of rootfs's own log
-    # as it grows -- Ansible's stdout goes straight to that file, never
-    # through Python.
+    # Scrapes 'PLAY [name] ***'/'TASK [name] ***' out of the rootfs log
+    # as it grows (Ansible's stdout goes straight to that file).
     def _scan_ansible(self, state, text):
         for line in text.splitlines():
             match = PLAY_RE.match(line)
@@ -361,7 +336,6 @@ class BuildScreen(BaseScreen):
             if PLAY_RECAP_RE.match(line):
                 state.play, state.ansible_task = None, None
 
-    # Highlighting moved to seine/tui/spectree.py's highlight_active():
-    # BaseScreen's own tick (base.py) now calls it for every screen, so a
-    # build kept running while the person watching navigated elsewhere
-    # still lights up wherever their spec tree currently is.
+    # Highlighting lives in spectree.py's highlight_active(), called by
+    # BaseScreen's tick for every screen, so a running build stays
+    # highlighted even after navigating away.

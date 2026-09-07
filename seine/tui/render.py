@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Text for the Overview/Plan screens, built from the same calls
-# 'seine plan'/'seine build --dry-run' already make -- nothing here is
-# computed twice. Kept apart from the widgets so it can be tested without
-# a running App.
+# 'seine plan'/'seine build --dry-run' make. Kept apart from the widgets
+# so it can be tested without a running App.
 
 import contextlib
 import io
@@ -56,9 +55,8 @@ def render_overview(context):
             parts.append("  would write: %s" % output)
     return "\n".join(parts) + "\n"
 
-# 'Image.plan()' prints straight to stdout, the same as every other 'seine'
-# command -- captured rather than reimplemented, so a change to what a plan
-# says needs changing in one place.
+# 'Image.plan()' prints straight to stdout, like every other 'seine'
+# command; captured rather than reimplemented.
 def _captured(fn):
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -84,10 +82,9 @@ def _human_size(size):
             return "%.1f%s" % (size, unit) if unit != "B" else "%dB" % size
         size /= 1024
 
-# What a build actually left behind: a stat-based listing of
-# 'ContainerEngine.deploy_root()/<release>/' -- the same directory
-# 'Image._output' names (the "would write:" line on Overview), read
-# back rather than tracked separately.
+# What a build left behind: a stat-based listing of
+# 'ContainerEngine.deploy_root()/<release>/', the same directory named
+# by the "would write:" line on Overview.
 def render_artifacts(context):
     if not context.active:
         return "no active specification -- '/use SPEC...' picks one\n"
@@ -125,8 +122,7 @@ def render_packages(context):
         else:
             builder = packages.Builder(distro, build.options,
                                        BuilderImage(distro, build.options))
-            # 'Builder.current()' already only names a stamp that exists
-            # on disk -- nothing here re-checks that.
+            # 'Builder.current()' already only names a stamp on disk.
             current = {(package.name, architecture)
                       for package, architecture, _ in builder.current(source_packages)}
             for package in source_packages:
@@ -161,10 +157,9 @@ def render_packages(context):
         sections.append("\n".join(lines))
     return "\n\n".join(sections) + "\n"
 
-# 'analyze.blame()'/'analyze.critical_chain()' print, same as
-# 'Image.plan()' -- captured, not reimplemented, for the newest recorded
-# run. 'ROOTFS SIZE' below is the one section that reads more than the
-# newest run -- a single number says nothing about "did it grow".
+# 'analyze.blame()'/'analyze.critical_chain()' print, captured for the
+# newest recorded run. 'ROOTFS SIZE' below is the one section that reads
+# more than the newest run, since a single number can't show growth.
 def render_analyze(context):
     if not context.active:
         return "no active specification -- '/use SPEC...' picks one\n"
@@ -179,9 +174,8 @@ def render_analyze(context):
         latest = history[0]
         text = _captured(lambda run=latest: analyze.blame(run))
         text += "\n" + _captured(lambda run=latest: analyze.critical_chain(run))
-        # Newest first, same order 'analyze.runs()' already returns --
-        # older runs made before this field existed just have nothing to
-        # add here, not a gap reported as zero.
+        # Newest first, same order analyze.runs() returns. Older runs
+        # made before this field existed just have nothing to add here.
         sized = [run for run in history if run.get("rootfs_size") is not None]
         if len(sized) > 0:
             lines = ["", "ROOTFS SIZE"]
@@ -198,11 +192,9 @@ def render_analyze(context):
         sections.append(text)
     return "\n\n".join(sections)
 
-# 'CacheCmd.info()' prints too -- not spec-scoped, a cache is shared by
-# every build, so this ignores 'context' on purpose. 'matching' (a regex)
-# narrows the listing the same way 'seine cache info --entries-matching'
-# does, and expands a surviving package entry with what it was actually
-# built from.
+# Not spec-scoped: a cache is shared by every build, so this ignores
+# 'context'. 'matching' narrows the listing like
+# 'seine cache info --entries-matching' does.
 def render_cache(matching=None):
     import re
     from seine.cache import CACHES, CacheCmd
@@ -233,10 +225,9 @@ def render_chat_header(context):
         return "%s -- %s" % (spec, model)
     return "%s -- not configured ('/settings' sets llm_model)" % spec
 
-# Not spec-scoped -- jobs/theme/llm_* only; startup_commands has its own
-# widget on the Settings screen. Unset shows the real fallback value, not
-# a bare "(default)" -- llm_model/llm_api_base have no fallback, so
-# '(unset)' is the honest word for those instead.
+# Not spec-scoped: jobs/theme/llm_* only; startup_commands has its own
+# widget on Settings. Unset shows the real fallback value; llm_model/
+# llm_api_base have no fallback, so '(unset)' is used for those instead.
 def render_settings():
     from seine import settings
     current = settings.load()
@@ -250,9 +241,8 @@ def render_settings():
          ("llm_model", llm_model), ("llm_api_base", llm_api_base)]
     ) + "\n"
 
-# Same "exactly one active group" restriction seine/tui/ai.py's own
-# tools apply to a spec-scoped call -- multi-group specifications
-# ('/use a -- b') aren't driven from any of these surfaces yet.
+# Same "exactly one active group" restriction ai.py's tools apply to a
+# spec-scoped call; multi-group specifications aren't driven here yet.
 def _issues_build(context):
     if not context.active:
         return None, "no active specification -- '/use SPEC...' picks one\n"
@@ -261,9 +251,8 @@ def _issues_build(context):
                       "supported here yet -- '/use' a single one\n")
     return context.builds[0], None
 
-# The active build's own SBOM path, or the "not built yet" message --
-# shared by both render_issues_* below so the two panes never disagree
-# about why there is nothing to show.
+# The active build's SBOM path, or the "not built yet" message, shared
+# by both render_issues_* below so the two panes never disagree.
 def _issues_sbom_path(build):
     path = sbom.output_path(build.image._output)
     if os.path.isfile(path):
@@ -293,11 +282,9 @@ def render_issues_table(context, package=None, min_urgency=None, rescan=False):
              for f in findings]
     return "\n".join(lines) + "\n"
 
-# Reads whatever render_issues_table() above just left cached rather
-# than scanning again -- called after it in IssuesScreen.update_body(),
-# so a '/issues --rescan' has already refreshed the cache this reads
-# back by the time this runs. 'rescan' is deliberately not repeated
-# here, not because a fresh scan is unwanted for this pane too.
+# Reads whatever render_issues_table() left cached rather than
+# scanning again; called after it in IssuesScreen.update_body(), so a
+# '/issues --rescan' has already refreshed the cache by the time this runs.
 def render_issues_stats(context):
     build, error = _issues_build(context)
     if error:
@@ -324,12 +311,10 @@ def render_issues_stats(context):
         lines.append(" %-17s %4d" % (pkg, count))
     return "\n".join(lines) + "\n"
 
-# Shared by render_vendor()/render_vendor_why(): a build's own 'vendor:'
+# Shared by render_vendor()/render_vendor_why(): a build's 'vendor:'
 # entries and the distribution they resolve against. Unlike
-# _issues_build() above, this loops every group in context.builds rather
-# than refusing more than one -- the same shape render_packages()/
-# render_artifacts() already use, since a vendor's own suites are just
-# another thing each group's spec happens to have.
+# _issues_build() above, this loops every group in context.builds
+# rather than refusing more than one, same as render_packages().
 def _vendor_entries(build):
     from seine import vendor, utils
     try:
@@ -339,11 +324,9 @@ def _vendor_entries(build):
         return None, None, "%s\n" % e
     return entries, distro, None
 
-# One suite's own summary: source/binary counts, which entries are
-# 'direct' (an explicit 'vendor:' entry) versus pulled in as a build
-# dependency, and the graph's own size if one was ever resolved with it.
-# A suite with no manifest at all (never vendored) says so rather than
-# printing a page of zeroes.
+# One suite's summary: source/binary counts, which entries are
+# 'direct' versus pulled in as a build dependency, and the graph's size
+# if resolved. A suite never vendored says so rather than showing zeroes.
 def _render_vendor_suite(suite, document):
     sources = document.get("sources", {})
     if len(sources) == 0:
@@ -367,9 +350,8 @@ def _render_vendor_suite(suite, document):
     return "\n".join(lines)
 
 # Every suite a specification's 'vendor:' section names (or just one,
-# with 'suite'), each summarised by _render_vendor_suite(). What a person
-# (or the AI chat, via 'vendor-status') asks first -- "what's in the
-# vendor" -- before narrowing to one package with render_vendor_why().
+# with 'suite'), summarised by _render_vendor_suite(). The first thing
+# asked before narrowing to one package with render_vendor_why().
 def render_vendor(context, suite=None):
     if not context.active:
         return "no active specification -- '/use SPEC...' picks one\n"
@@ -393,14 +375,10 @@ def render_vendor(context, suite=None):
             sections.append(_render_vendor_suite(s, vendor.load_manifest(s)))
     return "\n\n".join(sections) + "\n"
 
-# One package's own breadcrumb: whether it is a root or an extra, and --
-# reading the persisted graph's 'reverse' map, no BFS needed -- every
-# recorded (parent, via, field, arch, depth) reason it is here at all.
-# 'graph' being None (a manifest frozen before graph tracking existed) and
-# 'reverse' simply having nothing for this package (an old, pre-graph
-# resolve of a still-current manifest) are told apart -- the first is "we
-# never asked", the second is "we asked and found nothing", and a person
-# reading this should not confuse the two.
+# One package's breadcrumb: whether it's a root or an extra, and every
+# recorded reason it's here, read from the graph's 'reverse' map. 'graph'
+# being None ("we never asked") and 'reverse' having nothing for this
+# package ("we asked and found nothing") are told apart deliberately.
 def _render_vendor_why_suite(suite, package, entry, graph):
     kind = ("direct -- an explicit 'vendor:' entry" if entry.get("direct")
            else "extra -- pulled in as a build-dependency")

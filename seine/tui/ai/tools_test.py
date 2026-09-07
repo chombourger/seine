@@ -8,22 +8,18 @@ import os
 
 from . import Tool, _no_args, _single_group, NO_SINGLE_GROUP
 
-# call_from_thread needs a running app -- not true in a bare-App unit
-# test, or if this tool is ever reached off any worker at all. Caught
-# the same way _reload_and_highlight() already does for spec-update:
-# the real change (a run, a state update) already happened; only the
-# live UI redraw has nothing to refresh.
+# call_from_thread needs a running app, not true in a bare-App unit
+# test. Caught the same way _reload_and_highlight() does: the real
+# change already happened, only the UI redraw has nothing to refresh.
 def _call_if_running(app, fn, *args):
     try:
         app.call_from_thread(fn, *args)
     except RuntimeError:
         pass
 
-# 'files' defaults to the active spec's own loaded_files, the same
-# default 'start-build' uses -- 'test:' is an ordinary section of it
-# now (see BuildCmd._append_tests()), not a separate file to be told
-# about. An explicit 'files' still works, for a spec not currently
-# active.
+# 'files' defaults to the active spec's own loaded_files, same as
+# start-build -- 'test:' is an ordinary section of it, not a separate
+# file. An explicit 'files' still works for a spec not currently active.
 def _test_files(app, arguments):
     files = arguments.get("files")
     if files:
@@ -33,14 +29,9 @@ def _test_files(app, arguments):
         return None, NO_SINGLE_GROUP + " (or give 'files' directly)"
     return build.loaded_files, build.spec
 
-# Runs synchronously (unlike start-build/mtda-console-wait, which hand
-# back a running/waiting worker and report later): a test suite's own
-# 'while:'/'retry_until:' polling already carries its own limit, so
-# there is no open-ended wait here to background the way a bare
-# console-wait has. Reports into app.test_state as it goes (through
-# TextualReporter -- the same bridge '/test' itself uses), so a person
-# who switches to the Test screen mid-call sees the same rows this call
-# is about to summarise, and 'test-result' can answer for it afterwards.
+# Runs synchronously (a suite's own 'while:'/'retry_until:' already
+# carries a limit, nothing to background). Reports via TextualReporter,
+# the same bridge '/test' uses, so the Test screen sees the same rows.
 def _tool_run_test(app, arguments):
     from seine.testing import available
     if not available():
@@ -73,10 +64,8 @@ def _tool_run_test(app, arguments):
     return "\n".join(lines)
 
 # Dry run only -- Robot resolves every keyword and checks its arguments
-# without calling any of them, so this never touches real hardware (see
-# docs/testing.md and seine.testing.runner.run_spec's own 'dryrun').
-# Ungated for that reason, unlike run-test: prove a 'test:' section just
-# spec-update'd (or spec-create'd) is at least well-formed before
+# without calling any, so this never touches real hardware. Ungated
+# unlike run-test: proves a 'test:' section is well-formed before
 # spending a real hardware run on it.
 def _tool_test_validate(app, arguments):
     from seine.testing import available

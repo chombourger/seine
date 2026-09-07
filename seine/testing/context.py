@@ -8,81 +8,51 @@ import time
 
 from seine.testing.loader import DEFAULT_LIBRARIES as _INTERESTING_LIBS
 
-# The duck-typed stand-in for the Textual App that seine.tui.target's
-# functions already expect -- built once per run and handed to every
-# keyword library, so target.py runs unmodified whether called from
-# '/target' or headless. call_from_thread/refresh_indicators exist even
-# headless because mtda's console-remote subscription calls them from
-# its own background thread regardless of who connected it; run
-# synchronously here, since there is no UI thread to marshal onto.
+# Stand-in for the Textual App that seine.tui.target expects, so
+# target.py runs unmodified whether called from '/target' or headless.
+# call_from_thread/refresh_indicators run synchronously: there is no UI
+# thread to marshal onto here.
 #
-# Also a Robot listener (start_test/end_test/start_keyword/end_keyword),
-# kept apart from runner._Listener since the interaction timeline is
-# context's own business -- a keyword library reads/writes it.
-# start_keyword() only records seine's own three libraries (matched
-# against 'result.libname', Robot's dotted import path -- reusing
-# loader.DEFAULT_LIBRARIES' own strings rather than a second spelling
-# that could drift), not every BuiltIn call output.xml already has in
-# full; a user keyword ('Log In') is skipped the same way, so only the
-# real actions it calls show up.
+# Also a Robot listener (start_test/end_test/start_keyword/end_keyword)
+# that builds the interaction timeline. start_keyword() only records
+# calls into seine's own libraries (DEFAULT_LIBRARIES), not every
+# BuiltIn call or user keyword.
 
 class RunContext:
     def __init__(self, spec=None, spec_files=None, outdir=None):
         self._target_client = None
         self._target_console = None
         self.target_state = None
-        # No in-memory history to feed -- '/target's own recall isn't
-        # useful outside a chat session, and target.py's history side-
-        # load/unload calls are already no-ops when this is None (see
-        # its own get(app, "history", None) guards).
+        # No in-memory history outside a chat session.
         self.history = None
-        # The merged, parsed specification 'test:' came from -- the same
-        # files 'seine test'/'/test'/'run-test' were given, exposed to
-        # tests via seine.testing.library.image.ImageLibrary's own
-        # 'Get Spec Value'.
+        # Merged spec 'test:' came from, exposed to tests via
+        # ImageLibrary's 'Get Spec Value'.
         self.spec = spec
         self.spec_files = spec_files or []
-        # Set by ImageLibrary.build_image() once a build actually ran --
-        # None until then, which ImageLibrary.inspect_image_path() reads
-        # as "nothing built yet this run" rather than a stale one.
+        # Set once ImageLibrary.build_image() actually runs a build.
         self.built_image = None
-        # Where a run's own artifacts (screenshots, console log,
-        # interactions.json, ...) are written -- one directory per run.
+        # Directory this run's artifacts (screenshots, logs, ...) go to.
         self.outdir = outdir
-        # target.ConsoleAdapter's own raw capture (opt-in: only set
-        # when 'outdir' is, see run_spec()) -- one file for the whole
-        # run, appended across however many connect/disconnect cycles
-        # a suite's own per-test setup/teardown makes.
+        # Raw console capture for the whole run, appended across
+        # connect/disconnect cycles.
         self.console_log_path = os.path.join(outdir, "console.log") if outdir else None
-        # Asciinema v2 recording of the same stream -- replayable evidence
-        # next to console.log (see seine.tui.console.ConsoleAdapter).
+        # Asciinema v2 recording of the same stream.
         self.console_cast_path = os.path.join(outdir, "console.cast") if outdir else None
-        # One cast per test (see start_test()) -- supporting evidence that
-        # stays scoped to a single test rather than the whole run.
+        # One cast per test, keyed by test name (see start_test()).
         self.console_casts = {}
         self.current_test = None
-        # Held around every current_test transition and every read of it
-        # from ConsoleAdapter.print() (mtda's own background thread) --
-        # closes the race where a console byte arrives mid-transition and
-        # gets routed by a torn read of current_test/console_casts. Does
-        # not (cannot) resolve which test a byte straddling the real
-        # hardware boundary truly belongs to -- see record_artifact()'s
-        # own comment on that gap.
+        # Guards current_test/console_casts against a console byte
+        # arriving mid-transition from mtda's background thread.
         self._console_lock = threading.Lock()
-        # One entry per 'interesting' keyword call, in order -- a
-        # timeline, not a lookup table. 'record_artifact()' attaches a
-        # file (a screenshot, say) to the entry for the keyword call
-        # that produced it, rather than a separate list of files with
-        # no way to tell what led up to one. runner.run_spec() writes
-        # this to 'interactions.json' once the run ends.
+        # Timeline of keyword calls worth reporting. record_artifact()
+        # attaches a file to the call that produced it. Written to
+        # interactions.json by runner.run_spec() at the end of a run.
         self.interactions = []
         self._entry_stack = []
 
-    # Attaches 'path' to the keyword call currently open (Capture
-    # Screen/Capture Screen Image call this from inside their own
-    # keyword body); a standalone entry otherwise. A real run's own
-    # interactions.json has shown standalone entries even from inside
-    # one of those two, not yet root-caused -- a known gap, not blocking.
+    # Attaches 'path' to the keyword call currently open, or a standalone
+    # entry if none is open. Known gap: sometimes ends up standalone even
+    # when called from inside Capture Screen/Capture Screen Image.
     def record_artifact(self, kind, path):
         entry = self._entry_stack[-1] if self._entry_stack else None
         if entry is None:

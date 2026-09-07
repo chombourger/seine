@@ -5,16 +5,8 @@ import sys
 import threading
 import time
 
-# What a build is doing, while it does it.
-#
-# A build spends most of its time in one or two long steps and says
-# nothing about them: the kernel prints thousands of lines nobody reads,
-# and what is worth knowing -- what is running, how long it has been
-# running, how much is left -- is buried in them. So every step's output
-# goes to a file of its own and this takes the terminal.
-#
-# '--verbose' turns it off and puts the raw output back: when a build is
-# going wrong that is what is wanted, and no summary replaces it.
+# Live build status shown on the terminal while step output goes to files.
+# '--verbose' disables this and prints raw output instead.
 SPINNER = {
     True:  "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
     False: "|/-\\",
@@ -22,17 +14,14 @@ SPINNER = {
 DONE   = {True: "✔", False: "ok"}
 FAILED = {True: "✘", False: "!!"}
 
-# Where a terminal can be talked to as a terminal. A pipe, a file, a CI
-# log or a dumb TERM gets one line per step instead -- the same
-# information, in the form that survives being read later.
+# True only for a real terminal; a pipe/file/CI log/dumb TERM gets
+# one line per step instead.
 def interactive(stream, environment):
     if stream is None or not hasattr(stream, "isatty") or not stream.isatty():
         return False
     return environment.get("TERM", "") not in ["", "dumb"]
 
-# Whether the characters above will survive the encoding on the way out.
-# A build in a POSIX locale is a build whose terminal cannot print a
-# spinner, and a mojibake spinner is worse than a plain one.
+# Checks the stream's encoding can print the spinner/done/failed glyphs.
 def unicode_safe(stream):
     encoding = getattr(stream, "encoding", None)
     if encoding is None:
@@ -43,9 +32,7 @@ def unicode_safe(stream):
         return False
     return True
 
-# How long something took, in the units someone reading it thinks in.
-# Out here rather than on the display because a build's steps are timed in
-# two places now: while they run, and afterwards by 'seine analyze'.
+# Shared with 'seine analyze', which also times build steps.
 def elapsed(seconds):
     seconds = int(seconds)
     if seconds < 60:
@@ -66,15 +53,12 @@ class Display:
         self.failed = 0
         self.lines = 0
         self.frame = 0
-        # Reentrant: say() is reached from the SIGINT handler, which runs
-        # on the main thread wherever it happened to be -- including
-        # inside started() or finished(), holding this.
+        # Reentrant: say() can run from the SIGINT handler while the
+        # main thread already holds this lock (e.g. inside started()).
         self.lock = threading.RLock()
         self.ticker = None
         self.stop = threading.Event()
 
-    # Started and finished are called by whatever is running the steps;
-    # everything else here is presentation.
     def started(self, name):
         with self.lock:
             self.running[name] = self.clock()
@@ -86,9 +70,8 @@ class Display:
             self.done += 1
             if failed:
                 self.failed += 1
-            # A finished step leaves a line behind, above whatever is
-            # still running: what a build did is worth having in the
-            # scrollback, and only what it is doing needs redrawing.
+            # Leave this step's line in the scrollback; only redraw
+            # what's still running.
             self._erase()
             self._line("%s %-28s %s" % (
                 (FAILED if failed else DONE)[self.fancy], name,
@@ -97,9 +80,7 @@ class Display:
             self.lines = 0
             self._redraw()
 
-    # Something worth saying while steps are running. Erase and redraw the
-    # live block around it, as a finished step does: printing past the block
-    # instead leaves the message inside what the next redraw clears.
+    # Print a message without breaking the live redraw block below it.
     def say(self, text):
         with self.lock:
             self._erase()
@@ -121,8 +102,6 @@ class Display:
             self._erase()
         return False
 
-    # A spinner has to move on its own, or a long step looks like a step
-    # that has hung.
     def _tick(self):
         while not self.stop.wait(0.1):
             with self.lock:

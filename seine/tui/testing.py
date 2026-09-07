@@ -1,10 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# The Test cockpit: mirrors seine/tui/build.py's own BuildState/
-# start_build() shape, one App-level worker running seine.testing.runner
-# through the same seine.reporter.Reporter TextualReporter already
-# implements -- no test-specific reporting code needed here at all.
+# Test cockpit: mirrors build.py's BuildState/start_build() shape, an
+# App-level worker running seine.testing.runner through the same
+# TextualReporter -- no test-specific reporting code needed.
 
 import os
 
@@ -21,20 +20,17 @@ class TestState:
         self.error = False
         self.done = False
         self.result = None
-        # A running test's own spec-tree path (spectree.highlight_active_
-        # test() reads this), keyed the same as 'rows' -- empty when no
-        # spec was given to compute it from.
+        # Running test's spec-tree path, keyed like 'rows'; empty when
+        # no spec was given to compute it from.
         self.test_paths = {}
-        # Every keyword-level log line seen so far, TestScreen's own
-        # #tail pane tails this the way BuildScreen tails a task's log
-        # file -- there is no file here, only this growing list.
+        # Every keyword-level log line seen so far; TestScreen's #tail
+        # pane tails this list since there's no log file here.
         self.output_lines = []
         # Bumped on every reset() so TestScreen can tell a fresh run
         # apart from one still going, and clear #tail instead of
-        # appending to what a previous run already left there.
+        # appending to it.
         self.run_id = 0
-        # Set by SeineApp.__init__, same shape as BuildState's own
-        # on_finished -- fired from finished_ok()/finished_failed() below.
+        # Set by SeineApp.__init__, same shape as BuildState.on_finished.
         self.on_finished = None
 
     @property
@@ -54,10 +50,8 @@ class TestState:
         self.output_lines = []
         self.run_id += 1
 
-    # Reporter sink -- 'task_started'/'task_finished'/'sampled' are
-    # TextualReporter's own hardcoded names (seine/tui/reporter.py),
-    # not the Reporter protocol's 'started'/'finished' -- BuildState
-    # names them this way for the same reason, called on the UI thread.
+    # Reporter sink: named task_started/task_finished/sampled to match
+    # TextualReporter's calls, not the Reporter protocol's own names.
     def task_started(self, name):
         self.rows.setdefault(name, {"state": "pending"})
         self.rows[name]["state"] = "running"
@@ -92,10 +86,8 @@ class TestState:
         if self.on_finished:
             self.on_finished()
 
-    # A failed row's own message goes right under it, the same reason
-    # the CLI and the AI chat's own 'run-test' tool both print it beside
-    # the test's name rather than only in the summary count -- otherwise
-    # this screen is the one place a failure gives no reason at all.
+    # A failed row's message goes right under it, same as the CLI and
+    # the AI chat's 'run-test' tool, so a failure always shows a reason.
     def render(self):
         if len(self.order) == 0:
             return "no test run yet -- '/test SPEC...'\n"
@@ -117,11 +109,9 @@ class TestState:
                             "for what led up to it" % (outdir, outdir, outdir))
         return "\n".join(lines) + "\n"
 
-# Mirrors start_build()'s own shape: a worker thread, a Reporter crossing
-# back through call_from_thread, an outdir under the same logs root a
-# multi-group build's own logs land under. 'spec', already parsed, saves
-# reloading a spec the active session has open -- see runner.run_spec()'s
-# own 'spec' argument.
+# Mirrors start_build()'s shape: a worker thread, a Reporter crossing
+# back through call_from_thread. 'spec', already parsed, saves reloading
+# a spec the active session has open.
 def start_test(app, state, files, spec=None, tags=None, outdir=None):
     if state.running:
         raise RuntimeError("a test run is already running")

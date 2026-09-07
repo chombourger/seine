@@ -20,35 +20,24 @@ from seine.utils     import BUILDER_KIND
 from seine.utils     import HOST_ARCH
 from seine.utils     import PRIVILEGED_RUN_OPTIONS
 
-# Where the repository of rebuilt packages is mounted, both in the builder
-# container and -- through sbuild's own bind mount -- inside the chroot it
-# builds in. The same path in both, so one sources.list entry works in
-# either place.
+# Path of the rebuilt-package repository, same in the builder container
+# and (via sbuild's bind mount) inside the chroot -- one sources.list
+# entry works in both places.
 REPOSITORY = "/packages"
 
-# Where a build drops what it produced, which is not the repository.
-#
-# Builds run beside each other, into a repository they share, so "what did
-# this build write" cannot be answered by looking at what appeared there
-# while it ran -- what appeared there is also whatever else was building.
-# Each build writes into a directory of its own and the step that
-# publishes moves them across, which answers it by construction.
+# Where a build writes its output. Builds share one repository, so each
+# gets its own output dir instead; the publish step moves files across.
 OUTPUT = "/output"
 
 class BuilderImage(Bootstrap):
-    # Where packages are built, holding the buildd chroot: derived from
-    # the host bootstrap and worth carrying.
     kind = BUILDER_KIND
 
     def create(self, hostBootstrap):
         return self.build(self.dockerfile(hostBootstrap), base=hostBootstrap.name)
 
-    # Split out from create() so a caller can ask what this would build
-    # from -- and digest() it -- without a podman to build it. Unlike
-    # TargetBootstrap's own dockerfile(), this image's name does not cover
-    # what _sources() bakes in: two specifications sharing a release can
-    # still collide here if their feeds differ, which is what such a
-    # caller is checking for.
+    # Split out so a caller can inspect/digest the dockerfile without a
+    # podman to build it. The image name alone does not capture what
+    # _sources() bakes in, so this is also used to detect feed collisions.
     def dockerfile(self, hostBootstrap):
         return BUILDER_IMAGE_SCRIPT.format(
             hostBootstrap.name,
@@ -59,51 +48,33 @@ class BuilderImage(Bootstrap):
             REPOSITORY,
             APT_CLEANUP)
 
-    # The builder installs build dependencies and fetches sources from the
-    # same places the image itself is built from, with deb-src alongside so
-    # 'apt-get source' has somewhere to look. Anything else rebuilds a
-    # package from a different version than the one the image would have
-    # installed -- which for the security suite means rebuilding a source
-    # that is missing the fixes apt would otherwise have given it.
-    #
-    # A suite 'apt-pull-mode: offline' covers is left out here: the vendor
-    # repository it reads from instead is refreshed by 'seine vendor'
-    # between builds, and baking a file: line pointed at it into this image
-    # would go stale the moment that happens without the image itself
-    # changing. packages.py's own fetch() writes the same line at exec
-    # time instead, into the throwaway container each build already gets.
+    # Same feeds the image itself uses, plus deb-src for 'apt-get source'.
+    # Offline suites are skipped: their vendor repo is refreshed between
+    # builds, so packages.py's fetch() adds that line at exec time instead
+    # of baking a path that would go stale.
     def _sources(self):
         offline = set(offline_suites(self.distro))
         online = [feed for feed in feeds(self.distro)
                  if feed["suite"] not in offline]
         return apt_sources_dockerfile(self.distro, online, sources=True)
 
-    # The host's architecture, not the target's (the chroot's own).
-    # Named so storage copied from a different host misses by name and
-    # rebuilds native, instead of running sbuild's unshare() under
-    # emulation, where it fails.
+    # Host arch, not the target's -- named so storage from another host
+    # misses and rebuilds native instead of running sbuild's unshare()
+    # under emulation, where it fails.
     def defaultName(self):
         return os.path.join("builder", self.distro["source"],
                             "%s-%s" % (self.distro["release"], HOST_ARCH))
 
-    # Runs 'args' inside a throwaway builder container with the namespace
-    # privileges sbuild needs. 'volumes' is a list of (host, container)
-    # pairs. Passing an 'architecture' mounts that architecture's chroot
-    # cache where sbuild looks for its tarballs by default, so neither
-    # mmdebstrap nor sbuild needs telling where the chroot lives; steps
-    # that do not enter a chroot at all leave it out.
-    #
-    # 'tty' allocates one inside the container, for sbuild alone --
-    # see packages.py's own build() for why.
+    # Runs 'args' in a throwaway builder container with the namespace
+    # privileges sbuild needs. Pass 'architecture' to mount that chroot
+    # cache where sbuild expects it; 'tty' is for sbuild's own use.
     def exec(self, args, architecture=None, volumes=None, workdir=None,
              environment=None, check=True, tty=False):
         return ContainerEngine.run(
             self._args(args, architecture, volumes, workdir, environment, tty),
             check=check)
 
-    # As exec(), but returns what the command printed. Used for the small
-    # questions only the source tree can answer, such as the date its
-    # changelog was last touched.
+    # Like exec(), but returns the command's output.
     def output(self, args, architecture=None, volumes=None, workdir=None,
                environment=None):
         return ContainerEngine.check_output(
@@ -124,10 +95,9 @@ class BuilderImage(Bootstrap):
             cmd += ["-w", workdir]
         return cmd + [self.name] + args
 
-# The buildd chroot sbuild unpacks for every package it builds. Producing
-# one is a full mmdebstrap run, so it is kept in the host-side cache and
-# reused; 'architecture' is the chroot's own, which for a cross build is
-# the build architecture rather than the target's.
+# The buildd chroot sbuild unpacks for every package build. Making one is
+# a full mmdebstrap run, so it's cached and reused; 'architecture' is the
+# chroot's own -- the build arch, not the target's, for a cross build.
 class SbuildChroot:
     def __init__(self, distro, options, architecture):
         self.architecture = architecture
@@ -138,8 +108,7 @@ class SbuildChroot:
     def filename(self):
         return "%s-%s.tar.zst" % (self.distro["release"], self.architecture)
 
-    # What this chroot is called in the cache index, which is what a report
-    # of it says and what an eviction would name.
+    # Name used in the cache index, reports, and eviction.
     @property
     def key(self):
         return "%s-%s" % (self.distro["release"], self.architecture)
@@ -153,39 +122,28 @@ class SbuildChroot:
     def exists(self):
         return os.path.isfile(self.path)
 
-    # The tarball keeps the name sbuild looks for, so what it was made from
-    # is recorded beside it instead -- the same idea as a package's stamp.
-    # Without it a chroot made from one set of feeds goes on being used
-    # after the specification has changed them, and packages are built
-    # against an archive the image no longer has.
-    #
-    # Not '<tarball>.inputs', which is what this was: sbuild takes every
-    # file in its cache directory matching '<dist>-<arch>.t<anything>' for a
-    # chroot tarball, and 'bookworm-amd64.tar.zst.inputs' matches as surely
-    # as 'bookworm-amd64.tar.zst' does. Its find_tarball() keeps the last
-    # one readdir hands it, so which of the two a build unpacks is decided
-    # by the order of a directory -- and the build that gets this one dies
-    # with 'tar: This does not look like a tar archive'.
+    # Records what the tarball was built from, so a stale chroot (feeds
+    # changed since) is detected instead of silently reused. Named
+    # '<dist>-<arch>.inputs', not '<tarball>.inputs': sbuild's
+    # find_tarball() matches any '<dist>-<arch>.t*' file, so
+    # 'bookworm-amd64.tar.zst.inputs' would itself look like a chroot and
+    # could get picked up instead of the real tarball.
     @property
     def inputs(self):
         return os.path.join(os.path.dirname(self.path), "%s-%s.inputs"
                             % (self.distro["release"], self.architecture))
 
-    # The names an earlier seine put beside the tarball, both of which still
-    # look like a chroot to sbuild and are still sitting in caches.
+    # Names an older seine left beside the tarball that still look like a
+    # chroot to sbuild.
     @property
     def _mistakable(self):
         return ["%s.inputs" % self.path, "%s.lock" % self.path]
 
-    # What a chroot is called while it is being made. sbuild unpacks the
-    # tarball without taking the lock that making one takes, so writing
-    # onto it in place gave a reader a zstd stream that stopped in the
-    # middle. The rename below is atomic and costs no lock; holding one
-    # over the unpacking would serialise the package builds instead.
-    #
-    # No release or architecture in the name: sbuild takes every file
-    # matching '<dist>-<arch>.t<anything>' for a chroot. The '.tar.zst'
-    # stays, it is what tells mmdebstrap the format.
+    # Name used while a chroot is being made, then renamed into place
+    # atomically -- sbuild can unpack a tarball while it's still being
+    # written, so writing in place risks a reader seeing a truncated file.
+    # No release/arch in the name, since sbuild matches any '<dist>-<arch>.t*'
+    # file; '.tar.zst' stays so mmdebstrap knows the format.
     TEMPORARY = ".seine-new.tar.zst"
 
     @property
@@ -198,27 +156,18 @@ class SbuildChroot:
         with open(self.inputs, "r") as f:
             return f.read().strip() == digest
 
-    # 'offline' bakes the chroot's own sources.list from the local vendor
-    # repository instead of the network, for a real 'packages:' rebuild
-    # under 'apt-pull-mode: offline'. Left False by seine/vendor's own
-    # base_chroot(), which shares this same cache entry (see 'key' above)
-    # to compute a vendor's build-dependency closure -- going offline
-    # there would have it read a vendor repository that its own resolve is
-    # what is supposed to fill, before anything has. utils.apt_sources()'s
-    # own rule -- offline is an explicit opt-in, never inferred -- applies
-    # here too, for the same reason.
+    # 'offline' bakes sources.list from the local vendor repository instead
+    # of the network, for 'apt-pull-mode: offline' rebuilds. Left False by
+    # vendor.base_chroot(), which shares this cache entry to compute a
+    # vendor's build-dependency closure before the vendor repo exists to
+    # read from.
     def create(self, builderImage, offline=False):
-        # Another build may be making the same chroot: they want the same
-        # bytes, so one makes it and the other finds it made rather than
-        # both writing one tarball.
-        #
-        # The lock is taken on the digest's name rather than the tarball's,
-        # for the same reason the digest is not called '<tarball>.inputs':
-        # '<tarball>.lock' looks like a chroot tarball to sbuild too, and
-        # bookworm's sbuild does not skip the empty file it is.
+        # Lock on the digest file, not the tarball: two concurrent builds
+        # of the same chroot should share the result, and locking
+        # '<tarball>.lock' would itself look like a chroot tarball to
+        # sbuild.
         with locked(self.inputs):
-            # A cache made by an earlier seine has both of these in it, and
-            # leaving them there is leaving a build to fail on a coin toss.
+            # Clear stale files an older seine left behind.
             for stale in self._mistakable:
                 if os.path.isfile(stale):
                     os.unlink(stale)
@@ -226,31 +175,27 @@ class SbuildChroot:
 
     def _create(self, builderImage, offline=False):
 
-        # --mode=root: we are already root inside the container, so there
-        # is no reason to make mmdebstrap unshare a namespace of its own
-        # to get there. The sync-in/sync-out hooks seed apt's archives from
-        # the same download cache the rest of the build uses and put newly
-        # fetched packages back, as the target bootstrap does.
+        # --mode=root: already root in the container, no need for
+        # mmdebstrap to unshare its own namespace. sync-in/sync-out seed
+        # apt's archives from the shared download cache and put new
+        # downloads back, same as the target bootstrap does.
         args = [
             "mmdebstrap", "--mode=root", "--variant=buildd",
             "--arch=%s" % self.architecture,
             "--setup-hook=mkdir -p \"$1\"/var/cache/apt/archives/",
             "--setup-hook=sync-in /var/cache/mmdebstrap /var/cache/apt/archives/",
-            # apt's staging directory belongs to a user of the chroot's
-            # own, so copying it out puts a directory in the cache that
-            # this user cannot unlink -- which is what stopped 'seine
-            # cache clear' from emptying the downloads. Nothing wants it:
-            # what is in it is a download that did not finish.
+            # 'partial' is owned by a chroot-internal user, so copying it
+            # out would leave an unremovable dir in the cache; it only
+            # holds unfinished downloads anyway.
             "--customize-hook=rm -rf \"$1\"/var/cache/apt/archives/partial",
             "--customize-hook=sync-out /var/cache/apt/archives /var/cache/mmdebstrap",
             self.distro["release"],
             "/root/.cache/sbuild/%s" % self.filename,
         ] + apt_sources(self.distro, offline=offline)
-        # Digested before the name is swapped in below: where a chroot is
-        # written is not what it is made from, and caches made before this
-        # still match. Offline and online sources differ, so flipping
-        # 'apt-pull-mode' digests as a different chroot rather than one
-        # silently built from the wrong one.
+        # Digested before the temp name is swapped in below, so where a
+        # chroot is written doesn't affect what it's made from. Offline vs
+        # online sources digest differently, so an 'apt-pull-mode' flip
+        # is treated as a different chroot.
         digest = hashlib.sha256(" ".join(args).encode()).hexdigest()[:16]
         if self.current(digest) == False:
             import_bundled()
@@ -271,15 +216,14 @@ class SbuildChroot:
             volumes += [(vendor.deploy_repository(suite), vendor_mountpoint(suite))
                        for suite in offline_suites(self.distro)]
         try:
-            # Not 'architecture=self.architecture': that mounts the chroot
-            # cache directory of 'builderImage's own distro, which for a
-            # vendor's resolver differs from this chroot's -- see
+            # Not 'architecture=self.architecture': that would mount
+            # builderImage's own distro chroot cache, which differs from
+            # this chroot's for a vendor resolver -- see
             # VendorResolver.base_chroot().
             builderImage.exec(args, volumes=volumes)
         except subprocess.CalledProcessError:
-            # Only what this run wrote: the chroot that was there is whole
-            # and still matches its inputs, where removing the pair made
-            # every build remake a chroot because one of them failed.
+            # Remove only the failed temp file -- an existing chroot stays
+            # valid and matching its inputs.
             if os.path.isfile(self.temporary):
                 os.unlink(self.temporary)
             raise
@@ -302,27 +246,18 @@ RUN --mount=type=cache,target=/var/cache/apt/archives,id={4},sharing=locked \
          dpkg-dev devscripts quilt git            \
          ca-certificates curl iproute2 openssh-client \
          debhelper python3-jinja2 python3-dacite kernel-wedge
-# openssh-client is what git needs to clone a ';protocol=ssh' source. It
-# is only a Recommends of git, and recommends are not installed here.
-# The last four are for kernel rebuilds: regenerating debian/control
-# after restricting the flavours runs the kernel's own generator, which
-# wants jinja2, kernel-wedge and dh_listpackages behind them. None of
-# them fails in a way that names what is missing.
-#
-# dacite is what reads debian/config/*/defines.toml into the generator's
-# dataclasses, so it is needed by a 6.12 source and not by a 6.1 one --
-# and a specification may well build both.
-# iproute2 is not optional: sbuild brings the loopback interface up with
-# 'ip link set lo up' when it takes the network away from the build, and
-# dies rather than warns when 'ip' is missing.
+# openssh-client: git needs it for a ';protocol=ssh' source (only a
+# Recommends of git, not installed above). The last four are for kernel
+# rebuilds -- jinja2/kernel-wedge/dh_listpackages back the kernel's own
+# debian/control generator, dacite reads defines.toml (6.12 sources only).
+# iproute2: sbuild needs 'ip link set lo up' and dies without it.
 RUN {6}
 RUN echo 'root:1:65535' > /etc/subuid && \
     echo 'root:1:65535' > /etc/subgid
-# The chroot sbuild builds in is a root of its own that our bind mounts do
-# not reach into, so the repository of rebuilt packages is bind-mounted a
-# second time, by sbuild, at the same path -- letting a package build
-# against one rebuilt before it through an ordinary sources.list entry.
-# The trailing 1 is what a perl configuration file has to evaluate to.
+# sbuild's chroot is a separate root our bind mounts don't reach, so
+# sbuild bind-mounts the package repository into it at the same path too
+# -- a package can then build against ones rebuilt before it via a plain
+# sources.list entry. Trailing '1;' is required: it's a perl config file.
 RUN mkdir -p /etc/sbuild && \
     echo '$unshare_bind_mounts = [ {{ directory => "{5}", mountpoint => "{5}" }} ];' \
         > /etc/sbuild/sbuild.conf && \

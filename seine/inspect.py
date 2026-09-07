@@ -1,10 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Read-only browsing of a *finished* disk image, via guestfs. Which
-# partition is '/' comes from the same PartitionHandler mount metadata
-# the imager used to write the image, not guessed via inspect_os().
-# Read-only throughout: every mount is mount_ro, the drive readonly=True.
+# Read-only browsing of a finished disk image, via guestfs. Mount layout
+# comes from the same PartitionHandler metadata the imager wrote with,
+# not guessed via inspect_os().
 
 import copy
 import os
@@ -17,23 +16,19 @@ class Inspector:
             raise OSError("no such image: %s" % image_path)
         self.image_path = image_path
         self.ph = PartitionHandler()
-        # parse() mutates the dict it's given, so a copy -- a caller may
-        # hand the same spec to a new Inspector again (the TUI does, on
-        # every /cd).
+        # parse() mutates its argument, so copy -- caller may reuse spec.
         self.ph.parse(copy.deepcopy(spec))
         self._g = None
 
-    # Imported here, not at module load: a machine without
-    # python3-guestfs can still import this module -- only opening an
-    # image needs the real library.
+    # Import here, not at module load, so a machine without python3-guestfs
+    # can still import this module.
     def __enter__(self):
         import guestfs
         g = guestfs.GuestFS(python_return_dict=True)
         g.add_drive_opts(self.image_path, format="raw", readonly=True)
         g.launch()
 
-        # Same device-numbering Imager.create() wrote with: Nth partition
-        # is /dev/sda<N>. LVM volumes need their group activated first.
+        # Same numbering Imager.create() used: Nth partition is /dev/sda<N>.
         if len(self.ph.volumes) > 0:
             g.vgscan()
             g.vg_activate_all(True)
@@ -42,8 +37,7 @@ class Inspector:
         vol_devices = {id(vol): "/dev/%s/%s" % (vol["group"], vol["label"])
                        for vol in self.ph.volumes}
 
-        # Parents before children, exactly as the imager mounted them --
-        # '/boot' has to exist under '/' before it can be mounted itself.
+        # Mount parents before children, e.g. '/' before '/boot'.
         for mount in sorted(self.ph.mounts, key=lambda m: m["_depth"]):
             dev = part_devices.get(id(mount)) or vol_devices.get(id(mount))
             if dev is None:
@@ -60,9 +54,8 @@ class Inspector:
         self._g = None
         return False
 
-    # One entry per name: (name, kind, size, target). 'kind' matches
-    # guestfs's own ftyp letters (d/l/r/...). A symlink carries its
-    # target instead of a size.
+    # Returns (name, kind, size, target) per entry. 'kind' is guestfs's
+    # ftyp letter (d/l/r/...); symlinks carry a target instead of a size.
     def ls(self, path="/"):
         entries = []
         for entry in sorted(self._g.readdir(path), key=lambda e: e["name"]):
@@ -80,8 +73,7 @@ class Inspector:
     def is_dir(self, path):
         return bool(self._g.is_dir(path))
 
-    # 'read_file' (bytes), not 'cat' (str) -- 'cat' stops at the first
-    # embedded NUL, which a real config file or binary can easily have.
+    # read_file, not cat -- cat truncates at embedded NUL bytes.
     def cat(self, path):
         return self._g.read_file(path)
 

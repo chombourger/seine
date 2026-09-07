@@ -1,14 +1,11 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# What 'extends: module:' means: building an out-of-tree kernel module
-# against kernels this specification builds, or ones the distribution
-# ships, with packaging seine writes for it.
-#
-# Above seine/kernel rather than beside it: a module is built against a
-# kernel, names one, and is versioned by the ABI that kernel ended up with.
-# The names are imported rather than the module itself -- 'kernel' is what
-# a local variable is called all through here.
+# 'extends: module:' builds an out-of-tree kernel module against a kernel
+# this specification builds, or one the distribution ships, with packaging
+# seine writes for it. Lives above seine/kernel since a module names and
+# depends on a kernel; 'kernel' below is a plain local variable, not the
+# imported module.
 
 import collections
 import functools
@@ -34,94 +31,54 @@ from seine.utils  import GIT_NAME
 from seine.utils  import HOST_ARCH
 
 
-# What 'extends: module:' takes, beyond the '<architecture>-kernels'
-# below: those are not a fixed list, so they are matched rather than
-# listed.
 SETTINGS = ["build", "build-depends", "make-vars", "modules",
             "runtime-depends", "target"]
 
-# Which kernels a module is built against, said once per architecture:
-# 'amd64-kernels', 'arm64-kernels'. Keyed by architecture rather than
-# listed flat so that a specification building for one architecture never
-# has to resolve another's kernels -- a name it would have to reach into
-# a foreign apt index to make sense of, for a build it is not doing.
-#
-# The shape is checked, not the architecture: seine takes the
-# 'distribution' architecture as written and holds no list of Debian's. A
-# misspelt one is caught all the same, by the build finding no kernels for
-# the architecture it is building, in a message naming what was found.
+# '<architecture>-kernels', e.g. 'amd64-kernels', 'arm64-kernels'. Matched
+# rather than listed since architectures are not a fixed set.
 MODULE_KERNELS = re.compile(r"^([a-z][a-z0-9]*(-[a-z0-9]+)*)-kernels$")
 
-# What a module is built against, named by its headers package rather
-# than by the image package beside it: the headers are what a module
-# compiles and links against, and naming the image would be naming a
-# thing the build never opens.
+# A module is built against headers, not the kernel image package.
 MODULE_IMAGE_PREFIX = "linux-image-"
 
-# The headers packages a module is built against are named for the kernel
-# rather than for the architecture: linux-headers-<abi>-<flavour>, where
-# the ABI is what the packaging derived from the version it was built
-# from. Stripping this prefix leaves '<abi>-<flavour>' -- which is the
-# kernel's release, the name of its modules directory, and what a module
-# has to be built against to be loadable by it.
+# Stripping this prefix off a headers package name leaves
+# '<abi>-<flavour>', the kernel's release and modules directory name.
 MODULE_HEADERS_PREFIX = "linux-headers-"
 
-# An ABI begins with the kernel's version, so it begins with a digit:
-# that is what separates a name for one kernel from the metapackages
-# pointing at whichever kernel is current. Nothing else about the two
-# tells them apart -- a featureset and a flavour are both words.
+# An ABI starts with a digit; that's what tells a real kernel name apart
+# from a metapackage that just points at whichever kernel is current.
 MODULE_ABI = re.compile(r"^[0-9]")
 
-# What the headers of a kernel are called once they carry tools another
-# architecture can run. Not a name any archive uses: it is built here,
-# for the machine doing the building, out of a kernel meant for another.
+# Name for headers rebuilt here with tools another architecture can run.
 CROSS_SUFFIX = "-cross"
 
-# Where the kernel's own headers packages are staged inside the source
-# package that unpacks them, since a source package cannot reach outside
-# itself.
+# Where a kernel's headers .debs are staged inside the source package
+# that unpacks them (a source package can't reach outside itself).
 CROSS_STAGED = "debian/headers"
 
-# Where the fetch leaves them beside the source it unpacked. Hidden,
-# because what a fetch produced is found by looking for the one directory
-# it left behind, and anything seine put there itself has to stay out of
-# that count.
+# Directory a fetch leaves the kernel source under.
 CROSS_FETCHED = ".headers"
 
 def cross_headers_name(release):
     return "%s%s%s" % (MODULE_HEADERS_PREFIX, release, CROSS_SUFFIX)
 
-# Whether a package is one seine made up rather than one a specification
-# asked for. They have no source URI: what they are built from is worked
-# out from the kernel they are of.
+# True for a package seine made up itself (no source URI of its own).
 def is_cross_package(package):
     return getattr(package, "cross_kernel", None) is not None
 
-# What a module is built against, once the name it was written as has
-# been made sense of.
-#
-# 'release' is the '<abi>-<flavour>' the kernel calls itself: it names the
-# binary package the modules are shipped in, the directory they are
-# installed into, and the kernel they refuse to load into if it is wrong.
-# 'headers' is what has to be installed to build against it.
-#
-# 'flavour' is what a metapackage over these modules is named for, and is
-# None when there is nothing safe to call it. A reference that named a
-# flavour gives one; an ABI written out does not, since splitting it back
-# into an ABI and a flavour cannot be done from the name. Nothing is lost
-# by that: a specification that pinned an exact kernel can name the exact
-# package its modules are in.
+# A resolved kernel reference: 'release' is '<abi>-<flavour>', 'headers'
+# is the package to build against, 'flavour' is None when the reference
+# was an exact ABI (which can't be split back into abi + flavour).
 Kernel = collections.namedtuple("Kernel",
                                 ["reference", "headers", "release", "flavour"])
 
-# Whether a kernel reference names a package this specification builds,
-# as opposed to one the distribution ships. Written without a scheme:
-# 'linux' is a package here, 'apt://linux-headers-amd64' is Debian's.
+# True if the reference names a package this specification builds
+# ('linux'), false for a distro package ('apt://linux-headers-amd64').
 def is_built_kernel(reference):
     return "://" not in reference
 
-# Whether an 'apt://' reference names one kernel or whichever kernel is
-# current. Only the first can be made sense of without asking apt.
+# True if an 'apt://' reference names whichever kernel is current,
+# rather than one exact kernel (which apt doesn't need to resolve).
 def is_kernel_metapackage(reference):
     name = reference.partition("://")[2]
     if name.startswith(MODULE_HEADERS_PREFIX) == False:
@@ -129,12 +86,9 @@ def is_kernel_metapackage(reference):
     return MODULE_ABI.match(name[len(MODULE_HEADERS_PREFIX):]) is None
 
 
-# A kernel built here is published under the distribution's own names, so
-# a metapackage naming that flavour names the graft once the image is
-# composed. Both resolving builds the modules twice -- once for a kernel
-# the image does not carry -- and writes the flavour metapackage into
-# debian/control twice, which dh refuses. An ABI written out is not
-# superseded: it names one kernel and has no flavour to clash on.
+# Drops a grafted kernel's flavour metapackage when the exact ABI is also
+# named for it: building both would build the modules twice and write
+# the flavour package into debian/control twice, which dh refuses.
 def supersede_grafted(kernels):
     grafted = set(kernel.flavour for kernel in kernels
                   if is_built_kernel(kernel.reference)
@@ -143,15 +97,8 @@ def supersede_grafted(kernels):
             if is_built_kernel(kernel.reference)
             or kernel.flavour not in grafted]
 
-# The packaging seine writes for an out-of-tree module, kept beside the
-# code rather than in it, as the kernel rules above are: what a
-# debian/rules has to say is Debian's to define, and following it should
-# be an edit to a file that looks like what it produces.
-#
-# Read as bytes as well as rendered: those bytes are part of what decides
-# whether a module needs building again, so editing the packaging is
-# enough to ask for a rebuild -- without it a module would go on being
-# the one yesterday's rules produced.
+# Packaging templates for an out-of-tree module, kept as files rather
+# than inline so editing them looks like editing what they produce.
 MODULE_PACKAGING = os.path.join(os.path.dirname(__file__), "data", "module")
 CROSS_PACKAGING = os.path.join(os.path.dirname(__file__), "data", "cross")
 MODULE_FILES = ["changelog", "control", "rules"]
@@ -160,10 +107,6 @@ MODULE_FILES = ["changelog", "control", "rules"]
 def module_packaging():
     return _packaging(MODULE_PACKAGING)
 
-# The packaging for the headers of a kernel meant for one architecture,
-# carrying the kbuild tools of another. Kept beside the module packaging
-# and read the same way, so that both are edited as what they produce and
-# both decide by their content whether a rebuild is needed.
 @functools.lru_cache(maxsize=None)
 def cross_packaging():
     return _packaging(CROSS_PACKAGING)
@@ -178,15 +121,9 @@ def _packaging(directory):
         templates[name] = raw.decode()
     return templates, content
 
-# The same delimiters a specification is rendered with, so that one
-# notation is seine's throughout: somebody editing this packaging already
-# knows '[[ ]]' from the yaml. Spelt out here rather than shared with
-# build.py, which cannot be imported from this module -- it reaches this
-# one through seine.image.
-#
-# The one thing to keep out of a template because of it is bash's '[[ ]]'
-# test in a rules recipe; '[' does the same job and dh runs recipes under
-# /bin/sh anyway.
+# Same '[[ ]]' delimiters as spec rendering, so one notation is used
+# throughout. Avoid bash's '[[ ]]' test in rules recipes because of it;
+# '[' works the same and dh runs recipes under /bin/sh anyway.
 MODULE_TEMPLATE = jinja2.Environment(
     variable_start_string="[[", variable_end_string="]]",
     block_start_string="[%", block_end_string="%]",
@@ -195,21 +132,9 @@ MODULE_TEMPLATE = jinja2.Environment(
     undefined=jinja2.StrictUndefined)
 
 
-# A module is built after the kernels it names, without anybody writing it
-# down twice.
-#
-# Ordering is the obvious half: a module built against a kernel this
-# specification also builds needs that kernel's headers, which do not
-# exist until it has been built.
-#
-# The digest is the half that matters more. What a module has to be named
-# for is the kernel's ABI, and an ABI is not knowable until the kernel's
-# source has been prepared -- a grafted 6.18 calls itself
-# '6.18+unreleased', which nothing can predict and which changes with the
-# tree it was grafted onto. So the module's stamp does not try to carry
-# it. It carries the kernel's digest instead, which 'after' is what folds
-# in, and which changes whenever anything about that kernel does. A
-# kernel that moved rebuilds the modules on it, whatever moved.
+# Adds each named kernel this specification builds to 'after', so a
+# module is built once its kernel is, and stamped with the kernel's
+# digest (not its ABI, which a grafted kernel can't predict in advance).
 def depend_on_kernels(packages):
     for package in packages:
         if package.module == False:
@@ -219,15 +144,9 @@ def depend_on_kernels(packages):
                 if is_built_kernel(kernel) and kernel not in package.after:
                     package.after.append(kernel)
 
-# A kernel named without a scheme is one this specification builds, and
-# naming one it does not build is a typo rather than a constraint worth
-# ignoring -- the same answer 'before' and 'after' already give.
-#
-# A description under 'defaults' is the exception, and it never reaches
-# here: what it named that nothing builds was dropped as the defaults
-# were folded in, which is how an architecture file says "modules for our
-# kernel too, if there is one" without every image of that architecture
-# having to build one.
+# A kernel named without a scheme must be one this specification builds;
+# naming anything else is a typo, not a constraint to ignore. Names
+# dropped from 'defaults' when nothing built them never reach here.
 def check_references(packages):
     built = {package.name for package in packages}
     for package in packages:
@@ -244,20 +163,9 @@ def check_references(packages):
                     "one the distribution ships, as 'apt://linux-headers-%s'."
                     % (architecture, kernel, architecture))
 
-# Every module has to say which kernels it is built against for each
-# architecture it is built for. Answered when the specification is
-# parsed: the architectures are known without fetching anything, so an
-# arm64 build of a specification that names only amd64 kernels fails in a
-# second rather than after cloning somebody's tree.
-#
-# Every package at fault is named in one message. A specification with
-# three modules and one architecture missing from all of them is three
-# lines of one error rather than three builds, each finding the next.
-#
-# Not a skip: an entry under 'packages' asks for a build, and a module
-# built against no kernels produces nothing. The image would come out,
-# boot, carry none of the modules asked for, and look exactly as it
-# should.
+# Every module needs kernels named for each architecture it builds for.
+# Checked at parse time (no fetch needed) so a mismatched architecture
+# fails fast, with every offending package named in one error.
 def check_kernels(packages, spec):
     target = (spec.get("distribution") or {}).get("architecture")
     missing = []
@@ -288,40 +196,29 @@ def check_kernels(packages, spec):
 def parse(package, extends):
     settings = extends.get("module", {})
     package.module = "module" in extends
-    # Where the module's own makefile is, for a tree that keeps it in
-    # a subdirectory -- NVIDIA's is under kernel-open. The tree's root
-    # when nothing says otherwise.
+    # Subdirectory holding the module's own makefile, e.g. NVIDIA's
+    # kernel-open. Defaults to the tree's root.
     package.module_build = settings.get("build", ".")
     if type(package.module_build) != type(""):
         raise package._error("'extends: module: build' shall be a string")
-    # What to ask that makefile for. 'modules' is what kbuild calls
-    # it and what nearly every out-of-tree tree follows, but not all:
-    # some call it 'all', some 'default'.
+    # Make target to build. 'modules' is kbuild's own default but not
+    # every out-of-tree tree follows it (some use 'all' or 'default').
     package.module_target = settings.get("target", "modules")
     if type(package.module_target) != type(""):
         raise package._error("'extends: module: target' shall be a string")
-    # Which .ko files the build is expected to produce. Named rather
-    # than found: a build that quietly produced none, or produced one
-    # of two, would otherwise make a package that installs nothing and
-    # looks exactly as it should.
+    # .ko files the build must produce, named rather than discovered so
+    # a build producing none (or only some) doesn't silently pass.
     package.module_modules = package._parse_list(settings, "modules")
     for name in package.module_modules:
         if type(name) != type(""):
             raise package._error(
                 "'extends: module: modules' shall be a list of module "
                 "names")
-    # What this tree needs to build that seine cannot know about: a
-    # conftest that runs python, a driver that links against a
-    # library. Taken verbatim -- what may be said in a Build-Depends
-    # is Debian's to define, and a setting that parsed it would be a
-    # second, smaller language to keep up to date.
+    # Extra Build-Depends the tree needs, taken as-is (Debian's syntax).
     package.module_build_depends = package._parse_list(settings,
                                                        "build-depends")
-    # And what the modules need once installed, which seine knows
-    # less about still: firmware the driver asks the kernel to load,
-    # a userspace half that has to match. The kernel they were built
-    # for is added to these; it is the one relationship seine can
-    # work out for itself.
+    # Extra runtime dependencies; the kernel built against is added
+    # automatically since seine already knows that relationship.
     package.module_runtime_depends = package._parse_list(settings,
                                                          "runtime-depends")
     for setting, listed in [("build-depends", package.module_build_depends),
@@ -335,9 +232,7 @@ def parse(package, extends):
     package.module_make_vars = _parse_make_vars(package, settings)
     package.module_kernels = _parse_module_kernels(package, settings)
 
-# What to put on the make command line, for a tree that needs telling
-# where things are -- NVIDIA's wants SYSSRC. Taken as written: what a
-# module's makefile accepts is its own business.
+# Extra make variables, e.g. NVIDIA's SYSSRC. Taken as written.
 def _parse_make_vars(package, settings):
     variables = settings.get("make-vars", {})
     if type(variables) != type({}):
@@ -349,11 +244,9 @@ def _parse_make_vars(package, settings):
             raise package._error(
                 "'extends: module: make-vars' has '%s', whose value is "
                 "neither a string nor a number" % name)
-        # A value reaches a shell in the generated rules, where it is
-        # quoted so that '$KERNEL_SRC' and the rest expand. That is
-        # the whole of what may expand: a value that could run
-        # something would be running it as part of a build somebody
-        # else's specification asked for.
+        # Values are shell-quoted in the generated rules so
+        # $KERNEL_SRC etc. still expand; block anything that could
+        # run a command instead.
         for forbidden in ["`", "$(", ";", "&", "|", "\n"]:
             if forbidden in str(value):
                 raise package._error(
@@ -365,12 +258,8 @@ def _parse_make_vars(package, settings):
                     % (name, forbidden.strip()))
     return {name: str(value) for name, value in variables.items()}
 
-# The kernels this module is built against, per architecture.
-#
-# Each is named by its headers package -- 'apt://linux-headers-amd64',
-# 'apt://linux-headers-6.12.101+deb13-amd64' -- or by the name of a
-# kernel this specification builds, whose headers seine knows how to
-# name for itself.
+# Kernels this module is built against, per architecture. Each is named
+# by an 'apt://' headers package or by a kernel this spec builds.
 def _parse_module_kernels(package, settings):
     kernels = {}
     for setting, listed in settings.items():
@@ -389,12 +278,7 @@ def _parse_module_kernels(package, settings):
         kernels[architecture.group(1)] = list(listed)
     return kernels
 
-# A kernel is named by what a module is built against, which is a
-# headers package. The image package beside it holds a compiled
-# kernel and nothing to compile against, so naming it is a mistake
-# worth spelling out rather than a name to quietly translate: which
-# headers package an image package belongs to is a question with more
-# than one answer where featuresets are involved.
+# Rejects naming a kernel image package instead of its headers.
 def _check_module_kernel(package, setting, kernel):
     name = kernel
     if "://" in kernel:
@@ -411,25 +295,15 @@ def _check_module_kernel(package, setting, kernel):
             "'linux-headers-%s' instead."
             % (setting, kernel, name[len(MODULE_IMAGE_PREFIX):]))
 
-# A cross headers package is fetched rather than described: what it
-# is built from is the kernel's own source, and what it carries is
-# the headers that kernel's build produced. Both are asked of apt,
-# which is the one thing that knows where either lives -- the
-# distribution's for a kernel it ships, seine's own repository for a
-# kernel built here, and the same two commands for both.
-#
-# The source package is not named by the specification: it is read
-# off the headers package, which says which source it came from and
-# at what version. Guessing 'linux' would be right for Debian's
-# kernel and wrong for anybody else's.
+# Fetches the cross headers' source package from apt: the distribution's
+# feed for a kernel it ships, seine's own repository for one built here.
+# The source package name/version is read off the headers package
+# itself, not guessed (guessing 'linux' would be wrong for non-Debian
+# kernels).
 def _fetch_cross_args(builder, package, architecture):
     headers = package.cross_kernel.headers
     return ["sh", "-c",
             "set -e; "
-            # The repository this build fills, which is where a kernel
-            # built here is and nowhere else. The builder image carries
-            # the distribution's feeds only: what sbuild is handed
-            # separately never reaches a fetch running outside a chroot.
             "echo 'deb [trusted=yes] file:%(repository)s ./' "
             "  > /etc/apt/sources.list.d/seine-packages.list; "
             "echo 'deb-src [trusted=yes] file:%(repository)s ./' "
@@ -452,17 +326,11 @@ def _fetch_cross_args(builder, package, architecture):
             % {"headers": headers, "architecture": architecture,
                "repository": REPOSITORY}]
 
-# The packaging for an out-of-tree module, written into the tree.
-#
-# Packaging the tree came with is replaced rather than refused: upstream
-# usually ships dkms, which builds on the machine that installs it -- the
-# opposite of what 'extends: module' asks for.
-#
-# Everything here is generated from what the specification said, so
-# the source package is a function of the specification and the tree,
-# and two builds of it are the same source package. It is written
-# before the local changelog entry is added, since that reads the
-# changelog this puts there.
+# Writes packaging for an out-of-tree module into its source tree,
+# replacing whatever came with it (usually dkms, which builds on the
+# install machine -- the opposite of what 'extends: module' wants).
+# Run before the local changelog entry is added, since this writes the
+# changelog that entry reads.
 def extend(builder, package, sourcedir, epoch):
     if package.module == False:
         return
@@ -472,12 +340,9 @@ def extend(builder, package, sourcedir, epoch):
         shutil.rmtree(debian)
     os.makedirs(os.path.join(debian, "source"), exist_ok=True)
 
-    # Every architecture's kernels, not only the one being built for.
-    # The source package is published once however many architectures
-    # are built from it, so the control file has to describe all of
-    # them or two builds would write one filename with two contents.
-    # Which of them a build makes is decided by the Architecture
-    # field, and the build-dependencies are qualified the same way.
+    # Every architecture's kernels are described, since one source
+    # package is published for all of them and control has to name
+    # each with build-dependencies qualified by architecture.
     builds = []
     described = {}
     for architecture in sorted(package.module_kernels):
@@ -486,18 +351,9 @@ def extend(builder, package, sourcedir, epoch):
         _describe_once(package, described, architecture, kernels)
         builds.append({
             "architecture": architecture,
-            # Written here rather than in the template: '[[[ x ]]]'
-            # reads as a list literal inside a substitution, not as
-            # brackets around one.
             "qualifier": "[%s]" % architecture,
             "kernels": [{"release": kernel.release,
                          "headers": kernel.headers,
-                         # What the same headers are called once they
-                         # carry tools the builder can run. Which of
-                         # the two a build installs is decided by the
-                         # 'cross' build profile rather than here:
-                         # one source package is built both ways, on
-                         # machines of either architecture.
                          "cross_headers":
                              cross_headers_name(kernel.release),
                          "flavour": kernel.flavour,
@@ -505,10 +361,7 @@ def extend(builder, package, sourcedir, epoch):
                                     % (package.name, kernel.release)}
                         for kernel in kernels]})
 
-    # A native source package: what is built is a tree, with no
-    # upstream tarball beside it to be a delta against. Inventing one
-    # would only say that the packaging and the source were published
-    # apart, which they were not.
+    # Native: a tree with no upstream tarball to diff against.
     _write(os.path.join(debian, "source", "format"), "3.0 (native)\n")
 
     templates, _ = module_packaging()
@@ -527,16 +380,9 @@ def extend(builder, package, sourcedir, epoch):
         "kernel_architectures": sorted(KERNEL_ARCHITECTURES.items()),
         "kernel_machines": sorted(KERNEL_MACHINES.items()),
         "modules": " ".join(sorted(package.module_modules)),
-        # Double quotes, not shlex.quote: the point of a value is
-        # often to name one of the variables the rules set per
-        # kernel, and single quotes would pass '$KERNEL_SRC' to make
-        # as those nine characters. Quoted all the same, so a path
-        # with a space in it stays one argument.
-        #
-        # And every '$' doubled, because what reads this first is
-        # make: '$KERNEL_ARCH' is the variable K followed by the word
-        # ERNEL_ARCH to make, and the shell that was meant to expand
-        # it never sees a dollar at all.
+        # Double-quoted (not shlex.quote) so $KERNEL_SRC etc. still
+        # expand; every '$' doubled since make reads this before the
+        # shell does.
         "make_vars": " ".join(
             '%s="%s"' % (name, package.module_make_vars[name]
                          .replace('"', '\\"').replace("$", "$$"))
@@ -547,9 +393,8 @@ def extend(builder, package, sourcedir, epoch):
                MODULE_TEMPLATE.from_string(templates[name]).render(context),
                mode=0o755 if name == "rules" else None)
 
-# A kernel is described once, however many architectures name it: two
-# resolving to one means a kernel built here was named under both, and it
-# is built for one architecture only.
+# A kernel built here is for one architecture only; if two architecture
+# lists resolve to the same release, that's a mistake to report.
 def _describe_once(package, described, architecture, kernels):
     for kernel in kernels:
         seen = described.get(kernel.release)
@@ -568,19 +413,14 @@ def _write(path, content, mode=None):
     if mode is not None:
         os.chmod(path, mode)
 
-# The packaging for a cross headers package, written into the kernel
-# source tree it is built from.
-#
-# 'debs' is where seine staged the kernel's own headers packages: they
-# are what the build unpacks, since Module.symvers cannot be made
-# without building every module of that kernel, and it is what decides
-# whether a module will load at all.
+# Writes packaging for a cross headers package into the kernel source
+# tree it's built from. 'debs' holds the kernel's own staged headers
+# .debs, needed since Module.symvers can't be regenerated otherwise.
 def extend_cross_headers(builder, package, sourcedir, epoch, debs):
     kernel = package.cross_kernel
     debian = os.path.join(sourcedir, "debian")
-    # A kernel source package carries a debian/ of its own, and what
-    # is wanted here is not it: this builds headers and tools, not a
-    # kernel.
+    # Replace the kernel source's own debian/: this builds headers and
+    # tools, not the kernel.
     if os.path.isdir(debian):
         shutil.rmtree(debian)
     os.makedirs(os.path.join(debian, "source"), exist_ok=True)
@@ -604,8 +444,8 @@ def extend_cross_headers(builder, package, sourcedir, epoch, debs):
                MODULE_TEMPLATE.from_string(templates[name]).render(context),
                mode=0o755 if name == "rules" else None)
 
-    # Inside the source tree, since a source package cannot reach
-    # outside itself: what the build unpacks has to travel with it.
+    # Staged inside the source tree, since a source package can't
+    # reach outside itself.
     staged = os.path.join(sourcedir, CROSS_STAGED)
     os.makedirs(staged, exist_ok=True)
     for name in sorted(os.listdir(debs)):
@@ -619,36 +459,18 @@ def extend_cross_headers(builder, package, sourcedir, epoch, debs):
             "neither can be made again without building that kernel."
             % (package.name, kernel.release))
 
-# What the package is versioned as. The kernel's own version would be
-# a lie about what this is -- it is not that kernel -- but it has to
-# move when that kernel does, or a rebuilt kernel would leave headers
-# behind describing the one before it.
+# Versioned by the release it carries, not the kernel's own version
+# (which would misleadingly claim to be that kernel).
 def cross_version(kernel):
-    # No '-' in it: this is a native source package, and dpkg reads
-    # what follows the last '-' as a Debian revision, which a native
-    # package may not have. A release is full of them --
-    # '6.12.101+deb13-arm64' -- so they become dots, which say the
-    # same thing to a reader and nothing to dpkg.
+    # Dots instead of '-': this is a native package, and dpkg would
+    # otherwise read the text after the last '-' as a Debian revision.
     return "%s+cross1" % kernel.release.replace("+", ".").replace("-", ".")
 
-# The headers packages a cross build needs, one per kernel.
-#
-# A module cross-compiled for another architecture cannot use that
-# architecture's headers as they are: they reach for
-# linux-kbuild-<abi>, whose fixdep and modpost are compiled for the
-# kernel's architecture and cannot run on the machine doing the
-# building. What is needed is the same headers with tools this
-# machine can run, built from that kernel's own source -- and for a
-# kernel seine grafts, no such package exists in any archive at all.
-#
-# So seine builds one, and builds it once: it is a property of the
-# kernel rather than of the module, so many modules against one kernel
-# need one of these. Deduplicated on the release rather than on how a
-# specification spelt the kernel, since a headers metapackage and the
-# ABI written out are the same kernel named two ways.
-#
-# Nothing is made for a build that is not crossing: a module built
-# for the machine it is building on has tools it can run already.
+# Headers packages a cross build needs, one per kernel. A module
+# cross-compiled for another architecture can't use that architecture's
+# own linux-kbuild (its fixdep/modpost binaries can't run here), so
+# seine builds matching headers with tools this machine can run.
+# Deduplicated per kernel release since many modules can share one.
 def cross_headers(builder, packages):
     wanted = {}
     for package in packages:
@@ -663,32 +485,19 @@ def cross_headers(builder, packages):
     return [_cross_package(wanted[release], index)
             for index, release in enumerate(sorted(wanted), 1)]
 
-# Built for the machine doing the building, which is what 'host'
-# says, and named for the kernel it carries so that two kernels do
-# not write one package.
 def _cross_package(kernel, index):
-    # Here rather than at the top: seine/packages.py imports this module,
-    # and a package seine made up is still a package it describes.
+    # Imported here, not at the top: seine/packages.py imports this
+    # module.
     from seine.packages import Package
     package = Package({"name": cross_headers_name(kernel.release),
                        "scope": ["host"]}, index)
-    # Which kernel it is of, for the packaging that has yet to be
-    # written and for the module that will build against it.
     package.cross_kernel = kernel
     return package
 
-# What a module is built against for one architecture, with every
-# reference made sense of.
-#
-# Three ways of naming a kernel, and two of them need nothing asked of
-# anybody: an 'apt://' headers package carrying an ABI names one
-# kernel and says which in its own name, and a kernel this
-# specification builds is one seine gave an ABI to itself.
-#
-# The third -- a metapackage, 'apt://linux-headers-amd64' -- names
-# whichever kernel is current, which is a question only apt can
-# answer. Those are resolved when the build reaches them; see
-# module_kernels().
+# Resolves each kernel reference for one architecture. An 'apt://'
+# headers package with an ABI, or a kernel this spec builds, resolve
+# without asking anything; a metapackage must already be resolved by
+# resolve_kernels() before this runs.
 def resolved_kernels(builder, package, architecture, packages=None):
     kernels = []
     for reference in package.module_kernels.get(architecture, []):
@@ -699,20 +508,12 @@ def resolved_kernels(builder, package, architecture, packages=None):
             named = reference.partition("://")[2]
             headers = builder.metapackages.get((architecture, reference))
             if headers is None and is_kernel_metapackage(reference):
-                # Rather than carrying on with the metapackage's own
-                # name, which strips to a plausible-looking release
-                # -- 'linux-headers-amd64' becomes 'amd64' -- and
-                # names the modules after a kernel that does not
-                # exist. dpkg noticed only because that collided
-                # with the flavour package beside it.
                 raise package._error(
                     "'%s' was never resolved to a kernel for %s. A "
                     "metapackage names whichever kernel is current, "
                     "which has to be asked of apt before anything can "
                     "be named after it." % (reference, architecture))
             headers = headers or named
-            # A metapackage names a flavour and nothing else, which is
-            # what modules built for it can be named after too.
             flavour = None
             if is_kernel_metapackage(reference):
                 flavour = named[len(MODULE_HEADERS_PREFIX):]
@@ -721,31 +522,16 @@ def resolved_kernels(builder, package, architecture, packages=None):
                 headers[len(MODULE_HEADERS_PREFIX):], flavour))
     return supersede_grafted(kernels)
 
-# What the kernels named as metapackages actually are, asked of apt
-# before anything is stamped.
-#
-# A metapackage names whichever kernel is current, so what it resolves
-# to is part of what a module is built from -- and therefore part of
-# what decides whether it needs building again. Debian moves the ABI
-# in a security update; without this the modules would go on being the
-# ones built for the ABI before it, and the image would fail to
-# compose against a kernel that no longer exists.
-#
-# It costs a builder image, and only for a specification that names a
-# metapackage: naming a moving target is what buys the query. One that
-# writes its ABIs down, or builds its own kernels, still decides what
-# to rebuild without creating anything.
+# Resolves each metapackage to its current headers package via apt,
+# before anything is stamped -- Debian moves the ABI in security
+# updates, so this must run every time or modules would keep being
+# built for a kernel that no longer exists.
 def resolve_kernels(builder, packages, hostBootstrap):
     builder.packages = list(packages)
     wanted = {}
     for package in packages:
         if package.module == False:
             continue
-        # Every architecture the module names, not only the ones
-        # being built for. The control file describes all of them --
-        # that is what keeps one .dsc honest across architectures --
-        # so a name it has to write has to be resolved, whichever
-        # machine is doing the writing.
         for architecture in sorted(package.module_kernels):
             for reference in package.module_kernels.get(architecture, []):
                 if is_built_kernel(reference):
@@ -758,19 +544,13 @@ def resolve_kernels(builder, packages, hostBootstrap):
     if len(wanted) == 0:
         return
 
-    # The host bootstrap first: this runs while the graph is being made,
-    # so the step that would otherwise build it has not run yet, and the
-    # builder image is built FROM it. A cache holding one is what hid
-    # that; with the images cleared, the builder build stops at 'FROM
-    # bootstrap/... did not resolve'. This is what the step does, and
-    # it returns without building when the image is current.
+    # Build the host bootstrap and builder image first: this runs
+    # while the graph is still being built, before the normal step
+    # that would do it.
     hostBootstrap.create()
     builder.builderImage.create(hostBootstrap)
-    # The indexes of every architecture asked about, which for the one
-    # being built is already there and for any other is not. A module
-    # for another architecture is named in debian/control whichever
-    # architecture is building, so its kernel has to be resolved here
-    # too -- and its name only means something against its own index.
+    # Every wanted architecture's apt index is needed, not only the
+    # one being built for, since control names them all.
     foreign = [a for a in sorted(wanted) if a != HOST_ARCH]
     setup = ["dpkg --add-architecture %s" % a for a in foreign]
     setup.append("apt-get update -qq")
@@ -783,10 +563,8 @@ def resolve_kernels(builder, packages, hostBootstrap):
             builder.metapackages[(architecture, reference)] = \
                 _resolved_headers(reference, architecture, out)
 
-# The one headers package a metapackage depends on, out of what
-# 'apt-cache depends' printed. Recognised by carrying an ABI, which is
-# what separates it from the metapackage that was asked about and from
-# the '-common' half beside it.
+# The one headers package a metapackage depends on, picked out of
+# 'apt-cache depends' output by its ABI (skipping the '-common' one).
 def _resolved_headers(reference, architecture, output):
     if isinstance(output, bytes):
         output = output.decode(errors="replace")
@@ -801,15 +579,10 @@ def _resolved_headers(reference, architecture, output):
         "package and its ABI outright says which kernel is meant."
         % (reference, architecture))
 
-# A kernel this specification builds, whose ABI seine settled itself.
-#
-# The ABI is read back rather than predicted -- it is built from the
-# upstream version, the abiname in debian/config and what the
-# changelog's distribution earns it, and a local rebuild is
-# UNRELEASED, which turns a 6.1.0-53 into a 6.18+unreleased. It is
-# known once that kernel's source has been prepared, which the module
-# is built after, so by the time this is asked for the answer is
-# there.
+# Resolves a kernel this specification builds, reading back the ABI
+# seine settled on (from the upstream version, debian/config's abiname,
+# and the changelog distribution). Only known once that kernel's source
+# has been prepared, which a module is always built after.
 def _built_kernel(builder, package, reference, packages):
     kernel = None
     for other in packages or []:
@@ -827,10 +600,7 @@ def _built_kernel(builder, package, reference, packages):
             "the kernel '%s' has not been prepared yet, so what its "
             "modules will have to be built against is not known. A "
             "module is built after the kernels it names." % reference)
-    # A featureset is part of what a kernel is called: amd64's
-    # realtime kernel and its ordinary one are both the 'amd64'
-    # flavour, of the 'rt' and 'none' featuresets, and 'none' is the
-    # one that goes unsaid.
+    # 'none' featureset goes unsaid in the flavour name.
     flavour = kernel.kernel_flavour
     if kernel.kernel_featureset not in [None, DEFAULT_FEATURESET]:
         flavour = "%s-%s" % (kernel.kernel_featureset, flavour)
@@ -838,12 +608,8 @@ def _built_kernel(builder, package, reference, packages):
     return Kernel(reference, MODULE_HEADERS_PREFIX + release, release,
                   flavour)
 
-# The ABI of a kernel this build is not rebuilding, read off the stamp
-# of the build that did. Only a rebuild records one as it goes, so
-# without this a kernel that is already current -- a second build, or a
-# machine that imported a cache -- leaves every module naming it
-# unbuildable. The headers package every flavour shares is named for
-# the ABI alone, which is what makes it readable here.
+# ABI of a kernel this build isn't rebuilding, read off an earlier
+# build's stamp (only a rebuild records the ABI itself).
 def _abiname_built_earlier(builder, kernel):
     for architecture in builder.architectures(kernel):
         stamp = builder.stamp(kernel, architecture)
@@ -858,13 +624,10 @@ def _abiname_built_earlier(builder, kernel):
                     return abi.group(1)
     return None
 
-# A module is built against its kernel's headers, which depend on the
-# linux-kbuild of the same ABI. Debian builds that one for every
-# profile but 'pkg.linux.notools', and a kernel grafted here has an ABI
-# no archive can answer for -- so the modules fail to install their
-# build dependencies. Refused here rather than by sbuild, which
-# reaches it only after the kernel has been built.
-# 'pkg.linux.mintools' drops the same tools and keeps kbuild.
+# 'pkg.linux.notools' builds a kernel with no linux-kbuild package, so
+# modules against a kernel built here (no archive has one either)
+# can't install their build-dependencies. Checked here, before sbuild
+# wastes time building the kernel first.
 def check_kbuild(packages):
     built = {p.name: p for p in packages if p.kernel}
     for package in packages:

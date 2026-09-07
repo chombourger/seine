@@ -1,11 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
-# The '/issues' screen: known CVEs against the active build's own SBOM
-# (seine/secscan.py) -- a findings table beside summary stats, both
-# read-only text like FilesystemScreen's own fslist+previewpane split,
-# but neither pane here takes focus. Width split 1:3:2 (spec tree :
-# table : stats) -- the table is the reason to be on this screen.
+# The '/issues' screen: known CVEs against the active build's SBOM,
+# a findings table beside summary stats, both read-only and unfocusable.
+# Width split 1:3:2 (spec tree : table : stats).
 
 from textual.containers import Horizontal
 from textual.widgets import Static
@@ -29,19 +27,15 @@ class IssuesScreen(BaseScreen):
         )
         yield from self.footer()
 
-    # Narrows the spec tree from app.py's own global '#spectree
-    # { width: 2fr }' (right against '#cmd's 1fr elsewhere, wrong once a
-    # second pane joins it here) -- an instance style, since a same- or
-    # lower-specificity CSS rule here could not override that global one.
+    # Narrows the spec tree from app.py's global '#spectree { width: 2fr }',
+    # wrong once a second pane joins it here. Set as an instance style
+    # since a CSS rule here can't override that global one.
     def on_mount(self):
         super().on_mount()
         self.query_one("#spectree").styles.width = "1fr"
 
-    # 'rescan' is one-shot: only the '/issues --rescan' call that set it
-    # forces a fresh scan (seine/tui/commands.py's own _issues()) -- any
-    # later refresh_data() (a build finishing, /side-load, switching
-    # back to this screen) reads the cache alone, the same one-shot
-    # shape BuildState.notify_ai already follows.
+    # 'rescan' is one-shot: only '/issues --rescan' forces a fresh scan;
+    # any later refresh_data() just reads the cache.
     def update_body(self):
         rescan = self.app.issues_rescan
         self.app.issues_rescan = False

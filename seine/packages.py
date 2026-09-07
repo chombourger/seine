@@ -41,45 +41,21 @@ from seine.utils  import WORKDIR
 from seine.utils  import redact
 from seine.utils  import redactions
 
-# A source package to rebuild, as described by one entry of the spec's
-# 'packages' section. Where the source comes from is given as a URI:
-#
-#   apt://busybox[=1:1.37.0-6]     the distribution's own source package
-#   https://.../busybox_1.dsc      a source package published elsewhere
-#   git://host/busybox.git;rev=..  a tree carrying its own debian/ directory
-#
-# Only .dsc files are accepted over https: a plain upstream tarball has no
-# debian/ directory and so cannot be built, and pairing one with packaging
-# taken from somewhere else is a second source this does not model yet.
+# A source package to rebuild. Where the source comes from:
+#   apt://busybox[=1:1.37.0-6]     the distro's own source package
+#   https://.../busybox_1.dsc      a .dsc published elsewhere
+#   git://host/busybox.git;rev=..  a tree with its own debian/ directory
 SCHEMES = ["apt", "git", "https"]
 
-# Who a rebuild is for. 'target' is what the image installs and is what a
-# package that says nothing gets. 'host' is for the machine doing the
-# building: a code generator a later package build-depends on, or a tool
-# the imager runs.
-#
-# A list of roles rather than a word meaning "two of them": a compat
-# architecture beside the image's -- i386 on amd64, armhf on arm64 -- is a
-# third role to come, and a specification that had said 'both' would then
-# be saying which two without naming them.
+# Who a rebuild is for: 'target' (installed on the image, the default) or
+# 'host' (a build tool, e.g. a code generator another package needs).
 SCOPES = ["host", "target"]
 DEFAULT_SCOPE = ["target"]
 
-# What a package's 'apt-preferences' is keyed by when it names no release,
-# i.e. when one text is meant for all of them. Not a release anything can
-# be called, so it cannot collide with one.
+# Key for a package's apt-preferences text when it names no release.
 ANY_RELEASE = None
 
-# Build types 'extends' knows about, and the settings each of them takes.
-# Each build type is a module of its own -- seine/kernel and the rest --
-# holding the settings it takes, what it does to a source, and the checks
-# that go with it. What is left here is what a source package is regardless
-# of what is built from it.
-#
-# A dictionary rather than a registry the build types register into: they
-# are not peers -- a module is built against a kernel -- and an order
-# written out in the code that calls them is easier to follow than one
-# falling out of a loop over plugins.
+# Build types 'extends' knows about, each a module with its own settings.
 EXTENSIONS = {
     "kernel": kernel.SETTINGS,
     "module": module.SETTINGS,
@@ -87,40 +63,23 @@ EXTENSIONS = {
 }
 
 
-# The date a build is pinned to when the source can say nothing about
-# one: no changelog, and no revision with a date on it. Fixed rather than
-# now, since a date that moves makes two builds of one specification
-# produce different source packages. 2000-01-01, which is nobody's
-# release date and obviously not a real one.
+# Date a build is pinned to when the source gives none (no changelog, no
+# dated revision). Fixed, not "now", so rebuilds stay reproducible.
 FALLBACK_EPOCH = 946684800
 
 
-
-
-
-# What apt-ftparchive remembers about the packages it has already read,
-# so that indexing the repository after every build does not re-hash a
-# kernel's worth of .debs each time.
+# apt-ftparchive's own cache of packages already read, so re-indexing the
+# repository after a build does not re-hash every .deb again.
 INDEX_CACHE = ".packages.db"
 
 
-
-
-
-
-
-# Appended to the version of every package rebuilt here, so it sorts above
-# the distribution's own and says plainly that it is not it. 'revision'
-# overrides it per package.
+# Appended to every rebuilt package's version, so it sorts above the
+# distro's own. 'revision' overrides this per package.
 DEFAULT_REVISION = "mod1"
 
-# What a Debian version's revision may hold -- letters, digits, '+', '.'
-# and '~', never '-': a hyphen ends the revision and starts a second one,
-# which 'dpkg-parsechangelog' reads as "not a version" rather than as two
-# fields. A flavour name is free to be friendlier than that; whether it
-# is used as a revision is what has to check.
+# What a Debian revision may contain: letters, digits, '+', '.', '~' --
+# never '-', which dpkg-parsechangelog reads as starting a second field.
 DEBIAN_REVISION = re.compile(r"^[A-Za-z0-9+.~]+$")
-
 
 
 class Package:
@@ -128,9 +87,8 @@ class Package:
         self.index = index
         if type(spec) != type({}):
             raise ValueError("package #%d is not a dictionary!" % index)
-        # An entry says what it is, one way or the other: a 'source' is how
-        # a package asking to be built says it, and a 'name' alone is how a
-        # description under 'defaults' says which package it is about.
+        # A 'source' asks for a build; a bare 'name' only describes one
+        # (used under 'defaults').
         if "source" not in spec and type(spec.get("name")) != type(""):
             raise ValueError(
                 "package #%d has neither a 'source' to build nor a 'name' "
@@ -138,9 +96,7 @@ class Package:
 
         self.spec = spec
         self.priority = spec.get("priority", 500)
-        # Which file wrote each setting, for the messages that ask someone
-        # to change one: a package described by three files has three
-        # answers, and the useful one is per setting.
+        # Which file set each setting, used in error messages.
         self.origins = spec.get("_origins", {})
 
         self._parse_source(spec.get("source"))
@@ -154,17 +110,13 @@ class Package:
         self.profiles = self._parse_list(spec, "profiles")
         self.sha256 = self._parse_digest(spec, "sha256")
         # A kernel with 'derived-flavours' defaults its revision to the
-        # name(s) it derives, not 'mod1': two files rebuilding 'linux'
-        # under different flavours would otherwise publish the same
-        # '<source>_<version>+mod1.dsc'. 'revision' still overrides it.
+        # name(s) it derives, not 'mod1' -- else two flavours built from
+        # different files would collide on one '<source>_<version>+mod1.dsc'.
         default_revision = DEFAULT_REVISION
         if self.kernel_derived_flavours:
             names = sorted(set(name for derived in self.kernel_derived_flavours.values()
                                for name in derived))
-            # '.', not '-': a derived flavour is free to be named
-            # 'cloud-edge', and joining two such names with '-' would be
-            # indistinguishable from the hyphen 'dpkg-parsechangelog'
-            # itself reads as ending the revision.
+            # '.', not '-': a flavour name may itself contain '-'.
             default_revision = ".".join(names)
         if ("revision" not in spec and default_revision != DEFAULT_REVISION
                 and DEBIAN_REVISION.match(default_revision) is None):
@@ -179,12 +131,8 @@ class Package:
             raise self._error("'revision' shall be a string")
         self.scope = self._parse_scope(spec)
         self.apt_preferences = self._parse_apt_preferences(spec)
-        # A kernel is described per architecture and named for one. Its
-        # flavour is a name within an architecture -- 'arm64', 'amd64',
-        # 'rpi' -- so one 'flavour' cannot be right for two of them, and a
-        # specification asking for both would be asking for a kernel it
-        # has not described. Two entries, each naming its own flavour, is
-        # what that means.
+        # A kernel is per architecture; two flavours under one entry would
+        # mean one 'flavour' name for two kernels, which is not possible.
         if self.kernel and len(self.scope) > 1:
             raise self._error(
                 "'extends: kernel' takes one 'scope' role: a kernel is "
@@ -199,12 +147,8 @@ class Package:
     def _error(self, message):
         return ValueError("package #%d ('%s'): %s" % (self.index, self.source, message))
 
-    # Whether two entries describe the same build, for a caller merging
-    # several specifications' package lists -- building only one of two
-    # differently-configured packages sharing a name would ship the wrong
-    # one. Compares raw settings, ignoring '_origins' (which file wrote it)
-    # and 'priority' (where it sorts in one list) -- neither is part of
-    # what gets built.
+    # Settings ignored when comparing two entries for 'same_as': neither
+    # is part of what actually gets built.
     IGNORED_SETTINGS = ("_origins", "priority")
 
     def same_as(self, other):
@@ -216,18 +160,14 @@ class Package:
 
     def _parse_source(self, source):
         self.source = source
-        # Defaults for the fields only some of the schemes carry, so callers
-        # may read them without caring which scheme they got -- or, for an
-        # entry that only describes a package, that it named no source.
+        # Defaults, so callers don't need to care which scheme was used --
+        # or whether the entry named a source at all.
         self.scheme = None
         self.name = None
         self.version = None
         self.parameters = {}
         self.source_name = None
 
-        # A description leaves where the source comes from to the file that
-        # asks for the build. It is checked like any other entry, so a
-        # misspelt setting is reported by the file holding it.
         if source is None:
             return
 
@@ -263,37 +203,25 @@ class Package:
             for parameter in parameters:
                 key, _, value = parameter.partition("=")
                 self.parameters[key] = value
-            # A branch name moves, and a build that cannot be repeated is
-            # not worth caching, let alone calling reproducible.
             if len(self.parameters.get("rev", "")) == 0:
                 raise self._error(
                     "git sources shall be pinned with ';rev=<commit>' so the "
                     "same specification always rebuilds the same source")
             self.name = os.path.basename(location).removesuffix(".git")
 
-        # What the URI says this is called, kept apart from what the package
-        # is called: fetching uses this one, while 'name' is what the
-        # specification and the repository call the result.
+        # What the URI names, kept apart from 'name' -- fetching uses this,
+        # the specification/repository use 'name'.
         self.source_name = self.name
 
-    # What this package is called, which is the source package it produces
-    # rather than the last word of the URI it came from. The two are the
-    # same for a source carrying its own debian/ directory, and not for a
-    # tree carrying none: what seine generates from a clone should not be
-    # named after the repository that happens to hold it.
-    #
-    # It is the name everything else uses -- 'before' and 'after', the
-    # build's stamp, what the graph calls the step -- so a package renamed
-    # is renamed everywhere at once.
+    # What this package is called: the source package it produces, not
+    # the last word of its fetch URI -- those differ for a tree with no
+    # debian/ directory of its own.
     def _parse_name(self, spec):
         name = spec.get("name")
         if name is None:
             return self.source_name
         if type(name) != type(""):
             raise self._error("'name' shall be a string")
-        # Checked here rather than by dpkg part-way through a build: what
-        # this names is a Debian source package, and policy says what one
-        # may be called.
         if re.match(r"^[a-z0-9][a-z0-9+.-]+$", name) is None:
             raise self._error(
                 "'name' is '%s', which is not a source package name: those "
@@ -302,10 +230,9 @@ class Package:
                 "'+', '-' or '.'" % name)
         return name
 
-    # Settings that only mean something for a particular kind of package go
-    # under 'extends', named after the kind. A kernel's configuration and
-    # flavour would be silently meaningless on a busybox entry; naming the
-    # kind makes both the intent and the mistake visible.
+    # Settings for a particular kind of build go under 'extends', named
+    # after the kind -- so a kernel setting on a busybox entry is a
+    # visible mistake instead of a silently ignored one.
     def _parse_extends(self, spec):
         extends = spec.get("extends", {})
         if type(extends) != type({}):
@@ -322,9 +249,8 @@ class Package:
             for setting in settings:
                 if setting in EXTENSIONS[kind]:
                     continue
-                # A module names its kernels once per architecture, so its
-                # settings are not a fixed list: '<arch>-kernels' is one
-                # of them for whatever architecture is being built for.
+                # A module names its kernels per architecture, so
+                # '<arch>-kernels' is not on the fixed settings list.
                 if kind == "module" and module.MODULE_KERNELS.match(setting):
                     continue
                 expected = ", ".join(sorted(EXTENSIONS[kind]))
@@ -339,21 +265,13 @@ class Package:
         uki.parse(self, extends)
         return extends
 
-    # The upstream version of a source seine writes the packaging for.
-    # Not the 'version' a 'source' URI pins, which says which of the
-    # archive's versions to fetch -- this one says what is being built,
-    # for a tree that has no way of saying it.
-    #
-    # A tree that carries its own debian/ carries a changelog, and that
-    # says what version is being built. A bare upstream tree says nothing:
-    # a git revision is not a version, and a tag is not one either until
-    # somebody decides which part of it counts. So the specification says
-    # it, and says it for every package seine packages itself.
+    # Upstream version of a source, as written in the specification.
+    # Not the 'version' a 'source' URI pins (which archive version to
+    # fetch) -- this says what is being built, for a tree with no
+    # changelog to read it from.
     def _parse_version(self, spec):
         version = spec.get("version")
-        # A string, and not a number that looks like one: yaml reads an
-        # unquoted 1.10 as a float, and a float is 1.1, which is a
-        # different version and a silent one.
+        # A string, not a number: YAML reads unquoted 1.10 as float 1.1.
         if version is not None and type(version) != type(""):
             raise self._error(
                 "'version' shall be a string: write it in quotes, since a "
@@ -370,17 +288,9 @@ class Package:
                 "to read one from -- the specification has to say it.")
         return version
 
-    # apt preferences to put in front of this package's build, as
-    # apt_preferences(5) writes them. Taken verbatim: what can be said in
-    # that file is apt's to define, and a setting that parsed it would be a
-    # second, smaller language to keep up to date.
-    #
-    # Written as one text for every release, or keyed by release when they
-    # need different ones -- which is the ordinary case rather than the
-    # exception, since what a pin names is a suite: 'Pin: release
-    # n=bookworm' is not a thing to say while building trixie. A release
-    # the mapping does not name gets none, so a package needing a pin for
-    # one release alone says only that.
+    # apt preferences to put in front of this build, written verbatim as
+    # apt_preferences(5) expects. Either one text for every release, or a
+    # mapping keyed by release; a release named by neither gets none.
     def _parse_apt_preferences(self, spec):
         preferences = spec.get("apt-preferences")
         if preferences is None:
@@ -405,18 +315,15 @@ class Package:
             raise self._error("'apt-preferences'%s is empty" % where)
         return text
 
-    # What this package's build may install on the release being built,
-    # which is what it said for that release or what it said for all of
-    # them. Nothing, for a package that named neither.
+    # What this build may install for a given release: its per-release
+    # text, or the one written for all releases, or nothing.
     def preferences_for(self, release):
         if release in self.apt_preferences:
             return self.apt_preferences[release]
         return self.apt_preferences.get(ANY_RELEASE)
 
-    # Who this rebuild is for, as one role or a list of them. Whether it
-    # was written down at all is kept beside it: a scope nothing asked for
-    # is one a dependent may widen, and one the specification wrote is an
-    # answer rather than a default.
+    # Who this rebuild is for. 'scoped' says whether it was written down
+    # at all -- an unscoped package may be widened by a dependent later.
     def _parse_scope(self, spec):
         scope = spec.get("scope")
         self.scoped = scope is not None
@@ -439,9 +346,8 @@ class Package:
                 "package for no one is one to leave out")
         return sorted(set(scope))
 
-    # A sha256 as it is written down: sixty-four hexadecimal digits,
-    # checked here so a truncated one is reported against the file that
-    # holds it rather than against the download it fails to match.
+    # sha256 as written: 64 hex digits, checked here so a bad one is
+    # reported against the file that holds it, not the download later.
     def _parse_digest(self, spec, key):
         digest = spec.get(key)
         if digest is None:
@@ -476,13 +382,8 @@ class Package:
             raise self._error("'source_date_epoch' shall be a number of seconds")
         return value
 
-    # Patches and fragments are given relative to the YAML file that listed
-    # them, which is not necessarily the one being built: specifications are
-    # assembled from several files through 'requires'. They arrive here
-    # already resolved against it, since a package may be described by more
-    # than one file and each names its own files.
-    # The file that wrote a setting, named as its path -- 'source',
-    # 'extends.kernel.upstream'. None for a setting nothing wrote down.
+    # File that set a setting, e.g. 'source', 'extends.kernel.upstream'.
+    # None if nothing set it.
     def origin_of(self, setting):
         return self.origins.get(setting)
 
@@ -499,10 +400,7 @@ class Package:
                 files += fragments
         return self._files(files)
 
-    # Every local file this package's own spec entry names -- patches,
-    # kernel config, derived-flavour fragments. One definition, so a
-    # caller (the digest below, or anything else) never has to repeat
-    # the concatenation, and a future fourth category is one line here.
+    # Every local file this package's spec entry names.
     def referenced_files(self):
         return (self.patch_files() + self.kernel_fragment_files()
                + self.kernel_derived_flavour_files())
@@ -511,97 +409,71 @@ class Package:
         return [os.path.normpath(n) for n in names]
 
 
-# Where the "this has been built" markers live, inside the repository so
-# they are thrown away with it. Hidden, and not .debs, so neither apt nor
-# dpkg-scanpackages pays them any attention.
+# Where "already built" markers live, inside the repository so they are
+# thrown away with it. Hidden so apt/dpkg-scanpackages ignore them.
 STAMPS = ".stamps"
 
-# Where each stamp's digest excerpt lives -- named after it, but never in
-# the same directory: '_previous()' and 'cache.py' 's own stamp lookup
-# both list STAMPS and match by name prefix, so a sibling file living
-# there too would be misread as a stamp itself.
+# Where each stamp's digest excerpt lives, named after it but kept in its
+# own directory: same-name matching elsewhere must not pick it up too.
 STAMPS_SPEC = ".stamps-spec"
 
-# Where the container that clones finds the ssh agent of the user seine
-# runs as, and the hosts that user already trusts. Fixed names rather than
-# the paths they have on the host, which nothing here needs to preserve.
+# Where the container that clones finds the host user's ssh agent socket
+# and known_hosts. Fixed container-side paths; host paths need not match.
 SSH_AUTH_SOCK = "/ssh-agent/sock"
 SSH_KNOWN_HOSTS = "/root/.ssh/known_hosts"
 
 class Builder:
-    # 'redact_patterns' is optional: most callers (most tests among them)
-    # have no 'redact:' section to apply, and passing '[]' everywhere for
-    # that would be pure noise.
+    # 'redact_patterns' is optional: most callers have no 'redact:'
+    # section, and passing '[]' everywhere would be pure noise.
     def __init__(self, distro, options, builderImage, redact_patterns=None):
         self.builderImage = builderImage
         self.distro = distro
         self.options = options
         self._redact_patterns = redact_patterns or []
-        # The ABI each rebuilt kernel gave itself, by package name, read
-        # off its regenerated debian/control as it was prepared. What a
-        # module built against that kernel has to be named for, and not a
-        # thing anybody can predict: the UNRELEASED changelog a local
-        # rebuild carries changes the shape of it.
+        # The ABI each rebuilt kernel gave itself, by package name --
+        # what a module built against it must be named for.
         self.abinames = {}
-        # What each 'apt://linux-headers-<flavour>' metapackage turned out
-        # to name, by (architecture, reference). Asked of apt once and
-        # kept for the run: it is the archive's answer, so caching it
-        # between runs would be caching the thing that moves.
+        # What each 'apt://linux-headers-<flavour>' metapackage resolved
+        # to, by (architecture, reference). Asked of apt once per run.
         self.metapackages = {}
-        # Every package this build was asked for, so that a module can be
-        # told what the kernel it names resolved to. A module is described
-        # by its own entry and by the kernel's, which is a different one.
-        # Set once, by tasks() -- see '_tasked' below.
+        # Every package this build was asked for, so a module can look up
+        # the kernel it names. Set once, by tasks() -- see '_tasked'.
         self.packages = []
-        # tasks() fills this and 'metapackages' in once; a shared Builder
-        # needs that call to use the union of every image's packages, not
-        # one per image, or a module would resolve against only the last
-        # list. Enforced in tasks() itself -- asking again with the same
-        # list still answers.
+        # Enforces that tasks() is called once, with the union of every
+        # image's packages, not once per image.
         self._tasked = None
-        # Which kernels' cross headers this run has already seen to, so
-        # that several modules against one kernel do not each decide to
-        # make it.
+        # Which kernels' cross headers this run already made, so two
+        # modules against one kernel do not each build it.
         self._crossed = set()
-        # Held while unpacking a chroot and while rewriting the
-        # repository, both of which are shared by every package being
-        # built at the same time. Compiling is not: that is the part
-        # worth doing beside each other.
+        # Held while unpacking a chroot or rewriting the repository --
+        # both shared across builds running at the same time.
         self._chroots = threading.Lock()
-        # What each package's fetch left behind, until the last build that
-        # reads it is done, and what each build produced, until it is
-        # published. Both are reached from several tasks at once, hence
-        # the lock over the first -- the second is only ever written and
-        # read under a key one task owns.
+        # What each fetch left behind until the last build reading it is
+        # done, and what each build produced until it is published.
         self._sources = {}
-        # The source package each fetch produced, kept apart from the
-        # working directory it was built in: that directory belongs to the
-        # builds and goes when the last of them is done, which is before
-        # anything is published.
+        # Source package each fetch produced, kept apart from the
+        # working directory: that directory dies with the last build
+        # using it, before anything is published.
         self._source_packages = {}
         self._holding = {}
         self._workdirs = threading.Lock()
         # A fetch shared by every prepare:<name> task naming it -- see
-        # _fetch()/_fetch_upstream()/_prepare_source(). One fetch task per
-        # key, so nothing here needs a lock to write; freed by count
-        # ('_shared_taken' catching up with '_shared_wanted') once read,
-        # since a package's build can run long after every prepare task
-        # sharing its fetch has already taken a copy.
+        # _fetch()/_fetch_upstream()/_prepare_source(). Freed once every
+        # sharer has taken its copy ('_shared_taken' == '_shared_wanted').
         self._shared_fetches = {}
         self._shared_wanted = {}
         self._shared_taken = {}
         self._shared_lock = threading.Lock()
         self._built = {}
         self._repository = threading.Lock()
-        # The key this build signs with, if it was given one. Asked for
-        # here so a key that is not there stops the build now rather than
-        # after it has compiled.
+        # Asked for here so a missing signing key stops the build now,
+        # not after it has compiled.
         self.signer = signing.signer(options)
         if self.signer is not None:
             self.signer.fingerprint()
 
-    # Cores for one package build: what --parallel said, or the machine
-    # divided by how many builds may run at once.
+    # Cores for one package build: --parallel, or cores divided by how
+    # many builds run at once.
     def parallel(self, package):
         parallel = self.options.get("parallel")
         if parallel is None:
@@ -617,12 +489,9 @@ class Builder:
 
     def fetch(self, package, workdir):
         volumes = [(workdir, WORKDIR)]
-        # A cross headers package reads from the repository this build is
-        # filling, since a kernel built here has its source nowhere else.
+        # Cross headers read from this build's own repository -- a
+        # kernel built here has its source nowhere else.
         if module.is_cross_package(package):
-            # A pair, not the '-v host:container' pair of arguments
-            # build_volumes() makes: what exec() takes is the former and
-            # it says nothing about being handed the latter.
             volumes.append((repository(self.distro), REPOSITORY))
             self.builderImage.exec(
                 module._fetch_cross_args(self, package,
@@ -646,15 +515,10 @@ class Builder:
                          package.sha256, "sha256")
         return self._source_dir(package.source, workdir)
 
-    # What a specification said the bytes would be, against what arrived.
-    #
-    # Checked here rather than in the container that fetched them: the
-    # file lands in a directory seine bind-mounted, so it can be read
-    # directly, and a container asked to verify itself proves nothing.
-    #
-    # Only for what is fetched over http: an apt source is checked against
-    # the archive's signed index, and a git revision is the hash of what
-    # it names, so both already answer for themselves.
+    # Checks what was fetched over http against what the spec expects.
+    # Checked here, not in the container: the file is bind-mounted so we
+    # can read it directly, and a container verifying itself proves
+    # nothing. apt and git already verify themselves.
     def _verify(self, package, workdir, name, expected, setting):
         path = os.path.join(workdir, name)
         if os.path.isfile(path) == False:
@@ -677,10 +541,6 @@ class Builder:
                 "changed on the way here."
                 % (package.source, name, setting, expected, found))
 
-    # Nothing said what these bytes would be, so say what they were --
-    # with the file to write it in, which for a package described by
-    # several is the one that carries the URI rather than the one that
-    # named the package.
     def _unvouched(self, package, name, found, setting):
         where = package.origin_of(
             "extends.kernel.upstream" if setting == "upstream-sha256"
@@ -691,11 +551,9 @@ class Builder:
             setting, found, " to %s" % where if where else ""))
 
 
-    # The clone runs in the container, so what authenticates it goes in too:
-    # the agent's socket and the hosts already known. The keys stay outside
-    # -- this container runs build scripts fetched from elsewhere, with more
-    # of the namespace privileges than the others seine builds. A key the
-    # agent does not hold cannot be used: 'ssh-add' it before building.
+    # ssh agent and known_hosts, mounted into the container that clones.
+    # Keys stay on the host -- this container runs fetched build scripts
+    # with more privileges than the others seine builds.
     def _ssh(self, package):
         if package.parameters.get("protocol") != "ssh":
             return [], None
@@ -707,10 +565,8 @@ class Builder:
                 "is no agent to authenticate with" % package.source)
 
         volumes = [(sock, SSH_AUTH_SOCK)]
-        # An unknown host key stops the clone with a prompt no one can
-        # answer. Trusting whatever answers is not the fix: without a
-        # known_hosts file the clone fails, which is right for a host the
-        # user has never met.
+        # No known_hosts means an unknown host key stops the clone with a
+        # prompt nobody can answer -- the right failure, not a bypass.
         known_hosts = os.path.expanduser("~/.ssh/known_hosts")
         if os.path.isfile(known_hosts):
             volumes.append((known_hosts, SSH_KNOWN_HOSTS))
@@ -725,14 +581,12 @@ class Builder:
             return ["apt-get", "source", source]
 
         if package.scheme == "https":
-            # -u: the .dsc of a rebuilt or third-party package is not
-            # necessarily signed by a key we have, and refusing to fetch it
-            # on those grounds would make the scheme useless. What it is
-            # allowed to do to the image is the specification's call.
+            # -u: a rebuilt or third-party .dsc need not be signed by a
+            # key we hold; refusing it would make the scheme useless.
             return ["dget", "-u", package.source]
 
-        # git:// says nothing about how to reach the remote; bitbake spells
-        # that ';protocol=', and https is the sane default.
+        # git:// says nothing about the protocol; bitbake spells that
+        # ';protocol=', https being the default.
         protocol = package.parameters.get("protocol", "https")
         location = package.source.split("://", 1)[1].split(";")[0]
         url = "%s://%s" % (protocol, location)
@@ -741,21 +595,14 @@ class Builder:
         if "branch" in package.parameters:
             args += ["--branch", package.parameters["branch"]]
         args += [url, package.source_name]
-        # The revision is what the specification pinned; the branch only
-        # says where to look for it.
+        # 'rev' is what is actually built; the branch only helps find it.
         return ["sh", "-c", "%s && cd %s && git checkout --detach %s" % (
             " ".join(args), package.source_name, package.parameters["rev"])]
 
-    # 'apt-get source' reads whatever the builder image's own sources.list
-    # says -- which, under 'apt-pull-mode: offline', no longer carries the
-    # suite it needs at all: BuilderImage._sources() leaves an offline
-    # suite out of what it bakes rather than pointing it at a vendor
-    # repository that 'seine vendor' may since have refreshed. Written here
-    # instead, into the same throwaway container this fetch already runs
-    # in, right before the command that needs it.
-    #
-    # https:// and git:// sources never touch the image's own apt at all,
-    # so they pass through untouched.
+    # Under 'apt-pull-mode: offline', the builder image's own
+    # sources.list no longer carries this suite, so it is written fresh
+    # into this throwaway container, right before the command needs it.
+    # https:// and git:// sources never touch apt, so pass through as-is.
     def _offline_fetch(self, args, package, volumes):
         if package.scheme != "apt":
             return args, volumes
@@ -772,10 +619,9 @@ class Builder:
         script += shlex.join(args)
         return ["sh", "-c", script], volumes
 
-    # Every scheme leaves exactly one unpacked source tree behind, next to
-    # the .dsc/tarballs it came from, but only apt-get source and dget name
-    # it after the upstream version rather than the package. Directories we
-    # put there ourselves are hidden, and skipped here.
+    # Every scheme leaves one unpacked source tree in workdir, named
+    # after the upstream version (apt-get source, dget) not the package.
+    # Our own hidden directories there are skipped.
     def _source_dir(self, source, workdir):
         directories = [d for d in sorted(os.listdir(workdir))
                        if os.path.isdir(os.path.join(workdir, d))
@@ -786,24 +632,18 @@ class Builder:
                 % (source, len(directories), ", ".join(directories)))
         return os.path.join(workdir, directories[0])
 
-    # Where the patches listed by the specification are staged for the
-    # container to reach them. Hidden so _source_dir() does not mistake it
-    # for the unpacked source.
+    # Where the spec's patches are staged for the container. Hidden so
+    # _source_dir() does not mistake it for the unpacked source.
     PATCHES = ".patches"
 
-    # Applies the specification's patches to a fetched source tree.
+    # Applies the spec's patches to a fetched source tree.
     #
-    # A "3.0 (quilt)" package keeps its changes to upstream files in
-    # debian/patches and refuses to build with any others in the tree, so
-    # patches are added to its series rather than applied to it -- whether
-    # or not the source came from git.
-    #
-    # Anything else (native formats, and the packaging trees kept in git
-    # that tend to use them) takes the patch directly. In a git tree that
-    # means a commit, since leaving the tree dirty is how gbp-style
-    # packaging loses track of what was built; the commit is dated at
-    # SOURCE_DATE_EPOCH, with a fixed identity, or the commit hash -- and
-    # anything embedding it -- would differ on every rebuild.
+    # A "3.0 (quilt)" package keeps changes in debian/patches and refuses
+    # anything else in the tree, so patches are added to its series. Any
+    # other format (native, or a git packaging tree) takes the patch
+    # directly -- as a commit in a git tree, dated at SOURCE_DATE_EPOCH
+    # with a fixed identity, so the commit hash stays stable across
+    # rebuilds.
     def patch(self, package, sourcedir, epoch):
         if len(package.patches) == 0:
             return
@@ -825,7 +665,7 @@ class Builder:
     def _is_quilt(self, sourcedir):
         path = os.path.join(sourcedir, "debian", "source", "format")
         if not os.path.isfile(path):
-            # No debian/source/format means the ancient "1.0" format, which
+            # No debian/source/format means the old "1.0" format, which
             # has no series to add to.
             return False
         with open(path, "r") as f:
@@ -838,8 +678,8 @@ class Builder:
             shutil.copy(patch, patches)
 
         series = os.path.join(patches, "series")
-        # A series file not ending in a newline would otherwise have its
-        # last patch glued to the first one added here.
+        # Missing trailing newline would glue the last existing patch to
+        # the first one added here.
         existing = ""
         if os.path.isfile(series):
             with open(series, "r") as f:
@@ -874,38 +714,19 @@ class Builder:
                 workdir=source, environment=environment)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # The date the build is pinned to. dpkg-buildpackage derives one from
-    # the changelog on its own, and sbuild passes it down, but a patch
-    # committed to a git tree is dated before any of that runs -- so the
-    # same value has to be known here.
+    # Date the build is pinned to. dpkg-buildpackage would derive one
+    # from the changelog itself, but a patch committed to a git tree
+    # already needs one before that runs.
     def source_date_epoch(self, package, sourcedir):
         if package.source_date_epoch is not None:
             return package.source_date_epoch
-        # A module's tree has no changelog to read one from -- the one it
-        # will have is about to be written, and dated with what this
-        # returns. What it has instead is a revision, and
-        # the date that revision was made is a property of the source
-        # rather than of the machine or the day, which is what a date a
-        # build is pinned to has to be.
+        # A module's tree has no changelog yet -- its revision date is
+        # used instead, since that is a property of the source rather
+        # than of the machine or day.
         if package.module:
             return self._committed(package, sourcedir)
-        # A uki package's tree has no revision to date; pin it like
-        # _committed()'s own fallback for the same reason.
+        # A uki package has no revision either; same fallback as
+        # _committed()'s own.
         if uki.is_uki_package(package):
             return FALLBACK_EPOCH
         source = os.path.join(WORKDIR, os.path.basename(sourcedir))
@@ -914,12 +735,9 @@ class Builder:
             volumes=[(os.path.dirname(sourcedir), WORKDIR)], workdir=source)
         return int(timestamp.strip())
 
-    # When the revision this was fetched at was made, which for a git
-    # tree is the one date about it that is neither the machine's nor
-    # today's. A tree that came from anywhere else -- or a clone with the
-    # history dropped -- has nothing to say, and the epoch falls back to
-    # a fixed one rather than to now: a date that moves is a source
-    # package that differs between two builds of the same specification.
+    # When the fetched revision was made -- for a git tree, the one date
+    # that is neither the machine's nor today's. Falls back to a fixed
+    # epoch, not "now", so the source package stays reproducible.
     def _committed(self, package, sourcedir):
         source = os.path.join(WORKDIR, os.path.basename(sourcedir))
         try:
@@ -932,23 +750,13 @@ class Builder:
             return FALLBACK_EPOCH
 
 
-
-
-
-
-    # Gives the rebuild a version of its own, above the distribution's, and
-    # says in the changelog that it is not the distribution's package. What
-    # a machine is running can then be read off its versions rather than
-    # inferred, and apt prefers ours on version alone rather than only
-    # because of the pin.
-    #
-    # It matters twice over for a kernel: the packaging refuses to disable
-    # signed code in a release build, and rightly, since what comes out is
-    # not what was released -- so without this the rebuilt kernel keeps the
-    # name only a signed build may use, and nothing ever installs it.
-    #
-    # The entry is dated at SOURCE_DATE_EPOCH, like the patches committed to
-    # a git tree, so it does not change from one rebuild to the next.
+    # Gives the rebuild its own version above the distro's, so what a
+    # machine runs can be read off its versions, and apt prefers ours on
+    # version alone. Also matters for a kernel: release packaging refuses
+    # to disable signed-code checks, so without this the rebuilt kernel
+    # would keep a name only a signed build may use and never get
+    # installed. Dated at SOURCE_DATE_EPOCH so the entry never changes
+    # between rebuilds.
     def local_release(self, package, sourcedir, epoch):
         path = os.path.join(sourcedir, "debian", "changelog")
         with open(path, "r") as f:
@@ -969,42 +777,26 @@ class Builder:
             f.write(entry + changelog)
 
 
-
-    # Cross-compiling is the default whenever the target is not the machine
-    # seine runs on: emulating a foreign architecture for a whole package
-    # build is slow enough to be worth avoiding, even though not every
-    # package can be cross-built. 'cross: false' asks for the slow, always
-    # working way instead.
+    # Cross-compiling is the default whenever the target isn't the host:
+    # emulating a whole build is slow. 'cross: false' opts out.
     def cross(self, package, architecture):
-        # Nothing to cross to: a host package is built for the machine
-        # already running the compiler, whatever the specification said.
         if architecture == HOST_ARCH:
             return False
         if package.cross is not None:
             return package.cross
         return True
 
-    # The architecture of the chroot the build runs in: the host's when
-    # cross-compiling, since that is what runs the compiler, and the
-    # package's own when emulating it.
+    # Chroot architecture: the host's when cross-compiling (it runs the
+    # compiler), the package's own when emulating it.
     def chroot_architecture(self, package, architecture):
         if self.cross(package, architecture):
             return HOST_ARCH
         return architecture
 
 
-
-
-
-
-    # The cross headers a build is about to need, made if they are not
-    # made already.
-    #
-    # Once per kernel and not once per module: the second module built
-    # against a kernel finds the first one's package in the repository
-    # and its stamp beside it, so nothing is built twice however many
-    # modules there are. The lock is for the builds seine runs beside
-    # each other, which would otherwise each decide to make it.
+    # Makes the cross headers a build is about to need, if not made yet.
+    # Once per kernel, not per module: a second module against the same
+    # kernel finds the first module's package already in the repository.
     def _cross_headers_built(self, package, architecture):
         if package.module == False:
             return
@@ -1025,16 +817,9 @@ class Builder:
             self._deploy(cross, [HOST_ARCH])
 
 
-
-
-
-
-
-
-    # The architectures a package is built for, which is what 'scope' says.
-    # Collapsed to one when the image is of the machine's own architecture:
-    # 'both' then asks for the same source, built the same way, into the
-    # same repository, and building it twice would only race with itself.
+    # Architectures a package is built for, per 'scope'. Collapsed to one
+    # when target == host: building the same source twice would only
+    # race with itself.
     def architectures(self, package):
         wanted = []
         if "target" in package.scope:
@@ -1044,37 +829,14 @@ class Builder:
         return sorted(set(wanted))
 
     # Which of a package's builds produces its 'Architecture: all'
-    # binaries, when any of them can.
-    #
-    # Nominated rather than left to chance. Those binaries are one package
-    # under one filename, and one repository holds every architecture, so
-    # two builds of a source that both build them write the same file --
-    # and which of them landed last would decide what an image installs.
-    # Nominating one is also what Debian does: arch-all is built once, by
-    # one buildd, not once per architecture.
-    #
-    # A native build for preference. sbuild hands a cross build '-B' of
-    # its own accord, and with reason: an architecture-independent binary
-    # is sometimes made by running something that was just built, which a
-    # cross build has no way to run.
-    #
-    # Between two native builds -- which is what 'cross: false' on a
-    # package built for two architectures leaves -- the machine's own
-    # architecture wins, since the other is being emulated.
-    #
-    # But a preference is all it is. When every build of a package is a
-    # cross build, which is the ordinary shape of a specification building
-    # for one board on somebody's laptop, the alternative to asking a
-    # cross build for them is not getting them: the .debs would be
-    # published without the arch-all packages beside them, and an image
-    # installing one would take the distribution's copy of a package it
-    # asked to have rebuilt, looking exactly as it should.
-    #
-    # So the cross build is asked. Most packaging manages it -- an
-    # arch-indep binary is commonly documentation or configuration -- and
-    # packaging that does not now fails loudly instead of quietly
-    # producing less, with 'cross: false' as the way to say so: it builds
-    # under emulation, natively, where the question does not arise.
+    # binaries. Nominated rather than left to chance: two builds writing
+    # them both would share one filename in one repository, and whichever
+    # lands last wins. A native build is preferred (sbuild forces '-B' on
+    # a cross build anyway, and a cross build cannot run what it just
+    # built); between two native builds the host's own architecture wins.
+    # When every build is a cross build, the cross build is still asked
+    # for arch-all rather than skipping it -- most packaging manages it,
+    # and 'cross: false' is the way out for packaging that does not.
     def indep_architecture(self, package):
         architectures = self.architectures(package)
         natives = [a for a in architectures if self.cross(package, a) == False]
@@ -1085,34 +847,23 @@ class Builder:
                 return candidate[0]
         return None
 
-    # What a package's steps are called. The architecture is only added
-    # when the package is built for more than one: the graph of a
-    # specification that builds for the image alone -- which is every
-    # specification that says nothing about 'scope' -- reads as it always
-    # has, and 'before'/'after' go on naming a package rather than a build
-    # of one.
+    # Step names for a package. Architecture is only added when the
+    # package builds for more than one, so 'before'/'after' keep naming
+    # the package rather than one particular build of it.
     def label(self, package, architecture):
         if len(self.architectures(package)) > 1:
             return "%s:%s" % (package.name, architecture)
         return package.name
 
-    # Turns the prepared source tree back into a source package, and says
-    # what it is called. Patches added to a quilt series are applied by
-    # dpkg-source on the way, and sbuild wants a .dsc anyway.
-    #
-    # Done once per package rather than once per architecture: a Debian
-    # source package is not built for an architecture, it describes every
-    # one the packaging supports. Both builds of a 'scope: both' package
-    # are then demonstrably of the same source rather than of two trees
-    # prepared the same way.
+    # Turns the prepared tree back into a source package. Done once per
+    # package, not per architecture: a Debian source package describes
+    # every architecture the packaging supports, not one of them.
     def source_package(self, package, sourcedir):
         workdir = os.path.dirname(sourcedir)
 
-        # The fetched source came with a .dsc of its own, and ours is about
-        # to be written beside it under a different name -- the local
-        # revision changed the version. Take the old one out of the way
-        # first, so what is left is unambiguously what we built and sbuild
-        # cannot be handed the source we started from.
+        # The fetched source's own .dsc is in the way of ours (same
+        # directory, different name after the local revision) -- remove
+        # it so sbuild cannot be handed the wrong one.
         for name in os.listdir(workdir):
             if name.endswith(".dsc"):
                 os.unlink(os.path.join(workdir, name))
@@ -1128,22 +879,18 @@ class Builder:
                 "expected one" % (package.source, len(dsc)))
         return dsc[0]
 
-    # A source package is the .dsc and the files it lists, which is not
-    # everything lying beside it: the directory a source was fetched into
-    # also holds what it was fetched as -- the distribution's own .debian
-    # tarball, superseded by the one just written, and for a graft the
-    # tarball the tree came in. Taking what the .dsc names is the only
-    # answer that stays right, and it is the answer apt-ftparchive checks
-    # against when it reads one.
+    # A source package is the .dsc plus the files it lists -- not
+    # everything beside it (the old .debian tarball, a graft's leftover
+    # tarball). Taking only what the .dsc names matches what
+    # apt-ftparchive checks against.
     def source_files(self, workdir, dsc):
         files = [dsc]
         with open(os.path.join(workdir, dsc), "r") as f:
             listing = False
             for line in f:
                 if line.startswith(" ") == False:
-                    # A field of its own ends the file list; 'Files' and
-                    # the Checksums fields all name the same files, so the
-                    # first of them is enough.
+                    # 'Files' and the Checksums fields all list the same
+                    # files, so the first one seen is enough.
                     listing = line.startswith("Files:")
                     continue
                 if listing == False:
@@ -1153,18 +900,15 @@ class Builder:
                     files.append(named[2])
         return files
 
-    # Builds one prepared source package for one architecture and leaves
-    # the .debs, .changes and .buildinfo it produced in that
-    # architecture's host-side repository.
+    # Builds one prepared source package for one architecture, leaving
+    # the .debs/.changes/.buildinfo in that architecture's repository.
     def build(self, package, workdir, dsc, epoch, architecture, output):
         volumes = [(workdir, WORKDIR), (self.repository(), REPOSITORY),
                    (output, OUTPUT)]
 
-        # SOURCE_DATE_EPOCH and DEB_BUILD_OPTIONS are passed in the
-        # environment: sbuild forwards both into the build, as they are on
-        # dpkg's list of variables allowed to reach it. dpkg-buildpackage
-        # would work the date out from the changelog by itself, but not
-        # when the specification pinned a different one.
+        # sbuild forwards SOURCE_DATE_EPOCH and DEB_BUILD_OPTIONS into
+        # the build; dpkg-buildpackage would derive the date itself, but
+        # not when the spec pinned a different one.
         environment = {"SOURCE_DATE_EPOCH": epoch}
         if len(package.options) > 0:
             environment["DEB_BUILD_OPTIONS"] = " ".join(package.options)
@@ -1172,9 +916,8 @@ class Builder:
         args = [
             "sbuild", "--chroot-mode=unshare",
             "--dist=%s" % self.distro["release"],
-            # None of these are seine's business: they check the packaging
-            # rather than build it, and would need tooling in the chroot
-            # we have no reason to install.
+            # Not seine's business: these check the packaging rather
+            # than build it, and need tooling not in the chroot.
             "--no-run-lintian", "--no-run-piuparts", "--no-run-autopkgtest",
         ]
         if self.cross(package, architecture):
@@ -1183,65 +926,45 @@ class Builder:
         else:
             args += ["--arch=%s" % architecture]
 
-        # Said either way rather than left to sbuild's default, which is
-        # to build them whenever the build is a native one: a package
-        # built for two architectures natively would then build them
-        # twice, into one repository, under one name.
+        # Said explicitly, not left to sbuild's default (build arch-all
+        # whenever native): a package built natively for two
+        # architectures would otherwise build them twice into one
+        # repository under one name.
         args += ["--arch-all" if architecture == self.indep_architecture(package)
                  else "--no-arch-all"]
-        # How much of the machine this build may use. sbuild works it out
-        # from the machine itself, which is right for the one build that
-        # was ever running at a time and wrong the moment there are
-        # several, each helping itself to every core. So the cores are
-        # divided rather than handed out whole, unless the specification
-        # says otherwise -- a package whose build is broken in parallel
-        # says 'parallel=1' in its options, and a machine that is not
-        # CPU-bound can be told to oversubscribe.
+        # Cores divided across concurrent builds, not handed out whole as
+        # sbuild's own default would. 'parallel=1' in options opts a
+        # package out if its build breaks under parallelism.
         args += ["--jobs=%d" % self.parallel(package)]
 
-        # 'cross' is one of dpkg's own build profiles, and sbuild sets it
-        # for a cross build -- but only while it is choosing the profiles
-        # itself. Naming any profile takes that decision over, and a
-        # specification naming 'nocheck' has no reason to know that it has
-        # thereby told the packaging it is building natively. Debian's
-        # kernel build-depends on the cross compiler under '<cross>' and
-        # the native one under '<!cross>', so without the profile a cross
-        # build asks its chroot for a compiler not installable there.
+        # dpkg's 'cross' build profile: sbuild sets it automatically only
+        # while choosing profiles itself, so naming any profile at all
+        # takes that decision over and must add 'cross' back by hand --
+        # e.g. Debian's kernel build-depends on the cross compiler only
+        # under '<cross>'.
         profiles = list(package.profiles)
         if self.cross(package, architecture) and "cross" not in profiles:
             profiles.append("cross")
         if len(profiles) > 0:
             args += ["--profiles=%s" % ",".join(profiles)]
 
-        # A package may build-depend on one rebuilt before it. The chroot
-        # reaches the repository through the bind mount configured in the
-        # builder image, so it is an ordinary sources.list entry there --
-        # same repository, same pin, same behaviour as everywhere else.
-        #
-        # One entry covers every architecture, which is what makes a
-        # 'scope: host' rebuild useful: a cross build's chroot needs what
-        # it build-depends on to be of the *host* architecture, since that
-        # is what runs there, and apt takes from this index what the
-        # architecture it was asked about can use.
-        # The chroot reads the key where the repository is mounted rather
-        # than being given a copy of its own: sbuild bind-mounts the
-        # repository in, the key is in it, and a keyring installed by a
-        # setup command would have to be installed before the update that
-        # needs it.
+        # A package may build-depend on one rebuilt before it. The
+        # chroot reaches this repository through the builder image's own
+        # bind mount, as an ordinary sources.list entry -- one entry
+        # covers every architecture, which is what a 'scope: host'
+        # rebuild needs (a cross build's chroot wants host-architecture
+        # build-deps). The key is read from the mounted repository
+        # rather than installed separately, since it is already there.
         signed = "[trusted=yes]"
         if self.signer is not None:
             signed = "[signed-by=%s/%s]" % (REPOSITORY, self.signer.keyring())
         args += ["--extra-repository=deb %s file:%s ./" % (signed, REPOSITORY),
                  "--chroot-setup-commands=%s" % apt_preferences_command()]
 
-        # And what this package asked for, in front of its own build and no
-        # other. The chroot is unpacked for one build and thrown away, so
-        # naming a version here pins what that build is compiled against
-        # without deciding anything for the package beside it -- which is
-        # what makes it usable at all: a rebuilt kernel puts a
-        # linux-libc-dev in the repository that sorts above the release's,
-        # and busybox does not build against headers six versions newer
-        # than the ones its source expects.
+        # This package's own apt-preferences, pinning what its build may
+        # install without affecting the packages built beside it -- e.g.
+        # a rebuilt kernel's linux-libc-dev must not leak into a busybox
+        # build compiled against a much older one.
         preferences = package.preferences_for(self.distro["release"])
         if preferences is not None:
             args += ["--chroot-setup-commands=%s"
@@ -1249,23 +972,16 @@ class Builder:
 
         args += ["%s/%s" % (WORKDIR, dsc)]
 
-        # sbuild bind-mounts a handful of device nodes into its chroot and
-        # complains about each one the container does not have. podman only
-        # creates /dev/console when it allocates a terminal, which we have
-        # no other use for, so point it at /dev/null: nothing in a build
-        # has any business writing to a console, and the alternative is a
-        # warning per invocation drowning the output that matters.
-        # Without a terminal, libc's stdio block-buffers, so the log
-        # lags well behind the build. 'stdbuf' (LD_PRELOAD) does not fix
-        # it: sbuild only forwards a short env allowlist (below) into
-        # the chroot it builds in, dropping LD_PRELOAD before
-        # dpkg-buildpackage/gcc ever see it. 'exec.tty' asks podman for
-        # a real terminal instead -- isatty() survives that boundary
-        # since it is a property of the descriptor, not the environment.
+        # podman only creates /dev/console when it allocates a terminal;
+        # point sbuild's expected device at /dev/null instead of a
+        # missing one. Without a terminal libc's stdio block-buffers and
+        # the log lags -- 'exec.tty' below asks for a real terminal
+        # instead, since sbuild strips LD_PRELOAD from what reaches the
+        # chroot so an env-based workaround would not survive there.
         script = "ln -sf /dev/null /dev/console; exec %s" % shlex.join(args)
 
-        # Run from the output directory so sbuild drops what it built
-        # there, where it is this build's and nobody else's.
+        # Run from the output directory, so sbuild's own output lands
+        # where it belongs to this build alone.
         self.builderImage.exec(
             ["sh", "-c", script],
             architecture=self.chroot_architecture(package, architecture),
@@ -1274,51 +990,27 @@ class Builder:
     def repository(self):
         return repository(self.distro)
 
-    # Turns the directory the builds dropped their .debs in into something
-    # apt can read: a flat repository with a Packages index. Both the plain
-    # and the gzipped index are written, as apt looks for several
-    # compressions and complains about each one it does not find.
-    # apt-ftparchive rather than dpkg-scanpackages, for the cache: the
-    # index is rewritten after every package that builds, and
-    # dpkg-scanpackages hashes every .deb in the repository each time.
-    # That is the whole repository re-read per package -- and a kernel's
-    # debug package alone is larger than most images, so a specification
-    # building several of them spends longer hashing what it already
-    # hashed than building some of what it hashes.
+    # Turns the directory the builds dropped .debs in into something apt
+    # can read: a flat repository with plain and gzipped Packages/Sources
+    # indices. apt-ftparchive, not dpkg-scanpackages, because it caches
+    # what it already hashed -- re-hashing the whole repository on every
+    # package would dwarf the build itself for something like a kernel's
+    # debug package. The Sources index is written for anyone inspecting
+    # the cache; nothing seine runs reads it back.
     #
-    # The cache is keyed on what a file is and when it changed, so only
-    # what arrived since the last time is read. It lives beside the index
-    # it describes; apt has no interest in files it was not pointed at.
-    # The Sources index beside it describes the source packages the builds
-    # were made from, which are published with them. Nothing seine runs
-    # reads it: a build fetches its sources from the distribution, not from
-    # here. It is written because a repository holding source packages
-    # nothing can find is not holding them in any useful sense -- what it
-    # is for is the machine handed a cache, and anything asking what a
-    # modified binary was built from.
-    # 'cached' is false when a package took the place of one already in
-    # the repository, which happens whenever a rebuild produces the same
-    # version -- a change to the packaging seine writes, or to anything
-    # else the digest counts but the version does not.
-    #
-    # apt-ftparchive keeps what it has already read in a database, and
-    # for a file replaced under its own name it goes on describing the
-    # one before: an index announcing the size and hash of a package that
-    # is no longer there, which apt fetches and refuses as a hash
-    # mismatch. Rather than repair it, the database is set aside for that
-    # one run, since what it holds about that file is wrong and it cannot
-    # be told which.
+    # 'cached' is false when a rebuild replaced a file already in the
+    # repository under the same name: apt-ftparchive's own db would then
+    # go on describing the old file's size/hash, so the db is dropped for
+    # that run rather than served wrong.
     def index(self, cached=True):
         if cached == False:
             stale = os.path.join(self.repository(), INDEX_CACHE)
             if os.path.isfile(stale):
                 os.unlink(stale)
 
-        # The Release file goes last and is made fresh every time: it
-        # holds the hashes of the indices above it, and the signatures
-        # beside it are of the file as it was. Removing them first is what
-        # stops apt-ftparchive from hashing yesterday's signature into
-        # today's Release.
+        # Release is made fresh every time and removed first, so
+        # apt-ftparchive does not hash yesterday's own signature into
+        # today's file.
         for name in ["Release", "Release.gpg", "InRelease"]:
             path = os.path.join(self.repository(), name)
             if os.path.isfile(path):
@@ -1334,45 +1026,31 @@ class Builder:
             ["sh", "-c", script],
             volumes=[(self.repository(), REPOSITORY)], workdir=REPOSITORY)
 
-        # Signed here rather than in the container that wrote it: gpg runs
-        # on this machine, where the agent holding the key is.
+        # Signed here, not in the container: gpg runs on this machine,
+        # where the agent holding the key is.
         if self.signer is not None:
             self.signer.sign_release(os.path.join(self.repository(), "Release"))
 
-    # What a rebuild of this package would depend on, as a file whose
-    # presence means it has already been done. Everything the specification
-    # says about the package goes into the name, patches included by
-    # content, so editing a patch is enough to ask for a rebuild.
+    # A digest naming a rebuild of this package, as a stamp file whose
+    # presence means it was already done. Everything the spec says about
+    # the package goes in, patches by content so editing one is enough
+    # to ask for a rebuild.
     #
-    # What is deliberately not in it is the version an unpinned apt://
-    # source would resolve to today: knowing it means fetching the source,
-    # which is most of the cost this is here to avoid. A specification that
-    # pins its versions is therefore exact, and one that does not will keep
-    # its first rebuild until --rebuild or a change to the entry. The .debs
-    # of a stale build are still there and still installable, so the image
-    # is built from something real either way.
-    # Everything that would change the .debs goes into the digest: what the
-    # specification says about the package, the patches by content, and the
-    # distribution the chroot it builds in is made of -- a package built
-    # for another release, architecture, or from another feed is not the
-    # same package. The feeds go in whole rather than the distribution's
-    # bare 'uri': moving a feed -- to another snapshot, say -- leaves that
-    # 'uri' untouched while changing every version the build would see.
+    # Deliberately excluded: the version an unpinned apt:// source would
+    # resolve to today -- knowing it means fetching, which is the cost
+    # this avoids. An unpinned spec keeps its first rebuild until
+    # --rebuild or an edit; its .debs are still real and installable.
     #
-    # The rootfs 'baseline' is deliberately not part of it. Packages are
-    # built against the buildd chroot, which is made from the distribution
-    # settings above; the image the root file-system is later composed from
-    # has no bearing on what comes out of the build.
+    # The rootfs 'baseline' is also excluded: packages build against the
+    # buildd chroot (from the distro settings), not against the image the
+    # rootfs is later composed from.
     def stamp(self, package, architecture=None, depends=None):
         architecture = architecture or self.distro["architecture"]
         digest = hashlib.sha256()
         self._stamp_core(digest, package, architecture)
 
-        # Patches and kernel configuration fragments count by content, not
-        # by name: editing one without touching the specification has to be
-        # enough to ask for a rebuild, all the more for a kernel, where the
-        # alternative is silently keeping one built from the fragment as it
-        # used to read.
+        # Patches/kernel fragments count by content: editing one without
+        # touching the spec must still trigger a rebuild.
         for path in package.referenced_files():
             with open(path, "rb") as f:
                 digest.update(f.read())
@@ -1382,27 +1060,22 @@ class Builder:
         self._stamp_cross_headers(digest, package)
         self._stamp_uki(digest, package)
 
-        # A package built against another has to be rebuilt when that one
-        # changes: it was compiled and linked against what that package
-        # installed. Folding the dependency's digest in says so, and says
-        # it transitively, since that digest already carries its own.
+        # A package built against another must rebuild when that one
+        # changes -- the dependency's digest already carries its own,
+        # transitively.
         for name in sorted(depends or {}):
             digest.update(depends[name].encode())
 
-        # The architecture is in the name, not only in the digest: one
-        # repository holds every architecture's stamps, and what a stamp
-        # is looked up by is the build it belongs to. Without it the
-        # amd64 build of a package would find the arm64 build's stamp
-        # when asking what it left behind last time, and take its .debs
-        # away as superseded.
+        # Architecture is in the stamp's name, not just its digest, so
+        # the amd64 build never mistakes the arm64 build's stamp for its
+        # own and deletes its .debs as superseded.
         return os.path.join(self._stamps(), "%s_%s_%s"
                             % (package.name, architecture,
                                digest.hexdigest()[:16]))
 
     def _stamp_core(self, digest, package, architecture):
-        # Sets, not sequences: which patches are kept and which are dropped
-        # does not depend on the order they were written in, and a digest
-        # that says otherwise costs a kernel build to reorder two lines.
+        # A set of fields, not order-sensitive: reordering two lines in
+        # the spec must not itself trigger a rebuild.
         for part in [str(package.source),
                      ",".join(package.profiles),
                      ",".join(package.options),
@@ -1411,35 +1084,27 @@ class Builder:
                      package.revision,
                      str(package.kernel_featureset),
                      str(package.kernel_flavour),
-                     # Every base/name pair, so renaming one or moving it
-                     # to derive from a different base is a rebuild even
-                     # when every fragment's content stays the same; the
-                     # fragments' own content is folded in below, with
-                     # the ones 'kernel_fragments' names.
+                     # Every base/name pair, so renaming or re-basing one
+                     # is a rebuild even if fragment content is unchanged
+                     # (content is folded in separately, below).
                      ",".join(sorted("%s/%s" % (base, name)
                              for base, derived in (package.kernel_derived_flavours or {}).items()
                              for name in derived)),
                      # 'kernel_configs' is written straight into the
-                     # fragment, not read from a file 'referenced_files()'
-                     # would catch, so it has to be folded in by hand.
-                     # Not sorted: '_write_configs' writes groups in this
-                     # order, and two touching the same symbol settle it
-                     # by which is written last.
+                     # fragment rather than read from a file, so it must
+                     # be hashed by hand here. Not sorted: order decides
+                     # which of two edits to the same symbol wins.
                      "\n".join("%s:%s" % (name, "\n".join(lines))
                               for name, lines in package.kernel_configs.items()),
                      str(package.kernel_abi_suffix),
                      str(package.kernel_upstream),
                      str(package.kernel_upstream_sha256),
                      str(package.sha256),
-                     # What the build is allowed to install decides what
-                     # comes out of it, so a changed pin is a rebuild. What
-                     # this release is pinned to rather than the whole
-                     # mapping: another release's pin has no bearing on
-                     # what comes out here.
+                     # Only this release's pin: another release's pin has
+                     # no bearing on what this build produces.
                      str(package.preferences_for(self.distro["release"])),
-                     # str(), not a join: keeping nothing and saying
-                     # nothing are different answers, and 'None' and '[]'
-                     # are what tells them apart.
+                     # str(), not join(): 'None' and '[]' must read
+                     # differently -- "keeping nothing" vs "keeping all".
                      str(package.kernel_keep_patches
                          if package.kernel_keep_patches is None
                          else sorted(package.kernel_keep_patches)),
@@ -1448,57 +1113,35 @@ class Builder:
                      self.distro["source"],
                      self.distro["release"],
                      architecture,
-                     # 'offline=': what fetch()/the chroot actually read
-                     # from flips between the network and the local
-                     # vendor repository with 'apt-pull-mode', so a
-                     # rebuild already stamped under one has to be told
-                     # apart from one done under the other, the same as
-                     # any other feed change already is.
+                     # 'apt-pull-mode' flips fetch() between network and
+                     # local vendor repo -- a rebuild under one must not
+                     # be mistaken for one done under the other.
                      "\n".join(apt_sources(self.distro, sources=True,
                                            offline=len(offline_suites(self.distro)) > 0)),
                      self.chroot_architecture(package, architecture),
-                     # Who signed it. The .dsc and the .changes carry
-                     # their signature inside them, so a build signed by
-                     # another key -- or by none -- produced different
-                     # files, however identical the .debs beside them
-                     # are. Without this, changing the key would leave a
-                     # repository serving a source package signed by a
-                     # key it no longer carries, and adding one to a
-                     # specification already built would sign the index
-                     # over sources that are not signed at all.
-                     #
-                     # It follows that a cache built by somebody else is
-                     # rebuilt here rather than adopted, which is the
-                     # honest answer: their signature is not ours to
-                     # publish.
+                     # Who signed it: the .dsc/.changes carry the
+                     # signature inside, so a different key (or none)
+                     # means different files, however identical the .debs
+                     # look. A cache built by another key is thus
+                     # rebuilt, not adopted -- their signature is not
+                     # ours to publish.
                      str(self.signer.fingerprint()
                          if self.signer is not None else None),
-                     # Whether this is the build that makes the package's
-                     # architecture-independent binaries, which is decided
-                     # by what the *other* builds are: widening 'scope'
-                     # can move the job to another architecture, and the
-                     # build that no longer has it produces different
-                     # files than the stamp beside it says it did.
+                     # Whether this build makes the arch-all binaries,
+                     # which depends on what the *other* builds are:
+                     # widening 'scope' can move that job elsewhere.
                      str(architecture == self.indep_architecture(package)),
-                     # Which kernels this module is built against, as the
-                     # specification named them. A kernel added to the
-                     # list, or taken out of it, changes what binary
-                     # packages come out, so it has to change the stamp.
-                     #
-                     # For a kernel this specification builds, that is
-                     # only half of it: what matters is the ABI, which is
-                     # not knowable here. The dependency on the kernel
-                     # carries it -- a module is built after the kernels
-                     # it names, so the kernel's own digest is folded in
-                     # below, and a kernel rebuilt for any reason rebuilds
-                     # the modules on it.
+                     # Kernels this module is built against, as named --
+                     # adding/removing one changes the binaries produced.
+                     # For a kernel built by this spec, what actually
+                     # matters is its ABI, which is not knowable here;
+                     # that is carried instead by the dependency digest
+                     # below, since a module is built after its kernels.
                      ",".join(sorted(package.module_kernels.get(architecture, []))),
-                     # And what the ones naming a moving target turned out
-                     # to be. Debian moves a kernel's ABI in a security
-                     # update, which leaves 'linux-headers-amd64' pointing
-                     # somewhere new while the specification reads exactly
-                     # as it did. Without this the modules would still be
-                     # the ones built for the ABI before it.
+                     # What a moving-target reference (e.g.
+                     # 'linux-headers-amd64') actually resolved to -- a
+                     # security update can move this without the spec
+                     # changing at all.
                      ",".join("%s=%s" % (reference, headers)
                               for (a, reference), headers
                               in sorted(self.metapackages.items())
@@ -1514,33 +1157,22 @@ class Builder:
             digest.update(part.encode())
 
     def _stamp_kernel_graft(self, digest, package):
-        # A grafted kernel is built from what the rules kept of the
-        # distribution's series, so those rules decide what comes out as
-        # surely as a fragment does. By content, for the same reason:
-        # editing them has to be enough to ask for a rebuild, or the
-        # kernel goes on being the one yesterday's rules produced. Only
-        # for a graft -- an ordinary rebuild never consults them.
+        # A grafted kernel is built by these rules, so they decide the
+        # output as much as a fragment does -- and only for a graft.
         if package.kernel_upstream is not None:
             digest.update(kernel.kernel_rules().content)
             digest.update(str(kernel.GRAFT_VERSION).encode())
 
     def _stamp_module(self, digest, package):
-        # A module is built by the packaging seine writes for it, so
-        # that packaging decides what comes out as surely as a patch
-        # does. By content, for the same reason: editing the rules has to
-        # be enough to ask for a rebuild, or the modules go on being the
-        # ones yesterday's rules produced.
+        # A module is built by the packaging seine writes for it -- that
+        # decides the output too, so it is hashed by content.
         if package.module:
             digest.update(module.module_packaging()[1])
 
     def _stamp_cross_headers(self, digest, package):
-        # A cross headers package is of one kernel and made by one
-        # packaging, and neither is anything the settings above describe:
-        # it was made up rather than asked for. The kernel's release
-        # changes when that kernel does, which is what has to rebuild it
-        # -- a grafted kernel rebuilt is a new ABI, and headers left
-        # describing the one before it would have modules built against
-        # a kernel that is not there.
+        # A cross headers package belongs to one kernel and is made up
+        # rather than described by the settings above -- its kernel's
+        # release changes whenever that kernel does.
         if module.is_cross_package(package):
             digest.update(package.cross_kernel.release.encode())
             digest.update(package.cross_kernel.headers.encode())
@@ -1548,55 +1180,37 @@ class Builder:
 
     def _stamp_uki(self, digest, package):
         # A uki package is built from these settings plus the named
-        # 'initrd:' artifact's own bytes, none of which '_stamp_core'
-        # catches. Without this, a changed cmdline/tool/linux-image, or
-        # a rebuilt initrd with the same filename but new content, would
-        # keep reusing a stale cached UKI.
+        # 'initrd:' artifact's own bytes -- neither is caught above.
         if package.uki:
             digest.update(package.uki_tool.encode())
             digest.update(package.uki_linux_image.encode())
             digest.update(package.uki_cmdline.encode())
             initrd = uki.initrd_path(self.distro, package.uki_initrd)
-            # The initrd may not be deployed yet -- digests are computed
-            # for the whole task graph up front, including an
-            # 'after:'-ordered uki package whose predecessor hasn't built.
-            # A missing file can't be up to date, so a placeholder (never
-            # equal to a real hash) forces one rebuild instead of a wrong
-            # cache hit.
+            # Digests are computed for the whole task graph up front, so
+            # an 'after:'-ordered initrd may not be built yet. A missing
+            # file can never match a real hash, forcing one rebuild
+            # instead of a false cache hit.
             if os.path.isfile(initrd):
                 with open(initrd, "rb") as f:
                     digest.update(f.read())
             else:
                 digest.update(b"<initrd not yet built>")
 
-    # A file 'stamp()' hashed, written the way the specification wrote
-    # it -- relative to whichever file actually declared it
-    # ('origin_of()'), not the absolute path 'referenced_files()' deals
-    # in. A stamp is meant to travel ('cache export'/'import'); an
-    # absolute path baked into one would only be true on the machine
-    # that wrote it.
-    #
-    # 'derived-flavours' can (rarely) be merged from two files at once,
-    # and origin tracking only remembers one file per setting -- so a
-    # fragment from the file that lost that race resolves against the
-    # wrong directory. Still strictly better than an absolute path, and
-    # not worth chasing until it actually bites someone.
+    # A hashed file's path, written the way the spec wrote it (relative
+    # to the file that declared it) rather than the absolute path
+    # 'referenced_files()' uses -- a stamp travels between machines, so
+    # an absolute path would only be true on the one that wrote it.
     def _portable_path(self, package, setting, path):
         origin = package.origin_of(setting)
         if origin is None:
             return path
         return os.path.relpath(path, os.path.dirname(origin))
 
-    # The specification content behind one build, redacted and with
-    # every file path made portable -- what 'cache' shows beside a
-    # stamp so a person or the AI chat can tell what a cached build
-    # actually has in it without re-deriving it from the live spec.
-    #
-    # Deliberately not every field 'stamp()' hashes: the release/
-    # architecture/signer/cross-build context is either already in the
-    # stamp's own name or is build environment, not specification
-    # content -- what belongs here is what a person reading the
-    # specification itself would recognise.
+    # The spec content behind one build, redacted and with paths made
+    # portable -- what 'cache' shows beside a stamp, so someone can tell
+    # what a cached build contains without re-reading the live spec.
+    # Not every field 'stamp()' hashes: environment (release,
+    # architecture, signer...) is left out, only spec content is here.
     def digest_excerpt(self, package):
         excerpt = {"source": package.source, "revision": package.revision}
         if package.profiles:
@@ -1633,9 +1247,8 @@ class Builder:
         if package.kernel_configs:
             settings["configs"] = package.kernel_configs
         if package.kernel_derived_flavours:
-            # Already absolute+normalised ('_resolve_files()' resolves
-            # these fragments too, in place, at load time) -- no second
-            # pass through '_files()' needed here.
+            # Already absolute/normalised at load time, so no second
+            # pass through '_files()' is needed here.
             settings["derived-flavours"] = {
                 base: {name: [self._portable_path(
                                   package, "extends.kernel.derived-flavours", p)
@@ -1664,10 +1277,8 @@ class Builder:
             settings["make-vars"] = dict(package.module_make_vars)
         return settings
 
-    # Where an excerpt lives: same basename as its stamp, in the sibling
-    # directory ('STAMPS_SPEC') rather than beside it, so finding one
-    # from the other is swapping a directory, not appending a suffix
-    # '_previous()' 's own prefix match would then pick up too.
+    # Where an excerpt lives: same basename as its stamp, but in the
+    # sibling STAMPS_SPEC directory rather than beside it.
     def _excerpt_path(self, stamp):
         return os.path.join(self._stamps_spec(),
                             "%s.spec" % os.path.basename(stamp))
@@ -1676,15 +1287,10 @@ class Builder:
         with open(self._excerpt_path(stamp), "w") as f:
             yaml.dump(self.digest_excerpt(package), f, sort_keys=False)
 
-    # The stamp of every package it is built for, in build order, each one
-    # folding in the stamps of what it is built after. The order is what
-    # makes that possible: a package's dependencies have been given their
-    # digest before it is given its own.
-    #
-    # A dependency is followed within an architecture rather than across
-    # them: what a build was compiled and linked against is the
-    # dependency's build for the same architecture, and the host build of
-    # a package has no bearing on what its target build produced.
+    # Every package's stamp, in build order, each folding in the stamps
+    # of what it is built after -- possible because dependencies are
+    # given their digest first. Followed within one architecture only:
+    # a host build has no bearing on a target build of the same package.
     def stamps(self, packages):
         digests = {}
         stamps = []
@@ -1709,11 +1315,9 @@ class Builder:
         os.makedirs(stamps, exist_ok=True)
         return stamps
 
-    # What a previous build of this source package left in the repository.
-    # Each stamp lists the files its build produced, so an older build can
-    # be undone without having to guess which binary packages came from
-    # which source -- the names rarely match, and one source package
-    # commonly produces several.
+    # What a previous build of this source package left in the
+    # repository: each stamp lists its own produced files, so an old
+    # build can be undone without guessing which .debs came from where.
     def _previous(self, package, architecture):
         previous = {}
         for stamp in sorted(os.listdir(self._stamps())):
@@ -1724,20 +1328,14 @@ class Builder:
                 previous[path] = [line.strip() for line in f if len(line.strip()) > 0]
         return previous
 
-    # Drops what an earlier build of the same source package left behind,
-    # keeping anything the build that just ran produced -- rebuilding the
-    # same version overwrites its own files rather than replacing them, and
-    # they would otherwise be deleted right after being written.
-    #
-    # Without this the repository would keep every version ever built and
-    # go on offering them: the index lists all of them, and apt installs
-    # the highest version it is offered, which after a downgrade is the one
-    # that was meant to be replaced.
-    # 'produced' is what every build being published now made, not only
-    # this architecture's: the architecture-independent binaries move
-    # between architectures when 'scope' changes, and the build that has
-    # just lost them would otherwise take away the copy the build that
-    # gained them has only just written.
+    # Drops what an earlier build of the same source left behind, but
+    # keeps whatever the current build just produced under the same
+    # name. Without this the repository would keep every version ever
+    # built, and apt would install the highest one offered -- undoing
+    # a downgrade that was meant to happen.
+    # 'produced' covers every architecture published in this round, not
+    # only this one: arch-all binaries can move between architectures
+    # when 'scope' changes.
     def _forget(self, package, architecture, produced):
         for stamp, files in self._previous(package, architecture).items():
             for name in files:
@@ -1751,9 +1349,7 @@ class Builder:
             if os.path.isfile(excerpt):
                 os.unlink(excerpt)
 
-    # What a build left in the directory it was given. Everything there is
-    # its own, so there is nothing to date or to tell apart: it is the
-    # only thing that wrote there.
+    # What a build left in its output directory -- entirely its own.
     def _produced(self, output):
         return sorted(name for name in os.listdir(output)
                       if os.path.isfile(os.path.join(output, name))
@@ -1765,20 +1361,14 @@ class Builder:
                 f.write("%s\n" % name)
 
 
-
-    # Rebuilds every package the specification asked for, in the order they
-    # were sorted into. Each gets a working directory of its own, thrown
-    # away afterwards unless --keep was asked for: what is worth keeping
-    # (the .debs) is in the repository by then.
-    # One task per package, so packages that do not depend on each other
-    # can be built beside each other, and a 'packages' barrier for the
-    # rest of the build to wait on. The barrier is what lets the root
-    # file-system and the imager name one thing that always exists,
-    # rather than whichever packages a specification happens to have.
-    #
-    # They need the host bootstrap and not the target one: packages are
-    # built in a chroot of the build architecture, whichever architecture
-    # the image is for.
+    # Rebuilds every package the spec asked for. Each gets its own
+    # working directory, thrown away after unless --keep was given --
+    # what is worth keeping (the .debs) is in the repository by then.
+    # One task per package so independent ones build side by side, plus
+    # a 'packages' barrier the rest of the build can name regardless of
+    # which packages a spec actually has.
+    # Built in a chroot of the build architecture, so this needs the
+    # host bootstrap, whichever architecture the image itself is for.
     def tasks(self, packages, hostBootstrap, vendor_task=None):
         if self._tasked is not None and packages != self._tasked:
             raise RuntimeError(
@@ -1789,31 +1379,27 @@ class Builder:
         self._tasked = packages
         module.resolve_kernels(self, packages, hostBootstrap)
         pending = self._pending(packages)
-        # Every build in here reaches the builder image's own apt, whether
-        # it fetches, resolves build-deps or indexes -- so whenever a
-        # 'vendor' task is running ahead of this one (Image.shared_tasks()
-        # names it when 'apt-pull-mode: offline' needs it), 'packages-
-        # prepare' waits on it too, the same way it already waits on the
-        # host bootstrap.
+        # Every build here touches the builder image's own apt, so
+        # 'packages-prepare' also waits on a running 'vendor' task
+        # (named by Image.shared_tasks() under offline apt-pull-mode),
+        # same as it already waits on the host bootstrap.
         needs_vendor = [vendor_task] if vendor_task is not None else []
-        # Which ones were already built when the graph was made, asked now
-        # rather than at the barrier: by then this build has built the rest
-        # of them, and a package it just made was not one it reused.
+        # Asked now, not when the graph was built: by the barrier this
+        # build has made the rest of the packages, and one just made is
+        # not one that was reused.
         reused = self.current(packages)
         if len(pending) == 0:
-            # Nothing to build, but possibly something to index: a machine
-            # that imported a repository has the .debs and nothing to read
-            # them with until apt-ftparchive has run over them.
+            # Nothing to build, but maybe something to index: a machine
+            # that imported a repository has .debs with no index yet.
             first = []
             if self._indexable():
                 first = [Task("packages-prepare",
                               functools.partial(self._prepare, hostBootstrap),
                               needs=["bootstrap-host"] + needs_vendor)]
-            # No 'packages-prepare' to carry it here, so 'packages' itself
-            # waits on vendor directly -- otherwise a rerun with nothing
-            # pending and nothing to reindex drops the vendor wait
-            # entirely, and 'rootfs' (which only waits on 'packages')
-            # races it.
+            # No 'packages-prepare' to carry the vendor wait here, so
+            # 'packages' waits on it directly -- otherwise a rerun with
+            # nothing pending and nothing to reindex drops the wait, and
+            # 'rootfs' (which only waits on 'packages') races it.
             needs = ["bootstrap-host"] + [t.name for t in first]
             if len(first) == 0:
                 needs += needs_vendor
@@ -1825,28 +1411,23 @@ class Builder:
                       functools.partial(self._prepare, hostBootstrap),
                       needs=["bootstrap-host"] + needs_vendor)]
 
-        # A package built against another has to be built after it, which
-        # is the same order 'before'/'after' already worked out -- as task
-        # dependencies now, so everything else can overlap.
-        # What a dependent waits for is the name of the step that puts a
-        # package where it can be installed from, not the one that built
-        # it.
+        # 'before'/'after' become task dependencies here, so everything
+        # else can build concurrently. A dependent waits on the step that
+        # publishes a package, not the one that built it.
         names = {package.name: "deploy:%s" % package.name
                  for package, _, _ in pending}
 
-        # A package's builds, gathered so its steps are declared together:
-        # one prepare, a build per architecture, and one step publishing
-        # them.
+        # A package's steps declared together: one prepare, one build
+        # per architecture, one step publishing them all.
         grouped = collections.OrderedDict()
         for package, architecture, stamp in pending:
             grouped.setdefault(package.name, (package, []))[1].append(
                 (architecture, stamp))
 
-        # One fetch task per source these packages actually name, shared by
-        # every package naming the same one -- see _fetch()/_fetch_upstream().
-        # Named for the source ('fetch:linux'), digest-suffixed only where
-        # two keys would otherwise share a name; 'used' is shared with the
-        # fetch-upstream pass below so the two never collide either.
+        # One fetch task per distinct source, shared by every package
+        # naming it -- see _fetch()/_fetch_upstream(). Named
+        # 'fetch:<source>', digest-suffixed only if a label collision
+        # would otherwise merge two different keys.
         fetch_tasks, upstream_tasks, used = {}, {}, {}
         for pname, (package, _builds) in grouped.items():
             fetch_key = self._fetch_key(package)
@@ -1868,8 +1449,7 @@ class Builder:
         tasks += list(fetch_tasks.values()) + list(upstream_tasks.values())
 
         # How many prepare:<name> tasks will copy from each fetch, known
-        # now from the whole group rather than guessed at as each one
-        # copies -- see _taken_shared().
+        # now for the whole group -- see _taken_shared().
         for pname, (package, _builds) in grouped.items():
             for key in (self._fetch_key(package), self._upstream_key(package)):
                 if key is not None:
@@ -1883,12 +1463,9 @@ class Builder:
             needs = [fetch_tasks[fetch_key].name]
             if upstream_key is not None:
                 needs.append(upstream_tasks[upstream_key].name)
-            # A module is the exception to preparing early: its packaging
-            # is written as the source is prepared, decided by the ABI of
-            # the kernel it names, which does not exist until built here.
-            # Only for the kernels it waits on -- one built against the
-            # distribution's kernels alone prepares (and fetches) as early
-            # as anything else.
+            # A module is the exception to preparing early: its
+            # packaging depends on the ABI of the kernel it names, which
+            # does not exist until that kernel is built.
             if package.module:
                 needs += depends
             prepare = "prepare:%s" % name
@@ -1906,13 +1483,11 @@ class Builder:
                                   needs=waits))
                 built.append(step)
 
-            # One publishing step for every architecture, rather than one
-            # each. What comes out of the builds is not a repository per
-            # architecture and nothing else: an 'Architecture: all' binary
-            # belongs in all of them and is built by only one of them, so
-            # somebody has to hold the whole picture -- and the step that
-            # decides what an earlier build left behind should be forgotten
-            # is the natural somebody.
+            # One publishing step per package, covering every
+            # architecture at once: an arch-all binary belongs in every
+            # repository but is built by only one architecture, so this
+            # step is what holds the whole picture and decides what an
+            # earlier build should be forgotten.
             tasks.append(Task(names[name],
                               functools.partial(self._deploy, package,
                                                 [a for a, _ in builds]),
@@ -1923,10 +1498,8 @@ class Builder:
                              needs=[t.name for t in tasks])]
 
 
-    # The packages this build did not have to build, recorded as taken from
-    # the cache. At the barrier rather than where the decision is made: that
-    # decision is also made by '--dry-run', which uses nothing and should
-    # leave the index saying so.
+    # Packages this build did not have to build, recorded as reused at
+    # the barrier -- also reached by --dry-run, which should say so too.
     def _reused(self, current):
         for package, architecture, stamp in current:
             key = self.key(package, architecture)
@@ -1934,19 +1507,15 @@ class Builder:
             say(self.options, "package %s reused, made %s"
                               % (key, since(entry.get("made"))))
 
-    # What a package is called in the cache index. The release and the
-    # architecture are part of it: one index covers a machine, and the same
-    # source built for two releases -- or for two architectures -- is two
-    # different sets of .debs.
+    # Cache-index key: release/architecture/name, since one source built
+    # for two releases (or architectures) is two different sets of .debs.
     def key(self, package, architecture=None):
         return "%s/%s/%s" % (self.distro["release"],
                              architecture or self.distro["architecture"],
                              package.name)
 
-    # The packages this build would leave alone, with the stamp that says
-    # so. A stamp names the digest of everything that would go into the
-    # build, so one that exists means the .debs in the repository were
-    # made from exactly these inputs.
+    # Packages this build would leave alone: a stamp exists means the
+    # .debs already in the repository were made from these exact inputs.
     def current(self, packages):
         rebuild = self.options.get("rebuild", False)
         if rebuild:
@@ -1954,10 +1523,9 @@ class Builder:
         return [(p, a, s) for p, a, s in self.stamps(packages)
                 if os.path.isfile(s)]
 
-    # Which packages this build actually has to rebuild, decided before
-    # anything is created: reading a stamp costs nothing, and a build
-    # whose packages are all current should not make a builder image to
-    # discover it.
+    # Which packages actually need rebuilding, decided before anything
+    # is created: reading a stamp is cheap, so a build with nothing
+    # pending should not even make a builder image.
     def _pending(self, packages):
         if len(packages) == 0:
             return []
@@ -1965,14 +1533,10 @@ class Builder:
         return [(p, a, s) for p, a, s in self.stamps(packages)
                 if rebuild or os.path.isfile(s) == False]
 
-    # Whether the repository is holding .debs its index does not describe.
-    #
-    # The index is made from what the directory holds, which makes it the
-    # build's to maintain rather than something worth carrying between
-    # machines: what a cache is worth carrying for is the .debs, and the
-    # machine that receives them can say what is in them in one pass of
-    # apt-ftparchive. A build with nothing to rebuild would otherwise leave
-    # those .debs sitting there with apt unable to see them.
+    # Whether the repository holds .debs its index does not describe
+    # yet -- the index is rebuilt from the directory, not carried
+    # between machines, so an imported cache with nothing to rebuild
+    # still needs one pass of apt-ftparchive.
     def _indexable(self):
         repository = self.repository()
         if os.path.isdir(repository) == False:
@@ -1983,32 +1547,28 @@ class Builder:
         index = os.path.join(repository, "Packages")
         if os.path.isfile(index) == False:
             return True
-        # Written before the .debs it describes were, which is what an
-        # import leaves behind when it brings newer ones.
+        # Written before the .debs it describes -- what an import leaves
+        # behind when it brings in newer ones.
         described = os.path.getmtime(index)
         return any(os.path.getmtime(os.path.join(repository, name)) > described
                    for name in debs)
 
     # Every build has the repository in its sources.list, including the
-    # first one, when nothing has been rebuilt yet: apt needs an index to
-    # read there, even an empty one, or the build fails before it starts.
+    # very first, when it holds no index yet -- apt still needs one to
+    # read, even an empty one, or the build fails before it starts.
     def _prepare(self, hostBootstrap):
         self.builderImage.create(hostBootstrap)
         with locked(self.repository()):
             self._publish_key()
             self.index()
 
-    # The public half of the signing key, kept in the repository it signs.
-    # Anything the repository is mounted into can then find the key that
-    # answers for it without being told where it is, and a cache carried
-    # to another machine takes it along.
-    #
-    # Named for the key rather than for seine, since it ends up in
-    # /etc/apt/keyrings beside other people's.
+    # The signing key's public half, kept in the repository it signs, so
+    # anything mounting the repository can find it without being told
+    # where -- and it travels with a cache copied to another machine.
     def _publish_key(self):
         for name in sorted(os.listdir(self.repository())):
-            # A key from a build signed by another key, or by none: what
-            # answers for this repository is what signed it last.
+            # A key left by a build signed with another key, or none --
+            # what answers for this repository is whatever signed it last.
             if name.endswith(".gpg"):
                 os.unlink(os.path.join(self.repository(), name))
         if self.signer is not None:
@@ -2031,32 +1591,26 @@ class Builder:
                 self._rebuild(package, architecture, stamp)
             self._deploy(package, [a for a, _ in builds])
 
-    # What fetch() would run, as a key two packages asking for the same
-    # bytes can share -- see _fetch(). None for a cross-headers package:
-    # it has no source of its own to name, and fetch() already takes a
-    # different path for it.
+    # What fetch() would run, as a key two packages fetching the same
+    # bytes can share. None for a cross-headers package (no source of
+    # its own; fetch() already takes a different path for it).
     def _fetch_key(self, package):
         if module.is_cross_package(package):
             return None
-        # Never shared: there is nothing two uki packages could ever
-        # have fetched in common, since neither fetches anything.
+        # Never shared: a uki package fetches nothing.
         if uki.is_uki_package(package):
             return ("uki", package.name)
         return tuple(self._fetch_args(package))
 
-    # As _fetch_key(), for kernel.fetch_upstream()'s own download: the
-    # tree a grafted kernel is built from, the largest download seine
-    # makes and fetched apart from the packaging it is grafted onto.
+    # As _fetch_key(), for kernel.fetch_upstream()'s own download -- the
+    # tree a grafted kernel is built from.
     def _upstream_key(self, package):
         if package.kernel_upstream is None:
             return None
         return tuple(kernel._upstream_args(package.kernel_upstream))
 
-    # One task name per key, 'prefix:label' in the common case -- 'used'
-    # is shared across every call so different prefixes never collide
-    # either. A label already claimed by a different key gets a digest
-    # suffix; claimed by the same key again just answers with the name
-    # already given out.
+    # One task name per key: 'prefix:label' normally, digest-suffixed
+    # only when a label is already claimed by a different key.
     def _task_name(self, prefix, label, key, used):
         name = "%s:%s" % (prefix, label)
         claimed = used.get(name)
@@ -2067,12 +1621,9 @@ class Builder:
             return name
         return "%s-%s" % (name, hashlib.sha256(repr(key).encode()).hexdigest()[:6])
 
-    # Task body for a shared source fetch -- the network half of what
-    # _fetched() (still used for a cross-headers package -- see
-    # _fetch_key()) used to do in one step. Populates the canonical copy
-    # every prepare:<name> task naming this fetch's key will copy from;
-    # tasks() builds exactly one such task per key, so nothing here
-    # needs a lock.
+    # Task body for a shared source fetch. Populates the canonical copy
+    # every prepare:<name> task naming this key will copy from --
+    # tasks() makes exactly one such task per key, so no lock is needed.
     def _fetch(self, package):
         print("fetching '%s'" % package.source)
         canonical = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="fetched-")
@@ -2086,11 +1637,10 @@ class Builder:
         kernel.fetch_upstream(self, package, canonical)
         self._shared_fetches[self._upstream_key(package)] = canonical
 
-    # 'source's contents copied into 'dest' (which already exists);
-    # 'source' itself is left for the caller to remove. Symlinks are
-    # copied as symlinks, never followed -- a kernel tree is full of
-    # them, and dereferencing one into a plain file is a change
-    # dpkg-source refuses to represent as a patch.
+    # Copies 'source's contents into existing 'dest'; leaves 'source' for
+    # the caller to remove. Symlinks are copied as symlinks, never
+    # followed -- a kernel tree is full of them, and dpkg-source cannot
+    # represent one turned into a plain file as a patch.
     def _copy_into(self, source, dest):
         os.makedirs(dest, exist_ok=True)
         for name in os.listdir(source):
@@ -2103,9 +1653,8 @@ class Builder:
             else:
                 shutil.copy2(item, target)
 
-    # 'key''s claim on its canonical fetch, given up -- the counterpart to
-    # _fetch()/_fetch_upstream() writing it, called by every prepare:<name>
-    # task that copied from it. The canonical copy goes once
+    # Gives up 'key''s claim on its canonical fetch, called by every
+    # prepare:<name> task that copied from it. The copy is removed once
     # '_shared_taken' catches up with '_shared_wanted'.
     def _taken_shared(self, key):
         if key is None:
@@ -2123,11 +1672,10 @@ class Builder:
             else:
                 shutil.rmtree(canonical, ignore_errors=True)
 
-    # Fetch and prepare in one step, both from here on used only for a
-    # cross-headers package (_fetch_key() names no key for one, so it
-    # never reaches tasks()'s own fetch:/prepare: split -- see
-    # _cross_headers_built()'s direct call into _rebuild(), which is
-    # what calls this when nothing has fetched it yet).
+    # Fetch and prepare in one step -- used only for a cross-headers
+    # package, which _fetch_key() names no key for and so never goes
+    # through tasks()'s fetch:/prepare: split; called directly from
+    # _cross_headers_built() instead.
     def _fetched(self, package):
         workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
                                    prefix="source-")
@@ -2146,11 +1694,9 @@ class Builder:
             self._holding[package.name] = len(self.architectures(package))
         return source
 
-    # What tasks()'s prepare:<name> task runs, for every real (non
-    # cross-headers) package: its own copy of whichever fetch(es)
-    # 'fetch_key'/'upstream_key' name, turned into a source package the
-    # same way _fetched() used to. Sets what _rebuild() reads exactly as
-    # _fetched() did.
+    # What tasks()'s prepare:<name> task runs: a copy of the shared
+    # fetch(es) named by 'fetch_key'/'upstream_key', turned into a
+    # source package the same way _fetched() does.
     def _prepare_source(self, package, fetch_key, upstream_key):
         workdir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
                                    prefix="source-")
@@ -2172,23 +1718,20 @@ class Builder:
         source = (workdir, dsc, epoch)
         with self._workdirs:
             self._sources[package.name] = source
-            # How many builds are still to be handed this source. The
-            # directory outlives this step but not the last build that
-            # reads it, and with two architectures reading one tree the
-            # first to finish is not the one that may throw it away.
+            # Builds still to be handed this source: with two
+            # architectures reading one tree, the first to finish must
+            # not be the one that throws it away.
             self._holding[package.name] = len(self.architectures(package))
         return source
 
-    # A fetched tree turned into the source package the builds are handed,
-    # and the date they are all pinned to.
+    # Turns a fetched tree into the source package builds are handed,
+    # plus the date they are all pinned to.
     def _prepared(self, package, workdir, sourcedir):
-        # Taken before the graft, which replaces the changelog it is read
-        # from: what dates the build is the packaging we started from,
-        # which is a thing the specification pins.
+        # Taken before the graft replaces the changelog it reads from.
         epoch = self.source_date_epoch(package, sourcedir)
-        # A cross headers package is not the kernel it is built from, and
-        # none of what follows is about it: no graft, no patches, no
-        # local changelog entry on somebody else's source.
+        # A cross headers package isn't the kernel it's built from: no
+        # graft, no patches, no local changelog entry on someone else's
+        # source.
         if module.is_cross_package(package):
             module.extend_cross_headers(
                 self, package, sourcedir, epoch,
@@ -2199,43 +1742,36 @@ class Builder:
 
         if package.kernel_upstream is not None:
             sourcedir = kernel.graft(self, package, workdir, sourcedir, epoch)
-        # Before the patches and before the local changelog entry: both
-        # read a debian/ directory, and for a module or a uki wrapper
-        # this is what puts one there.
+        # Before patches/local changelog: both need a debian/ directory,
+        # which for a module or uki wrapper is what this step creates.
         module.extend(self, package, sourcedir, epoch)
         uki.extend(self, package, sourcedir, epoch)
         self.patch(package, sourcedir, epoch)
-        # After them: what the series already answers for is not written
-        # again, and a specification's own patches are in it by now.
+        # After them, since the series may already cover it.
         if package.kernel_upstream is not None:
             kernel.module_lds_patch(package, sourcedir)
         self.local_release(package, sourcedir, epoch)
         kernel.extend(self, package, sourcedir, self.architectures(package))
         dsc = self.source_package(package, sourcedir)
-        # Signed before it is staged or built from: a .dsc carries its
-        # signature inside itself, so signing it here is what makes the
-        # copy that reaches the repository -- and any machine handed the
-        # cache -- say who built it. dpkg-source reads a signed one as
-        # readily as an unsigned one.
+        # Signed before staging or building: a .dsc carries its
+        # signature inside, so signing here is what the repository (and
+        # any machine given the cache) ends up serving.
         if self.signer is not None:
             self.signer.clearsign(os.path.join(os.path.dirname(sourcedir), dsc))
         self._stage_source(package, os.path.dirname(sourcedir), dsc)
         return dsc, epoch
 
-    # The source package put where publishing will find it, which is not
-    # where it was built: the working directory is thrown away by the last
-    # build to finish, and publishing comes after that.
-    #
-    # Once per package rather than once per build, which is what it is:
-    # both architectures were handed this same .dsc, and a source package
-    # is not built for an architecture.
+    # Puts the source package where publishing will find it -- not where
+    # it was built, since the working directory dies with the last build
+    # using it, before publishing runs. Once per package, not per build:
+    # a source package is not built for one architecture.
     def _stage_source(self, package, workdir, dsc):
         staged = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="source-")
         for name in self.source_files(workdir, dsc):
             shutil.copy(os.path.join(workdir, name), staged)
         self._source_packages[package.name] = staged
 
-    # One build's claim on a fetched source, given up. The last to do so
+    # Gives up one build's claim on a fetched source; the last to do so
     # takes the directory with it.
     def _release(self, package):
         with self._workdirs:
@@ -2252,17 +1788,12 @@ class Builder:
         else:
             shutil.rmtree(workdir, ignore_errors=True)
 
-    # Putting what was built where the rest of the build can install it
-    # from: the repository, and the index apt reads there.
-    #
-    # Both only once it built. A stamp left by a failed build would skip
-    # the package next time and compose the image from whatever the
-    # repository happened to hold, and dropping the previous build before
-    # this one succeeds would leave the repository with neither.
-    #
-    # One at a time, and against every other build on the machine as well:
-    # an index rewritten while another build's apt reads it is a failure
-    # that arrives much later and makes no sense when it does.
+    # Publishes what was built: the repository, and its apt index.
+    # Both only after a successful build -- a stamp for a failed build
+    # would skip it next time, and dropping the old build too early
+    # would leave the repository with neither. One at a time across the
+    # whole machine, since an index read mid-rewrite by another build's
+    # apt fails in a confusing way, much later.
     def _deploy(self, package, architectures=None):
         if architectures is None:
             architectures = [self.distro["architecture"]]
@@ -2276,36 +1807,29 @@ class Builder:
         if len(built) == 0:
             return
 
-        # What all of these builds made, which is what none of them may
-        # take away. A build's own files are its to record; keeping the
-        # others safe is what stops one architecture from tidying away
-        # another's as superseded.
+        # Everything all these builds made, so one architecture's step
+        # cannot delete another's files as superseded.
         everything = set()
         for _, _, produced in built.values():
             everything.update(produced)
 
-        # The source package the builds were handed, published once
-        # however many of them there were: it is one set of files, named
-        # by one .dsc, and neither belongs to an architecture. Recorded in
-        # every build's stamp all the same, so it is retired when the last
-        # of them goes rather than by whichever is forgotten first.
+        # The source package these builds were handed, published once
+        # regardless of how many builds there were, but recorded in
+        # every build's stamp so it is retired with the last of them.
         staged = self._source_packages.pop(package.name, None)
         sources = [] if staged is None else sorted(os.listdir(staged))
         everything.update(sources)
 
-        # The .changes says what a build produced and with what hashes,
-        # which is the thing worth a signature: the .debs beside it are
-        # named by it. Signed before anything is moved, so what lands in
-        # the repository is signed rather than signed in place afterwards.
+        # The .changes describes what was produced and its hashes, so
+        # it is what gets signed; signed before anything is moved.
         if self.signer is not None:
             for _, output, produced in built.values():
                 for name in produced:
                     if name.endswith(".changes"):
                         self.signer.clearsign(os.path.join(output, name))
 
-        # Whether anything published here took the place of a file that
-        # was already in the repository. It decides whether the index can
-        # be made from what it remembers; see index().
+        # Whether this replaced a file already in the repository --
+        # decides whether the index cache can be trusted; see index().
         replaced = False
 
         with self._repository, locked(self.repository()):
@@ -2321,15 +1845,10 @@ class Builder:
             for architecture, (stamp, output, produced) in sorted(built.items()):
                 for name in produced:
                     destination = os.path.join(self.repository(), name)
-                    # What is already there goes first. A file would be
-                    # replaced by the move on its own, but a symlink would
-                    # not -- and sbuild leaves one beside every build log,
-                    # pointing at the newest, so the second build of a
-                    # package would stop here with 'File exists' having
-                    # already done all of its work.
-                    #
-                    # lexists, since that symlink may be pointing at a log
-                    # an earlier build of the same package has taken away.
+                    # Removed first: a plain file would be replaced by
+                    # the move anyway, but sbuild leaves a symlink beside
+                    # every build log pointing at the newest one, and a
+                    # move cannot overwrite that.
                     if os.path.lexists(destination):
                         os.remove(destination)
                         replaced = True
@@ -2338,9 +1857,8 @@ class Builder:
                 self._forget(package, architecture, everything)
                 self._record(stamp, sorted(set(produced) | set(sources)))
                 self._record_excerpt(stamp, package)
-            # Once, at the end: one repository, and an index of it made
-            # while a build of it is half moved in describes neither what
-            # was there nor what is.
+            # Once, at the end: an index made while a build is half
+            # moved in describes neither what was there nor what is.
             self.index(cached=replaced == False)
 
         for architecture in sorted(built):
@@ -2349,15 +1867,11 @@ class Builder:
             say(self.options, "package %s made" % key)
 
     # One package: patched, built, and recorded as built. The chroot is
-    # shared with whatever else is building at the same time, so it is
-    # taken one at a time.
+    # shared with whatever else is building at the same time.
     def _rebuild(self, package, architecture, stamp):
-        # What this build needs installed that no specification asked
-        # for. Built here rather than planned earlier because a kernel
-        # built by this specification only says what its ABI is once its
-        # own source has been prepared -- so which cross headers are
-        # wanted is not knowable until the kernel that decides it has
-        # been built, which 'after' guarantees has happened by now.
+        # A kernel built by this spec only knows its own ABI once its
+        # source is prepared, so cross headers are made here rather than
+        # planned earlier -- 'after' guarantees the kernel is done by now.
         self._cross_headers_built(package, architecture)
 
         with self._chroots:
@@ -2372,27 +1886,21 @@ class Builder:
             source = self._fetched(package)
         workdir, dsc, epoch = source
 
-        # Where this build writes, which is nowhere anything else does.
+        # Where this build writes; nowhere anything else does.
         output = tempfile.mkdtemp(dir=ContainerEngine.scratch(), prefix="built-")
         try:
             print("rebuilding '%s' for %s" % (package.source, architecture))
             self.build(package, workdir, dsc, epoch, architecture, output)
 
-            # Handed to the step that publishes it. What a package built
-            # against another needs is that one's .deb in the repository,
-            # for sbuild to install out of -- which is a later moment than
-            # its build finishing.
+            # Handed to the step that publishes it, since a dependent
+            # package needs this one's .deb in the repository to build
+            # against -- a later moment than this build finishing.
             self._built[(package.name, architecture)] = (stamp, output)
         except:
-            # Left where it is, and said out loud. sbuild writes its build
-            # log beside what it produced, so this directory is where the
-            # record of the failure is -- what the chroot installed, and
-            # the compiler error that stopped it. Throwing it away would
-            # leave nothing to read but the exit status.
-            #
-            # It stays in the scratch space, which 'seine cache clear
-            # scratch' empties, rather than being tidied away here by the
-            # one build that had something worth keeping.
+            # Left in place and announced: this is where sbuild's own
+            # build log (and whatever the chroot installed) can be read.
+            # Lives in scratch space, cleared by 'seine cache clear
+            # scratch', not tidied away here.
             print("keeping '%s': what the failed build of '%s' wrote, its "
                   "build log included" % (output, package.name))
             raise
@@ -2401,28 +1909,19 @@ class Builder:
 
 
 
-# Making the rebuilt packages visible to apt, wherever apt is being run:
-# the chroot packages are built in, the container the root file-system is
-# composed in, and the imager's own containers.
+# Makes rebuilt packages visible to apt everywhere it runs: the build
+# chroot, the rootfs container, the imager's own containers.
 #
-# Both files are written the same way everywhere so there is one answer to
-# "why is this version being installed": the repository is trusted, since
-# it is unsigned and was produced locally moments ago, and it is preferred
-# over the distribution's. The pin matches on an empty origin, which is
+# The repository is trusted (unsigned, built locally moments ago) and
+# preferred over the distro's, matching on an empty origin -- which is
 # what a file:// repository has.
 #
-# 900, deliberately not the 1001 that would let a rebuild replace a
-# *higher* version from the archive. Above 1000 apt will downgrade an
-# already-installed package to match, and a repository holding anything
-# older than what a chroot already has then breaks every build in it:
-#
-#   The following packages will be DOWNGRADED: linux-libc-dev
-#   E: Packages were downgraded and -y was used without --allow-downgrades
-#
-# It is not needed for its original purpose either, now that every rebuilt
-# package carries a local revision and so sorts above the distribution's
-# own version to begin with. This only decides which of two origins to
-# prefer, and leaves installed packages alone.
+# 900, not 1001: above 1000 apt will *downgrade* an already-installed
+# package to match a lower version in the repository, breaking any
+# chroot that already has a newer one. 900 is also no longer needed for
+# its original purpose, since every rebuilt package's local revision
+# already sorts above the distro's -- it only breaks ties between
+# origins and never touches an installed package.
 SOURCES_LIST = "/etc/apt/sources.list.d/seine-packages.list"
 PREFERENCES  = "/etc/apt/preferences.d/seine-packages"
 
@@ -2433,54 +1932,33 @@ def apt_preferences_command():
         "echo 'Pin-Priority: 900' >> %s" % PREFERENCES,
     ])
 
-# Where a package's own preferences go, beside seine's rather than in it:
-# the two say different things -- which origin to prefer, and what this
-# one build may install -- and a fragment of its own is what lets the
-# specification's text be written down exactly as it was given.
-#
-# Not 'seine-package', which would be a prefix of the name above it and so
-# a thing to misread in a directory listing and in anything matching on
-# names.
+# A package's own preferences, in a fragment of their own beside
+# seine's -- not named 'seine-package', which would be a confusing
+# prefix of the file above it.
 PACKAGE_PREFERENCES = "/etc/apt/preferences.d/seine-build"
 
-# sbuild expands percent escapes in the commands it is handed -- '%s' is
-# the interactive shell it would otherwise drop you into, and '%%' is how
-# a literal percent is written -- and it does that before any shell sees
-# the command. So a command meant to arrive intact has its percents
-# doubled.
-#
-# Found by the file this writes arriving as the expansion of '%s' and apt
-# refusing to read it:
-#
-#   E: Unable to parse package file /etc/apt/preferences.d/seine-build (1)
-#
-# Doubled here rather than asked of a specification: what it writes is
-# apt's language, and sbuild's escaping is no business of its.
+# sbuild expands percent escapes in the commands it runs ('%s' the
+# interactive shell, '%%' a literal percent) before any shell sees them,
+# so a command meant to arrive intact needs its percents doubled here.
 def sbuild_command(command):
     return command.replace("%", "%%")
 
-# Written with printf rather than echo: what a specification put here is
-# several lines of apt_preferences(5), and echo would need it taken apart
-# and put back together again -- and would interpret backslashes in it on
-# any shell whose echo does. quote() is what makes the text survive the
-# shell it travels through unaltered.
+# printf, not echo: the preferences text is multi-line, and quote()
+# is what makes it survive the shell unaltered.
 def package_preferences_command(preferences):
     if preferences.endswith("\n") == False:
         preferences += "\n"
     return "printf '%%s' %s > %s" % (shlex.quote(preferences),
                                      PACKAGE_PREFERENCES)
 
-# Where a repository's own key is installed in whatever is going to read
-# from it. Under apt's keyrings directory rather than pointed at where the
-# repository is mounted, because it stays behind in the image: the
-# repository is gone from the sources.list by then, and what is left is a
-# key that can answer for one served from somewhere else.
+# Where a repository's key is installed for whatever reads from it.
+# Under apt's own keyrings directory, not pointed at the mounted
+# repository, since it must stay in the image after the repository
+# itself is gone from sources.list.
 KEYRINGS = "/etc/apt/keyrings"
 
 def apt_configuration(*mountpoints, keyring=None):
-    # A repository nothing signed is trusted because it was made here a
-    # moment ago; one that is signed is verified instead, which is worth
-    # more the further it travels.
+    # Unsigned is trusted (built here a moment ago); signed is verified.
     if keyring is None:
         options = "[trusted=yes]"
         install = ""
@@ -2488,11 +1966,9 @@ def apt_configuration(*mountpoints, keyring=None):
         options = "[signed-by=%s/%s]" % (KEYRINGS, keyring)
         install = "install -D -m 0644 %s/%s %s/%s && " % (
             mountpoints[0], keyring, KEYRINGS, keyring)
-    # deb-src beside deb: the repository carries a Sources index over the
-    # source packages it holds, and a kernel built here is the only place
-    # its source can be fetched from -- there is no archive that has it.
-    # What needs it is the headers package built for another architecture
-    # out of that kernel's own source.
+    # deb-src beside deb: a kernel built here is the only place its
+    # source can be fetched from, needed for headers built on another
+    # architecture from that same source.
     lines = " && ".join(
         "echo 'deb%s %s file:%s ./' %s %s"
         % (kind, options, mountpoint,
@@ -2501,15 +1977,10 @@ def apt_configuration(*mountpoints, keyring=None):
         for kind in ["", "-src"])
     return "%s%s && %s" % (install, lines, apt_preferences_command())
 
-# The key a repository carries, if it carries one and is actually signed
-# -- which is how anything mounting it learns which key answers for it
-# without being told.
-#
-# Both halves of that matter. A cache carried to another machine brings
-# the public key with it, but not the private one, so the build there
-# writes indices nothing has signed: a repository configured 'signed-by'
-# on the strength of a key file alone would be one apt refuses to read.
-# What says a repository is signed is a signature.
+# The key a repository carries, if it is actually signed -- both must be
+# true: a cache carried to another machine brings only the public key,
+# and configuring 'signed-by' on that alone (with no signature to check)
+# is a repository apt refuses to read.
 def keyring(distro):
     where = repository(distro)
     if os.path.isfile(os.path.join(where, "InRelease")) == False:
@@ -2519,18 +1990,16 @@ def keyring(distro):
             return name
     return None
 
-# The sources.list and the pin go, since the repository they name is on
-# the machine that did the building. The keyring stays: it says which key
-# answers for those packages, and an image updated later from a repository
-# signed by the same key needs it to say so.
+# sources.list and the pin are removed, since the repository lives on
+# the build machine only. The keyring stays: it says which key answers
+# for packages that an image updated later, from a repository signed
+# with the same key, still needs to trust.
 def apt_deconfiguration():
     return "rm -f %s %s" % (SOURCES_LIST, PREFERENCES)
 
-# The same configuration for images built from a Dockerfile: a layer that
-# sets apt up, and the bind mounts that make the repositories readable
-# while that image is being built. Both are empty when the specification
-# rebuilt nothing, so an image that has no use for a repository is not
-# given a sources.list pointing at a directory that will not be there.
+# The same apt configuration for a Dockerfile-built image: a layer
+# setting it up, and the bind mounts making the repositories readable
+# during that build. Both empty when the spec rebuilt nothing.
 def apt_setup_layer(distro):
     if has_packages(distro) == False:
         return ""
@@ -2541,23 +2010,19 @@ def build_volumes(distro):
         return []
     return ["-v", "%s:%s:ro" % (repository(distro), REPOSITORY)]
 
-# Where the rebuilt packages of a specification are kept: one flat
-# repository per release, holding every architecture built for, the way a
-# distribution's archive does.
+# Where a spec's rebuilt packages live: one flat repository per release,
+# holding every architecture built for, like a distro's own archive.
 def repository(distro):
     return ContainerEngine.packages(distro["release"])
 
-# Whether there is anything there to install: a specification with no
-# 'packages' section leaves the directory without an index, and pointing
-# apt at it would only earn a failed 'apt-get update'.
+# Whether there is anything to install: a spec with no 'packages'
+# section leaves this directory without an index.
 def has_packages(distro):
     return os.path.isfile(os.path.join(repository(distro), "Packages"))
 
-# Validates the 'packages' section and returns it as Package objects,
-# ordered the way they will be built.
-# What answers for a source, if anything does. A specification that wants
-# every download accounted for asks with --require-hashes, and is told
-# before a byte is fetched rather than after.
+# What answers for a source's integrity, if anything does --
+# --require-hashes asks this to be non-None for every package, and is
+# told before a byte is fetched rather than after.
 def integrity(package):
     if package.scheme == "apt":
         return "the archive's signed index"
@@ -2574,8 +2039,7 @@ def upstream_integrity(package):
     return ("a declared sha256"
             if package.kernel_upstream_sha256 is not None else None)
 
-# Every source nothing vouches for, named with the file that wrote it, so
-# one run says all of them rather than one per attempt.
+# Every source nothing vouches for, named with the file that wrote it.
 def unvouched(packages):
     found = []
     for package in packages:
@@ -2594,47 +2058,35 @@ def parse(spec, check_uki=True):
         raise ValueError("'packages' shall be a list of source packages!")
 
     parsed = [Package(p, i + 1) for i, p in enumerate(packages)]
-    # An entry here asks for a build, and a build needs something to
-    # fetch. Naming a package without saying where its source comes from
-    # describes it, which is what 'defaults' is for -- and a description
-    # left under 'packages' would otherwise be a build of nothing. A uki
-    # package is the exception: it generates its own source.
+    # A package with no 'source' describes nothing to build -- that
+    # belongs under 'defaults' instead. A uki package is the exception:
+    # it generates its own source.
     for package in parsed:
         if package.source is None and uki.is_uki_package(package) == False:
             raise ValueError(
                 "package '%s' has no 'source' to build from. An entry under "
                 "'packages' asks for a package to be built; one that only "
                 "describes a package goes under 'defaults'." % package.name)
-    # Before ordering, so that a kernel named here is reported by the
-    # message written for it rather than by 'after' finding a package it
-    # cannot name.
+    # Before ordering, so a bad kernel reference is reported here rather
+    # than by 'after' failing to find it.
     module.check_references(parsed)
     module.depend_on_kernels(parsed)
     ordered = propagate(order(parsed))
     module.check_kernels(ordered, spec)
-    # Skipped for a 'multiconfig:' group this specification's own 'after:'
-    # declared a predecessor for -- see multiconfig._load()'s own comment.
-    # uki.extend() still checks for real once the package actually builds.
+    # Skipped for a 'multiconfig:' group whose predecessor is declared
+    # via 'after:' elsewhere -- uki.extend() still checks for real once
+    # the package actually builds.
     if check_uki:
         uki.check_initrds(ordered, spec)
     return ordered
 
-# Carries a package's scope down to what it is built after.
-#
-# A package built for the host is compiled and linked against what its
-# dependencies installed, which have to be of the host's architecture too
-# -- so a dependency that said nothing about who it is for is built for
-# whoever needs it, on top of the image it was already going to be in.
-# Saying it twice is bookkeeping the specification should not have to do.
-#
-# A dependency that *did* say is not widened, it is an error: an explicit
-# scope is an answer, and quietly building a package for an architecture
-# its specification ruled out is how a build gives you something you said
-# you did not want. The message names both entries, since which of them is
-# wrong is not seine's to decide.
-#
-# In reverse build order, so one pass carries a role the length of a
-# chain: a package is reached before everything it is built after.
+# Carries a package's scope down to what it is built after: a dependency
+# built for the host must itself be built for the host, or the
+# dependent would link against an architecture it never asked to build.
+# An explicit scope on the dependency is never widened -- that is an
+# error instead, since silently building for an unwanted architecture is
+# worse than failing loudly. Walked in reverse build order, so one pass
+# carries a role the length of a chain.
 def propagate(packages):
     for package in reversed(packages):
         for dependency in getattr(package, "depends", []):
@@ -2654,18 +2106,9 @@ def propagate(packages):
             dependency.scope = sorted(set(dependency.scope) | set(missing))
     return packages
 
-# Orders packages for building. 'priority' says which package would rather
-# go first; 'before' and 'after' say which package *has* to, naming the
-# other by its package name.
-#
-# Both are needed. A package that build-depends on another has to be built
-# after it, and saying so by giving the two of them priorities that happen
-# to sort the right way records the conclusion rather than the reason --
-# and quietly stops holding when a third package is added between them.
-#
-# Constraints win over priority, and priority decides between packages that
-# no constraint separates, so adding a 'before' to a specification does not
-# rearrange the packages around it.
+# Orders packages for building. 'priority' is a preference; 'before' and
+# 'after' are hard constraints, naming another package by name -- and
+# constraints always win over priority.
 def order(packages):
     indexes = {}
     for index, package in enumerate(packages):
@@ -2681,10 +2124,8 @@ def order(packages):
             for other in _referenced(indexes, package, name, "before"):
                 predecessors[other].add(index)
 
-    # Kahn's algorithm, taking the highest priority package among those
-    # whose predecessors have all been built, and the earliest listed among
-    # those of equal priority. Quadratic in the number of packages, which
-    # is a handful.
+    # Kahn's algorithm: among packages whose predecessors are all built,
+    # take the highest priority, then the earliest listed.
     ordered = []
     remaining = set(range(len(packages)))
     while len(remaining) > 0:
@@ -2696,18 +2137,16 @@ def order(packages):
                     sorted(packages[i].name for i in remaining)))
         ready.sort(key=lambda i: (packages[i].priority, i))
         chosen = ready[0]
-        # What this package is built after, kept so a rebuild of any of
-        # them can be seen in its digest. Reachability is not needed here:
-        # the digest of a direct dependency already carries its own.
+        # Direct predecessors only: each already carries its own
+        # dependencies' digests, so reachability need not be computed.
         packages[chosen].depends = [packages[i] for i in predecessors[chosen]]
         ordered.append(packages[chosen])
         remaining.discard(chosen)
     return ordered
 
-# A 'before'/'after' entry names another package of the same specification.
-# Naming something that is not there is a typo worth reporting rather than
-# a constraint worth ignoring -- the build would otherwise go ahead in an
-# order the specification did not ask for.
+# A 'before'/'after' entry must name a real package in this
+# specification -- a typo here should fail loudly, not silently build
+# in the wrong order.
 def _referenced(indexes, package, name, setting):
     if name not in indexes:
         raise package._error(

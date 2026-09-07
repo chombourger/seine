@@ -1,8 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# /help: a modal overlay, not a screen app.show() navigates to -- the
-# screen underneath stays put, Esc returns to it, same as Ctrl+P.
+# /help: a modal overlay, not a screen app.show() navigates to. The
+# screen underneath stays put; Esc returns to it, same as Ctrl+P.
 
 import textwrap
 
@@ -25,8 +25,7 @@ SHORTCUTS = [
     ("Esc",    "close a preview, or this help"),
 ]
 
-# The active tab in reverse video, the rest dim -- a real Text, not
-# markup, for styled spans within one line.
+# The active tab in reverse video, the rest dim.
 def _tab_bar(active):
     bar = Text()
     for i, name in enumerate(TABS):
@@ -46,8 +45,8 @@ def _general_text():
         text.append("%s\n" % what)
     return text
 
-# One row per command, not per alias -- filters on c.name so
-# REGISTRY["q"] (same object as REGISTRY["quit"]) isn't listed twice.
+# One row per command, not per alias: filters on c.name so an alias
+# like REGISTRY["q"] isn't listed twice.
 class CommandList(OptionList):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -72,8 +71,7 @@ class CommandList(OptionList):
         return self._names[index]
 
 # A command's detail page, laid out like a man page: bold all-caps
-# section headers, indented body. DESCRIPTION is skipped when a command
-# has nothing beyond its one-line help.
+# section headers, indented body.
 DETAIL_WIDTH = 64
 
 def _section(title, body):
@@ -84,8 +82,8 @@ def _section(title, body):
     text.append("\n")
     return text
 
-# One flags line per option, description indented further under it --
-# the same two-line shape man's own OPTIONS section uses.
+# One flags line per option, description indented under it, same
+# two-line shape man's OPTIONS section uses.
 def _options_section(options):
     text = Text()
     text.append("OPTIONS\n", style="bold")
@@ -121,14 +119,14 @@ class HelpScreen(ModalScreen):
         Binding("right",  "next_tab",    show=False),
         # Only reached while a detail page shows: CommandList binds its
         # own 'enter' and consumes it first while focused.
-        Binding("enter",  "activate",    show=False),
+        Binding("enter", "activate", show=False),
     ]
 
     DEFAULT_CSS = """
     HelpScreen { align: center middle; }
     #helppane {
         width: 70%; height: 70%;
-        /* 'round', not 'tall' -- see app.py's CSS comment on glyph support. */
+        /* 'round', not 'tall' -- see app.py's CSS comment. */
         border: round $border;
         background: $surface;
         padding: 1 2;
@@ -144,8 +142,8 @@ class HelpScreen(ModalScreen):
     def __init__(self):
         super().__init__()
         self._active = 0
-        # The command CommandList's Enter last opened, or None while
-        # the list (or General tab) is showing.
+        # Command CommandList's Enter last opened, or None if the list
+        # (or General tab) is showing.
         self._detail = None
 
     def compose(self):
@@ -181,8 +179,8 @@ class HelpScreen(ModalScreen):
         self._active = (self._active + 1) % len(TABS)
         self._redraw()
 
-    # Closes Help and hands the prompt "/name ", ready to type on -- same
-    # "fill, don't run" as the command palette's RegistryProvider._fill().
+    # Closes Help and hands the prompt "/name ", ready to type on --
+    # same "fill, don't run" as RegistryProvider._fill().
     def action_activate(self):
         if self._detail is None:
             return
@@ -194,8 +192,7 @@ class HelpScreen(ModalScreen):
         prompt.cursor_position = len(prompt.value)
         prompt.focus()
 
-    # Not '_render': that's Widget._render(), an internal Textual hook --
-    # shadowing it breaks rendering (see build.py's _redraw()).
+    # Not '_render': that's Widget._render(), an internal Textual hook.
     def _redraw(self):
         self.query_one("#helptabs", Static).update(_tab_bar(self._active))
         body = self.query_one("#helpbody", Static)

@@ -1,17 +1,11 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Compiles one 'test:' entry -- a spec's own list of them, the same
-# section every other part of a specification lives in (a fragment
-# 'requires:'s in its own suite beside whatever it tests, merged by
-# name across fragments the way 'packages:' is; see
-# BuildCmd._merge_tests()) -- onto robot.
-# running's programmatic model (TestSuite/UserKeyword/If/For/While/Try,
-# all built with .body.create_*() calls) rather than generating '.robot'
-# text -- no second parser, and no syntax to keep in sync with Robot's
-# own. IF/FOR/WHILE/TRY/keywords/variables/tags/setup/teardown are
-# Robot's; what this module adds is only the step shape a test author
-# writes and how it maps onto those.
+# Compiles a spec's 'test:' entries onto robot.running's programmatic
+# model (TestSuite/UserKeyword/If/For/While/Try) instead of generating
+# '.robot' text -- no second parser to keep in sync with Robot's own.
+# IF/FOR/WHILE/TRY/keywords/variables/tags/setup/teardown are Robot's;
+# this module only adds the step shape below and maps it onto those.
 #
 # A step is one of:
 #   "Some Keyword  arg1  arg2"          -- Robot's own text call, verbatim
@@ -26,11 +20,10 @@
 #   {break: true} / {continue: true}
 #   {set: {name: VAR, value: EXPR}}
 #
-# Keyword libraries are always seine's own (target/image/observation --
-# see library/), plus whatever 'library:' names; assertions are Robot's
-# own BuiltIn (Should Be Equal, Should Contain, ...), called through the
-# same {snake_name: ARGS} shorthand as a seine keyword -- one call syntax
-# for both, no separate 'assert:' step type to maintain.
+# Keyword libraries are seine's own (target/image/observation, see
+# library/) plus whatever 'library:' names. Assertions are Robot's own
+# BuiltIn (Should Be Equal, Should Contain, ...), called through the
+# same {snake_name: ARGS} shorthand -- no separate 'assert:' step type.
 
 DEFAULT_LIBRARIES = [
     "seine.testing.library.target.TargetLibrary",
@@ -39,9 +32,8 @@ DEFAULT_LIBRARIES = [
 ]
 
 # Control-flow keys, checked before the generic {snake_name: ARGS}
-# shorthand -- a step naming one of these is never mistaken for a
-# keyword call, so a library is free to define a keyword called (say)
-# 'While' without colliding with the step type.
+# shorthand, so a library keyword named e.g. 'While' can't collide
+# with the step type.
 _CONTROL_KEYS = ("if", "for_each", "for_range", "while", "retry_until",
                  "try", "break", "continue", "set", "call")
 
@@ -123,11 +115,9 @@ def _add_while(body, step):
     node = body.create_while(condition=step["while"], limit=step.get("limit"))
     _compile_steps(node.body, step.get("do", []))
 
-# Sugar for the "wait for a condition, polling" shape the prompt asks
-# for: a WHILE NOT(condition), 'timeout' as Robot's own loop 'limit' (so
-# a stuck poll fails with Robot's own clear "did not finish within the
-# limit" rather than spinning silently), 'interval' as a Sleep between
-# tries -- BuiltIn's own keyword, not a bespoke poll primitive.
+# Sugar for "wait for a condition, polling": a WHILE NOT(condition),
+# 'timeout' as the loop's 'limit' (so a stuck poll fails clearly
+# instead of spinning), 'interval' as a Sleep between tries.
 def _add_retry_until(body, step):
     condition = step["retry_until"]
     node = body.create_while(condition="not (%s)" % condition,
@@ -185,11 +175,9 @@ def _compile_steps(body, steps):
             else:
                 _add_keyword(body, step)
 
-# One step list becomes one UserKeyword body -- shared by 'keywords:'
-# (reusable named actions), suite/test setup and teardown (a single
-# keyword call, same restriction Robot's own '[Setup]'/'[Teardown]'
-# have -- bundle more than one step under a keyword of its own, exactly
-# the way a real .robot file would), and a test's own 'steps:'.
+# One step list becomes one UserKeyword body -- shared by 'keywords:',
+# suite/test setup and teardown (a single keyword call, same
+# restriction as Robot's '[Setup]'/'[Teardown]'), and a test's 'steps:'.
 def _compile_keyword(suite, entry):
     uk = suite.resource.keywords.create(
         name=entry["name"], args=[("${%s}" % a) for a in entry.get("args", [])])
@@ -199,31 +187,18 @@ def _config_fixture(fixture, step):
     name, args, named, _assign = _keyword_step(step)
     fixture.config(name=name, args=args, named_args=named or None)
 
-# A child TestSuite built from a sibling one does not see its
-# resource's own keywords/variables (verified: Robot only wires that up
-# for a real directory/'__init__.robot' discovery, not for two
-# programmatically-built suites joined with 'suites.append()') -- so
-# every 'test:' entry a spec's own fragments contributed compiles into
-# ONE flat suite instead, sharing one resource. This is what makes a
-# 'Log In' keyword defined where the root account is actually
-# configured usable by a test another, unrelated fragment contributes:
-# both entries end up in the same suite's own resource, not two
-# separate ones that can't see each other.
+# A child TestSuite built from a sibling one can't see its resource's
+# keywords/variables, so every 'test:' entry compiles into ONE flat
+# suite sharing one resource. This lets a 'Log In' keyword defined in
+# one fragment be reused by tests from another, unrelated fragment.
 #
-# There is no suite-level setup/teardown: two boards each 'requires:'-
-# ing their own board-specific fragment plus a shared one (conf-
-# accounts, say) is the ordinary case, and each fragment's own
-# 'test:' entry reasonably wants its own tests connected the same way
-# -- a single whole-spec setup would mean only one entry's fragment
-# could ever declare one, an arbitrary restriction two real,
-# unrelated 'connect_target: {}' entries have no reason to trip over.
-# Instead, an entry's own 'setup:'/'teardown:' is the default for every
-# test *that entry* contributes -- a test's own 'setup:'/'teardown:'
-# still overrides it, same as always.
-# Shared with spectree.py's own test_paths(): a running test's fully
-# qualified Robot name is '<suite_name()>.<case name>', which the spec
-# tree's own live-highlight has to reproduce exactly to find the right
-# node -- one naming rule, not two copies that can drift apart.
+# There is no suite-level setup/teardown: an entry's own
+# 'setup:'/'teardown:' is the default for every test that entry
+# contributes; a test's own 'setup:'/'teardown:' overrides it.
+#
+# A running test's fully qualified Robot name is
+# '<suite_name()>.<case name>' -- spectree.py's test_paths() must
+# reproduce this exactly to find the right node.
 def suite_name(entries, default="seine test"):
     if len(entries) == 1:
         return entries[0].get("name") or default
@@ -247,9 +222,8 @@ def compile(entries, context, name="seine test"):
         for keyword in entry.get("keywords", []):
             name = keyword["name"]
             if name in seen_keywords:
-                # Identical definition: a fragment reached twice via two
-                # 'requires:' paths, tolerated the same as everywhere
-                # else that happens. Only a real mismatch is an error.
+                # Same fragment reached via two 'requires:' paths is
+                # fine; only a real mismatch is an error.
                 if seen_keywords[name] != keyword:
                     raise LoadError(
                         "keyword '%s' is defined differently by two "
@@ -260,9 +234,8 @@ def compile(entries, context, name="seine test"):
             seen_keywords[name] = keyword
             _compile_keyword(suite, keyword)
 
-    # Every default library first (once), then every entry's own extra
-    # ones -- imported after the loop above so DEFAULT_LIBRARIES' own
-    # names can never collide with an entry naming one of them again.
+    # Default libraries import after entry libraries, so an entry naming
+    # one of them again can't collide.
     for library in DEFAULT_LIBRARIES:
         if library not in seen_libraries:
             suite.resource.imports.library(library, args=(context,))

@@ -1,9 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# The TUI's "active specification" -- what /use sets, and what
-# Overview/Plan act on. Reuses multiconfig.split()'s own '--' grouping:
-# 'use a.yaml -- b.yaml' means what 'seine build a.yaml -- b.yaml' means.
+# The TUI's "active specification": what /use sets, and what
+# Overview/Plan act on. '/use a.yaml -- b.yaml' groups the same way
+# 'seine build a.yaml -- b.yaml' does.
 
 from seine import multiconfig
 from seine.build import BuildCmd
@@ -12,13 +12,12 @@ class Context:
     def __init__(self):
         self.groups = None
         self.builds = None
-        # Set only by side_load()/side_unload(): the active group's spec
-        # just before the most recent one, for SpecTree.load() to diff
-        # against. Cleared by use(), overwritten (not accumulated) by
-        # the next call -- highlights only the last change.
+        # Set only by side_load()/side_unload(): the spec just before
+        # the most recent change, for SpecTree.load() to diff against.
+        # Cleared by use(), overwritten (not accumulated) each call.
         self.changed_from = None
 
-    # Loads/parses each group the way 'seine build' does -- nothing is
+    # Loads/parses each group like 'seine build' does; nothing is
     # built, so this is instant and side-effect-free.
     def use(self, args):
         groups = multiconfig.split(args)
@@ -33,8 +32,7 @@ class Context:
         self.builds = builds
         self.changed_from = None
 
-    # Refuses more than one active group, same as /build and
-    # /filesystem -- both this and side_unload() below.
+    # Refuses more than one active group, same as /build/ /filesystem.
     def _one_active_group(self):
         if not self.active:
             raise ValueError("no active specification -- '/use SPEC' first")
@@ -43,9 +41,8 @@ class Context:
                 "side-load needs exactly one active group -- multi-group "
                 "specifications ('/use a -- b') aren't supported here yet")
 
-    # 'group's own declared file list (spec['multiconfig'][group]) -- the
-    # thing both side_load()/side_unload() amend when targeting a named
-    # sub-build instead of the outer spec.
+    # 'group's declared file list, amended by side_load()/side_unload()
+    # when targeting a named sub-build instead of the outer spec.
     def _subbuild_files(self, build, group):
         groups = build.spec.get("multiconfig") or {}
         if group not in groups:
@@ -54,10 +51,9 @@ class Context:
                 % (group, ", ".join(sorted(groups)) if groups else "none"))
         return groups[group]
 
-    # Re-parses 'group' alone from 'files', in place -- the outer spec and
+    # Re-parses 'group' alone from 'files', in place; the outer spec and
     # every other sub-build are untouched. 'build.subbuilds' and
-    # 'build.image.subbuilds' are the same dict (BuildCmd._parse_
-    # multiconfig()), so mutating one is enough.
+    # 'build.image.subbuilds' are the same dict, so mutating one suffices.
     def _reload_subbuild(self, build, group, files):
         if not files:
             raise ValueError(
@@ -69,9 +65,8 @@ class Context:
         self.changed_from = previous_spec
 
     # One more fragment appended to the active group's file list, same
-    # '--' composition as the real CLI -- or, with 'group' given, to that
-    # named 'multiconfig:' sub-build's own file list instead, reparsing
-    # only that sub-build.
+    # '--' composition as the CLI -- or, with 'group' given, to that
+    # sub-build's file list instead, reparsing only that sub-build.
     def side_load(self, fragment, group=None):
         self._one_active_group()
         build = self.builds[0]
@@ -83,11 +78,9 @@ class Context:
         files = self._subbuild_files(build, group)
         self._reload_subbuild(build, group, files + [fragment])
 
-    # The reverse of side_load(): one fragment dropped back out of the
-    # active group's (or, with 'group' given, the named sub-build's) file
-    # list and the rest reparsed. Works on any file currently in the
-    # list, not only one side_load() itself added -- the list doesn't
-    # distinguish how a file got there, so neither does this.
+    # The reverse of side_load(): drops one fragment out of the file
+    # list and reparses the rest. Works on any file in the list, not
+    # only one side_load() itself added.
     def side_unload(self, fragment, group=None):
         self._one_active_group()
         build = self.builds[0]

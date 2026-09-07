@@ -1,9 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Every check says whether something a real module assumes is actually
-# there -- no privileged action, nothing built. seine.tui.doctor renders
-# the same list.
+# Each check verifies a dependency a real module needs. No privileged
+# actions, nothing built. seine.tui.doctor renders the resulting list.
 
 import importlib.util
 import os
@@ -20,8 +19,8 @@ class Check:
     def __init__(self, group, name, status, detail):
         self.group = group
         self.name = name
-        # "ok"/"warn"/"missing", not True/False -- a missing cross-arch
-        # qemu is a note, not a failure like a missing podman.
+        # status is "ok"/"warn"/"missing", not a bool: e.g. a missing
+        # cross-arch qemu is only a warning, unlike a missing podman.
         self.status = status
         self.detail = detail
 
@@ -36,8 +35,8 @@ def _first_line(text):
     text = (text or "").strip()
     return text.splitlines()[0] if text else ""
 
-# 'binary --version', reduced to one line -- missing or unresponsive
-# both count as "missing"; diagnosing why is not this function's job.
+# Runs 'binary --version' and keeps the first line. Missing or
+# unresponsive both count as "missing".
 def _binary(group, name, argv=None):
     path = shutil.which(name)
     if path is None:
@@ -63,8 +62,8 @@ def check_crun():
     return _binary(GROUP_ENGINE, "crun")
 
 def check_passt():
-    # passt has no '--version' worth trusting across releases; found is
-    # the whole question.
+    # passt's '--version' output is not reliable across releases, so we
+    # only check whether it exists.
     path = shutil.which("passt")
     status = "ok" if path else "missing"
     return Check(GROUP_ENGINE, "passt", status, path or "not found")
@@ -75,9 +74,8 @@ def check_guestfs():
                 "ok" if found else "missing",
                 "importable" if found else "not importable")
 
-# A note, not an error: '/target' and its AI tools are an optional
-# feature, unlike guestfs which every real build needs. Both mtda and
-# pyte are required -- either missing disables '/target'.
+# '/target' is optional, so a missing dependency is only a warning.
+# Both mtda and pyte are required; either missing disables '/target'.
 def check_mtda():
     found = importlib.util.find_spec("mtda.client") is not None
     return Check(GROUP_TARGET, "python3-mtda",
@@ -90,8 +88,8 @@ def check_pyte():
                 "ok" if found else "warn",
                 "importable" if found else "not met\n  ! /target disabled")
 
-# 'seine test' is optional the same way '/target' is: a note, not an
-# error, since most builds never drive real hardware.
+# 'seine test' is optional, like '/target': most builds never drive
+# real hardware, so a missing dependency is only a warning.
 def check_robotframework():
     found = importlib.util.find_spec("robot") is not None
     return Check(GROUP_TESTING, "robotframework",
@@ -106,8 +104,8 @@ def check_kvm():
     return Check(GROUP_IMAGING, "/dev/kvm", "ok" if ok else "missing",
                 "accessible" if ok else "exists but not accessible (group 'kvm'?)")
 
-# Host architecture's hypervisor is the one that matters; the others are
-# only for cross-building, so their absence is a note, not a failure.
+# Only the host architecture's hypervisor is required; the others are
+# for cross-building, so their absence is just a warning.
 def check_hypervisors():
     checks = []
     for architecture, path in sorted(DEFAULT_HYPERVISORS.items()):
@@ -126,9 +124,8 @@ def check_hypervisors():
 def check_ansible_playbook():
     return _binary(GROUP_ANSIBLE, "ansible-playbook")
 
-# 'ansible-galaxy collection list NAME' exits 0 whether or not NAME is
-# installed -- it prints nothing when it is not -- so presence is read
-# off the output, not the exit code.
+# 'ansible-galaxy collection list NAME' exits 0 either way, printing
+# nothing if NAME is missing, so we check the output, not the exit code.
 def check_podman_collection():
     result = _run(["ansible-galaxy", "collection", "list", "containers.podman"])
     if result is None:
@@ -144,9 +141,8 @@ def check_gnupg():
     return Check(GROUP_SIGNING, "gnupg", "ok" if path else "missing",
                 path or "not found (only needed for --sign-key)")
 
-# The one check that takes what a caller is about to do into account:
-# a sign key set on the environment or the command line is fine either
-# way, so this is a note, never a failure of its own.
+# The sign key can come from the environment or a --sign-key option,
+# so a missing key is only a warning, never a failure.
 def check_sign_key(options=None):
     options = options or {}
     key = options.get("sign_key") or os.environ.get("SEINE_SIGN_KEY")
@@ -156,9 +152,8 @@ def check_sign_key(options=None):
                 "SEINE_SIGN_KEY not set and no --sign-key on this command")
 
 def check_debsbom_image():
-    # Not pulled -- only asked whether the registry can be reached at
-    # all, and only when a caller opts in: this has to stay fast and
-    # offline-safe by default.
+    # Only checks that the registry is reachable, does not pull. Runs
+    # only when a caller opts in, so doctor stays fast and offline by default.
     result = _run(["podman", "manifest", "inspect", DEBSBOM_IMAGE], timeout=10)
     ok = result is not None and result.returncode == 0
     return Check(GROUP_SBOM, "debsbom image reachable",
@@ -171,10 +166,8 @@ def check_storage():
     free = shutil.disk_usage(build_dir).free
     return Check(GROUP_STORAGE, build_dir, "ok", "%.1f GiB free" % (free / 1024**3))
 
-# Same shape as check_sign_key(): configured but missing the one
-# credential is a note, not a failure. No model set at all isn't
-# reported here -- that's the feature being off, not a machine missing
-# something.
+# A model configured without an API key is a warning. No model at all
+# is not reported: that means the feature is off, not misconfigured.
 def check_llm():
     model = os.environ.get("SEINE_LLM_MODEL") or settings.load().get("llm_model")
     if not model:
@@ -184,14 +177,11 @@ def check_llm():
     return Check(GROUP_AI, "llm_model", "warn",
                 "%s configured but SEINE_LLM_API_KEY is not set" % model)
 
-# Cheap and offline by default; 'pull' opts into the one check that
-# touches the network for real.
 def _target_checks():
     mtda = check_mtda()
     pyte = check_pyte()
     if mtda.status == "warn" and pyte.status == "warn":
-        # Both missing -> single coalesced warning instead of two
-        # identical '! /target disabled' lines.
+        # Both missing: one combined warning instead of two identical lines.
         return [Check(GROUP_TARGET, "python3-mtda, pyte", "warn",
                       "not met\n  ! /target disabled")]
     return [mtda, pyte]
@@ -211,8 +201,7 @@ def run(options=None, pull=False):
 
 MARKS = {"ok": "✔", "warn": "-", "missing": "✗"}
 
-# The one rendering of a check list. Group headers appear once, in the
-# order run() already grouped them in.
+# Group headers appear once, in the order run() already grouped them in.
 def render(checks):
     lines = []
     group = None

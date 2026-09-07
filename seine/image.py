@@ -43,23 +43,15 @@ class Image:
         self._output = None
         self._tarball = None
         self._verbose = options["verbose"]
-        # Both only ever set for real by parse() -- defaulted here too so
-        # a specification with no 'image:' section (a vendor-only one,
-        # say) still has something safe to read: 'packages' as "nothing
-        # rebuilt from source" rather than an AttributeError, and 'spec'
-        # as the tell plan()/tasks() use to refuse cleanly instead of
-        # reaching into a spec that was never parsed.
+        # Defaulted here so a spec with no 'image:' section still has
+        # something safe to read, instead of parse()/tasks() hitting
+        # an AttributeError on an unparsed spec.
         self.packages = []
         self.spec = None
-        # A specification's own 'multiconfig:' groups (BuildCmd.
-        # _parse_multiconfig()), name -> the BuildCmd that parsed it.
-        # Empty for a specification with none -- tasks() below then adds
-        # nothing beyond what it always built.
+        # 'multiconfig:' groups: name -> the BuildCmd that parsed it.
         self.subbuilds = {}
-        # Each group's own 'after' set, name -> the other groups' names it
-        # named ('before' already folded in -- multiconfig.resolve_order()).
-        # tasks() below reads this to wire a group's own root tasks to the
-        # 'needs' of whichever group(s) it has to build after.
+        # Each group's resolved 'after' set: name -> names it must
+        # build after. Used by tasks() to wire group dependencies.
         self.multiconfig_after = {}
 
     def __del__(self):
@@ -83,11 +75,8 @@ class Image:
             if "filename" not in image:
                 raise ValueError("output 'filename' not specified in 'image' section!")
             filename = image["filename"]
-            # A relative filename follows SEINE_DEPLOY_DIR/SEINE_BUILD_DIR
-            # the way seine's other output does, scoped per release like
-            # the caches are, so two releases built from one checkout
-            # don't overwrite each other's image; an absolute one says
-            # where it goes and is never redirected.
+            # Relative path goes under deploy/<release>, same as other
+            # output, so two releases don't overwrite each other's image.
             if os.path.isabs(filename) == False:
                 deploy = os.path.join(ContainerEngine.deploy_root(), distro["release"])
                 os.makedirs(deploy, exist_ok=True)
@@ -104,29 +93,22 @@ class Image:
                 filename = os.path.join(deploy, filename)
             self._initrd_output = filename
         else:
-            # No 'image:' section: nothing to partition, so the root
-            # file-system tarball built for it is this build's real
-            # output instead (own_tasks() below).
+            # No 'image:' section: the rootfs tarball is this build's
+            # real output instead (own_tasks() below).
             self._output = self._rootfs_output(distro)
 
-        # Validated here so a bad 'packages' section is reported when the
-        # specification is parsed rather than once the build reaches it.
-        # 'defer_uki_check' (multiconfig._load()) skips only the
-        # 'extends: uki: initrd:' half of that for a 'multiconfig:' group
-        # whose own predecessor -- not yet built -- is what will deploy it.
+        # Validated at parse time, not build time. 'defer_uki_check' skips
+        # the 'extends: uki: initrd:' check for a multiconfig group whose
+        # predecessor (not yet built) will deploy it.
         self.packages = packages.parse(
             spec, check_uki=not self.options.get("defer_uki_check"))
 
-        # And so is 'vendor:', for the same reason -- 'seine build' never
-        # acts on it, but a specification with a typo in it should not
-        # wait for 'seine vendor' to say so.
+        # Validated here too, so a typo doesn't wait for 'seine vendor' to
+        # catch it.
         from seine import vendor
         vendor.suites(vendor.parse(spec), distro)
         vendor.exclusions(spec)
 
-        # And so is this: whether a source has anything vouching for it is
-        # knowable without fetching it, so a specification that asked for
-        # hashes and has none is told now rather than after a download.
         if self.options.get("require_hashes"):
             self._require_hashes()
 
@@ -139,10 +121,9 @@ class Image:
         self.spec = spec
         return self.spec
 
-    # Named from the spec file's own basename ('main.yaml' -> 'main.tar')
-    # rather than the release: two image-less specs sharing a release
-    # would otherwise collide on one filename. Falls back to the release
-    # when no file is known (e.g. BuildCmd.loads() in a test).
+    # Named from the spec file's basename ('main.yaml' -> 'main.tar') so
+    # two image-less specs sharing a release don't collide. Falls back
+    # to the release name when no file is known (e.g. tests).
     def _rootfs_output(self, distro):
         files = self.options.get("files") or []
         stem = os.path.splitext(os.path.basename(files[0]))[0] \
@@ -209,19 +190,10 @@ class Image:
             vendor_digest=vendor.offline_dockerfile_digest(self.spec, distro))
         self._cid = runner.run(self.spec["playbook"])
 
-    # What was exported is a root file-system, rather than whatever came out
-    # of a podman that said nothing was wrong.
-    #
-    # 'check=True' catches an export that failed and nothing else. One that
-    # exits zero having written a tar with no file-system in it is taken as
-    # good, written into the image, and reported three steps later by
-    # libguestfs as
-    #
-    #   internal_write: open: /etc/fstab: No such file or directory
-    #
-    # which says nothing about where it went wrong. A root file-system has
-    # an /etc: looking for it costs a walk of the first few thousand
-    # members of a tar this build is about to read in full anyway.
+    # 'check=True' only catches podman failing, not an export that exits
+    # zero with an empty tar. That case would otherwise only surface much
+    # later, as a confusing libguestfs error. So confirm the tar actually
+    # has a root file-system in it (has '/etc') before trusting it.
     ROOT_EVIDENCE = 5000
 
     def _exported(self, tarball):
@@ -240,10 +212,9 @@ class Image:
         failed = True
         try:
             self._tarball = None
-            # In the scratch space rather than the working directory: a
-            # root file-system nobody asked to keep is large, and the
-            # working directory is someone's checkout. A build that dies
-            # leaves it where 'seine cache clear scratch' will find it.
+            # Scratch space, not the working directory: it's large and
+            # unwanted by default, and a failed build leaves it where
+            # 'seine cache clear scratch' will find it.
             image = tempfile.NamedTemporaryFile(
                 mode="w", delete=False, dir=ContainerEngine.scratch(),
                 prefix="root-", suffix=".tar")
@@ -255,28 +226,23 @@ class Image:
             raise
         finally:
             if self._cid:
-                # The container is still running ('sleep infinity', kept
-                # alive for ansible to connect into) at this point, so it
-                # needs a forceful removal rather than a plain 'rm'.
+                # Container is still running ('sleep infinity'), so it
+                # needs a forceful removal, not a plain 'rm'.
                 ContainerEngine.discard(self._cid, force=True, failed=failed)
                 self._cid = None
-            # No prune here. It is machine-wide -- the appliance being
-            # prepared beside this is made of images it would consider
-            # dangling -- so it happens once, when the build is done and
-            # holds nothing, and only if no other build is running.
+            # No prune here: it's machine-wide and would catch images the
+            # appliance build beside this one still needs.
 
-    # Every 'source:' a partition/volume names, once each -- what
-    # _size_partitions()/Imager.create() both walk to know which tarball(s)
-    # besides this specification's own (source=None) they need.
+    # Every 'source:' a partition/volume names, once each -- the extra
+    # tarballs (besides this spec's own) that a build needs.
     def _referenced_sources(self):
         return sorted({m["source"] for m in self.partitionHandler.mounts
                        if m.get("source") is not None})
 
-    # The tarball a mount's 'source' points at. 'None' is this
-    # specification's own. A declared group's is its sub-build's --
-    # already moved to '_output' by 'deploy-rootfs', unless that
-    # sub-build has its own 'image:' (ignored for the outer disk), in
-    # which case it never runs that step and is read from '_tarball'.
+    # The tarball a mount's 'source' points at. 'None' is this spec's
+    # own. A group's is read from '_output' once 'deploy-rootfs' has
+    # moved it there, or from '_tarball' if the group has its own
+    # 'image:' and never runs that step.
     def _tarball_for(self, source):
         if source is None:
             return self._tarball
@@ -294,10 +260,8 @@ class Image:
         self.partitionHandler.compute_sizes()
         self.partitionHandler.print_stats()
 
-    # Names the task that leaves a referenced group's tarball ready to
-    # read (Image.tasks()'s own '<label>:<name>' naming). 'disk' waits
-    # on these too, so a group's tarball is never read while still being
-    # written or renamed away.
+    # Names the task that finishes writing a referenced group's tarball,
+    # so 'disk' can wait for it and never read it mid-write.
     def _source_task_names(self):
         from seine import multiconfig
         names = []
@@ -308,12 +272,9 @@ class Image:
             names.append("%s:%s" % (label, terminal))
         return names
 
-    # Beside the image it is about to become, and not in the scratch space
-    # with the rest: the imager finishes by renaming this to the filename the
-    # specification asked for, and a rename only works within one filesystem.
-    # Written where the output goes rather than in the working directory, so
-    # a specification writing to another drive renames rather than failing
-    # with EXDEV.
+    # Created beside the final output path, not in scratch: the imager
+    # finishes by renaming this into place, and rename only works within
+    # one filesystem.
     def _empty_disk(self):
         size = self.partitionHandler.disk_size()
         image = tempfile.NamedTemporaryFile(
@@ -323,33 +284,11 @@ class Image:
         image.close()
         self._image = image.name
 
-    # A 'vendor' task, resolving/fetching/indexing what 'vendor:' asks for
-    # before 'packages:' reaches for it -- only when there is anything to
-    # do: a 'vendor:' section that feeds no suite 'apt-pull-mode: offline'
-    # actually needs is left for a plain 'seine vendor' to build whenever
-    # someone wants it, same as today, since nothing here would read it.
-    #
-    # Narrowed to this build's own release, like 'seine vendor --suite
-    # <release>' -- 'vendor:' entries scoped to some other suite are no
-    # business of this build's own 'packages:'. Fetching (not resolving,
-    # which still walks every architecture 'vendor:' asks for -- see
-    # VendorCmd.main()'s own comment) is narrowed the same way to this
-    # build's own architecture, like 'seine vendor --architecture
-    # <architecture>': a foreign architecture's binaries are no more this
-    # build's business than a foreign suite's.
-    #
-    # No task at all, rather than one that would find nothing to do, once
-    # deploy/vendor/<release> already has an index in it (vendor.
-    # is_deployed()): trusted outright as complete, not reresolved,
-    # refetched or reindexed against the manifest -- a 'seine build' run
-    # this way never touches the network, or apt, or a resolver
-    # container, on account of vendoring at all.
-    #
-    # Short of that, reuses VendorCmd._run() itself rather than a copy of
-    # it, the same way the TUI's own start_vendor() already does -- an
-    # ordinary rerun with nothing changed still just freezes what an
-    # earlier resolve found (see manifest_digest()), so this costs
-    # nothing when the vendor repository is already current.
+    # Resolves/fetches/indexes 'vendor:' before 'packages:' needs it.
+    # Skipped when there's nothing to do, or a vendor repo already
+    # exists for this release. Narrowed to this build's own release
+    # and architecture, and reuses VendorCmd._run() to keep a no-op
+    # rerun cheap.
     def _vendor_task(self, distro):
         from seine import vendor
         entries = vendor.parse(self.spec)
@@ -364,31 +303,24 @@ class Image:
             return None
         wanted = [release]
         exclude = vendor.exclusions(self.spec)
-        # Resolving still has to cover whatever 'distribution:
-        # architectures:' asks for beyond this build's own architecture
-        # -- only fetching (via 'archs=' below) is narrowed to it, same
-        # as with a foreign suite.
+        # Resolving still covers every 'distribution: architectures:'
+        # entry; only fetching is narrowed to this build's own one.
         extra_archs = vendor.extra_architectures(self.spec)
         cmd = vendor.VendorCmd()
         cmd.options = dict(cmd.options, jobs=self.options.get("jobs", 1),
                            verbose=self.options.get("verbose", False))
-        # No 'needs=["bootstrap-host"]': this task bootstraps its own
-        # force_online=True HostBootstrap (see bootstrap.py's own comment
-        # on why that is a distinct, always-online image), so it never
-        # touches whatever 'bootstrap-host' builds -- and once that can
-        # itself depend on 'vendor' finishing first (shared_tasks(),
-        # below), a dependency back the other way would be a cycle.
+        # No 'needs=["bootstrap-host"]': it bootstraps its own
+        # always-online HostBootstrap. 'bootstrap-host' can depend on
+        # this task instead (shared_tasks() below) without a cycle.
         return Task("vendor",
                     functools.partial(cmd._run, distro, entries, exclude,
                                       wanted, False,
                                       archs=[distro["architecture"]],
                                       extra_archs=extra_archs))
 
-    # The host bootstrap and the packages built in a chroot of it -- the
-    # half of a build several specifications can share when they agree on
-    # a release, since neither varies by architecture. A caller building
-    # several images together passes its own 'hostBootstrap' and the union
-    # of every image's 'requested' packages; left unset, this builds its own.
+    # The host bootstrap and chroot-built packages -- the half of a build
+    # several specs sharing a release can reuse. A caller building several
+    # together passes its own 'hostBootstrap' and combined 'requested'.
     def shared_tasks(self, hostBootstrap=None, requested=None):
         from seine import vendor
         distro = self.spec["distribution"]
@@ -402,11 +334,8 @@ class Image:
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options),
             redactions(self.spec))
-        # 'bootstrap-host' waits on 'vendor' finishing first exactly
-        # when going offline actually needs a fresh vendor run: without
-        # this, HostBootstrap's own apt-get (now itself vendor-backed
-        # when offline) would look for a repository the 'vendor' task
-        # below exists to build, and find nothing there yet.
+        # 'bootstrap-host' waits on 'vendor' only when there is one:
+        # its apt-get would otherwise look for a repo not built yet.
         shared = [self.hostBootstrap.task(
             needs=["vendor"] if vendor_task is not None else None)]
         if vendor_task is not None:
@@ -416,22 +345,15 @@ class Image:
             self.hostBootstrap,
             vendor_task=vendor_task.name if vendor_task is not None else None)
 
-    # The rest: the target bootstrap this image's own root file-system is
-    # assembled in, and everything built on top of it -- never shared
-    # between specifications, though two naming the same tag still
-    # collapse into one task if whoever merges them notices. 'needs_packages'
-    # names the barrier shared_tasks() ends with; 'hostBootstrap' must be
-    # set by here or by an earlier shared_tasks() call.
+    # The rest: the target bootstrap and everything built on top of it --
+    # never shared between specs. 'needs_packages' names the barrier
+    # shared_tasks() ends with.
     def own_tasks(self, hostBootstrap=None, needs_packages="packages"):
         distro = self.spec["distribution"]
         if hostBootstrap is not None:
             self.hostBootstrap = hostBootstrap
         self.targetBootstrap = TargetBootstrap(distro, self.options)
 
-        # Each of these is declared beside the code that runs it, so what
-        # a step needs is written where someone changing that step will
-        # see it. What is left here is the handful of steps this class
-        # implements itself, and the order they make between them.
         common = [
             self.targetBootstrap.task(self.hostBootstrap),
             Task("rootfs", self.rootfs,
@@ -440,27 +362,24 @@ class Image:
             SBOM(distro, self.options).task(self),
         ]
 
-        # 'initrd:' section: nothing built here is an image at all, just
-        # the one file this build exists to produce -- stop after pulling
-        # it out of the tarball, same shortcut '--rootfs-only' takes below.
+        # 'initrd:' section: just pull the initrd out of the tarball and
+        # stop, there's no image to build.
         if "initrd" in self.spec:
             return common + [
                 Task("deploy-initrd", self._deploy_initrd, needs=["tarball"]),
             ]
 
-        # No 'image:' section: the tarball built above is the real
-        # output, so move it to its deploy path instead of leaving it
-        # for __del__ to discard as scratch. Needs 'sbom' too: it also
-        # reads '_tarball' and must finish before this renames it away.
+        # No 'image:' section: the tarball is the real output, so move
+        # it to its deploy path. Needs 'sbom' too, since it also reads
+        # '_tarball' before this renames it away.
         if "image" not in self.spec:
             return common + [
                 Task("deploy-rootfs", self._deploy_tarball,
                     needs=["tarball", "sbom"]),
             ]
 
-        # '--rootfs-only' stops here: a tarball is what somebody wants to
-        # look inside, and the disk it would be written to, and the
-        # appliance that writes it, are both for booting it.
+        # '--rootfs-only' stops here: no disk or appliance needed just
+        # to look inside the tarball.
         if self.options.get("rootfs_only"):
             return common
 
@@ -494,12 +413,8 @@ class Image:
         self._unlink(self._tarball, "root file-system as a tarball")
         self._tarball = None
 
-    # What a build is made of, and what each step waits for -- shared_tasks()
-    # and, unless '--packages-only' stops here, own_tasks() after it. The
-    # order is derived from the dependencies rather than from the layout of
-    # the source; the imager needs the packages, since its own kernel is
-    # installed from the repository they land in, so it boots the kernel the
-    # specification rebuilt rather than the distribution's.
+    # The full task graph: shared_tasks(), plus own_tasks() unless
+    # '--packages-only' stops here.
     def tasks(self):
         if self.spec is None:
             raise ValueError(
@@ -507,16 +422,9 @@ class Image:
         shared = self.shared_tasks()
         all_tasks = shared if self.options.get("packages_only") \
             else shared + self.own_tasks()
-        # Every 'multiconfig:' group's own tasks, namespaced under its
-        # declared name -- the same graph a build of that group alone
-        # would run, merged in rather than run separately (multiconfig.
-        # merged_tasks() is what does that for the CLI's own '--' groups).
-        #
-        # A group's own 'after' set (self.multiconfig_after) is wired in
-        # before namespacing: every root task (no 'needs' of its own) is
-        # made to need every sink task (tasks.sinks()) of each named
-        # predecessor. Coarse -- whole group after whole group -- but
-        # simple: no task name needs to be known by a spec author.
+        # Merge in each 'multiconfig:' group's tasks, namespaced under
+        # its name, with each group's root tasks wired to need every
+        # sink task of its predecessor group(s) ('after' set).
         if len(self.subbuilds) > 0:
             from seine import multiconfig
             raw = {name: build.image.tasks()
@@ -534,14 +442,9 @@ class Image:
                         task.needs = predecessors
             for name, group in raw.items():
                 all_tasks += tasks.namespaced(group, labels[name])
-        # '--target' narrows the graph further still, to one task and
-        # what it needs -- 'packages_only'/'rootfs_only' already say
-        # where the *usual* stopping points are; this names any task at
-        # all in whatever this list already trims to. Checked here
-        # rather than left to 'ancestors()', which silently drops a name
-        # it does not recognise -- built for merging a name list that
-        # legitimately does not cover every task, not for catching a
-        # typo in the one name a person just gave on the command line.
+        # '--target' narrows to one task and what it needs. Checked here
+        # rather than left to ancestors(), which silently drops an
+        # unrecognised name instead of catching a command-line typo.
         target = self.options.get("target")
         if target is not None:
             names = {t.name for t in all_tasks}
@@ -552,18 +455,9 @@ class Image:
             all_tasks = tasks.ancestors(all_tasks, [target])
         return all_tasks
 
-    # Every container image a build of this specification would use, named
-    # without building any of them.
-    #
-    # Asked of the same classes the build instantiates rather than worked out
-    # from the shape of their names: what an image is called is theirs to
-    # decide, and a copy of the formula over here would go quietly wrong the
-    # day one of them changes.
-    #
-    # The appliance is a cross build's, so it is named only for one. The
-    # imager's kernel needs a target bootstrap to stand on, which is what a
-    # build gives it when it reaches that step; here it only has to exist for
-    # the name to be asked of it.
+    # Every container image a build would use, named without building any
+    # of them. Asked of the same classes the build instantiates, rather
+    # than reimplementing their naming here.
     def images(self):
         distro = self.spec["distribution"]
         if self.targetBootstrap is None:
@@ -588,9 +482,7 @@ class Image:
         self._size_partitions()
         self._empty_disk()
 
-    # Everything the build would do, and what it would leave alone.
-    # Nothing is fetched, built or written: the same graph run() would
-    # walk, printed instead of walked.
+    # Prints the same task graph build() would run, instead of running it.
     def plan(self):
         if self.spec is None:
             raise ValueError(
@@ -602,9 +494,8 @@ class Image:
             what = "the root file-system"
         else:
             what = "'%s'" % self._output
-        # How many at a time only when it is more than one: a build that runs
-        # its steps in a row is what a plan describes by default, and saying
-        # '1 step at a time' says nothing.
+        # Only mention parallelism when it's more than 1: "1 at a time" is
+        # the default and says nothing.
         jobs = self.options.get("jobs", 1)
         print("would build %s for %s/%s%s"
               % (what, distro["release"], distro["architecture"],
@@ -644,8 +535,7 @@ class Image:
             return tempfile.mkdtemp(dir=spec, prefix="%s-" % run)
 
     # 'reporter' is a seine.reporter.Reporter -- progress.Display by
-    # default, or a caller's own wanting to watch without owning the
-    # terminal (the TUI's TextualReporter).
+    # default, or a caller's own (e.g. the TUI's TextualReporter).
     def build(self, reporter=None):
         if self.options.get("dry_run"):
             return self.plan()
@@ -656,35 +546,24 @@ class Image:
             jobs = self.options.get("jobs", 1)
             verbose = self.options.get("verbose", False)
 
-            # Whose downloads this build is about to use. Not per .deb:
-            # which of them apt takes out of the archive cache is decided by
-            # apt inside the container, and a release is the smallest thing
-            # seine can honestly say was used.
+            # Tracked per release, not per .deb: apt decides which cached
+            # .debs it actually uses, so release is the smallest unit
+            # seine can honestly attribute the cache hit to.
             release = self.spec["distribution"]["release"]
             cache_index.Index().hit(cache_index.DOWNLOADS, release)
 
-            # A step's output goes to a file of its own unless someone
-            # asked to watch it go by: several steps at once cannot share
-            # a terminal, and one step at a time buries what is worth
-            # knowing in what is not. A caller's own reporter always gets
-            # one too -- it has no terminal to fall back on.
+            # Each step's output goes to its own log file unless verbose
+            # and single-job (one terminal, one step at a time). A
+            # caller's own reporter always gets log files too.
             self.logs = None
             if verbose == False or jobs > 1 or reporter is not None:
                 self.logs = self._logs()
                 print("output under %s" % self.logs)
 
             steps = self.tasks()
-            # Taken now, before a single task has run -- not in the
-            # 'finally' below, after they have. 'disk' (_prepare_disk() ->
-            # PartitionHandler.compute_sizes()) writes '_size'/
-            # '_start_mib'/'_end_mib' straight onto the same partition/
-            # volume dicts this specification holds, the same mistake
-            # already found and fixed once for playbooks
-            # (ansible_runner.py's _run_playbooks()): a digest taken after
-            # a real build's tasks had run never matched what reloading
-            # the same files fresh, un-run, would compute -- 'seine plan'/
-            # 'seine analyze' on those files could never find the record
-            # a real build had just written.
+            # Digest taken before any task runs: 'disk' mutates the
+            # partition/volume dicts in self.spec, so a digest taken
+            # after running would never match a fresh, un-run reload.
             digest = analyze.spec_digest(self.spec)
             # Only the internally-built Display is entered as a context
             # manager -- a caller's reporter owns its own lifecycle.
@@ -694,11 +573,6 @@ class Image:
                 display = progress.Display(total=len(steps),
                                            environment=os.environ)
                 ticker = display
-            # What every step cost, kept for 'seine analyze' to read back.
-            # Written in a finally because a build that failed is the one
-            # worth reading: the steps that did run still say where the
-            # time went, and the build that resumes this one is filed
-            # with it.
             ok = False
             # 'sampled' is optional on a Reporter -- Display has none, so
             # the machine is still watched and recorded, just not pushed live.
@@ -709,20 +583,15 @@ class Image:
                               display=display)
                 ok = True
             finally:
-                # 'self._tarball' still exists here regardless: it is
-                # only ever unlinked from '__del__', well after 'build()'
-                # returns. 'None' for a build that never reached the
-                # 'tarball' step at all ('--packages-only').
+                # Recorded even on failure: which steps ran and how long
+                # they took still matters for the build that resumes this one.
                 rootfs_size = None
                 if self._tarball is not None and os.path.exists(self._tarball):
                     rootfs_size = os.path.getsize(self._tarball)
                 analyze.record(steps, digest, jobs=jobs, ok=ok, machine=machine,
                                rootfs_size=rootfs_size)
 
-            # What the caches spared this build, and what it had to make.
-            # Printed after the steps rather than by them: it is the answer
-            # to 'is the cache working', and one line at the end is where
-            # someone looks for it.
+            # Printed once at the end, as the answer to "is the cache working".
             said = cache_index.summary()
             if said is not None:
                 print(said)

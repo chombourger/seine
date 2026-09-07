@@ -1,28 +1,11 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Two distinct kinds of observation, both plain values a test can
-# 'assign:' and use in any 'if:'/'while:' condition or BuiltIn assertion
-# -- no separate "observation" object to learn:
-#
-#  * 'Capture Screen' -- the console's decoded text (pyte's own screen,
-#    the same one the Remote Target screen renders), for a target whose
-#    state shows up as text: a boot log, a BIOS menu, a shell prompt.
-#  * 'Capture Screen Image' -- a real frame off mtda's video RPC
-#    (VideoSnapshot), for a target with nothing useful on its serial
-#    console: a Wayland/Qt app has pixels, not text, to check.
-#
-# 'Screen Should Contain'/'Screen Matches' are convenience over the text
-# case only, calling straight into BuiltIn (robot.libraries.BuiltIn)
-# rather than reimplementing string/regexp matching. 'Classify Screen' is
-# the seam for the image case's own missing half: an OpenCV/vision-model
-# comparison over a captured frame. Capturing the frame is implemented
-# (mtda's VideoSnapshot); classifying it is not -- this integration adds
-# no OpenCV/vision-model dependency, seine has never needed one before
-# now and the prompt only asks that the seam exist. Raising
-# NotImplementedError here, rather than omitting the keyword, is
-# deliberate: a test author can write 'Classify Screen' today and get a
-# clear reason it doesn't run yet instead of 'no keyword with that name'.
+# Two kinds of observation: 'Capture Screen' reads the console's decoded
+# text (pyte), 'Capture Screen Image' grabs a real frame via mtda's
+# VideoSnapshot. 'Classify Screen' is a seam for a future vision-model
+# check; it raises NotImplementedError instead of being missing, so a
+# test author gets a clear error rather than an unknown keyword.
 
 import os
 import time
@@ -77,9 +60,6 @@ class ObservationLibrary:
         text = self.captures[name] if name else self.capture_screen()
         BuiltIn().should_match_regexp(text, pattern)
 
-    # 'name' with no 'outdir' still returns the path of a temp file --
-    # a captured frame is not text a test can 'Should Contain' its way
-    # through, so the file is the value, not a fallback for one.
     @keyword("Capture Screen Image")
     def capture_screen_image(self, name="screen"):
         """Saves a real video frame (mtda's VideoSnapshot) and returns its file path."""
@@ -106,9 +86,8 @@ class ObservationLibrary:
 
     @keyword("Classify Screen")
     def classify_screen(self, name=None, model=None):
-        """Not implemented: the seam for an OpenCV/vision classifier over a captured image -- see this file's own comment."""
+        """Not implemented yet: seam for a future vision-model classifier over a captured image."""
         raise NotImplementedError(
             "no OpenCV/vision-model classifier is wired in yet -- "
             "'Capture Screen Image' already gives you a real frame to "
-            "feed one once this grows; see "
-            "seine/testing/library/observation.py")
+            "feed one once this grows")

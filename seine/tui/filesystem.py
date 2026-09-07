@@ -1,15 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# The Filesystem screen: a read-only browse of a *finished* image via
-# seine/inspect.py (guestfs). Opening an image boots a small VM
-# (libguestfs's supermin appliance), so every listing runs in a worker
-# thread, same as the Build cockpit, so it doesn't block the event loop.
-#
-# ponytail: a fresh Inspector (and appliance boot) opens for every
-# directory listed, rather than staying open across a browsing session --
-# correct but a few seconds slower per navigation. Keep FilesystemState's
-# Inspector open across browse() calls instead if that turns out to matter.
+# Filesystem screen: read-only browse of a built image via seine/inspect.py
+# (guestfs). Opening an image boots a small VM, so listings run in a
+# worker thread to avoid blocking the event loop.
 
 import os
 
@@ -23,8 +17,8 @@ from seine.tui.spectree import SpecTree
 
 MARKS = {"d": "📁", "l": "📄", "r": "📄"}
 
-# Built as a real Text, not markup -- a file with a literal '[' must
-# never be parsed as markup.
+# Built as a real Text, not markup: a name with a literal '[' must not
+# be parsed as markup.
 def _numbered_text(text):
     lines = text.splitlines()
     width = len(str(len(lines))) if lines else 1
@@ -34,9 +28,7 @@ def _numbered_text(text):
         numbered.append(line + "\n")
     return numbered
 
-# Shared by FilesystemState.render() and .options(), so the two never
-# drift into different ideas of what an entry looks like. No size
-# column -- doesn't fit the pane's third of the screen width.
+# Shared by render() and options() so both agree on entry formatting.
 def _entry_label(name, kind, size, target):
     mark = MARKS.get(kind, "  ")
     if kind == "l":
@@ -45,8 +37,8 @@ def _entry_label(name, kind, size, target):
         return "%s %s/" % (mark, name)
     return "%s %s" % (mark, name)
 
-# A size cap plus NUL/UTF-8 check, not a real charset/MIME sniff --
-# enough to keep a binary or huge file off the screen as garbage.
+# Size cap plus a NUL/UTF-8 check: enough to keep a binary or huge
+# file from being shown as garbage.
 PREVIEW_CAP = 256 * 1024
 
 def _as_text(data):
@@ -66,11 +58,10 @@ class FilesystemState:
         self.loading = False
         # (path, text) of a file shown instead of the directory listing.
         self.preview = None
-        # One-shot status for a failed preview -- unlike a failed /cd,
-        # opening a binary/huge file must not blank the current listing.
+        # One-shot message for a failed preview; keeps the current
+        # listing instead of blanking it.
         self.notice = None
-        # Set by FilesystemScreen.on_mount()/cleared by on_unmount(),
-        # same import-cycle workaround as seine/tui/build.py.
+        # Set by FilesystemScreen on mount, cleared on unmount.
         self.on_change = None
 
     def reset(self, build):
@@ -82,7 +73,7 @@ class FilesystemState:
         self.preview = None
         self.notice = None
 
-    # Called back on the UI thread once a worker's Inspector.ls() returns.
+    # Called on the UI thread once a worker's Inspector.ls() returns.
     def loaded(self, path, entries):
         self.path = path
         self.entries = entries
@@ -133,8 +124,7 @@ class FilesystemState:
             return "%s -- error: %s" % (self.path, self.error)
         return self.path
 
-    # (label, name) per entry -- a leading '..' when not at the root,
-    # the same way a file picker offers "up" as a real row.
+    # (label, name) per entry, with a leading '..' unless already at root.
     def options(self):
         if self.build is None or self.error:
             return []
@@ -145,8 +135,7 @@ class FilesystemState:
             items.append((_entry_label(*entry), entry[0]))
         return items
 
-# Not a general path-resolution library -- an image's filesystem has no
-# '.'/symlink-loop concerns to chase, only what a typed name would mean.
+# Path resolution for the image's filesystem: no symlinks to chase.
 def resolve(current, given):
     if given in ("", "."):
         return current
@@ -157,8 +146,8 @@ def resolve(current, given):
         return os.path.normpath(given)
     return os.path.normpath(os.path.join(current, given))
 
-# Runs Inspector.ls() in a worker thread; 'state' is updated back on the
-# UI thread once it returns, same as TextualReporter does for a build.
+# Runs Inspector.ls() in a worker thread; 'state' updates on the UI
+# thread once it returns.
 def browse(app, state, path):
     if state.build is None:
         return
@@ -179,11 +168,10 @@ def browse(app, state, path):
 
     app.run_worker(work, thread=True, exclusive=True, group="filesystem")
 
-# Unlike browse(), doesn't assume 'path' is a directory: asks guestfs,
-# then lists or previews as appropriate. A binary/huge file or read
-# error goes through state.preview_failed(), which leaves the current
-# listing alone rather than blanking it -- opening the wrong row by
-# accident is routine here in a way a bad typed path is not.
+# Unlike browse(), doesn't assume 'path' is a directory: lists or
+# previews depending on what guestfs reports. A read failure or
+# non-text file goes through state.preview_failed(), which keeps the
+# current listing instead of blanking it.
 def open_entry(app, state, path):
     if state.build is None:
         return
@@ -211,9 +199,9 @@ def open_entry(app, state, path):
 
     app.run_worker(work, thread=True, exclusive=True, group="filesystem")
 
-# A third Tab stop on this screen only (prompt, spec tree, this).
-# set_entries() keeps 'name' per row alongside the rendered label, since
-# name_at() is what selection reads back, not the label.
+# A third Tab stop on this screen (prompt, spec tree, this). Keeps
+# 'name' per row alongside the rendered label, since name_at() needs
+# the name, not the label.
 class FilesystemList(OptionList):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -230,8 +218,8 @@ class FilesystemList(OptionList):
             return None
         return self._names[index]
 
-# A plain VerticalScroll, not StaticPane: focusable is exactly what's
-# wanted, so a long file scrolls with the keyboard like the list does.
+# Plain VerticalScroll, not StaticPane: needs to be focusable so a
+# long file scrolls with the keyboard like the list does.
 class PreviewPane(VerticalScroll):
     pass
 
@@ -248,13 +236,10 @@ class FilesystemScreen(BaseScreen):
         ("browse",   "back",   "Esc back"),
     ]
 
-    # No-op unless a file is being previewed, so it never steals the key
-    # from anything else on the screen stack.
+    # No-op unless a file is being previewed.
     BINDINGS = BaseScreen.BINDINGS + [Binding("escape", "close_preview", show=False)]
 
-    # #path sits above a focusable FilesystemList instead of an
-    # unfocusable StaticPane -- the body here is a list to act on, not
-    # text to read. #previewpane shares that slot while previewing.
+    # #previewpane shares the body slot with #fslist while previewing.
     def compose(self):
         yield Horizontal(
             SpecTree(id="spectree"),
@@ -269,13 +254,10 @@ class FilesystemScreen(BaseScreen):
         yield from self.footer()
 
     def on_mount(self):
-        # Tracks which of FilesystemList/PreviewPane update_body() last
-        # showed, so focus follows only on an actual switch, not on
-        # every plain re-list (a /cd shouldn't yank focus off the prompt).
+        # Tracks which pane update_body() last showed, so focus follows
+        # only on an actual switch, not on every plain re-list.
         self._previewing = False
         super().on_mount()
-        # update_body, not refresh_data: browsing never changes the spec
-        # tree, only #body/#fslist/#previewpane.
         self.app.fs_state.on_change = self.update_body
 
     def on_unmount(self):

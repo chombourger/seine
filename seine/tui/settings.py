@@ -1,12 +1,11 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# /settings: a modal overlay, same shape as /help. Two focusable lists,
-# Tab-cycled: GeneralSettings for jobs/theme, StartupCommands for the
-# list. jobs and startup commands edit through '#editrow' (Input),
-# pre-filled, empty submit clearing the row; theme is a closed choice
-# (commands.THEMES) so it gets ThemePicker instead. Del clears the
-# highlighted row on either list.
+# /settings: a modal overlay, same shape as /help. Two focusable,
+# Tab-cycled lists: GeneralSettings for jobs/theme, StartupCommands for
+# the command list. jobs/startup commands edit through '#editrow'
+# (empty submit clears the row); theme is a closed choice, so it uses
+# ThemePicker instead. Del clears the highlighted row on either list.
 
 from rich.text import Text
 from textual.binding import Binding
@@ -20,8 +19,8 @@ ADD_LABEL = "+ add command…"
 
 HINT = "Tab switch · Up/Down move · Enter edit · Del clear · Esc close"
 
-# refresh_from() reuses render_settings()'s own lines rather than
-# formatting each setting a second way; KEYS maps a row index back to
+# refresh_from() reuses render_settings()'s lines rather than
+# formatting each setting a second way; KEYS maps a row index to
 # which setting it was.
 class GeneralSettings(OptionList):
     KEYS = ["jobs", "theme", "llm_model", "llm_api_base"]
@@ -37,9 +36,8 @@ class GeneralSettings(OptionList):
     def key_at(self, index):
         return self.KEYS[index] if index is not None and 0 <= index < len(self.KEYS) else None
 
-# One row per startup command, plus an always-last, dimmed "add" row --
-# never a separate key to remember for "add a new one", and never
-# ambiguous about which row that is.
+# One row per startup command, plus an always-last, dimmed "add" row,
+# so adding a new one is never a separate key to remember.
 class StartupCommands(OptionList):
     def refresh_from(self, lines):
         previous = self.highlighted
@@ -52,8 +50,7 @@ class StartupCommands(OptionList):
     def is_placeholder(self, index):
         return index == self.option_count - 1
 
-# Reads commands.THEMES directly rather than a second, parallel list,
-# so /set theme and this can never drift apart.
+# Reads commands.THEMES directly so /set theme and this never drift apart.
 class ThemePicker(OptionList):
     def refresh_from(self, current_value):
         from seine.tui.commands import THEMES
@@ -63,9 +60,8 @@ class ThemePicker(OptionList):
             self.add_option(name)
         self.highlighted = names.index(current_value) if current_value in names else 0
 
-# OptionList never highlights a row on its own -- clear_options() leaves
-# highlighted None, so every list above sets it explicitly, clamped to
-# where it already was.
+# OptionList never highlights a row on its own: clear_options() leaves
+# highlighted None, so every list above sets it explicitly.
 
 class SettingsScreen(ModalScreen):
     BINDINGS = [
@@ -96,8 +92,7 @@ class SettingsScreen(ModalScreen):
 
     def __init__(self):
         super().__init__()
-        # (section, index) of the row Enter opened an editor for, or
-        # None while a list has focus.
+        # (section, index) of the row being edited, or None if a list has focus.
         self._editing = None
 
     def compose(self):
@@ -121,8 +116,9 @@ class SettingsScreen(ModalScreen):
         return self.query_one(GeneralSettings).key_at(self._editing[1])
 
     # 'focus' names which list gets focus back once editing is done;
-    # None leaves focus alone. Resets the hint line to HINT -- the one
-    # caller that wants a message to stay up (_edit_error()) skips this.
+    # None leaves focus alone. Resets the hint line to HINT --
+    # _edit_error() is the one caller that skips this to keep its
+    # message up.
     def _redraw(self, focus=None):
         self.query_one(GeneralSettings).refresh_from()
         self.query_one(StartupCommands).refresh_from(settings.load()["startup_commands"])
@@ -143,9 +139,8 @@ class SettingsScreen(ModalScreen):
         elif focus == "startup":
             self.query_one(StartupCommands).focus()
 
-    # Esc backs out one level at a time: an edit in progress first (back
-    # to whichever list it came from, unchanged), only then the whole
-    # screen -- same two-step 'HelpScreen.action_dismiss()' already uses.
+    # Esc backs out one level at a time: an edit in progress first,
+    # then the whole screen, same two-step HelpScreen.action_dismiss() uses.
     def action_dismiss(self):
         if self._editing is not None:
             section, _ = self._editing
@@ -154,8 +149,8 @@ class SettingsScreen(ModalScreen):
             return
         self.app.pop_screen()
 
-    # Input claims 'delete' itself while focused, so this only ever
-    # runs while a list has focus -- has_focus below picks which one.
+    # Input claims 'delete' itself while focused, so this only runs
+    # while a list has focus.
     def action_clear_selected(self):
         if self._editing is not None:
             return
@@ -184,9 +179,8 @@ class SettingsScreen(ModalScreen):
         settings.save(current)
         self._redraw(focus="startup")
 
-    # Enter on a row: 'theme' opens #themepicker (a closed choice);
-    # everything else opens #editrow pre-filled with its current text.
-    # #editlabel says which setting either way.
+    # Enter on a row: 'theme' opens #themepicker; everything else opens
+    # #editrow pre-filled with its current text.
     def on_option_list_option_selected(self, event):
         if event.option_list.id == "themepicker":
             from seine.tui.commands import THEMES
@@ -225,8 +219,7 @@ class SettingsScreen(ModalScreen):
             self._commit_startup(index, value)
 
     # 'theme' is picked, not typed, so never reaches this. 'jobs' is
-    # validated (a bad value leaves #editrow open to fix); llm_model/
-    # llm_api_base are free text, litellm's to judge, not this screen's.
+    # validated; llm_model/llm_api_base are free text, litellm's to judge.
     def _commit_general(self, index, value):
         key = self.query_one(GeneralSettings).key_at(index)
         current = settings.load()
@@ -257,9 +250,8 @@ class SettingsScreen(ModalScreen):
         self._editing = None
         self._redraw(focus="general")
 
-    # Empty text on a real row clears it, non-empty updates it; empty on
-    # the "add" row is a no-op, non-empty appends one and the
-    # placeholder reappears at the end.
+    # Empty text on a real row clears it, non-empty updates it; empty
+    # on the "add" row is a no-op, non-empty appends one.
     def _commit_startup(self, index, value):
         current = settings.load()
         lines = current["startup_commands"]

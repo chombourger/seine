@@ -13,15 +13,13 @@ from seine.container import ContainerEngine
 from . import (Plan, Preview, Tool, _detect_indent, _doc_sources, _no_args,
                _redacted_diff, _single_group, _socket_send, NO_SINGLE_GROUP)
 
-# The three below read a build's own loaded files back via BuildCmd.
-# loaded_files/dump_file() (seine/build.py, general capability, nothing
-# AI-specific) -- an arbitrary path is refused there, not here.
-#
-# Every *.yml/*.yaml in a directory a loaded file lives in, or -- when
-# loaded files span two or more directories -- in a sibling directory
-# under their common ancestor (e.g. examples/linux-6.18 next to
-# examples/common). A single loaded directory never climbs to its
-# parent, so a lone spec file doesn't sweep unrelated directories. Non-recursive.
+# The tools below read a build's loaded files via BuildCmd's own
+# loaded_files/dump_file() -- an arbitrary path is refused there, not here.
+
+# Every *.yml/*.yaml next to a loaded file, or -- when loaded files span
+# multiple directories -- in a sibling directory under their common
+# ancestor. A single loaded directory never climbs to its parent, so
+# one spec file doesn't sweep unrelated directories. Non-recursive.
 def _sibling_files(build):
     directories = {os.path.dirname(f) for f in build.loaded_files}
     search_dirs = set(directories)
@@ -54,30 +52,25 @@ def _tool_spec_files(app, arguments):
     text = "\n".join(build.loaded_files)
     siblings = _sibling_files(build)
     if siblings:
-        # spec-update still only accepts a loaded path; read/spec-query
-        # (given an explicit path) accept either section -- but this
-        # stays a requires: hint, not a load. A path-less spec-query
-        # still only walks loaded_files, so it won't widen to files
-        # nothing requires:.
+        # spec-update still only accepts a loaded path -- this is a
+        # requires: hint, not a load.
         text += ("\n\nnot loaded (same or a cousin directory, not part "
                 "of this build -- a candidate to 'requires:' in rather "
                 "than duplicate with spec-create, and readable with "
                 "read/spec-query):\n" + "\n".join(siblings))
     return text
 
-# A source-pull tool call, or 'seine source pull' run by hand, lives
-# entirely under the workbench -- no active spec needed to read it back,
-# same as source-list/gist-show need none. Checked before _single_group()
-# for that reason, not after.
+# A pulled source lives entirely under the workbench -- no active spec
+# needed to read it back, same as source-list/gist-show. Checked before
+# _single_group() for that reason.
 def _under_workbench(real):
     workbench = os.path.realpath(ContainerEngine.workbench())
     return real == workbench or real.startswith(workbench + os.sep)
 
-# The active build's own SBOM output (seine build --sbom), if its
-# options still say one would be produced and it is actually there --
-# not any SBOM (sbom-diff takes an explicit path for that), only the
-# one naming what this build itself installs, so the model can look up
-# an exact version before calling source-pull instead of guessing one.
+# The active build's own SBOM (seine build --sbom), if configured and
+# actually there -- not any SBOM (sbom-diff takes an explicit path),
+# only this build's own, so the model can look up an exact version
+# before calling source-pull instead of guessing.
 def _build_sbom_path(build):
     from seine.sbom import SBOM
     output = SBOM(build.spec["distribution"], build.options)._output_file(
@@ -119,17 +112,14 @@ def _tool_read(app, arguments):
     except ValueError as e:
         return str(e)
 
-# The merged specification, exactly what 'seine build -D'/'--dump' prints
-# -- every loaded file combined, 'extends'/'defaults' resolved, secrets
-# redacted -- as opposed to read's one file in isolation. Answers
-# "did two entries merge into one, or land side by side" without
-# inferring it from 'plan' 's step list.
+# The merged specification, exactly what 'seine build -D' prints --
+# every loaded file combined, 'extends'/'defaults' resolved, secrets
+# redacted -- unlike read's one file in isolation.
 SPEC_DUMP_CHUNK_LINES = 300
 
-# Shared by spec-dump and docs: 'lines' clamped to a 'start'/'end'
-# range no wider than 'chunk_lines', regardless of what was asked for
-# -- one reply can't become an unbounded wall of text. 'noun' names
-# what's being paged, for the "past the end" message.
+# Shared by spec-dump and docs: clamps 'lines' to a 'start'/'end' range
+# no wider than 'chunk_lines', so one reply can't be an unbounded wall
+# of text. 'noun' names what's being paged, for the "past the end" message.
 def _text_chunk(lines, start, end, chunk_lines, noun):
     total = len(lines)
     start = max(start, 1)
@@ -180,14 +170,14 @@ def _tool_docs(app, arguments):
     return ("%s is not one of this seine's own docs/*.md or prompt "
             "cluster *.txt files" % name)
 
-# Capped the same way task-log caps a log tail -- a wide-open expression
-# across every loaded file could otherwise return an unbounded wall of text.
+# Capped like task-log's log tail -- a wide-open expression across
+# every loaded file could return an unbounded wall of text.
 SPEC_QUERY_MAX_MATCHES = 50
 
-# A JSONPath expression evaluated against one loaded file's own parsed,
-# redacted tree -- or, 'path' omitted, every loaded file in turn, each
-# match prefixed with which one. YAML parses to the same shape JSON
-# does, so JSONPath works unmodified.
+# Evaluates a JSONPath against one loaded file's parsed, redacted tree
+# -- or, 'path' omitted, every loaded file, each match prefixed with
+# which one. YAML parses to the same shape JSON does, so JSONPath
+# works unmodified.
 def _tool_spec_query(app, arguments):
     path = arguments.get("path")
     expression = arguments.get("expression")
@@ -212,11 +202,9 @@ def _tool_spec_query(app, arguments):
         try:
             data = yaml.safe_load(build.dump_file(one, extra_allowed=extra_allowed)) or {}
         except ValueError as e:
-            # A named file that isn't actually loaded is worth saying
-            # so -- one that merely failed to parse on its own during a
-            # search across *every* file is skipped instead, the same
-            # "don't let one bad fragment abort the whole thing" spirit
-            # 'load_all()' 's own probing pass already follows.
+            # A named file that isn't loaded is worth reporting; one
+            # that fails to parse during a search across every file is
+            # just skipped instead.
             if path:
                 return str(e)
             continue
@@ -246,13 +234,9 @@ def _tool_reset_conversation(app, arguments):
     app.ai_state.reset()
     return "conversation reset"
 
-# Structural, not textual: 'at' is the same JSONPath 'spec-query' hands
-# back, so locating a node survives read/query's redacted, re-
-# serialized view not matching the real bytes on disk (PyYAML's
-# safe_load+dump drops comments, sorts keys, reflows indentation).
-# ruamel.yaml's round-trip mode is read and written instead, so a
-# one-node edit stays a one-node diff. Refuses on anything ambiguous:
-# 'at' must resolve to exactly one node, and a no-op edit is refused.
+# 'at' is a JSONPath (structural, not textual), so it still finds the
+# node even though read/query's view is redacted. Uses ruamel.yaml's
+# round-trip mode, not plain PyYAML, so the edit stays a one-node diff.
 def _spec_update_plan(app, arguments):
     path = arguments.get("path")
     at = arguments.get("at")
@@ -341,8 +325,8 @@ def _tool_spec_update_preview(app, arguments):
     return Preview(plan.ok, plan.message)
 
 # Atomic write, temp file then os.replace(). Recomputes the plan rather
-# than trusting anything cached from preview above -- the file could
-# have changed between the diff being shown and "Yes" being clicked.
+# than trusting the preview -- the file could have changed between the
+# diff being shown and "Yes" being clicked.
 def _tool_spec_update(app, arguments):
     plan = _spec_update_plan(app, arguments)
     if not plan.ok:
@@ -359,13 +343,10 @@ def _tool_spec_update(app, arguments):
                 "it is what's stale" % (arguments.get("path"), reload_error))
     return "updated %s" % arguments.get("path")
 
-# Re-parses the active group's file list and marks what changed on the
-# spec tree, the same mechanism /side-load's own highlight uses. Not
-# called by spec-create: a brand new file isn't in context.groups[0] yet.
-#
-# context.use() only reassigns groups/builds after load_all()/parse()
-# both succeed, so a reload that fails leaves the active spec untouched
-# -- still worth surfacing, since the file on disk is correct either way.
+# Re-parses the active group and marks what changed, same as
+# /side-load's highlight. Not called by spec-create -- a new file isn't
+# in context.groups[0] yet. A failed reload leaves the spec untouched,
+# but is still reported since the file on disk is correct either way.
 def _reload_and_highlight(app):
     context = app.context
     previous = context.builds[0].spec
@@ -388,9 +369,8 @@ def _reload_and_highlight(app):
     return error.get("message")
 
 # A whole new file, not an edit -- the diff is trivially every line
-# added. Confined to a directory a loaded file already lives in, the
-# same "loaded_files is the only thing this instance can vouch for"
-# spirit read/spec-update follow.
+# added. Confined to a directory a loaded file already lives in, same
+# as read/spec-update: loaded_files is the only thing vouched for.
 def _spec_create_plan(app, arguments):
     path = arguments.get("path")
     content = arguments.get("content")
@@ -440,14 +420,12 @@ def _tool_spec_create(app, arguments):
 
 # The AI-tool equivalent of /side-load FRAGMENT: loads one more fragment
 # on top of the active group, in-session only. Lower stakes than
-# spec-update/spec-create (no write, undone by /use again or by
-# side-unload) but still gated -- it changes what a /build right after
-# would actually build.
+# spec-update/spec-create (no write, undone by side-unload) but still
+# gated -- it changes what the next /build would build.
 #
-# The preview is a dry run, not a call to context.side_load() itself: a
-# scratch BuildCmd loads the same files side_load() would and is diffed
-# against the real active build, so a bad fragment is refused before
-# anything touches app.context.
+# The preview is a dry run, not a real call: a scratch BuildCmd loads
+# the same files side_load() would and diffs against the real active
+# build, so a bad fragment is refused before touching app.context.
 def _side_load_preview(app, arguments):
     fragment = arguments.get("fragment")
     if not fragment:
@@ -474,16 +452,14 @@ def _side_load_preview(app, arguments):
     before = active.dump(active.spec)
     after = scratch.dump(scratch.spec)
     changes = diff(before, after, color=False)
-    # diff() always returns the whole spec, never blank -- check for an
-    # actual +/- mark, not just truthiness of the text.
+    # diff() always returns the whole spec, never blank -- check for a
+    # real +/- mark instead.
     if not any(line[:1] in ("+", "-") for line in changes.splitlines()):
         return Preview(False, "loading %s would change nothing" % fragment)
     return Preview(True, changes)
 
-# Textual widgets are only touched from the UI thread -- this tool runs
-# from ask()'s worker thread, so it crosses back via call_from_thread,
-# same as start-build. The slash command's own _side_load() never needs
-# this: it already runs on the UI thread.
+# Runs from ask()'s worker thread, so it crosses via call_from_thread
+# to touch Textual widgets, same as start-build.
 def _tool_side_load(app, arguments):
     fragment = arguments.get("fragment")
     if not fragment:
@@ -504,9 +480,8 @@ def _tool_side_load(app, arguments):
     return "side-loaded %s\n\n%s" % (fragment, changes)
 
 # The reverse of side-load: a scratch BuildCmd loads the active group's
-# file list *without* 'fragment', diffed the same way, so a name that
-# isn't currently loaded (or would leave the group empty) is refused
-# before anything touches app.context.
+# file list without 'fragment', diffed the same way, so a name that
+# isn't loaded is refused before touching app.context.
 def _side_unload_preview(app, arguments):
     fragment = arguments.get("fragment")
     if not fragment:

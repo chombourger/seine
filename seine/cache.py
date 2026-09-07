@@ -29,97 +29,59 @@ from seine.utils import ROOTFS_KIND
 from seine.utils import TOOLING_KIND
 from seine.utils import SOURCE_KIND
 
-# What seine keeps between builds, and what a build has to do again once it
-# is gone. Nothing here is needed for a build to succeed -- only to spare
-# it work it has already done -- which is what makes removing any of it
-# safe.
-#
-# A directory each, except the images: those are in podman's storage, whose
-# layout is podman's business, so they are asked of podman rather than
-# walked. Hence a name with no directory behind it.
+# Cache seine keeps between builds. Not needed for a build to succeed,
+# only saves repeated work, so removing any of it is safe.
+# Each is a directory except images, which live in podman's storage.
 IMAGES = "images"
 
 CACHES = {
     "downloads": ContainerEngine.downloads_root,
     "packages":  lambda: ContainerEngine.cache("packages"),
     "chroots":   lambda: ContainerEngine.cache("chroots"),
-    # Packages the image builds fetched, which the engine keeps for them.
-    # Named for what it holds rather than for what keeps it: which engine
-    # that is, and how, is seine's business and not a user's.
+    # Packages fetched during image builds, kept by the engine.
     "bootstraps": lambda: ContainerEngine.cache("bootstraps"),
-    # Packages a 'vendor:' section resolved from a remote feed, kept so a
-    # spec can be rebuilt years after that feed is gone. Registered ahead
-    # of anything writing to it, so 'seine cache clear ... vendor' exists
-    # from the start rather than appearing the day the feature lands.
+    # Packages a 'vendor:' section resolved, kept so a spec can still be
+    # rebuilt after that feed is gone.
     "vendor":    lambda: ContainerEngine.cache("vendor"),
     IMAGES:      None,
-    # What every step of a build cost, which 'seine analyze' reads back.
-    # Not something a build takes out again -- it is read by hand and by
-    # nothing else -- but it is seine's, it is under seine's cache, and a
-    # directory that does not answer to 'seine cache' is a directory
-    # nobody finds.
+    # Per-step build cost data, read back by 'seine analyze'.
     analyze.RECORDS: lambda: ContainerEngine.cache(analyze.RECORDS),
     "scratch":   ContainerEngine.scratch,
 }
 
-# The caches a tar can hold. Scratch is not one of them: what is in it
-# belongs to a build that is either running or has died, and neither is of
-# use anywhere else.
+# Caches a tar can hold. Not scratch: that belongs to a running or dead
+# build, useless on any other machine.
 PORTABLE = ["downloads", "packages", "chroots", IMAGES]
 
-# What an export carries when nothing is named. The downloads are left out:
-# a build needs the archive whatever it was sent, since apt reads its lists
-# from there and seine caches none of them, so carrying a release's .debs
-# saves bandwidth for a machine that has to reach the mirror anyway. Naming
-# 'downloads' carries them for the machine that wants that.
-#
-# An import has no such default: it takes whatever the tar holds, since
-# deciding what to send is the exporting machine's business.
+# Default export set. Downloads left out: apt needs the mirror archive
+# regardless, so carrying it wastes bandwidth -- name it to include anyway.
+# Import has no default: it takes whatever the tar holds.
 CARRIED = ["packages", "chroots", IMAGES]
 
-# Where the images ride in the tar. One archive holding all of them rather
-# than one per image, so a layer shared by every image seine builds -- and
-# they all stand on the host bootstrap -- is written once.
+# One archive for all images, so the layer shared by every image seine
+# builds is written once.
 IMAGES_MEMBER = "%s/images.tar.gz" % IMAGES
 
-# Where the record of what was cached rides. Not under a cache's name: it
-# covers all of them, and it is the one member that is not an object a build
-# takes but a description of the ones that are.
+# Record of what was cached. Not filed under one cache's name since it
+# describes all of them.
 INDEX_MEMBER = "index.json"
 
-# Every image except the one an export leaves behind: the image's own root
-# file-system, which is what mmdebstrap made of the archive on the day it
-# ran and is stale as soon as the archive moves.
+# Kinds carried on export. Not the plain rootfs image: it goes stale as
+# soon as the archive it was built from moves, while what stands on it
+# (kernel, appliance, transport bootstrap) stays current since it is
+# rebuilt from the same spec. '--with-image-rootfs' carries it anyway.
 #
-# The images built on that one go all the same -- the kernel libguestfs
-# boots, the appliance it runs for a cross build, the transport bootstrap
-# ansible connects through -- because what says whether they are current is
-# what their base was built *from* rather than which bytes it came out as.
-# The receiving machine bootstraps its own root file-system from the same
-# specification, which is a different image and the same inputs, so what
-# stands on it is still current. The appliance is the largest and slowest
-# thing in a storage and the one most worth not making twice.
-#
-# '--with-image-rootfs' carries the root file-system as well, for a machine
-# that wants a copy of another's storage rather than one it can build with.
-#
-# An image with no kind and a registry to its name is carried too: that is a
-# base image everything here is built on, and carrying it is what lets an
-# import work with no route to a registry. One with no kind and no registry
-# was built by a seine that did not label them and is rebuilt on sight, so it
-# is not worth the bytes.
-#
-# The root file-system a build hands to ansible is not among these either
-# way: it is a container, exported as a tarball and never committed, so
-# podman has no image of it.
+# A base image with a registry is carried too, so import works with no
+# route to that registry; one with neither kind nor registry is cheap to
+# rebuild and skipped.
 CARRIED_KINDS = [TOOLING_KIND, BUILDER_KIND, IMAGER_KIND, TRANSPORT_KIND, SOURCE_KIND]
 
 def images(with_image_rootfs=False):
     named = []
     for image in json.loads(ContainerEngine.check_output(["images", "--format", "json"])):
         kind = (image.get("Labels") or {}).get(KIND_LABEL)
-        # Ones with no name are left out for want of a way to ask for them:
-        # an intermediate layer is carried by the image standing on it.
+        # Skip unnamed images -- no way to ask for them; carried instead
+        # via the image built on top of them.
         for name in image.get("Names") or []:
             if "<none>" in name:
                 continue
@@ -129,13 +91,12 @@ def images(with_image_rootfs=False):
                 named.append(name)
     return named
 
-# What podman calls an image nothing pulled: it has no registry, so it says
-# so with one of its own.
+# podman's own name for a local image, one nothing ever pulled.
 LOCAL = "localhost/"
 
-# What podman says its storage holds, which is not the sum of what its
-# images say they weigh: every image seine builds stands on the host
-# bootstrap, so adding them up counts that one once per image.
+# Storage size straight from podman, not summed per image: every image
+# stands on the shared host bootstrap, so summing would count it many
+# times over.
 def images_size():
     listed = ContainerEngine.check_output(["system", "df", "--format", "json"])
     for row in json.loads(listed):
@@ -143,18 +104,9 @@ def images_size():
             return row.get("RawSize") or 0
     return 0
 
-# What a build of these specifications would want out of the caches, worked
-# out from the specifications alone: none of this fetches anything or builds
-# anything.
-#
-# A cache holds what a machine has built for every board and release it has
-# ever been asked for, and a colleague on one project wants the part of it
-# their own build would reach for. What that is, seine already knows how to
-# say -- the release and architecture name the directories, a package's stamp
-# names the .debs its build produced, and the image classes name themselves.
-#
-# Each specification is a list of files composed the way 'seine build'
-# composes them, so what is scoped is what those files describe together.
+# What a build of these specs would need from the cache, worked out from
+# the specs alone -- fetches or builds nothing. Lets an export scope down
+# to one project's part of a shared cache.
 class Wanted:
     def __init__(self, specifications):
         from seine.build import BuildCmd
@@ -174,9 +126,8 @@ class Wanted:
             self.images.update(build.image.images())
 
             builder = Builder(distro, build.options, None)
-            # One repository per release, holding every architecture it was
-            # asked to build for -- so what a specification wants out of it
-            # is a set of files rather than a set of directories.
+            # One repository per release covers every architecture, so
+            # track wanted files rather than directories.
             files_wanted = self.repositories.setdefault(release, set())
             for package, built_for, stamp in builder.stamps(build.image.packages):
                 files_wanted.add(os.path.join(STAMPS, os.path.basename(stamp)))
@@ -185,8 +136,7 @@ class Wanted:
                 self.chroots.add(
                     (release, builder.chroot_architecture(package, built_for)))
 
-    # Whether an entry of the record belongs to what was asked for, keyed the
-    # way the index keys them.
+    # Whether an index entry belongs to what was asked for.
     def records(self, kind, key):
         from seine import cache_index
         if kind == cache_index.DOWNLOADS:
@@ -199,8 +149,8 @@ class Wanted:
             return key in self.images
         return True
 
-    # Whether a path inside a cache belongs to what was asked for. The path
-    # is the one the tar will hold, so it starts with the cache's own name.
+    # Whether a tar path (starting with its cache's own name) belongs to
+    # what was asked for.
     def holds(self, path):
         cache, _, rest = path.partition("/")
         if rest == "":
@@ -208,9 +158,8 @@ class Wanted:
         parts = rest.split("/")
         if cache == "downloads":
             return parts[0] in self.releases
-        # A release nothing wants is not carried as an empty directory
-        # either: the tar is what a colleague reads to see what they were
-        # given.
+        # Skip an empty release dir too -- the tar should show only what
+        # was actually given.
         if cache == "chroots":
             if len(parts) == 1:
                 return any(release == parts[0] for release, _ in self.chroots)
@@ -246,13 +195,11 @@ def human(count):
         count /= 1024.0
     return "%.1f TiB" % count
 
-# Where a repository keeps the stamps that say what was built from what, as
-# packages.py names it. Taken from there rather than spelled again, so the
-# two cannot drift apart.
+# Reuse packages.py's own STAMPS name, so the two can't drift apart.
 from seine.packages import STAMPS
 
-# Which cache each kind of index entry belongs to, so a cache that is
-# cleared or reported on can find what was recorded about it.
+# Which cache each index-entry kind belongs to, so clear/report can find
+# what was recorded about it.
 KINDS = {
     "downloads": [cache_index.DOWNLOADS],
     "packages":  [cache_index.PACKAGE],
@@ -278,19 +225,13 @@ class CacheCmd(Cmd):
             self._entries(names, matching)
         return 0
 
-    # What is in the caches one object at a time, least recently used first
-    # -- which is the order to read it in when the question is what to
-    # remove. The times are seine's own record rather than the filesystem's:
-    # atime is a day's worth of resolution where a filesystem keeps it at
-    # all, and podman keeps no last-used time for an image.
+    # List cache entries oldest-used first -- the order to read them in
+    # when deciding what to remove. Times are seine's own record, not the
+    # filesystem's (podman keeps none for images at all).
     #
-    # 'matching' narrows the listing to entries whose key matches (a
-    # release/architecture/source triple for a package, an image name
-    # for the rest) -- with tens of entries typical, jumping straight to
-    # the one that matters beats reading all of them. A package entry
-    # that survives the filter also gets its digest excerpt printed,
-    # the specification content that stamp was actually built from --
-    # see 'Builder.digest_excerpt()'.
+    # 'matching' filters by key (a release/arch/source triple for a
+    # package, an image name for the rest); a package entry that survives
+    # also prints what it was actually built from, see Builder.digest_excerpt().
     def _entries(self, names, matching=None):
         kinds = [kind for name in names for kind in KINDS.get(name, [])]
         listed = cache_index.Index().entries(
@@ -317,10 +258,9 @@ class CacheCmd(Cmd):
                 if excerpt:
                     print("\n".join("    %s" % l for l in excerpt.splitlines()))
 
-    # The on-disk stamp file for a package entry -- '<source>_<arch>_
-    # <digest>', the same digest 'seine plan' names as already built.
-    # The index itself never records the digest, only that some build
-    # of this source/arch happened.
+    # The on-disk stamp '<source>_<arch>_<digest>' for an entry -- the
+    # index itself never records the digest, only that some build
+    # happened.
     def _package_stamp(self, key):
         release, architecture, source = key.split("/", 2)
         stamps = os.path.join(CACHES["packages"](), release, STAMPS)
@@ -331,12 +271,9 @@ class CacheCmd(Cmd):
                 return stamp
         return None
 
-    # The digest excerpt beside a package entry's stamp, as written --
-    # paths in it are relative to whichever file declared them, same as
-    # 'Builder._portable_path()' left them, not resolved against this
-    # machine's own checkout. None of it is present for a stamp older
-    # than this feature, or for one 'cache import' brought in without
-    # its excerpt (an export predating it), and that is not an error.
+    # Digest excerpt beside a stamp; paths stay relative as
+    # Builder._portable_path() wrote them. Missing for older stamps or
+    # imports without one -- not an error.
     def _package_excerpt(self, key, stamp):
         from seine.packages import STAMPS_SPEC
         release = key.split("/", 1)[0]
@@ -348,10 +285,8 @@ class CacheCmd(Cmd):
         except OSError:
             return None
 
-    # What was last wanted longer ago than this, and nothing else. The index
-    # is the only thing asked: what it does not know about, it does not
-    # remove. A cache written by a seine that kept no record is left alone
-    # rather than deleted on a guess about its mtimes.
+    # Remove only what's older than this, per the index. A cache with no
+    # record is left alone rather than guessed at from mtimes.
     def stale(self, names, older_than):
         with self._alone():
             return self._stale(names, older_than)
@@ -386,30 +321,21 @@ class CacheCmd(Cmd):
             shutil.rmtree(os.path.join(CACHES["downloads"](), key),
                           ignore_errors=True)
         elif kind == cache_index.VENDOR:
-            # '<suite>_<source>_<name>_<arch>_<version>' -- none of those
-            # first four ever hold an underscore of their own (Debian
-            # package and suite names cannot), so a plain split finds
-            # them; 'name' is the literal 'source' for a source artifact
-            # (see vendor.py's own _artifact_key()) and a binary package
-            # name otherwise.
+            # Key is '<suite>_<source>_<name>_<arch>_<version>'; plain
+            # split works since Debian names never hold '_'. 'name' is
+            # literal "source" for a source artifact (see vendor.py's
+            # _artifact_key()), else a binary package name.
             suite, source, name, arch, version = key.split("_", 4)
             where = os.path.join(CACHES["vendor"](), suite)
-            # A source's own .dsc/.orig.tar.* never carry an epoch in
-            # their filename, per Debian Policy ch-binary.html#
-            # uniqueness-of-version-numbers -- '1:1.2-3' downloads as
-            # '..._1.2-3...'. A binary's own .deb is different: apt keeps
-            # the epoch, ':' escaped as '%3a' -- '1:1.2-3' downloads as
-            # '..._1%3a1.2-3...' (see vendor.py's own _binary_filename()).
-            # 'stripped' is the source-side name; the binary branch below
-            # builds its own encoded name straight from 'version'.
+            # Source filenames drop the epoch ('1:1.2-3' -> '..._1.2-3...');
+            # .deb filenames keep it, '%3a'-escaped (vendor.py's
+            # _binary_filename()). 'stripped' is the source-side form.
             stripped = version.split(":", 1)[-1]
             if os.path.isdir(where):
                 if name == "source":
-                    # The orig tarball is named after the upstream version
-                    # alone -- the debian revision after the last '-' is
-                    # not part of it -- while the .dsc and .debian.tar.*
-                    # carry the full version; matching on either lets one
-                    # key take every file the source's own build produced.
+                    # orig tarball uses the upstream version alone (no
+                    # debian revision); .dsc/.debian.tar.* use the full
+                    # version. Match either to catch all files of one build.
                     upstream = stripped.rsplit("-", 1)[0]
                     for entry in sorted(os.listdir(where)):
                         if entry.startswith("%s_" % source) and \
@@ -418,40 +344,26 @@ class CacheCmd(Cmd):
                             if os.path.isfile(path):
                                 os.unlink(path)
                 else:
-                    # An 'Architecture: all' binary is still evicted by
-                    # a key naming the arch it was resolved for, but apt
-                    # names the file it fetched after the package's own
-                    # architecture -- 'all', never that one (see
-                    # vendor.py's own _binary_already_fetched()) -- so
-                    # both names are tried. Each is also tried under both
-                    # epoch spellings -- '%3a'-escaped (what a real
-                    # 'apt-get download' actually writes) and the plain
-                    # stripped one (an older fetch, or some apt that
-                    # names it differently) -- the same fallback
-                    # vendor.py's own _binary_already_fetched() uses, so a
-                    # file this doesn't recognize is never silently left
-                    # behind uncleaned.
+                    # 'Architecture: all' binaries are fetched as 'all',
+                    # not the resolved arch, so both are tried (see
+                    # vendor.py's _binary_already_fetched()) -- and each
+                    # under both epoch spellings, same fallback.
                     for candidate in (arch, "all"):
                         for encoded in (version.replace(":", "%3a"), stripped):
                             path = os.path.join(
                                 where, "%s_%s_%s.deb" % (name, encoded, candidate))
                             if os.path.isfile(path):
                                 os.unlink(path)
-            # Nothing derived to clean up alongside it: the cache holds
-            # only ever these flat fetched files -- the repository built
-            # from them (pool/, dists/, Release, signatures) lives
-            # entirely in deploy/ instead (see vendor.py's own
-            # deploy_repository()/index()), rebuilt from scratch by the
-            # next 'seine vendor' or 'seine build' run regardless of
-            # what this just removed.
+            # No derived files to clean here -- the built repository lives
+            # in deploy/ instead (vendor.py's deploy_repository()),
+            # rebuilt fresh by the next run regardless.
         elif kind == cache_index.PACKAGE:
             release, _, rest = key.partition("/")
             architecture, _, source = rest.partition("/")
             repository = os.path.join(CACHES["packages"](), release)
             stamps = os.path.join(repository, STAMPS)
-            # '<source>_<architecture>_<digest>': one repository holds every
-            # architecture's stamps, and an entry of the index names one
-            # architecture's build.
+            # Stamp is '<source>_<arch>_<digest>'; one repository holds
+            # every architecture's stamps.
             for stamp in sorted(os.listdir(stamps)) if os.path.isdir(stamps) else []:
                 if stamp.rsplit("_", 2)[:2] != [source, architecture]:
                     continue
@@ -469,11 +381,8 @@ class CacheCmd(Cmd):
                 if os.path.isfile(path):
                     os.unlink(path)
 
-    # Nothing sweeps the caches while a build is using them. A build holds
-    # the storage shared for as long as it runs, so this waits for none of
-    # them and refuses instead: someone who has just been told a build is
-    # running can decide whether to wait for it, where a command that hung
-    # silently until the build finished says nothing at all.
+    # Refuse rather than wait while a build holds the shared storage --
+    # better than hanging silently until it finishes.
     @contextlib.contextmanager
     def _alone(self):
         try:
@@ -490,12 +399,9 @@ class CacheCmd(Cmd):
             return self._clear(names)
 
     def _clear(self, names):
-        # Best effort, cache by cache: a build's apt runs as a user of the
-        # container's own, so what it left behind -- 'downloads/*/partial'
-        # -- belongs to a uid outside the namespace that this cannot
-        # unlink. Stopping there took every other cache down with it, and
-        # 'clear all' emptied nothing after any build that fetched a
-        # package.
+        # Best effort, cache by cache: a container's apt leaves files
+        # owned by a uid we can't unlink (e.g. downloads/*/partial). Skip
+        # and continue, so one stuck cache doesn't block the rest.
         index = cache_index.Index()
         left = []
         for name in names:
@@ -507,16 +413,13 @@ class CacheCmd(Cmd):
             except (OSError, subprocess.CalledProcessError) as e:
                 left.append((name, str(e)))
                 continue
-            # What was recorded about a cache goes with the cache: an entry
-            # for something that is not there any more would be reported as
-            # a very old object and evicted twice. Kept for a cache still
-            # holding what it says it holds.
+            # Drop the index record with the cache -- else a gone entry
+            # reports as ancient and gets "evicted" again.
             for kind in KINDS.get(name, []):
                 index.forget(kind)
 
-        # After what was removed has been said, not before it: piped into a
-        # file, as a runner does, stdout is block-buffered and the warnings
-        # would otherwise come out first.
+        # Flush stdout first: piped output is block-buffered, so warnings
+        # could otherwise print out of order.
         sys.stdout.flush()
         for name, why in left:
             sys.stderr.write("warning: '%s' was not emptied: %s\n" % (name, why))
@@ -536,18 +439,14 @@ class CacheCmd(Cmd):
         if os.path.exists(path):
             raise OSError("%s is still there" % path)
 
-    # The images go by name and not by removing the storage under them: what
-    # is in a podman storage belongs to uids a rootless user cannot unlink
-    # without going back through a user namespace, so 'rm -rf' on it fails
-    # halfway and leaves a storage that is neither there nor usable.
+    # Remove images by name, not by rm -rf on the storage dir: rootless
+    # podman's storage has uids we can't unlink directly.
     def _clear_images(self):
         print("removing the images from %s" % ContainerEngine.root())
         ContainerEngine.run(["rmi", "--all", "--force"], check=True)
 
-    # One tar holding the named caches, each under its own name, so what
-    # comes out of one machine goes into another without either having to
-    # agree on where a cache lives. Uncompressed unless the filename asks
-    # for it: what is in here is .deb and .tar.zst, already compressed.
+    # One tar, each cache under its own name. Uncompressed by default --
+    # contents (.deb, .tar.zst) are already compressed.
     def export(self, names, where, with_image_rootfs=False, wanted=None):
         mode = "w|gz" if where.endswith((".gz", ".tgz")) else "w|"
         stream = sys.stdout.buffer if where == "-" else None
@@ -572,11 +471,9 @@ class CacheCmd(Cmd):
             self._export_index(tar, where, names, wanted)
         return 0
 
-    # What each entry is and when it was made, and nothing about this
-    # machine's use of it: how often someone else reached for a chroot says
-    # nothing about the machine reading this, and a last-used time from over
-    # there would have the first eviction sweep deleting on another machine's
-    # history.
+    # Export what each entry is and when made, not this machine's usage --
+    # an imported last-used time would drive eviction by another
+    # machine's history.
     def _export_index(self, tar, where, names, wanted=None):
         # Only the caches this tar holds: a record of a cache that was not
         # sent describes nothing the other machine has.
@@ -599,30 +496,20 @@ class CacheCmd(Cmd):
         entry.mode = 0o644
         tar.addfile(entry, io.BytesIO(written))
 
-    # podman writes the images out itself rather than seine walking its
-    # storage: what is in there is podman's business, and an archive it
-    # wrote is what another podman will read back. The ids and the labels
-    # come out of that unchanged, which is what matters -- an image is
-    # rebuilt when the label saying what it was built from does not match,
-    # so an imported bootstrap is current, and so is everything derived
-    # from it, whose label carries that image's id.
+    # Let podman save/load images itself -- ids and labels survive intact,
+    # which is what the rebuild-on-label-mismatch check needs.
     #
-    # Through gzip on the way: 'podman save' compresses only when it is
-    # writing a directory, and the images are the one thing in the tar that
-    # is not compressed already, and it compresses several times over.
-    # Level 1, because the last few per cent of a gigabyte cost more time
-    # than the bytes are worth.
+    # Gzipped here at level 1: images are the one uncompressed thing in
+    # the tar, and squeezing the last bytes out costs more time than it's
+    # worth.
     #
-    # Into a temporary file rather than straight into the tar: a member's
-    # size has to be written before its bytes, and podman will not say in
-    # advance what it is about to produce. That is one extra copy through
-    # the scratch space.
+    # Written to a temp file first, since podman won't say the size
+    # upfront and a tar member needs its size before its bytes.
     def _export_images(self, tar, where, with_image_rootfs=False, wanted=None):
         named = images(with_image_rootfs)
         if wanted is not None:
-            # A base image nothing here built is kept whatever was asked for:
-            # it is what everything else is built on, and it is not named by
-            # any specification.
+            # Always keep base images (not built by us, not named by any
+            # spec) -- everything else stands on them.
             named = [name for name in named
                      if name.startswith(LOCAL) == False
                      or name.removeprefix(LOCAL).rsplit(":", 1)[0] in wanted.images]
@@ -643,40 +530,22 @@ class CacheCmd(Cmd):
             saved.flush()
             tar.add(saved.name, arcname=IMAGES_MEMBER)
 
-    # What is in a cache but has no business on another machine, by the end
-    # of its path:
+    # Excluded, by path suffix:
+    #   .lock, /lock      seine's and apt's own lock files
+    #   /Packages*        repo indices (+ apt-ftparchive's hash cache) --
+    #   /Sources*         rebuilt on the receiving machine from what's
+    #   /Release*         there, so shipping them saves nothing. The key
+    #   /InRelease        that signs them can't be sent, so its signature
+    #   /.packages.db     couldn't be renewed there either.
+    #   .build            sbuild logs and their "latest" symlinks -- a
+    #                     kernel's log rivals its own .debs, and is
+    #                     useless from another machine's build
+    #   /partial          apt's in-flight downloads, root-owned 0700
+    #                     inside the container -- unreadable anyway
     #
-    #   .lock, lock       the lock files that guard what two builds share,
-    #                     seine's own and apt's own
-    #   /Packages         the repository indices, binary and source, with
-    #   /Packages.gz      their .gz and apt-ftparchive's hash cache beside
-    #   /Sources          them: every one is made from what the directory
-    #   /Sources.gz       holds, so the machine that receives those makes
-    #   /.packages.db     its own in one pass rather than being sent a
-    #                     description of a repository it is about to change
-    #   /Release          the signed index and its signatures, for the same
-    #   /Release.gpg      reason and one more: the machine receiving them
-    #   /InRelease        has the public key but not the one that signs, so
-    #                     a signature over indices it is about to rewrite is
-    #                     a signature it could not renew. The key itself is
-    #                     carried, since what it answers for -- the .dsc and
-    #                     the .changes -- travels with it
-    #   .build            sbuild's build logs, and the symlinks naming the
-    #                     latest of them. A kernel's log rivals the .debs
-    #                     it came with, and a log of a build that happened
-    #                     on another machine is worth none of that. A stamp
-    #                     naming one is no problem: what a stamp lists is
-    #                     unlinked only if it is still there.
-    #   /partial          apt's in-flight downloads, which it creates 0700
-    #                     as root inside the container. Not carrying them
-    #                     is not an optimisation: the export cannot read
-    #                     the directory at all, and stopped there before.
-    #
-    # What is kept beyond the .debs themselves is the stamps: they are what
-    # says the .debs are current, and what names which .debs belong to which
-    # source package, which is how an import knows what it supersedes. The
-    # .changes and .buildinfo are kept too -- small, and what says how the
-    # .debs beside them were made.
+    # Kept beyond the .debs: the stamps (say which .debs are current, for
+    # which source package) and the small .changes/.buildinfo (say how
+    # the .debs were made).
     NOT_CARRIED = [".lock", "/lock", "/.packages.db", "/Packages", "/Packages.gz",
                    "/Sources", "/Sources.gz", "/Release", "/Release.gpg",
                    "/InRelease", ".build", "/partial"]
@@ -694,26 +563,21 @@ class CacheCmd(Cmd):
             return None
         return entry
 
-    # The other half, and the only place seine writes files it did not make
-    # itself: a tar handed to it may name anything at all. Every member has
-    # to be a file, a directory or a link, under a cache seine knows and can
-    # carry, and has to stay inside that cache -- both where it is written
-    # and, for a link, what it points at. The whole import fails on the
-    # first member that does not: half of someone else's tar is not a
-    # cache, and a tar reaching out of one is not worth guessing about.
+    # Import: the only place seine writes files it didn't make itself, so
+    # every tar member is checked -- file/dir/link, under a known cache,
+    # staying inside it (target too, for a link). Fails hard on the first
+    # bad member rather than guessing.
     def load(self, names, where, replace=False, force=False):
         arrived = []
-        # 'make this machine look like that tar', which is what a runner
-        # starting from nothing wants: what is here now cannot be worth
-        # keeping if it is about to be replaced wholesale.
+        # --replace: make this machine look like the tar, for a runner
+        # starting from nothing.
         if replace:
             self.clear(names)
         stream = sys.stdin.buffer if where == "-" else None
         with tarfile.open(None if stream else where, "r|*", fileobj=stream) as tar:
             for member in tar:
-                # The index describes every cache rather than being in one,
-                # so it is taken before a member is asked which cache it
-                # belongs to.
+                # Handle the index member first -- it describes all
+                # caches, not one.
                 if member.name == INDEX_MEMBER:
                     if member.isfile():
                         self._load_index(tar, member, names, where)
@@ -725,10 +589,9 @@ class CacheCmd(Cmd):
                 if self._inside(rest) == False:
                     raise ValueError("'%s' points outside of its cache!"
                                      % member.name)
-                # sbuild leaves a symlink beside every build log, naming the
-                # latest of them, so a cache holds links as well as files.
-                # One is followed on the machine that imports it, so where
-                # it leads is checked as closely as where it is written.
+                # sbuild's logs include a symlink to the latest one, so
+                # links are checked (target inside the cache) as closely
+                # as regular files.
                 if member.issym():
                     target = os.path.join(os.path.dirname(rest), member.linkname)
                     if self._inside(target) == False:
@@ -752,10 +615,8 @@ class CacheCmd(Cmd):
                 tar.extract(member, path=CACHES[cache]())
                 if cache == "packages":
                     arrived.append(rest)
-        # What the tar superseded, once all of it is in: a stamp names the
-        # .debs its build produced, so a stamp that arrived for a source
-        # package this machine had already built says which of the ones
-        # already here are not reachable any more.
+        # Once everything's extracted: an arrived stamp for a source
+        # package we already had supersedes the old build's files.
         if "packages" in names:
             self._prune(arrived, force, where)
         for name in names:
@@ -766,21 +627,13 @@ class CacheCmd(Cmd):
                 self.say("imported %s (%s)" % (name, human(size_of(path))), where)
         return 0
 
-    # A .deb is reachable if a stamp names it: a stamp lists the files its
-    # build produced, which is how seine already undoes an earlier build of
-    # the same source package.
+    # A .deb is reachable if some stamp names it. An arrived stamp
+    # supersedes an existing build of the same source (import means take
+    # theirs), leaving the old stamp's .debs unreachable -- else the repo
+    # would offer two versions and apt picks the higher one, pinning aside.
     #
-    # An import brings .debs and the stamps that describe them, so a stamp
-    # that arrived for a source package this machine had already built
-    # supersedes the one that was here -- an import means take theirs -- and
-    # what only the superseded stamp named is not reachable any more. Left
-    # there, the repository would offer two versions of the same package and
-    # apt would install the higher of them, which is neither what the
-    # specification pinned nor what either stamp describes.
-    #
-    # A .deb no stamp names at all is a leftover of a seine that did not
-    # record them, or of a directory someone tidied by hand. Removing it is
-    # guesswork rather than following a stamp, so it waits for --force.
+    # A .deb no stamp names at all is a leftover; removing it is a guess,
+    # so it waits for --force.
     def _prune(self, arrived, force, where):
         cache = CACHES["packages"]()
         if os.path.isdir(cache) == False:
@@ -795,10 +648,8 @@ class CacheCmd(Cmd):
         if os.path.isdir(stamps) == False:
             return
 
-        # Every stamp in there, by the build it belongs to: a name is
-        # '<source>_<architecture>_<digest of what it was built from>', and
-        # what supersedes a build is another build of the same source for
-        # the same architecture.
+        # Group stamps by source: name is '<source>_<arch>_<digest>', and
+        # a later build of the same source+arch supersedes an earlier one.
         stamped = {}
         for stamp in sorted(os.listdir(stamps)):
             stamped.setdefault(stamp.rsplit("_", 1)[0], []).append(stamp)
@@ -841,10 +692,8 @@ class CacheCmd(Cmd):
                 self.say("keeping %s, which no stamp names ('--force' removes it)"
                          % os.path.join(inside, name), where)
 
-        # The indices describe what the directory held a moment ago. They
-        # are made from the directory rather than carried, so the honest
-        # thing to do with them here is take them away and let the next
-        # build write them.
+        # Drop the indices too -- they describe what the directory held a
+        # moment ago; the next build regenerates them.
         for derived in ["Packages", "Packages.gz", "Sources", "Sources.gz",
                         "Release", "Release.gpg", "InRelease",
                         ".packages.db"]:
@@ -860,10 +709,8 @@ class CacheCmd(Cmd):
         except OSError:
             return []
 
-    # What arrived is theirs for the entries they carry and mine for the
-    # ones they do not, which is the rule the objects themselves follow: a
-    # superseded stamp gives way to the one that came with the tar, and an
-    # entry for a cache this import was not asked about is left alone.
+    # Merge rule: arrived entries win (a superseded stamp gives way), and
+    # entries for a cache not asked about are left alone.
     def _load_index(self, tar, member, names, where):
         kinds = [kind for name in names for kind in KINDS.get(name, [])]
         try:
@@ -880,9 +727,8 @@ class CacheCmd(Cmd):
                                    for kind, entries in carried.items()
                                    if kind in kinds})
 
-    # Handed to podman as it comes out of the tar: podman reads a gzipped
-    # archive as happily as a plain one, so the images go from one storage
-    # to the other without being written down on the way.
+    # Streamed straight to podman -- it reads gzipped or plain archives,
+    # so images move storage-to-storage without touching disk.
     def _load_images(self, tar, member, where):
         self.say("importing %s (%s)" % (IMAGES, human(member.size)), where)
         podman = ContainerEngine.Popen(["load"], stdin=subprocess.PIPE)
@@ -891,10 +737,9 @@ class CacheCmd(Cmd):
         if podman.wait() != 0:
             raise ValueError("podman could not load the images!")
 
-    # Whether a path taken from a tar stays within the cache it was found
-    # in, once '..' and the rest of it are worked out. An absolute path
-    # fails this too: joining one throws away what it was joined to, which
-    # is exactly what makes it worth refusing.
+    # Whether a tar path stays inside its cache after resolving '..'. An
+    # absolute path fails too -- os.path.join would discard the prefix,
+    # so it's rejected explicitly.
     def _inside(self, path):
         resolved = os.path.normpath(os.path.join("cache", path))
         return resolved == "cache" or resolved.startswith("cache" + os.sep)
@@ -995,10 +840,8 @@ class CacheCmd(Cmd):
                 sys.exit(1)
             where, names = names[0], names[1:]
 
-        # Naming nothing already means all of them, but 'all' is what a
-        # person types when they want to say so, and an error is a poor
-        # answer to being clear. For a tar that means every cache one can
-        # hold, which is not quite all of them.
+        # No names already means all; 'all' just spells that out rather
+        # than erroring. For a tar that's PORTABLE, not literally all.
         every = PORTABLE if where is not None else list(CACHES)
         if "all" in names:
             names = list(every)

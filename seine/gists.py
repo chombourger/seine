@@ -1,10 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Reusable spec fragments, kept outside any one project's source tree so
-# they travel between projects -- same XDG lookup shape as settings.py's
-# XDG_CONFIG_HOME, but XDG_DATA_HOME: this is user content meant to
-# persist and be reused, not a regenerable setting.
+# Reusable spec fragments, stored outside any project so they travel
+# between projects. Uses XDG_DATA_HOME (user content), not
+# XDG_CONFIG_HOME like settings.py (regenerable config).
 
 import getopt
 import os
@@ -28,9 +27,8 @@ def path_for(name, directory=None):
                          "letters/digits only" % name)
     return os.path.join(directory or default_dir(), "%s.yaml" % name)
 
-# A gist's description is its first line, a plain YAML comment --
-# already ignored by any YAML parser, so the file stays a normal,
-# directly side-loadable fragment; no sidecar index to fall out of sync.
+# Description is the file's first line, a YAML comment. YAML parsers
+# ignore it, so the file stays a plain, side-loadable fragment.
 def _description(path):
     try:
         with open(path) as f:
@@ -40,8 +38,7 @@ def _description(path):
     first = first.rstrip("\n")
     return first[2:] if first.startswith("# ") else ""
 
-# (name, description) pairs, sorted by name -- empty, not an error, if
-# the directory doesn't exist yet (nobody has created a gist).
+# (name, description) pairs, sorted by name. Empty if dir doesn't exist.
 def list_gists(directory=None):
     directory = directory or default_dir()
     if not os.path.isdir(directory):

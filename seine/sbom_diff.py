@@ -1,9 +1,7 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Diffs two SBOMs (seine build --sbom) by package name and version. Not
-# image-to-image -- seine has no retention convention for built images,
-# so this only compares two SPDX files named explicitly.
+# Compares package name/version between two SPDX files given explicitly.
 
 import json
 
@@ -11,8 +9,7 @@ def _packages(spdx):
     return {p["name"]: p.get("versionInfo", "") for p in spdx.get("packages", [])
            if "name" in p}
 
-# Added/removed/changed packages between two SPDX documents -- +/-/~,
-# the same marks 'seine plan's spec diff uses, plus ~ for a version change.
+# Marks: + added, - removed, ~ version changed.
 def diff(old_spdx, new_spdx):
     old = _packages(old_spdx)
     new = _packages(new_spdx)

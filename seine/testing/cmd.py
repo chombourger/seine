@@ -1,12 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# 'seine test': the same load/compile/run seine.testing.runner does for
-# the TUI's '/test' and the AI chat's 'run-test' tool, wired to the
-# command line -- progress.Display is a Reporter the same way it is for
-# 'seine build', so a suite's own tests show up the same way a build's
-# own tasks do. Exit code is unambiguous for CI: 0 only if every test
-# that ran passed (see run() below).
+# CLI front-end for seine.testing.runner, used also by the TUI '/test'
+# and the AI chat 'run-test' tool. Exit code: 0 only if every test passed.
 
 import getopt
 import sys

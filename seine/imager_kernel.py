@@ -8,10 +8,8 @@ from seine.bootstrap import Bootstrap
 from seine.container import ContainerEngine
 from seine.utils import IMAGER_KIND
 
-# Fallback kernel package per architecture, used when the spec does not set
-# 'imager: kernel:'. This is the kernel that boots the (throwaway) guestfs
-# appliance used to partition/format/install-grub -- it has nothing to do
-# with the kernel installed into the produced image by the user's playbook.
+# Fallback kernel per arch when the spec has no 'imager: kernel:'. Boots
+# the throwaway guestfs appliance only, unrelated to the target's kernel.
 DEFAULT_PACKAGES = {
     "amd64": "linux-image-amd64",
     "arm64": "linux-image-arm64",
@@ -20,9 +18,6 @@ DEFAULT_PACKAGES = {
 }
 
 class ImagerKernel(Bootstrap):
-    # The kernel libguestfs boots to write the image. Built on the target
-    # bootstrap, so it has to say what it is rather than inherit that
-    # image's answer.
     kind = IMAGER_KIND
 
     def __init__(self, source):
@@ -49,13 +44,9 @@ class ImagerKernel(Bootstrap):
             base=self.targetBootstrap.name,
             options=packages.build_volumes(self.distro))
 
-    # Extracts vmlinuz and the matching /lib/modules/<version> tree from the
-    # image built by create() into output_dir. Returns (vmlinuz, moduledir,
-    # version).
     def extract(self, output_dir):
-        # /lib is usually a symlink to /usr/lib (usrmerge), so the tar member
-        # itself is named usr/lib/modules/... -- handle both in case a
-        # non-usrmerge distro is ever targeted.
+        # /lib is usually a symlink to /usr/lib (usrmerge), so tar members
+        # are named usr/lib/modules/... -- handle both forms.
         ContainerEngine.extractImage(self.name, output_dir, lambda n:
             n.startswith("boot/vmlinuz-") or
             n.startswith("lib/modules/") or
@@ -76,11 +67,8 @@ class ImagerKernel(Bootstrap):
         vmlinuz = os.path.join(output_dir, "boot", "vmlinuz-%s" % version)
         return vmlinuz, os.path.join(modules_root, version), version
 
-# The kernel's postinst hook (initramfs-tools) runs 'update-initramfs -c'
-# unconditionally on a fresh kernel install -- the only thing it checks is
-# the INITRD=No environment variable, not update-initramfs.conf. We never
-# read the initrd this package produces (only vmlinuz + modules), so skip
-# generating it at all.
+# INITRD=No skips the postinst initramfs build -- we only need vmlinuz
+# and modules, not the initrd.
 IMAGER_KERNEL_SCRIPT = """
 FROM {0}
 {2}RUN apt-get update -qqy && \\

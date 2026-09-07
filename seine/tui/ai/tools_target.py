@@ -10,15 +10,9 @@ from textual.css.query import NoMatches
 
 from . import Tool, _no_args
 
-# Every mtda-* tool below calls straight into seine/tui/target.py's own
-# action functions -- the same code '/target' itself calls, not a
-# reimplementation. Confirmation for a gated one already happened in
-# _dispatch() before its run() is ever called (unlike '/target' itself,
-# which never confirms -- typing/clicking it already is the
-# confirmation; only the model's own unsupervised judgement is gated).
-# target.Unavailable (mtda not installed) and any real RPC failure both
-# come back the same way any other tool's own error does: a plain
-# string, not a raise.
+# Every mtda-* tool calls straight into seine/tui/target.py, same code
+# '/target' calls. A gated one is already confirmed by _dispatch()
+# before run(); any error comes back as a plain string, not a raise.
 def _tool_mtda_status(app, arguments):
     from seine.tui import target
     try:
@@ -121,10 +115,9 @@ def _tool_mtda_console_read(app, arguments):
         return "target: %s" % e
     return text or "(console buffer is empty)"
 
-# Crosses back to the UI thread (call_from_thread, below) since it
-# touches ai_state, same as notify_build_finished(). Silently skipped
-# if the AI is mid-turn already -- 'waiting' just goes back to idle and
-# a fresh mtda-console-wait call picks the console up from there.
+# Touches ai_state, so it crosses via call_from_thread, same as
+# notify_build_finished(). Skipped if the AI is mid-turn already --
+# 'waiting' just goes back to idle for a fresh call to pick up.
 def _console_wait_finished(app, what, text, error):
     app.target_state.waiting = False
     app.target_state.wait_what = None
@@ -150,10 +143,9 @@ def _console_wait_finished(app, what, text, error):
     from seine.tui import ai
     app.run_worker(lambda: ai._run(app), thread=True, exclusive=True, group="ai")
 
-# Runs the wait in its own worker thread/group (not "ai"), so a slow or
-# default-length mtda timeout never blocks the model -- the call itself
-# returns right away and _console_wait_finished() delivers the outcome
-# later as an unprompted turn, same shape as notify_build_finished().
+# Runs the wait in its own worker group (not "ai") so a slow mtda
+# timeout never blocks the model -- this call returns right away and
+# _console_wait_finished() delivers the outcome as an unprompted turn.
 def _tool_mtda_console_wait(app, arguments):
     from seine.tui import target
     what = arguments.get("what")

@@ -38,9 +38,8 @@ from seine.tui.target_screen import TargetScreen
 from seine.tui.testing import TestState
 
 class OverviewScreen(BaseScreen):
-    # Not reported from SeineApp.on_mount(): push_screen() schedules this
-    # screen's mount rather than composing it inline, so the status bar
-    # isn't there to query yet at that point.
+    # Not reported from SeineApp.on_mount(): the status bar isn't
+    # mounted yet at that point.
     def on_mount(self):
         super().on_mount()
         if self.app._startup_error:
@@ -65,8 +64,7 @@ class AnalyzeScreen(BaseScreen):
     def update_body(self):
         self.query_one("#body", Static).update(render_analyze(self.app.context))
 
-# Not spec-scoped -- a cache and the environment are shared by every
-# build, so these read nothing from 'self.app.context'.
+# Not spec-scoped: cache and environment are shared by every build.
 class CacheScreen(BaseScreen):
     def update_body(self):
         self.query_one("#body", Static).update(render_cache())
@@ -75,19 +73,16 @@ class DoctorScreen(BaseScreen):
     def update_body(self):
         self.query_one("#body", Static).update(render_doctor())
 
-# What /diff last computed -- not spec-scoped, so reads app.diff_text
-# rather than app.context.
+# What /diff last computed -- not spec-scoped, so reads app.diff_text.
 class DiffScreen(BaseScreen):
     def update_body(self):
         text = self.app.diff_text or (
             "no diff yet -- '/diff OLD.spdx.json NEW.spdx.json'\n")
         self.query_one("#body", Static).update(text)
 
-# A live view over app.test_state, the same "own tick, redraw #body"
-# shape BuildScreen's own #tasklist uses, plus a #tail output pane fed
-# by TestState.output_lines -- BuildScreen's own row/CSS ids (#tail,
-# #buildrow) reused as-is rather than a new DEFAULT_CSS block, safe
-# since only one screen is ever mounted at a time.
+# Live view over app.test_state: own tick redraws #body, plus a #tail
+# output pane. Reuses BuildScreen's #tail/#buildrow ids -- safe since
+# only one screen is mounted at a time.
 class TestScreen(BaseScreen):
     def compose(self):
         yield Horizontal(
@@ -120,11 +115,8 @@ class TestScreen(BaseScreen):
         if state.message:
             self.say(state.message, error=state.error)
 
-    # A fresh run (state.run_id bumped by TestState.reset()) starts the
-    # pane over, the same "remounted widget starts from the current
-    # log's beginning" spirit BuildScreen's own Tail class follows for
-    # a real file -- there is no file here, so 'new since last tick' is
-    # just a list slice instead of a seek.
+    # A fresh run (state.run_id bumped by reset()) starts the pane over.
+    # No file here, so 'new since last tick' is a list slice, not a seek.
     def _follow(self):
         state = self.app.test_state
         tail = self.query_one("#tail", RichLog)
@@ -144,9 +136,8 @@ SCREENS = {"overview": OverviewScreen, "plan": PlanScreen, "build": BuildScreen,
           "issues": IssuesScreen, "chat": ChatScreen, "target": TargetScreen,
           "test": TestScreen, "vendor": VendorScreen}
 
-# Offers the same command registry through Ctrl+P. Selecting one fills the
-# prompt and focuses it rather than running it -- a second, deliberate
-# Enter in the prompt itself is what actually runs a command.
+# Offers the command registry through Ctrl+P. Selecting one fills the
+# prompt rather than running it; a deliberate Enter runs it.
 class RegistryProvider(command.Provider):
     async def discover(self):
         for c in commands.REGISTRY.values():
@@ -173,9 +164,8 @@ class SeineApp(App):
     COMMANDS = App.COMMANDS | {RegistryProvider}
     CSS = """
     #main, #buildrow { height: 1fr; }
-    /* 'round', not Input's own default 'tall': 'tall' draws with
-       eighth-block glyphs some real terminal fonts (Monaco/iTerm2) lack,
-       breaking the border. 'round' is plain box-drawing every font has. */
+    /* 'round', not Input's default 'tall': 'tall' uses eighth-block
+       glyphs some terminal fonts lack, breaking the border. */
     #spectree, #tail { width: 2fr; height: 100%; }
     #prompt, #spectree, #tail, #fslist, #previewpane { border: round $foreground 40%; }
     #prompt:focus, #spectree:focus, #tail:focus, #fslist:focus, #previewpane:focus {
@@ -185,9 +175,7 @@ class SeineApp(App):
     #body { padding: 1 2; }
     #tasklist { padding: 1 2; }
     #tail { padding: 0 1; }
-    /* Vendor screen: its own ids, not '#spectree'/'#tail'/'#cmd'/'#tasks'
-       -- those are 2fr:1fr everywhere else, this one is 1fr:1fr both
-       rows (see VendorScreen.compose()'s own comment). */
+    /* Vendor screen: own ids, 1fr:1fr both rows (others are 2fr:1fr). */
     #vendormain, #vendorrow { height: 1fr; }
     #vendorspectree, #vendortail, #vendorstatspane, #vendortaskspane {
         width: 1fr; height: 100%; border: round $foreground 40%;
@@ -204,8 +192,7 @@ class SeineApp(App):
     #status { padding: 0 2; height: 1; width: 1fr; }
     #status.error { color: $error; }
     #status.warning { color: $warning; }
-    /* '$accent', not '$text-muted' like '#hint' -- this is clickable
-       and worth noticing, closer to a link than a caption. */
+    /* '$accent', not '$text-muted' like '#hint': clickable, like a link. */
     #indicators { color: $accent; padding: 0 2; height: 1; width: auto; }
     #vendor-indicator { color: $accent; padding: 0 2; height: 1; width: auto; }
     #target-indicator { color: $accent; padding: 0 2; height: 1; width: auto; }
@@ -226,31 +213,26 @@ class SeineApp(App):
         self.context = Context()
         self.history = History()
         self.build_state = BuildState()
-        # "N build" chip's finish edge, wired for the App's own lifetime
-        # so it updates regardless of which screen is open. The start
-        # edge is start_build() calling refresh_indicators() directly.
+        # "N build" chip's finish edge; the start edge is start_build()
+        # calling refresh_indicators() directly.
         self.build_state.on_finished = self._build_finished
-        # Follows a build onto the vendor screen for its 'vendor' task
-        # (Image._vendor_task(), ahead of packages:), then back -- see
-        # _build_task_started()/_build_task_finished() below. Wired once,
-        # the same as on_finished, so both '/build' and the AI's
-        # 'start-build' tool get it without either asking for it.
+        # Follows a build onto the vendor screen for its 'vendor' task,
+        # then back -- see _build_task_started/_build_task_finished below.
         self.build_state.on_task_started = self._build_task_started
         self.build_state.on_task_finished = self._build_task_finished
         self.vendor_state = VendorState()
         self.vendor_state.on_finished = self._vendor_finished
         self.fs_state = FilesystemState()
         self.ai_state = ai.AIState()
-        # Give AIState a back-reference to the app so it can trigger socket
-        # notifications (assistant messages) without importing ``app`` here.
+        # Back-reference so AIState can trigger socket notifications
+        # without importing app here.
         self.ai_state.app = self
         self.target_state = TargetState()
         self.test_state = TestState()
         self.test_state.on_finished = self._test_finished
         self.diff_text = None
-        # Set by commands.py's own _issues() right before app.show("issues")
-        # -- IssuesScreen.update_body() reads these back, the same
-        # app-state-then-show() shape diff_text/_diff() above already uses.
+        # Set by commands.py's _issues() right before app.show("issues");
+        # IssuesScreen.update_body() reads these back.
         self.issues_filter = None
         self.issues_min_urgency = None
         self.issues_rescan = False
@@ -263,28 +245,20 @@ class SeineApp(App):
                 self.context.use(files)
             except (OSError, ValueError) as e:
                 self._startup_error = str(e)
-        # -----------------------------------------------------------------
-        # Interaction socket handling -- optional, enabled when the CLI passes
-        # ``--interaction-socket``. The socket is created (overwriting any stale
-        # file) and a background thread is started to accept connections.
-        # Clients send JSON messages terminated by a newline. Incoming messages
-        # are dispatched via ``_handle_socket_message``.
-        # -----------------------------------------------------------------
+        # Interaction socket, enabled via --interaction-socket: creates
+        # the socket (overwriting any stale file) and starts a background
+        # thread accepting newline-delimited JSON messages, dispatched
+        # via _handle_socket_message.
         self._socket_path = interaction_socket
         self._socket_clients: list[socket.socket] = []
         self._socket_lock = threading.Lock()
         if self._socket_path:
             self._start_socket_server()
 
-    # Interaction-socket helpers -- only reachable when --interaction-socket
-    # is passed. They run in background threads and marshal UI actions via
+    # Interaction-socket helpers, only reachable when --interaction-socket
+    # is passed. Run in background threads and marshal UI actions via
     # self.call_from_thread().
     def _start_socket_server(self) -> None:
-        """Create the UNIX socket and launch the acceptor thread.
-
-        The socket file is removed if it already exists. A daemon thread runs
-        ``_socket_accept_loop`` which spawns a per-connection handler.
-        """
         path = self._socket_path
         if not path:
             return
@@ -299,8 +273,8 @@ class SeineApp(App):
         self._socket_server = server
         threading.Thread(target=self._socket_accept_loop, daemon=True).start()
 
+    # Accepts connections, spinning a handler thread per client.
     def _socket_accept_loop(self) -> None:
-        """Accept connections and spin a handler thread for each client."""
         server: socket.socket = getattr(self, "_socket_server", None)
         if server is None:
             return
@@ -313,12 +287,9 @@ class SeineApp(App):
                 self._socket_clients.append(conn)
             threading.Thread(target=self._socket_client_handler, args=(conn,), daemon=True).start()
 
+    # Reads newline-delimited JSON messages from 'conn', handing each
+    # to _handle_socket_message. Closes on error or disconnect.
     def _socket_client_handler(self, conn: socket.socket) -> None:
-        """Read newline-delimited JSON messages from *conn*.
-
-        Each line is parsed as JSON and handed to ``_handle_socket_message``.
-        The connection is closed on any error or when the client disconnects.
-        """
         with conn:
             buffer = b""
             while True:
@@ -343,26 +314,17 @@ class SeineApp(App):
             if conn in self._socket_clients:
                 self._socket_clients.remove(conn)
 
+    # Dispatches a JSON message from an external client: "input" types
+    # msg["text"] into the prompt and submits it; "ai_input" forwards
+    # msg["prompt"] straight to the AI chat.
     def _handle_socket_message(self, msg: dict) -> None:
-        """Dispatch a JSON message received from an external client.
-
-        Supported ``type`` values:
-        * ``"input"`` -- simulate a user typing. ``msg["text"]`` is the string
-          to type. The TUI will clear the current prompt, feed each character
-          with a tiny delay (to emulate typing) and finally send an ``Enter``.
-        * ``"ai_input"`` -- forward a prompt directly to the AI chat (equivalent
-          to the user typing a line that does not start with ``/``). ``msg["prompt"]``
-          contains the text.
-        """
         t = msg.get("type")
         if t == "input":
             text = msg.get("text", "")
             if not isinstance(text, str):
                 return
-            # type_and_submit() itself already runs on the app's own thread
-            # (invoked below via call_from_thread) -- awaiting action_submit()
-            # directly here, rather than a second call_from_thread(), since
-            # that call only works from a thread other than the app's own.
+            # Runs on the app's own thread (via call_from_thread below),
+            # so action_submit() can just be awaited directly here.
             async def type_and_submit():
                 try:
                     prompt = self.screen.query_one(Prompt)
@@ -381,12 +343,9 @@ class SeineApp(App):
             if isinstance(p, str):
                 self.call_from_thread(ai.ask, self, p)
 
+    # Broadcasts a JSON message to all connected socket clients, dropping
+    # any that raise on send.
     def _socket_send(self, data: dict) -> None:
-        """Broadcast a JSON message to all connected socket clients.
-
-        ``data`` is serialized with ``json.dumps`` and terminated by a newline.
-        Clients that raise an exception on send are removed from the list.
-        """
         if not hasattr(self, "_socket_clients"):
             return
         raw = (json.dumps(data) + "\n").encode()
@@ -403,13 +362,9 @@ class SeineApp(App):
                 finally:
                     self._socket_clients.remove(client)
 
+    # Emits new assistant messages not yet sent, called from
+    # AIState.changed after persisting. Streaming chunks are omitted.
     def _socket_send_ai_messages(self) -> None:
-        """Emit any new assistant messages that have not yet been sent.
-
-        Called from ``AIState.changed`` after persisting. Only finished
-        assistant replies (role == "assistant") are sent -- intermediate
-        streaming chunks are omitted.
-        """
         msgs = self.ai_state._new_assistant_messages()
         for msg in msgs:
             self._socket_send({"type": "ai_message", "content": msg.get("content", "")})
@@ -447,8 +402,8 @@ class SeineApp(App):
             self.screen.refresh_data()
 
     # Refreshes every chip regardless of which one a caller actually
-    # changed -- ConsoleAdapter.on_event() (console.py) needs
-    # TargetIndicator kept current too, not just Indicators.
+    # changed -- ConsoleAdapter.on_event() needs TargetIndicator kept
+    # current too, not just Indicators.
     def refresh_indicators(self):
         if isinstance(self.screen, BaseScreen):
             self.screen.query_one(Indicators).refresh_text()
@@ -462,29 +417,21 @@ class SeineApp(App):
         self.refresh_indicators()
         if isinstance(self.screen, BuildScreen):
             self.screen.update_body()
-        # One-shot: only a build 'start-build' itself started sets this
-        # (seine/tui/ai.py's _start_ai_build), and it must not fire
-        # again for whatever build runs next.
+        # One-shot: only ai.py's _start_ai_build sets this, and it must
+        # not fire again for whatever build runs next.
         if self.build_state.notify_ai:
             self.build_state.notify_ai = False
-            # Still on the Build screen start-build's own app.show()
-            # switched to -- shown, not left unnoticed, since nothing
-            # suggests they went looking elsewhere. Any other screen
-            # means they navigated away themselves; that choice is
-            # left alone.
+            # Only switch to chat if still on the Build screen; if they
+            # navigated away themselves, leave that choice alone.
             if isinstance(self.screen, BuildScreen):
                 self.show("chat")
             ai.notify_build_finished(self)
 
-    # A build's own 'vendor' task (Image._vendor_task(), added ahead of
-    # packages: when 'apt-pull-mode: offline' needs it) is the one part of
-    # a build the vendor screen already knows how to show -- resolve/
-    # fetch/index progress, wave by wave. Followed there while it runs,
-    # then back to the build screen once it is done, the same "left alone
-    # if they navigated away themselves" rule _build_finished() already
-    # applies on the way to chat: only switch while still on the screen
-    # this same following put the user on, never yanking them off
-    # somewhere else they went looking on their own.
+    # A build's 'vendor' task is the one part of a build the vendor
+    # screen already knows how to show. Followed there while it runs,
+    # then back to the build screen once done -- only while still on
+    # the screen this following put the user on, same rule as
+    # _build_finished().
     def _build_task_started(self, name):
         if name == "vendor" and isinstance(self.screen, BuildScreen):
             self.show("vendor")
@@ -500,8 +447,7 @@ class SeineApp(App):
         self.refresh_indicators()
         if isinstance(self.screen, VendorScreen):
             self.screen.update_body()
-        # One-shot, same as BuildState's own: only ai.py's 'start-vendor'
-        # tool ever sets this.
+        # One-shot, same as BuildState's own; only ai.py's start-vendor sets this.
         if self.vendor_state.notify_ai:
             self.vendor_state.notify_ai = False
             if isinstance(self.screen, VendorScreen):
@@ -521,8 +467,8 @@ class SeineApp(App):
         else:
             self.screen.refresh_data()
 
-    # '!<command>' / bare '!': a real shell, handed the real terminal via
-    # 'App.suspend()', then a one-line exit status once the TUI resumes.
+    # '!<command>' / bare '!': runs a real shell via App.suspend(), then
+    # reports the exit status once the TUI resumes.
     def shell_escape(self, cmdline):
         shell = os.environ.get("SHELL", "/bin/sh")
         argv = [shell, "-c", cmdline] if cmdline.strip() else [shell]
@@ -530,19 +476,11 @@ class SeineApp(App):
             result = subprocess.run(argv)
         self.say("$ %s  -> exit %d" % (cmdline or shell, result.returncode))
 
-    # Textualize/textual#5525 (proposed, closed without merging -- still
-    # unfixed as of textual 2.1.2, the version this pins): a fenced code
-    # block's own MarkdownFence widget watches 'self.app.theme' with
-    # 'init=True', which can fire _retheme() -- and its
-    # 'get_child_by_type(Static)' -- before compose() has actually
-    # mounted that Static, raising NoMatches. Hit live rendering a chat
-    # reply with several fenced blocks (seine/tui/chat.py's own
-    # Markdown(content) use). Not seine's bug to fix (a vendored
-    # dependency file), and 'App._handle_exception()' always exits the
-    # whole session otherwise -- losing a live chat/build over a code
-    # fence that just won't re-theme this once is a worse outcome than
-    # logging it and moving on. Every other exception still panics as
-    # normal: only this exact, identified race is swallowed.
+    # textual#5525: a fenced code block's MarkdownFence can call
+    # _retheme() before its Static is mounted, raising NoMatches. Not
+    # seine's bug (vendored dependency), and the default handler would
+    # exit the whole session over it -- log and continue instead. Every
+    # other exception still panics as normal.
     def _handle_exception(self, error):
         if _is_markdown_retheme_race(error):
             self.log.warning("ignored a known textual race in "
@@ -550,9 +488,8 @@ class SeineApp(App):
             return
         super()._handle_exception(error)
 
-# Split out from _handle_exception() so the identification itself is
-# testable without a live MarkdownFence race to trigger it -- a
-# synthetic traceback with the same frame identity proves the check.
+# Split out so the check is testable with a synthetic traceback,
+# without needing a live MarkdownFence race to trigger it.
 def _is_markdown_retheme_race(error):
     if not isinstance(error, NoMatches):
         return False
@@ -564,38 +501,28 @@ def _is_markdown_retheme_race(error):
         tb = tb.tb_next
     return False
 
+# Entry point for the TUI. 'argv' may contain --interaction-socket
+# (or --interaction-socket=PATH) followed by zero or more spec files;
+# the socket argument is stripped before the rest are treated as specs.
 def run(argv=None):
-    """Entry point for the TUI.
-
-    ``argv`` is a list of command-line arguments as passed from the CLI.
-    It may contain ``--interaction-socket`` (or ``--interaction-socket=PATH``)
-    followed by zero or more specification files. The socket argument is
-    stripped from the list before the remaining items are treated as spec
-    files.
-    """
-    # Basic manual parsing -- we avoid pulling in ``argparse`` to keep the
-    # import surface small and to stay consistent with the rest of the CLI
-    # which does manual ``getopt`` parsing.
+    # Manual parsing, consistent with the rest of the CLI's getopt use.
     spec_files: list[str] = []
     socket_path: str | None = None
     if argv:
         it = iter(argv)
         for arg in it:
             if arg.startswith("--interaction-socket"):
-                # ``--socket=PATH`` or ``--socket PATH``
                 if arg == "--interaction-socket":
                     try:
                         socket_path = next(it)
                     except StopIteration:
                         raise ValueError("--interaction-socket requires a path")
                 else:
-                    # ``--interaction-socket=PATH``
                     _, _, path = arg.partition("=")
                     if not path:
                         raise ValueError("--interaction-socket requires a path")
                     socket_path = path
                 continue
             spec_files.append(arg)
-    # ``SeineApp`` now accepts an optional ``interaction_socket`` argument.
     SeineApp(files=spec_files or None, interaction_socket=socket_path).run()
 

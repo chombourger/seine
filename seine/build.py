@@ -21,20 +21,10 @@ from seine.utils import distribution, locked
 from seine.utils      import lock_sibling, redact, redactions
 from seine.diffing    import colorless, diff, recall, remember
 
-# Specifications are rendered before they are parsed, so that one file can
-# say what is true of several architectures or releases instead of being
-# copied once per each.
-#
-# The delimiters are not jinja's own on purpose. A specification carries
-# ansible tasks, and ansible templates them itself, on the target, at the
-# time the playbook runs: '{{ ansible_facts.hostname }}' is a value seine
-# has no business resolving and could not resolve if it wanted to. Sharing
-# jinja's delimiters would mean eating those at load time, so seine takes a
-# pair of its own and leaves '{{ }}' and '{% %}' alone for ansible.
-#
-# StrictUndefined rather than a name that renders to nothing: a
-# specification whose architecture quietly went empty builds an image for
-# the wrong machine and says so nowhere.
+# Specs render before parsing (one file covers several
+# archs/releases). Custom delimiters keep ansible's own '{{ }}'
+# untouched. StrictUndefined: a missing value fails loudly, not
+# silently building for the wrong machine.
 TEMPLATE = jinja2.Environment(
     variable_start_string="[[", variable_end_string="]]",
     block_start_string="[%", block_end_string="%]",
@@ -42,16 +32,14 @@ TEMPLATE = jinja2.Environment(
     trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True,
     undefined=jinja2.StrictUndefined)
 
-# The same, for the pass that only wants to know what a specification sets:
-# a name it has not reached yet renders to nothing instead of stopping the
-# walk. Its output is thrown away, so nothing is decided on what it makes of
-# a half-known file.
+# Same, but for the probe pass: unresolved names render empty instead
+# of raising, since this output is only used to collect what names
+# get set, then thrown away.
 PROBE = TEMPLATE.overlay(undefined=jinja2.ChainableUndefined)
 
 class BuildCmd(Cmd):
-    # What this command is called and what it prints for '-h'. A command that
-    # is the same build with one option decided for it says so by overriding
-    # these rather than by copying main().
+    # Command name and its '-h' text. A variant of this command (see
+    # PlanCmd) overrides these instead of copying main().
     NAME = "build"
     SHORT_OPTIONS = "dDhj:kv"
     LONG_OPTIONS = [
@@ -77,9 +65,8 @@ class BuildCmd(Cmd):
 
     def __init__(self):
         self.image = None
-        # 'jobs' falls back to the persisted setting (seine/settings.py,
-        # '/set jobs N' in the TUI) before the hardcoded '1' -- an
-        # explicit '-j'/'--jobs' below still overrides either.
+        # 'jobs' falls back to the persisted setting (see settings.py / '/set
+        # jobs N') before the hardcoded '1'; '-j'/'--jobs' below overrides both.
         self.options = { "ansible_library": [], "build": True, "color": None,
                          "debug": False, "dry_run": False,
                          "jobs": settings.load().get("jobs") or 1, "keep": False,
@@ -95,9 +82,8 @@ class BuildCmd(Cmd):
         # (size: strings -> byte ints) -- what Inspector needs.
         self.raw_spec = None
         self._loading = []
-        # Every real file this build has loaded, in order first reached
-        # -- unlike _loading above, never popped: the durable record
-        # dump_file() checks a path against.
+        # Every real file loaded, in order first reached. Unlike _loading,
+        # never popped -- dump_file() checks paths against this.
         self.loaded_files = []
         self._probing = False
         self._variables = None
@@ -109,21 +95,14 @@ class BuildCmd(Cmd):
         # a specification with none.
         self.subbuilds = {}
 
-    # A specification handed over as text, rather than as a tree of files to
-    # walk: there is nothing to probe, so it renders against the
-    # specification merged so far and reads what earlier calls have set.
+    # A spec passed in as text rather than a file to walk: nothing to
+    # probe, so it renders against the spec merged so far.
     def loads(self, yaml_spec):
         return self._load("<string>", yaml_spec)
 
-    # Every file the command names, probed before any of them is loaded:
-    # what one asks for may be set by another further along the line, and
-    # 'seine build' takes as many of them as a user cares to compose.
-    #
-    # A named file's own lock sibling (lock_sibling(), 'foo.yaml' ->
-    # 'foo.lock.yaml') is spliced in right after it, before the next
-    # named file -- kas-style auto-discovery, not a 'requires:' of the
-    # file's own. Expanded once, up front, so the probe pass and the real
-    # load below walk the exact same list.
+    # Probes every named file before loading any -- a file may need a
+    # name a later file sets. Each file's lock sibling (foo.yaml ->
+    # foo.lock.yaml) is auto-spliced in right after it.
     def load_all(self, yaml_files):
         expanded = []
         for yaml_file in yaml_files:
@@ -138,24 +117,9 @@ class BuildCmd(Cmd):
             self.load(yaml_file)
         return self.spec
 
-    # What a specification sets, learned before it is loaded for real.
-    #
-    # Rendering against the specification merged so far is enough for a
-    # fragment to read what the file that reached for it said, and not
-    # enough for it to read what a fragment listed after it says. That is an
-    # ordering nobody should have to keep in their head, so the tree is
-    # walked once beforehand with a lenient jinja, purely to collect what it
-    # sets, and the result of that walk is thrown away.
-    #
-    # Only the names it found survive it, as the context the real walk
-    # renders against. Nothing the lenient render made of a half-known file
-    # reaches the specification that gets built.
-    #
-    # One walk for every file, merged the way a specification is merged
-    # rather than by replacing whole sections: two files both naming
-    # 'distribution' -- one the architecture, one the components a board's
-    # firmware needs -- each said half of it, and the second took the
-    # first's half away.
+    # Learns what a spec sets before loading it for real, so ordering
+    # between files doesn't matter for name lookups. Uses a lenient jinja
+    # pass and throws away its output -- only the discovered names survive.
     def _probe(self, yaml_file, check=True):
         if self._prober is None:
             self._prober = BuildCmd()
@@ -166,15 +130,8 @@ class BuildCmd(Cmd):
         if check:
             self._check_names(self._prober._names)
 
-    # Every name the specification asks for that it never sets, in one
-    # message. The walk has been to every file by the time this runs, so
-    # reporting the first and stopping would be a choice to make someone
-    # find the rest one build at a time.
-    #
-    # Names, not paths: what a file asks of a name it does read -- the
-    # 'architecture' of a 'distribution' that is set -- is a question about
-    # a value rather than about the specification's shape, and the load that
-    # follows answers it against the real values.
+    # Reports every unset name asked for, all at once rather than one
+    # error per run.
     def _check_names(self, names):
         missing = []
         for filename, asked in names:
@@ -184,15 +141,10 @@ class BuildCmd(Cmd):
         if len(missing) > 0:
             raise ValueError("\n".join(missing))
 
-    # The files being loaded, innermost last. 'requires' pulls in files that
-    # pull in files themselves, and nothing stopped two of them from reaching
-    # for each other: seine recursed until Python ran out of stack, with a
-    # traceback naming neither file. A file already on the chain is one being
-    # loaded again before it finished, which is the loop.
-    #
-    # A file reached twice by two different paths is not, and still loads
-    # twice: that is a specification listing a fragment its fragments also
-    # list, which is how they are meant to be composed.
+    # Tracks the requires-chain to catch loops (two files requiring each
+    # other used to recurse until the stack blew, with no useful
+    # traceback). A file reached twice via different paths is not a loop
+    # and loads again, on purpose.
     def load(self, yaml_file):
         if self._probing is False and len(self._loading) == 0 \
                 and os.path.realpath(yaml_file) not in self._probed:
@@ -208,20 +160,15 @@ class BuildCmd(Cmd):
         finally:
             self._loading.pop()
 
-    # A specification is rendered against the one built so far. Files are
-    # loaded before the 'requires' they list, so a fragment sees what the
-    # specification that reached for it had already said -- which is where
-    # the architecture and the release a fragment speaks of come from.
-    #
-    # Blocks are not accepted, only substitutions. Branching in a
-    # specification is what 'requires' is: listing the fragments that apply
-    # says which ones apply, in a file that can be read without running it.
+    # Rendered against the spec built so far, so a fragment can read what
+    # reached for it. Only '[[ ]]' substitutions are allowed, not '[% %]'
+    # blocks -- 'requires:' is how a spec branches, kept readable without
+    # running it.
     BLOCKS = re.compile(re.escape(TEMPLATE.block_start_string))
 
-    # 'requires' is read from the rendered file like everything else, so a
-    # require could name a file through a variable -- and then the set of
-    # files a specification is made of depends on the render, which is
-    # decided by the files. Kept out from the start.
+    # 'requires:' is stripped from the template text before rendering, so a
+    # require can't itself be templated (else which files load would
+    # depend on the render, which the files decide).
     REQUIRES = re.compile(r"^([ \t]*)requires:.*?(?=^\1\S|\Z)",
                           re.MULTILINE | re.DOTALL)
 
@@ -249,16 +196,9 @@ class BuildCmd(Cmd):
             raise ValueError("%s:%s: %s"
                 % (yaml_filename, getattr(e, "lineno", "?"), e)) from e
 
-    # The text of one specification file, not a stream: what a file says is
-    # read before it is parsed, and both callers hand over the same thing.
-    #
-    # A file that does not parse is skipped while probing rather than
-    # reported. What failed to parse there is a lenient render, where a name
-    # the walk had not reached yet left a value empty, so the fault may be
-    # the render's rather than the file's. The real walk reads the same file
-    # with every name in hand and reports what is wrong with the file
-    # itself; what is lost by skipping it here is the names it would have
-    # contributed.
+    # Takes raw text, not a stream, so loads() and load() can share this.
+    # A YAML error while probing is swallowed (the lenient render may have
+    # left a name empty) -- the real load below reports it properly.
     def _load(self, yaml_filename, yaml_spec):
         if yaml_filename != "<string>":
             path = os.path.realpath(yaml_filename)
@@ -271,10 +211,8 @@ class BuildCmd(Cmd):
                 return self.spec
             raise
 
-        # Patches and kconfig fragments are listed relative to the file
-        # listing them, which merging would otherwise lose. Resolved here,
-        # where the file they came from is still known: a package assembled
-        # from several files has no one directory to carry along.
+        # Patch/kconfig paths are relative to the file listing them; resolve
+        # here while we still know which file that was.
         for package in self._package_entries(spec):
             self._resolve_files(package, os.path.dirname(yaml_filename))
             self._record_origins(package, yaml_filename)
@@ -317,14 +255,10 @@ class BuildCmd(Cmd):
         entries += list((spec.get("defaults") or {}).get("packages") or [])
         return [e for e in entries if type(e) == type({})]
 
-    # Which file each of a package's settings came from. A package is
-    # routinely described by several, so there is no such thing as "the
-    # file this package came from" -- only the file that wrote each
-    # setting, which is the one a user would open to change it.
-    #
-    # Nested settings are named by their path, 'extends.kernel.upstream',
-    # so one flat map answers for all of them. It rides along under a key
-    # starting with an underscore, which the dump already hides.
+    # Which file wrote each of a package's settings (a package is often
+    # described by several files). Nested settings use a dotted path
+    # ('extends.kernel.upstream'); stored under an '_'-prefixed key so
+    # dump() already hides it.
     ORIGINS = "_origins"
 
     def _record_origins(self, package, filename, prefix=""):
@@ -399,11 +333,8 @@ class BuildCmd(Cmd):
             elif "distribution" not in self.spec:
                 self.spec["distribution"] = spec["distribution"]
 
-    # Feeds are merged by suite rather than replaced wholesale, the way
-    # partitions and volumes are merged by label: a file adding one feed
-    # would otherwise have to restate the others to keep them, and
-    # restating them means writing down URIs a snapshot has changed.
-    # Naming a suite already listed still overrides it.
+    # Feeds merge by suite (like partitions/volumes merge by label), so
+    # adding one feed doesn't require restating the others.
     #
     # direction: most-specific file wins, per setting within a matched
     # suite (docs/merging.md).
@@ -422,13 +353,9 @@ class BuildCmd(Cmd):
             else:
                 merged.append(feed)
 
-    # Additive, deduplicated, unlike every other 'distribution:' setting
-    # (docs/merging.md): a project's supported architectures accumulate
-    # across whichever per-architecture fragments a specification
-    # composes (examples/common/amd64.yaml, .../arm64.yaml, each naming
-    # its own), rather than the most specific one silently dropping what
-    # an earlier one already said. 'architecture' itself (singular, what
-    # this one run targets) is unaffected -- still last-loaded wins.
+    # Unlike other 'distribution:' settings, 'architectures' (plural)
+    # accumulates across fragments instead of the last one winning.
+    # 'architecture' (singular, this run's target) still last-wins.
     #
     # direction: additive, deduplicated (docs/merging.md).
     def _merge_distro_architectures(self, architectures):
@@ -446,10 +373,9 @@ class BuildCmd(Cmd):
             else:
                 self.spec["imager"] = spec["imager"]
 
-    # A group's file list, like 'imager's settings: a file naming the
-    # same group again replaces its file list outright rather than
-    # extending it, so a board file overriding what a shared fragment
-    # asked 'main' to load says the whole of it.
+    # A group's file list is replaced outright when named again, not
+    # extended -- a board file fully overrides what a shared fragment
+    # asked a group to load.
     #
     # direction: most-specific file wins (docs/merging.md).
     def _merge_multiconfig(self, spec):
@@ -460,14 +386,9 @@ class BuildCmd(Cmd):
             else:
                 self.spec["multiconfig"] = spec["multiconfig"]
 
-    # Merged by name, reusing _merge_named_list()/_merge_settings(): a
-    # fragment reached twice via two 'requires:' paths (conf-accounts's
-    # own 'configure user accounts', say) used to duplicate its
-    # playbook entry once per path. 'tasks:' stays one additive list
-    # rather than merged task-by-task -- ansible tasks run in order, so
-    # folding two same-named tasks into one is a bigger behavior change
-    # than it would be for an independent list entry; only an exact
-    # repeat (the reached-twice case) is dropped.
+    # Merged by name so a fragment reached twice via two 'requires:'
+    # paths doesn't duplicate its playbook entry. 'tasks:' stays additive
+    # (order matters for ansible), not merged task-by-task.
     #
     # direction: asking file wins within 'requires:'; a peer file amends
     # by field instead (docs/merging.md).
@@ -486,16 +407,9 @@ class BuildCmd(Cmd):
     def _merge_playbook_entry(self, entry, newentry, peer=False):
         self._merge_settings(entry, newentry, appends=lambda s: s == "tasks", peer=peer)
 
-    # A suite belongs beside whatever it tests -- the rebuild a
-    # 'packages:' entry describes, the config a 'playbook:' task sets --
-    # so it is composed across 'requires:' fragments the way 'packages:'
-    # is: an entry named the same as one already loaded is merged into
-    # it rather than duplicated, since a fragment reached twice via two
-    # 'requires:' paths (the ordinary way of sharing one) would
-    # otherwise show up twice. Two fragments naming their own, different
-    # concern is still the point, not a conflict -- only a shared name
-    # amends rather than duplicates. See seine.testing for what a
-    # 'test:' entry holds and how it runs.
+    # Merged by name like 'packages:', so a fragment reached twice via
+    # two 'requires:' paths amends its entry instead of duplicating it.
+    # See seine.testing for what a 'test:' entry holds and how it runs.
     #
     # direction: asking file wins within 'requires:'; a peer file amends
     # by field instead (docs/merging.md).
@@ -532,10 +446,9 @@ class BuildCmd(Cmd):
                              appends=lambda s: s in ("library", "tags"), skip=skip,
                              peer=peer)
 
-    # A case name colliding with genuinely different 'steps:' is more
-    # likely an authoring accident than deliberate composition -- raised
-    # rather than silently keeping the first-loaded steps, the same
-    # equality-or-error rule _merge_keyword() applies.
+    # Two 'steps:' for the same case name is likely a mistake, not
+    # deliberate composition -- raised rather than silently keeping the
+    # first (same identity-or-error rule as _merge_keyword()).
     #
     # direction: asking file wins for settings within 'requires:', peer
     # amends instead; 'steps' is identity-or-error regardless (docs/merging.md).
@@ -548,13 +461,9 @@ class BuildCmd(Cmd):
         self._merge_settings(case, newcase, appends=lambda s: s == "tags",
                              skip=("steps",) if "steps" in case else (), peer=peer)
 
-    # Two fragments can define the same keyword, reached twice via two
-    # 'requires:' paths -- tolerated if identical, the same rule
-    # seine.testing.loader.compile() applies across differently-named
-    # entries (which this has no visibility into: only keywords merged
-    # within the same 'test:' entry name are compared here). A real
-    # mismatch is caught here at load time instead of only surfacing
-    # when 'seine test' runs.
+    # Two fragments defining the same keyword (reached via two
+    # 'requires:' paths) is fine only if identical -- caught here at
+    # load time instead of surfacing later when 'seine test' runs.
     #
     # direction: identity-or-error -- never silently overrides
     # (docs/merging.md).
@@ -567,28 +476,11 @@ class BuildCmd(Cmd):
                 "entries -- give one of them a different name if they "
                 "are meant to be two keywords" % plain.get("name"))
 
-    # Packages are merged by the source package they name, the way
-    # partitions are merged by label: a file may say what to build and
-    # another how, without either having to restate the other.
+    # Generic named-entry merge: an entry from 'new' matching one already
+    # in 'existing' (by name_of()) is folded into it with merge_entry(),
+    # otherwise appended. Shared by packages, playbook, and test merging.
     #
-    # What that is for is a kernel: which patches a tree needs, what
-    # upstream it is, what flavour to cut the build down to are none of
-    # them properties of the release being built for, and writing them
-    # once per suite is how the copies drift apart.
-    #
-    # A setting already there wins, as it does for partitions: 'requires'
-    # loads what a file asked for after the file itself, so the
-    # specification reaching for a fragment is the one that overrides it.
-    #
-    # Named-entry merge, generic over what "named" means: an entry from
-    # 'new' matching one already in 'existing' (by name_of()) is folded
-    # into it with merge_entry() instead of duplicating it; one with no
-    # match is appended. What began as 'packages:''s own loop -- also
-    # what 'test:' entries and their own 'tests:' cases merge by name
-    # with (see BuildCmd._merge_tests()).
-    #
-    # direction: set by the caller's merge_entry -- this helper has none
-    # of its own (see docs/merging.md).
+    # direction: set by the caller's merge_entry (docs/merging.md).
     def _merge_named_list(self, existing, new, name_of, merge_entry):
         for entry in new:
             name = name_of(entry)
@@ -598,15 +490,12 @@ class BuildCmd(Cmd):
             else:
                 merge_entry(match[0], entry)
 
-    # One entry's settings, first-loaded-wins for anything already
-    # present, unless appends(setting) says the two should add together
-    # instead (see _added()). 'skip' is whatever the caller already
-    # merged its own way (a nested named list, say).
+    # First-loaded-wins per setting, unless appends(setting) says to add
+    # together instead (_added()). 'skip' is whatever the caller already
+    # merged itself. 'peer' flips the direction for a file reached
+    # outside 'requires:', which amends instead of losing.
     #
-    # direction: asking file wins -- every caller of this (packages,
-    # playbook, test) inherits it (see docs/merging.md). 'peer' flips it
-    # for a file reached outside 'requires:' (a later top-level/side-loaded
-    # file), which amends instead of losing.
+    # direction: asking file wins (docs/merging.md); peer amends instead.
     def _merge_settings(self, entry, newentry, appends=lambda setting: False,
                         skip=(), peer=False):
         for setting in newentry:
@@ -641,20 +530,14 @@ class BuildCmd(Cmd):
                                self._package_name,
                                lambda e, n: self._merge_package(e, n, peer=peer))
 
-    # Merged by the source package name, the same as 'packages' -- a
-    # board file naming an architecture a base file's entry did not, say.
+    # 'vendor:' is a list of asks, merged by name like other named
+    # lists. A lock file's 'vendor:' is instead a dict keyed by suite
+    # (already-resolved versions) -- told apart by type(), and kept in
+    # '_vendor_lock' so existing readers (vendor.py's parse()) still see
+    # a plain list.
     #
     # direction: asking file wins within 'requires:', peer amends
     # instead (docs/merging.md).
-    # 'vendor:' is a list of asks in an ordinary file -- merged below, by
-    # name, the way every other named list is. In a lock file it is
-    # instead a dict, keyed by suite, of what a resolve already froze
-    # (see seine/vendor's own manifest shape) -- told apart by type()
-    # since the two are never the same shape, and kept out of
-    # self.spec["vendor"] itself so every existing reader of it (starting
-    # with vendor.py's own parse()) keeps seeing a plain list of asks.
-    # Last suite entry loaded wins, matching a lock file being the whole
-    # truth for the suites it names.
     def _merge_vendor(self, spec, peer=False):
         if "vendor" not in spec:
             return
@@ -675,9 +558,9 @@ class BuildCmd(Cmd):
         name = entry.get("name")
         return name if type(name) == type("") else None
 
-    # Additive, deduplicated -- the same reasoning as 'redact': the file
-    # that knows a build-dep is not worth vendoring is rarely the file a
-    # vendor run is started from.
+    # Additive, deduplicated -- like 'redact': the file that knows a
+    # build-dep isn't worth vendoring is rarely the file a vendor run
+    # starts from.
     #
     # direction: additive, deduplicated -- order doesn't matter
     # (docs/merging.md).
@@ -687,16 +570,10 @@ class BuildCmd(Cmd):
             if name not in excluded:
                 excluded.append(name)
 
-    # A package entry under 'defaults' describes a package without asking
-    # for it to be built: it is what an architecture file needs to say
-    # which kernel flavour is meant without conjuring a kernel rebuild into
-    # every image that includes it.
-    #
-    # The last file to describe a package wins, which is the opposite of
-    # 'packages' and is what makes them useful: files are listed from the
-    # general to the particular, so a board file gets the last word over
-    # the architecture file it sits on. Anything under 'packages' still
-    # beats every default, since that is the file doing the asking.
+    # A 'defaults' package entry describes a package without asking to
+    # build it (e.g. which kernel flavour is meant, without forcing a
+    # rebuild). Last file wins here, unlike 'packages:' -- so a board
+    # file overrides the architecture file it sits on.
     #
     # direction: most-specific file wins (docs/merging.md).
     def _merge_defaults(self, spec):
@@ -743,12 +620,9 @@ class BuildCmd(Cmd):
                 package[setting] = newpackage[setting]
                 self._take_origin(package, newpackage, setting)
 
-    # Folded into the packages the specification asked for, once every file
-    # has been read. A default naming a package nothing builds describes
-    # nothing and is dropped -- which is the whole point of it -- but it is
-    # parsed first, so a typo in an architecture file is reported by the
-    # file that holds it rather than by the one image that happens to build
-    # a kernel.
+    # Folds defaults into the packages actually asked for, once every
+    # file is read. Parsed first so a typo is reported by the file that
+    # has it, not by whichever image happens to build a kernel.
     def _apply_defaults(self):
         from seine.packages import Package
 
@@ -761,16 +635,10 @@ class BuildCmd(Cmd):
                 if self._package_name(package) == name:
                     self._merge_package(package, default)
 
-    # A description may name a kernel this specification does not build,
-    # and that is not a mistake: an architecture file says "if a kernel of
-    # our own is built, put modules on it too", and it is included by every
-    # image of that architecture, most of which build no kernel. So a
-    # kernel named here that nothing builds is dropped, exactly as the
-    # description itself is when nothing asks for the package. Under
-    # 'packages' it stays an error, as it already is for 'before'.
-    #
-    # Only bare names are dropped: an 'apt://' kernel is the
-    # distribution's and is built by nobody here.
+    # A default may name a kernel this spec doesn't build -- not a
+    # mistake, just "if we build our own kernel, add modules to it too".
+    # Drop kernels nothing builds; under 'packages:' that stays an error.
+    # Only bare names are dropped, not 'apt://' kernels (the distro's own).
     def _drop_unbuilt_kernels(self, default):
         module = (default.get("extends") or {}).get("module")
         if type(module) != type({}):
@@ -797,10 +665,8 @@ class BuildCmd(Cmd):
             skip.add("extends")
         self._merge_settings(package, newpackage, skip=skip, peer=peer)
 
-    # A setting and the file that wrote it move together. Taking a setting
-    # whole takes what is under it: copying an 'extends' block no file had
-    # yet copies where each of its settings was written, not one answer
-    # for the block.
+    # A setting and the file that wrote it move together, so copying a
+    # whole 'extends' block also copies each nested setting's origin.
     def _take_origin(self, package, newpackage, setting):
         origins = newpackage.get(BuildCmd.ORIGINS) or {}
         taken = {name: origin for name, origin in origins.items()
@@ -808,9 +674,8 @@ class BuildCmd(Cmd):
         if len(taken) > 0:
             package.setdefault(BuildCmd.ORIGINS, {}).update(taken)
 
-    # One level deeper than the rest: 'extends' is a dictionary of kinds,
-    # and two files describing the same kernel are describing the same
-    # 'kernel' entry rather than replacing each other's.
+    # 'extends' is a dict of kinds; two files describing the same kernel
+    # describe the same 'kernel' entry rather than replacing each other.
     #
     # direction: asking file wins within 'requires:', peer amends
     # instead, unless _appends() says the setting is additive either way
@@ -838,36 +703,18 @@ class BuildCmd(Cmd):
                     self._take_origin(package, newpackage,
                                       "extends.%s.%s" % (kind, setting))
 
-    # Settings that two files add to rather than settle between them.
-    #
-    # Which kernels a module is built against is one of them: the file
-    # asking for the module names the kernels it knows about, and the file
-    # building a kernel of its own adds that one. Neither says the same
-    # thing twice, so "what was said first stands" would quietly drop a
-    # kernel somebody asked to have modules for.
-    #
-    # 'derived-flavours' is the other: a board file builds on a base an
-    # architecture file already derives, and "what was said first
-    # stands" would drop the second file's base entirely.
-    #
-    # 'configs' is the same idea, one level flatter: a file naming a
-    # group another file also named on the same kernel entry is two
-    # requests for that kernel, not one description repeated -- the gap
-    # a real session hit (build/chats/20260820T080504625424.json), where
-    # the second file's whole 'configs:' was dropped rather than merged.
+    # Settings two files add to rather than settle between them: which
+    # kernels a module targets, and 'kernel: derived-flavours'/'configs'
+    # -- "first stands" would silently drop what a second file added.
     def _appends(self, kind, setting):
         from seine.module import MODULE_KERNELS
         if kind == "module" and MODULE_KERNELS.match(setting) is not None:
             return True
         return kind == "kernel" and setting in ("derived-flavours", "configs")
 
-    # Two lists, in the order they were written, without repeating what
-    # both of them named -- the same kernel added by an architecture file
-    # and by the file asking for the module is one kernel; 'configs'
-    # merged one group at a time, the same reasoning one level flatter;
-    # or 'derived-flavours', merged one base at a time so a second file
-    # naming a flavour under a base the first already used adds to it
-    # rather than replacing it.
+    # Union of two lists (order preserved, no dupes) -- or for dicts,
+    # merged key by key: 'configs' one group at a time, 'derived-flavours'
+    # one base at a time, rather than the second replacing the first.
     def _added(self, listed, added, kind=None, setting=None):
         if kind == "kernel" and setting == "configs":
             return self._added_configs(listed or {}, added or {})
@@ -882,11 +729,9 @@ class BuildCmd(Cmd):
             return added if type(added) == type([]) else listed
         return listed + [entry for entry in added if entry not in listed]
 
-    # 'configs' groups are name to a list of lines, not name to a
-    # dictionary like 'derived-flavours' -- a group named by both files
-    # merges its own two line lists the way a plain list would, rather
-    # than the second replacing the first outright the way a repeated
-    # 'derived-flavours' name does.
+    # 'configs' maps group name -> list of lines (unlike 'derived-
+    # flavours', name -> dict), so a group named by both files unions
+    # its two line lists instead of the second replacing the first.
     def _added_configs(self, listed, added):
         merged = {group: list(lines) for group, lines in listed.items()}
         for group, lines in added.items():
@@ -894,16 +739,9 @@ class BuildCmd(Cmd):
             merged[group] = current + [line for line in lines if line not in current]
         return merged
 
-    # What decides whether two entries are the same package: the name it
-    # was given, or failing that the source package its 'source' URI
-    # names. Kept simple on purpose: the URI is parsed properly later, and
-    # a name that comes out wrong here merges nothing that was not already
-    # separate.
-    #
-    # 'name' first, because it is the package's name and the URI only says
-    # where the source came from: a file adding to a package described
-    # elsewhere then names it, rather than repeating a git URI complete
-    # with a revision it has no opinion about.
+    # Identifies a package by its 'name', or failing that by parsing its
+    # 'source' URI -- kept simple since the URI is parsed properly later,
+    # so a wrong guess here just fails to merge, it doesn't merge wrongly.
     def _package_name(self, package):
         if type(package) != type({}):
             return None
@@ -972,9 +810,8 @@ class BuildCmd(Cmd):
         self.spec["image"][kind] = parts
 
     # direction: most-specific file wins for a plain setting;
-    # 'partitions'/'volumes' route to _merge_parts_or_vols instead, which
-    # goes the other way -- asking file wins within 'requires:', peer
-    # amends instead, matched by 'label' (docs/merging.md).
+    # 'partitions'/'volumes' route to _merge_parts_or_vols instead (asking
+    # file wins within 'requires:', matched by 'label') (docs/merging.md).
     def _merge_image(self, spec, peer=False):
         if "image" in self.spec:
             for setting in spec["image"]:
@@ -995,10 +832,8 @@ class BuildCmd(Cmd):
         else:
             self.spec["initrd"] = spec["initrd"]
 
-    # What a fragment asked not to print, gathered from every file rather
-    # than taken from the last one to say it: the fragment that holds a
-    # secret is the fragment that knows it is one, and it is rarely the
-    # file a build is started from.
+    # Gathered from every file, not just the last: the fragment holding a
+    # secret is the one that knows it's a secret, rarely the top file.
     #
     # direction: additive, deduplicated -- order doesn't matter
     # (docs/merging.md).
@@ -1033,10 +868,9 @@ class BuildCmd(Cmd):
             self.image = Image(self.partitionHandler, self.options)
         self._apply_defaults()
         self.raw_spec = copy.deepcopy(self.spec)
-        # A vendor-only spec (no 'image:', 'packages:' or 'playbook:')
-        # skips both parsers below -- there is nothing for them to build.
-        # 'vendor:' is still validated here, so a typo is caught now
-        # instead of later in 'seine vendor'.
+        # A vendor-only spec (no image:/packages:/playbook:) skips both
+        # parsers -- nothing to build. 'vendor:' is still validated here so a
+        # typo is caught now, not later in 'seine vendor'.
         if "image" in self.spec:
             self.spec = self.partitionHandler.parse(self.spec)
             self.spec = self.image.parse(self.spec)
@@ -1053,16 +887,11 @@ class BuildCmd(Cmd):
         self._parse_multiconfig()
         return self.spec
 
-    # Loads every 'multiconfig:' group as its own sub-build, the way
-    # multiconfig._load() already loads a CLI '--' group. A sub-group's
-    # own 'image:', if it has one, never reaches this specification's --
-    # only self.spec's own 'image:' owns the disk.
-    #
-    # A group's value is a bare file list, or {files:, after:, before:} --
-    # see multiconfig._parse_group(). 'after'/'before' are resolved into
-    # one 'after' set per group (multiconfig.resolve_order()) before any
-    # group is loaded, so Image.tasks() has it ready when it wires each
-    # group's own tasks to the 'needs' of whichever group(s) it named.
+    # Loads each 'multiconfig:' group as its own sub-build (like a CLI
+    # '--' group). A sub-group's own 'image:' never reaches this spec --
+    # only self.spec's 'image:' owns the disk. 'after'/'before' are
+    # resolved into one 'after' set per group before loading, so
+    # Image.tasks() has it ready to wire each group's 'needs'.
     def _parse_multiconfig(self):
         from seine import multiconfig
         groups = self.spec.get("multiconfig") or {}
@@ -1081,13 +910,9 @@ class BuildCmd(Cmd):
             raise RuntimeError("no specification was loaded or parsed!")
         return self.image.build(reporter=reporter)
 
-    # The intermediate images of the multi-stage builds this made, once,
-    # when there is nothing left to stand on them -- rather than after
-    # every image, which is what it was.
-    #
-    # 'podman image prune' is machine-wide, so it is taken exclusively and
-    # skipped when it is not free: another build holds the storage, has
-    # intermediates of its own, and prunes when it finishes.
+    # Prunes intermediate images once, after everything's built, not
+    # after each image. 'podman image prune' is machine-wide, so it's
+    # skipped (not blocked on) when another build already holds the lock.
     def _prune(self):
         try:
             with locked(ContainerEngine.storage_lock(), blocking=False):
@@ -1136,10 +961,9 @@ class BuildCmd(Cmd):
         # together and we now have a consolidated specification
         spec.pop("requires", None)
 
-        # take out what the specification asked not to print, everywhere it
-        # appears. The section itself is left as it is: its patterns say
-        # what a reader is not being shown, and one of them matching itself
-        # would hide that too.
+        # Redacts everywhere the patterns appear, but leaves the 'redact'
+        # section itself alone -- its patterns describe what's hidden, and
+        # matching itself would hide that.
         patterns = redactions(spec)
         for section in spec:
             if section != "redact":
@@ -1148,11 +972,9 @@ class BuildCmd(Cmd):
         # return the spec in YAML format
         return yaml.dump(spec)
 
-    # One file's own text, not the merged spec dump() returns -- redacted
-    # the same patterns, but never the literal bytes on disk. Refused
-    # unless in loaded_files or 'extra_allowed' (e.g. spec-files' unloaded
-    # siblings). Read as written, not rendered -- no Jinja substitution,
-    # so '{{ }}' shows up verbatim.
+    # A single file's own text, not the merged spec -- redacted, but never
+    # written back to disk. Refused unless in loaded_files or
+    # 'extra_allowed'. Read as-is, no Jinja rendering.
     def dump_file(self, path, extra_allowed=()):
         real = os.path.realpath(path)
         if real not in self.loaded_files and real not in extra_allowed:
@@ -1165,11 +987,9 @@ class BuildCmd(Cmd):
         patterns = redactions(self.spec)
         return yaml.dump(redact(spec, patterns))
 
-    # Every local file this build's 'packages:' entries reference --
-    # patches, kernel fragments, derived-flavour fragments -- the same
-    # files a real build reads to compile them. Never
-    # 'defaults.packages:', a description names nothing built. Read
-    # fresh, not cached, so a spec-update mid-conversation shows up now.
+    # Local files this build's 'packages:' reference (patches, kernel/
+    # derived-flavour fragments) -- never 'defaults.packages:', which
+    # builds nothing. Read fresh, not cached.
     def referenced_files(self):
         from seine import packages
         try:
@@ -1178,11 +998,10 @@ class BuildCmd(Cmd):
             return set()
         return {os.path.realpath(f) for p in parsed for f in p.referenced_files()}
 
-    # Falls back to a referenced file (a patch, a kernel fragment) when
-    # dump_file() refuses -- read as written, redacted as flat text via
-    # redact() (no YAML round-trip needed). No path-containment check:
-    # a real build already reads and ships whatever a 'patches:'/
-    # 'fragments:' entry names, a bigger exposure than this preview.
+    # Falls back to a referenced file (patch, kernel fragment) when
+    # dump_file() refuses -- redacted as flat text, no YAML round-trip.
+    # No path-containment check: the real build already reads whatever
+    # a 'patches:'/'fragments:' entry names.
     def read(self, path, extra_allowed=()):
         try:
             return self.dump_file(path, extra_allowed=extra_allowed)
@@ -1228,10 +1047,8 @@ class BuildCmd(Cmd):
                 print(self.usage())
                 sys.exit()
             elif o in ("-j", "--jobs"):
-                # How many steps of a build may run at once. One by
-                # default: that is the order and the output a build has
-                # always had, and the only thing that makes a failure
-                # readable without going looking for a file.
+                # How many build steps may run at once. Defaults to 1 -- the
+                # ordering/output a build has always had, and the easiest to debug.
                 try:
                     self.options["jobs"] = int(a)
                 except ValueError:
@@ -1253,21 +1070,17 @@ class BuildCmd(Cmd):
             elif o in ("--rootfs-only"):
                 self.options["rootfs_only"] = True
             elif o in ("--target"):
-                # Checked against the graph itself once it exists
-                # (Image.tasks(), via tasks.closure()) rather than here --
-                # a task's name depends on what the specification asks
-                # for (which package, which architecture), which is not
-                # known yet from the command line alone.
+                # Validated later against the task graph (Image.tasks()), not
+                # here -- task names depend on the parsed spec, not just the CLI.
                 self.options["target"] = a
             elif o in ("--dry-run"):
                 self.options["dry_run"] = True
             elif o in ("-D", "--dump"):
                 self.options["build"] = False
             elif o in ("--parallel"):
-                # How many cores one package build may use. Left unset it
-                # follows --jobs, so raising that divides the machine
-                # rather than multiplying it: N builds each helping
-                # themselves to every core is how a build machine dies.
+                # Cores one package build may use. Left unset it follows
+                # --jobs, so raising --jobs divides the machine instead of
+                # multiplying it.
                 try:
                     self.options["parallel"] = int(a)
                 except ValueError:
@@ -1294,10 +1107,9 @@ class BuildCmd(Cmd):
             sys.exit(1)
 
         try:
-            # '--' separates groups of files: several images, one
-            # scheduler. A single group -- no '--' anywhere -- takes the
-            # path below exactly as it always has; multiconfig.run() has
-            # its own copy of what follows it, for more than one.
+            # '--' separates groups of files: several images, one scheduler. A
+            # single group takes the path below as always; multiconfig.run()
+            # handles more than one.
             from seine import multiconfig
             groups = multiconfig.split(args)
             if len(groups) > 1:
@@ -1324,10 +1136,9 @@ class BuildCmd(Cmd):
                 # playbook's environment there. Taken after, every playbook
                 # would differ from the one a plan renders.
                 recorded = self.dump(spec)
-                # Shared: a build started in another terminal runs beside
-                # this one, which is what a machine with cores to spare is
-                # for. What may not run beside it is something that sweeps
-                # the storage -- 'seine cache clear', and the prune below.
+                # Shared: another build in a different terminal runs alongside
+                # this one. What can't run alongside is anything sweeping
+                # storage -- 'seine cache clear', and the prune below.
                 with locked(ContainerEngine.storage_lock(), shared=True):
                     result = self.build()
                 self._prune()
@@ -1353,10 +1164,9 @@ class BuildCmd(Cmd):
             sys.stderr.write("error: build was %s\n" % (str(e) or "interrupted"))
             sys.exit(130)
 
-# Everything 'build' does up to the point of doing it. The same command with
-# one option decided for it, rather than a second implementation of it: what
-# a plan is worth depends on it being the graph a build would walk, and two
-# code paths would be two answers.
+# Everything 'build' does, minus doing it. Same command with one
+# option decided for it, not a second implementation -- a plan's
+# value depends on it being the exact graph a build would walk.
 class PlanCmd(BuildCmd):
     NAME = "plan"
 

@@ -1,8 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Reading 'extends: kernel:' onto a package, and writing what it asks
-# for into the fetched source's own kconfig fragments.
+# Reading 'extends: kernel:' onto a package, and writing what it asks for
+# into the fetched source's own kconfig fragments.
 
 import os
 import re
@@ -11,9 +11,8 @@ from . import (CONFIG_LINE, CONFIG_LINE_DISABLED, DEFAULT_FEATURESET,
               TARBALL_SUFFIXES, UPSTREAM_SCHEMES)
 
 
-# The tree named by 'extends: kernel: upstream:'. It carries the same
-# fields a Package does -- scheme, name, parameters -- so the code that
-# fetches one fetches the other.
+# The tree named by 'extends: kernel: upstream:'. Carries the same fields
+# as a Package (scheme, name, parameters) so the same fetch code works.
 class Upstream:
     def __init__(self, uri, error):
         if type(uri) != type(""):
@@ -43,9 +42,8 @@ class Upstream:
             for parameter in parameters:
                 key, _, value = parameter.partition("=")
                 self.parameters[key] = value
-            # Same reason a git 'source' is pinned: a branch name moves,
-            # and a kernel rebuild is not a thing to repeat by accident,
-            # or to skip when it should not have been.
+            # A branch name can move; a git ref must be pinned so a
+            # rebuild isn't silently repeated (or skipped) by accident.
             if len(self.parameters.get("rev", "")) == 0:
                 raise error(
                     "'extends: kernel: upstream' git trees shall be pinned "
@@ -55,12 +53,9 @@ class Upstream:
     def __str__(self):
         return self.uri
 
-# 'extends: kernel: configs:' entries -- named groups of literal
-# 'CONFIG_OPTION=value' lines, for the common case of wanting a handful of
-# symbols set without writing a fragment file for them. Kept as the
-# assignments they were written as rather than translated here: that is a
-# serialization detail of the fragment they end up in ('_config_line'),
-# not something the specification's own words should already have lost.
+# 'extends: kernel: configs:' entries: named groups of literal
+# 'CONFIG_OPTION=value' lines, for setting a handful of symbols without
+# writing a whole fragment file.
 def _parse_configs(package, settings):
     if "configs" not in settings:
         return {}
@@ -90,10 +85,8 @@ def _parse_configs(package, settings):
         parsed[name] = lines
     return parsed
 
-# The fragment line one 'CONFIG_OPTION=value' entry becomes. 'n' is the one
-# value kconfig itself does not accept as an assignment -- a disabled
-# symbol is said by commenting it out, not by '=n' -- so that value alone
-# is rewritten; anything else is passed through as written.
+# kconfig itself does not accept '=n' as an assignment -- a disabled
+# symbol must be a comment -- so only that value is rewritten.
 def _config_line(assignment):
     if CONFIG_LINE_DISABLED.match(assignment) is not None:
         return assignment
@@ -102,12 +95,9 @@ def _config_line(assignment):
         return "# %s is not set" % symbol
     return assignment
 
-# Appends every 'configs:' group to an architecture's own config file, in
-# the order the specification wrote them -- two groups may touch the same
-# symbol, and the later one is meant to win, exactly as it would for two
-# fragment files. A function of its own, the way '_add_derived_flavours'
-# is, so it can be pointed at a fixture directly rather than only through
-# the whole of 'extend'.
+# Appends every 'configs:' group to an architecture's config file, in
+# spec order, so a later group can override an earlier one on the same
+# symbol -- same as two fragment files would.
 def _write_configs(package, config):
     if len(package.kernel_configs) == 0:
         return
@@ -117,11 +107,6 @@ def _write_configs(package, config):
             for line in lines:
                 f.write("%s\n" % _config_line(line))
 
-# Reads 'extends: kernel:' onto the package it was written on. The package
-# is handed over whole rather than a dictionary handed back: what a
-# setting is called in the yaml and what it is called on the package are
-# one subject, and the error messages come from the package that is being
-# parsed.
 def parse(package, extends):
     settings = extends.get("kernel", {})
     package.kernel = "kernel" in extends
@@ -139,8 +124,6 @@ def parse(package, extends):
         package.kernel_upstream = Upstream(settings["upstream"], package._error)
     package.kernel_upstream_sha256 = package._parse_digest(settings,
                                                            "upstream-sha256")
-    # What a graft's ABI carries instead of Debian's own '+unreleased'.
-    # None leaves it alone.
     package.kernel_abi_suffix = settings.get("abi-suffix")
     if package.kernel_abi_suffix is not None:
         if type(package.kernel_abi_suffix) != type(""):
@@ -155,11 +138,8 @@ def parse(package, extends):
                 "graft: it is what a grafted kernel's ABI carries in "
                 "place of '+unreleased', and there is no such ABI to "
                 "rename without 'upstream'")
-    # One or several flavours of seine's own, derived from an existing
-    # Debian one, keyed by the flavour derived from rather than the
-    # architecture ('armhf' builds 'armmp'). Takes precedence over a bare
-    # 'flavour' rather than erroring when both are set: 'defaults'
-    # commonly gives every kernel one, for a module built against it.
+    # Takes precedence over a bare 'flavour' instead of erroring when both
+    # are set, since 'defaults' commonly sets 'flavour' for every kernel.
     package.kernel_derived_flavours = settings.get("derived-flavours")
     if package.kernel_derived_flavours is not None:
         if type(package.kernel_derived_flavours) != type({}):
@@ -204,27 +184,16 @@ def parse(package, extends):
                     "flavour to derive from it" % base)
             normalized[base] = names
         package.kernel_derived_flavours = normalized
-    # Filled in by '_add_derived_flavours' with what it actually built
-    # for this architecture, which '_check_flavour' reads back rather
-    # than working it out itself. None until then.
+    # Filled in later by '_add_derived_flavours' with what it actually
+    # built for this architecture.
     package.kernel_derived_flavours_built = None
-    # None, not a list of globs: with nothing said, which patches are
-    # the packaging is decided by what they touch rather than by their
-    # names. An explicit empty list is a different answer -- "keep none
-    # of them" -- so presence decides, not emptiness.
+    # None (not an empty list) means "keep the default set"; an explicit
+    # empty list means "keep none of them" -- presence decides.
     package.kernel_keep_patches = None
     if "keep-patches" in settings:
         package.kernel_keep_patches = package._parse_list(settings,
                                                           "keep-patches")
-    # Subtracted from what 'keep-patches' selected, since that only
-    # adds: taking one patch out of 'debian/*' would otherwise mean
-    # writing out the thirty-odd being kept.
     package.kernel_drop_patches = package._parse_list(settings, "drop-patches")
-    # Added to the patterns seine ships, for a packaging that builds
-    # through files Debian's does not touch. Checked here rather than
-    # where the series is read: a bad expression should be reported by
-    # the specification that wrote it, not by the patch it first fails
-    # to match.
     package.kernel_build_files = package._parse_list(settings, "build-files")
     for pattern in package.kernel_build_files:
         try:

@@ -1,13 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Every keyword here is a thin wrapper over seine.tui.target's own action
-# functions -- the same code '/target' and its AI tools already call, not
-# a reimplementation for headless use. What is added is only the RF
-# surface: keyword names a test author writes, and duration strings
-# ('120s', '2 minutes') parsed the same way Robot's own WHILE 'limit' is,
-# via robot.utils.timestr_to_secs -- one time syntax across the whole
-# suite rather than a seine-specific one here and Robot's own elsewhere.
+# Thin wrapper over seine.tui.target's action functions, the same code
+# '/target' uses. Duration strings ('120s', '2 minutes') are parsed with
+# robot.utils.timestr_to_secs, same as Robot's own WHILE 'limit'.
 
 from robot.api.deco import keyword, library
 from robot.utils import timestr_to_secs
@@ -53,20 +49,10 @@ class TargetLibrary:
     def power_toggle(self):
         self._power("toggle")
 
-    # No single mtda RPC for this -- off, a pause for the target to
-    # actually lose power, then on. 'settle' is a duration string
-    # ('2s' default), not a fixed sleep hidden from the test author: a
-    # board with capacitors that hold power longer names its own.
-    #
-    # Clears mtda's own server-side console buffer right after 'off',
-    # while nothing can print anything new yet: a real run's own
-    # interactions.json showed a *second* Power Cycle's 'Console Wait
-    # login:' matching in ~2s, far too fast for a real boot -- it was
-    # still seeing the previous cycle's own 'login:', never consumed by
-    # anyone since the earlier test only read the local screen (Capture
-    # Screen), which does not drain this buffer. The Password: wait 15s
-    # later then timed out for real, against a boot that had barely
-    # started.
+    # No single mtda RPC for power-cycle: off, settle, on. Console buffer
+    # is cleared right after 'off' so a later 'Console Wait' can't match
+    # leftover text from before the cycle (seen once as a false-fast
+    # 'login:' match from the previous boot).
     @keyword("Power Cycle")
     def power_cycle(self, settle="2s"):
         import time
@@ -84,9 +70,7 @@ class TargetLibrary:
         except target.Unavailable as e:
             raise RuntimeError(str(e))
 
-    # 'key' is mtda's own key-name syntax (X11 keysym names, e.g. 'Return',
-    # 'Tab', 'a') -- passed through as-is rather than seine inventing a
-    # second naming scheme for the same keys.
+    # 'key' uses mtda's own key names (X11 keysyms, e.g. 'Return', 'Tab', 'a').
     @keyword("Keyboard Press")
     def keyboard_press(self, key, repeat=1, ctrl=False, shift=False, alt=False, meta=False):
         from seine.tui import target
@@ -99,24 +83,16 @@ class TargetLibrary:
         from seine.tui import target
         target.keyboard_write(self.context, text)
 
-    # 'x'/'y' are absolute HID coordinates (0-32767, mtda.constants.MOUSE's
-    # own MAX_X/MAX_Y), not screen pixels -- mtda's HID mouse reports
-    # position this way regardless of the target's actual resolution, so
-    # a test names a fraction of the screen (e.g. centre: 16384, 16384)
-    # rather than a resolution it may not know.
+    # 'x'/'y' are absolute HID coordinates (0-32767, mtda.constants.MOUSE
+    # MAX_X/MAX_Y), not screen pixels -- e.g. centre is (16384, 16384).
     @keyword("Mouse Move")
     def mouse_move(self, x, y, buttons=0):
         """Moves the pointer to '(x, y)', 'buttons' held down (a bitmask, 0 for none)."""
         from seine.tui import target
         target.mouse_move(self.context, int(x), int(y), int(buttons))
 
-    # A single mouse_move() only reports where the pointer is and which
-    # buttons are held *right now* -- a real click is two HID reports,
-    # button down then up, exactly like a physical mouse; nothing seen
-    # in between is a "click" to whatever is listening on the target.
-    # Bit values are the standard USB HID mouse report (button 1 = bit
-    # 0, button 2 = bit 1, button 3 = bit 2) -- mtda passes 'buttons'
-    # through as-is and names no constant of its own for them.
+    # A click is two HID reports (button down, then up), like a real mouse.
+    # Bits are standard USB HID mouse report bits (button 1 = bit 0, etc).
     _BUTTON_BITS = {"left": 1, "right": 2, "middle": 4}
 
     @keyword("Mouse Click")
@@ -138,10 +114,8 @@ class TargetLibrary:
         from seine.tui import target
         target.console_send(self.context, data, raw=True)
 
-    # Waits for mtda's configured prompt to know a command finished --
-    # its default ('=> ') rarely matches a real shell. 'Console Prompt'
-    # below fixes that; 'Console Send' + 'Console Wait' never depend on
-    # it at all.
+    # Waits for mtda's configured prompt to know the command finished --
+    # the default ('=> ') rarely matches a real shell; see 'Console Prompt'.
     @keyword("Console Run")
     def console_run(self, command):
         """Runs 'command' on the console and returns what it printed."""
@@ -154,9 +128,8 @@ class TargetLibrary:
         from seine.tui import target
         return target.console_prompt(self.context, new_prompt)
 
-    # Truthy once 'pattern' appears, falsy on timeout -- not the matched
-    # text (mtda's own protocol, not a seine choice; use 'Capture Screen'/
-    # 'Console Tail' to read what is actually on the console).
+    # Returns truthy once 'pattern' appears, falsy on timeout -- not the
+    # matched text; use 'Capture Screen'/'Console Tail' to read the console.
     @keyword("Console Wait")
     def console_wait(self, pattern, timeout=None):
         """Waits for 'pattern' to appear; truthy if it did, falsy on timeout."""

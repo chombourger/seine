@@ -3,8 +3,7 @@
 
 # The Remote Target screen's console pane: pyte-backed terminal
 # emulation over mtda's console byte stream, plus optional raw/
-# asciinema capture -- split out of seine/tui/target.py, which grew
-# too large to navigate.
+# asciinema capture. Split out of target.py, which grew too large.
 
 import contextlib
 import json
@@ -13,39 +12,27 @@ import time
 
 # --- Console pane (fed by the same client.console_remote() subscription) ---
 
-# 80x25 is the VGA text-mode/BIOS convention (mtda.md's targets are
-# QEMU-emulated PCs), but the screen is grown well past the 25-line
-# half of it: this firmware's boot menu addresses absolute rows up to
-# 31 via 'CSI row;colH', and a too-short pyte screen scrolls those
-# absolute-positioned redraws instead of just overwriting them --
-# stale and fresh copies of the same row both stay on screen, looking
-# like duplicated text. 40 leaves real margin above the observed max.
+# 80x25 is the VGA text-mode/BIOS convention, but the screen is grown
+# past the 25-line half: this firmware's boot menu addresses absolute
+# rows up to 31 via 'CSI row;colH', and a too-short pyte screen scrolls
+# those redraws instead of overwriting them, leaving duplicated text.
+# 40 leaves real margin above the observed max.
 CONSOLE_COLUMNS = 80
 CONSOLE_LINES = 40
 
-# pyte's CSI parser only special-cases '?' as a private-mode marker;
-# any other unexpected character in the parameter area gets treated as
-# the CSI's own final byte, dispatching a no-op and leaking the rest of
-# the sequence as literal text. This firmware hits two such shapes:
-#   - 'CSI = <n> <letter>' (a legacy mode-set convention, '\x1b[=3h') --
-#     '=' has no standard meaning as a CSI parameter, so unrecoverable;
-#     the whole sequence is stripped.
-#   - 'CSI <row>;:<col>H' -- a stray ':' where a digit was expected
-#     ('\x1b[25;:0H'). ':' is ECMA-48's sub-parameter separator, which
-#     pyte doesn't implement, so deleting it recovers the cursor move
-#     the firmware meant. Left unrecovered, the cursor never reaches
-#     its intended row and a black SGR background bleeds across
-#     redraws instead of just a leaked "0H".
-# Real pyte limitations, fixed on the decoded text before pyte's parser
-# sees it, not patched inside pyte itself.
+# pyte's CSI parser treats any unexpected character in the parameter
+# area as the CSI's final byte, dispatching a no-op and leaking the
+# rest as literal text. This firmware hits two such shapes: 'CSI = <n>
+# <letter>' (unrecoverable, stripped whole) and 'CSI <row>;:<col>H'
+# (a stray ':' pyte doesn't implement as a sub-parameter separator;
+# deleting it recovers the intended cursor move). Fixed on the decoded
+# text before pyte's parser sees it, not patched inside pyte itself.
 _STRAY_COLON_IN_CSI = re.compile(r"(\x1b\[[0-9;]*);:+(?=[0-9;A-Za-z])")
-# Anything else unrecognised has no safe reconstruction -- stripped
-# generally, not as an allow-list of just the '=' shape seen so far.
+# Anything else unrecognised has no safe reconstruction, so it's
+# stripped generally, not as an allow-list of just the '=' shape seen so far.
 _UNSUPPORTED_CSI = re.compile(r"\x1b\[[0-9;?]*[^0-9;?A-Za-z][0-9;?]*[A-Za-z]")
 # Holds back a chunk's unterminated CSI tail rather than feeding it to
-# pyte early -- needed whether it turns out malformed (only
-# recognisable once complete) or normal (pyte already buffers those
-# correctly on its own; no need to tell which in advance).
+# pyte early, since it's only recognisable as malformed once complete.
 _UNSUPPORTED_CSI_PARTIAL = re.compile(r"\x1b(?:\[[^A-Za-z]*)?\Z")
 
 def _strip_unsupported_csi(data, pending):
@@ -57,20 +44,17 @@ def _strip_unsupported_csi(data, pending):
         return data[:m.start()], data[m.start():]
     return data, ""
 
-# pyte.ByteStream.feed() decodes then dispatches in one call, no seam
-# to strip unsupported CSI sequences from the decoded text before the
-# parser sees it -- so this subclass re-does ByteStream.feed()'s own
-# two lines (reusing self.utf8_decoder/self.use_utf8 from
-# ByteStream.__init__) and inserts the strip in between, rather than
-# reimplementing incremental UTF-8 decoding ourselves. Feed it raw
-# bytes, not text decoded per-chunk: a chunk boundary landing
-# mid-character is exactly what pyte's own incremental decoder exists
-# to get right (decoding each chunk independently corrupts a split
-# character into U+FFFD on both sides of the cut).
+# pyte.ByteStream.feed() decodes then dispatches in one call, with no
+# seam to strip unsupported CSI sequences before the parser sees them.
+# This subclass re-does feed()'s own two lines (reusing
+# self.utf8_decoder/self.use_utf8) and inserts the strip in between,
+# rather than reimplementing incremental UTF-8 decoding: feeding raw
+# bytes matters because a chunk boundary landing mid-character is
+# exactly what pyte's incremental decoder exists to get right.
 #
-# Defined lazily (module-level 'import pyte' would defeat the point of
-# ConsoleAdapter's own lazy import -- the rest of '/target'
-# (seine/tui/target.py) still needs to work with no pyte installed).
+# Defined lazily: a module-level 'import pyte' would defeat the point
+# of ConsoleAdapter's own lazy import, since '/target' still needs to
+# work with no pyte installed.
 _ByteStream = None
 
 def _get_byte_stream_class():
@@ -94,11 +78,11 @@ def _get_byte_stream_class():
         _ByteStream = _ByteStreamImpl
     return _ByteStream
 
-# Asciinema v2 writer for the same console stream -- one JSON header
-# plus [elapsed, "o", data] lines, replayable with `asciinema play`.
-# Only used when RunContext provides console_cast_path (same opt-in as
-# console.log); interactive /target never sets it so this stays a no-op
-# there. Created once per adapter, appended across reconnects.
+# Asciinema v2 writer for the console stream: one JSON header plus
+# [elapsed, "o", data] lines, replayable with `asciinema play`. Only
+# used when RunContext provides console_cast_path; interactive
+# '/target' never sets it. Created once per adapter, appended across
+# reconnects.
 class _AsciinemaWriter:
     def __init__(self, path):
         self.path = path
@@ -111,9 +95,8 @@ class _AsciinemaWriter:
             "env": {"TERM": "xterm-256color"},
         }
         # Truncate on first open of this run; later reconnects append.
-        # If the file already exists (a previous connect in the same run
-        # already wrote the header), keep it and reuse its start time so
-        # elapsed stays relative to the run's first byte.
+        # If the file already exists, keep it and reuse its start time
+        # so elapsed stays relative to the run's first byte.
         import os as _os
         if _os.path.isfile(path):
             try:
@@ -149,22 +132,17 @@ class _AsciinemaWriter:
 
 
 # The duck-typed 'screen' object mtda's RemoteConsole/ConsoleOutput
-# actually calls: print(data) for raw console bytes (ConsoleOutput.
-# write() -> print() -> screen.print(), output.py), on_event(event) for
-# one 'EVT' line (remote.py:40-48). Never spawns mtda-cli or its
-# interactive menu -- that has its own prefix-key menu which can mutate
-# hardware outside seine's confirm gate.
+# actually calls: print(data) for raw console bytes, on_event(event)
+# for one 'EVT' line. Never spawns mtda-cli or its interactive menu,
+# which could mutate hardware outside seine's confirm gate.
 class ConsoleAdapter:
     def __init__(self, app):
         import pyte
         self.app = app
-        # Raw console capture, for the same post-mortem reason
-        # seine.tasks captures a build step's own output to a file --
-        # opt-in via 'console_log_path' (seine.testing.context.
-        # RunContext sets it; the interactive '/target' screen never
-        # does, so this stays a no-op there). Append: several connects
-        # in one run (a test reconnecting per test, say) share one
-        # continuous transcript rather than overwriting each other.
+        # Raw console capture, opt-in via 'console_log_path'
+        # (RunContext sets it; interactive '/target' never does).
+        # Append: several connects in one run share one continuous
+        # transcript rather than overwriting each other.
         log_path = getattr(app, "console_log_path", None)
         self._log = open(log_path, "ab") if log_path else None
         cast_path = getattr(app, "console_cast_path", None)
@@ -182,29 +160,27 @@ class ConsoleAdapter:
         self.screen = pyte.Screen(CONSOLE_COLUMNS, CONSOLE_LINES)
         # pyte defaults to DECAWM (auto-wrap) on, matching a real
         # vt100. Real VGA/BIOS text mode clips at the screen edge
-        # instead, and this firmware relies on that without ever
-        # sending 'CSI ?7l' itself -- left on, its two-column layout
-        # (menu left, help text right) wraps long help text onto the
-        # next row's left half, overwriting menu items drawn there.
+        # instead, and this firmware relies on that without sending
+        # 'CSI ?7l' -- left on, its two-column layout wraps long help
+        # text onto the next row, overwriting menu items drawn there.
         self.screen.reset_mode(pyte.modes.DECAWM)
         self.stream = _get_byte_stream_class()(self.screen)
-        # A boot log arrives as hundreds of small chunks a second --
-        # redrawing on every single one made the console look like it
-        # was printing one character at a time. dirty is a plain flag,
-        # no thread marshal; TargetScreen's own tick redraws instead,
-        # same "poll, don't push" precedent BuildScreen's tail uses.
+        # A boot log arrives as hundreds of small chunks a second;
+        # redrawing on every one made the console look like it was
+        # printing one character at a time. dirty is a plain flag;
+        # TargetScreen's tick redraws instead, poll not push.
         self.dirty = False
 
     def _cast_for_test(self, test_name):
         if not test_name:
             return None
-        # Fast path without lock -- single-threaded setup phase.
+        # Fast path without lock: single-threaded setup phase.
         w = self._casts.get(test_name)
         if w is not None:
             return w
         # RunContext already created the header file; resolve its path
-        # via the context helper when available, otherwise fall back to
-        # a sanitized name next to the global cast.
+        # via the context helper, or fall back to a sanitized name next
+        # to the global cast.
         path = None
         getter = getattr(self.app, "_cast_path_for", None)
         if callable(getter):
@@ -249,14 +225,12 @@ class ConsoleAdapter:
         if self._log is not None:
             self._log.write(data)
             self._log.flush()
-        # Per-test cast (if a test is currently running) plus the global
-        # run cast -- the per-test file is scoped evidence for that one
-        # test, the global one is the whole run for `asciinema play`
-        # on the entire console transcript. Read/routed under the same
-        # lock RunContext.start_test()/end_test() hold while switching
-        # current_test, so a byte from this (mtda's own background)
-        # thread never sees a torn transition -- see context.py's own
-        # comment on _console_lock.
+        # Per-test cast (if a test is running) plus the global run cast:
+        # the per-test file is scoped evidence for that test, the
+        # global one covers the whole run. Read under the same lock
+        # RunContext.start_test()/end_test() hold while switching
+        # current_test, so a byte from mtda's background thread never
+        # sees a torn transition.
         lock = getattr(self.app, "_console_lock", None)
         with lock if lock is not None else contextlib.nullcontext():
             test = getattr(self.app, "current_test", None)
@@ -290,10 +264,9 @@ class ConsoleAdapter:
             self._casts.clear()
 
 # pyte gives one Char per cell (fg/bg as an ANSI name or a bare hex
-# triplet for 256/true-color) -- mapped straight to a Rich Style per
-# cell. Naive: no run-length merging of same-style neighbours, so a
-# redraw is one Text.append() per cell (up to CONSOLE_COLUMNS *
-# CONSOLE_LINES); add merging if that ever shows up as slow in practice.
+# triplet), mapped straight to a Rich Style per cell. Naive: no
+# run-length merging of same-style neighbours, so a redraw is one
+# Text.append() per cell; add merging if that shows up as slow.
 def _pyte_color(value):
     if len(value) == 6 and all(c in "0123456789abcdefABCDEF" for c in value):
         return "#" + value
@@ -308,19 +281,14 @@ def _pyte_style(char):
                 reverse=char.reverse)
 
 # max_lines: the pyte screen (CONSOLE_LINES) is taller than this
-# firmware's own content ever needs, purely as scroll-drift margin (see
-# CONSOLE_LINES's own comment) -- rows beyond what this BIOS actually
-# draws into are never meant to be seen. So the *widget* showing this
-# doesn't need to reserve room for all of them either: pass however
-# many rows actually fit the available space, and only that many get
-# rendered, from the top (where the real content lives).
+# firmware's content ever needs, purely as scroll-drift margin, so
+# rows beyond what the BIOS actually draws are never meant to be seen.
+# Pass however many rows fit the available space, rendered from the top.
 def render_console(screen, max_lines=None):
     from rich.text import Text
     # no_wrap/overflow="crop": pyte already wrapped this at exactly
-    # screen.columns -- a real terminal doesn't reflow when its display
-    # is narrower than its own width, it clips. Rewrapping here would
-    # scramble the fixed 80-column grid BIOS/serial-console output
-    # actually assumes.
+    # screen.columns. Rewrapping here would scramble the fixed
+    # 80-column grid BIOS/serial-console output assumes.
     text = Text(no_wrap=True, overflow="crop")
     lines = screen.lines if max_lines is None else min(max_lines, screen.lines)
     for y in range(lines):

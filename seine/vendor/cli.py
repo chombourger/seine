@@ -37,17 +37,11 @@ from .resolve import VendorResolver
 
 
 # ---------------------------------------------------------------------
-# The task graph. Built in three waves, each its own 'tasks.run()' call,
-# rather than one static graph: which artifacts wave 2 fetches is not
-# known until wave 1's resolve step has run, and seine/tasks.py's own DAG
-# is built once up front -- see VendorCmd._run().
-#
-# Wave 1's own result does not come back through a Task: tasks.py's
-# 'Task.run()' is called for what it does, its return value thrown away
-# (the same as every other caller of it -- see packages.py's own
-# Task bodies). Each resolve task instead writes into 'results', a dict
-# handed in and shared by every task of this wave, keyed by suite to a
-# (sources, graph) pair -- VendorResolver.resolve()'s own return shape.
+# The task graph. Built as three separate 'tasks.run()' waves rather than
+# one static graph: what wave 2 fetches isn't known until wave 1's
+# resolve has run (see VendorCmd._run()). Task.run()'s return value is
+# always discarded, so each resolve task instead writes into 'results',
+# a dict shared by the whole wave, keyed by suite to (sources, graph).
 # ---------------------------------------------------------------------
 
 def resolve_tasks(distro, entries, suites_wanted, options, hostBootstrap,
@@ -70,29 +64,21 @@ def resolve_tasks(distro, entries, suites_wanted, options, hostBootstrap,
         tasks.append(Task("resolve:%s" % suite, run, needs=["bootstrap-host"]))
     return tasks
 
-# The suite's own builder container, made (or found already current) the
-# first time a task asks for it and reused after -- not before any task
-# has run, the way fetch_tasks()/index_tasks() building it themselves
-# would: constructing the task list is then free of podman, which is
-# what lets it be described (or tested) without one.
+# The suite's builder container, made the first time a task asks for it
+# and reused after -- not up front, so the task list can be built (and
+# tested) without podman.
 def _builder_for(distro, suite, options, hostBootstrap):
     return VendorResolver(distro, suite, options)._builder(hostBootstrap)
 
 # One flat, dependency-free task per artifact still missing -- every
-# fetch for a suite may run beside every other, including another
-# suite's, since each writes its own filename into its own suite's
-# repository (see fetch.py's own fetch_source()/fetch_binary()). An artifact
-# already sitting there under its own name is not given a task at all:
-# a source's exact files are known from the manifest's own 'files' (see
-# RESOLVE_SCRIPT's _source_files()), and a binary's filename is a pure
-# function of its name/arch/version (_binary_filename()), so this is
-# decided on the host, before any container -- unlike apt's own
-# skip-if-present check, which only happens once one has already been
+# fetch may run beside every other, since each writes its own filename
+# into its own suite's repository. Whether an artifact is already there
+# is decided on the host from the manifest alone, before any container
+# -- unlike apt's own skip-if-present check, which needs one already
 # spawned to ask it.
 def fetch_tasks(distro, suite, manifest, options, hostBootstrap, archs=None):
-    # Qualified: tests replace what a fetch actually does by patching
-    # 'seine.vendor._builder_for' (this package's own re-export), which a
-    # bare name here would never see.
+    # Qualified: tests patch 'seine.vendor._builder_for' (this package's
+    # re-export), which a bare name here would never see.
     from seine import vendor
     tasks = []
     seen_bins = set()
@@ -106,16 +92,11 @@ def fetch_tasks(distro, suite, manifest, options, hostBootstrap, archs=None):
             Index().hit(VENDOR, src_key)
             say(options, "vendor source %s reused" % src_key)
         else:
-            # A source whose entry already carries a 'snapshot' (only
-            # ever set by '--refresh', into a committed lock -- see
-            # _enrich_for_lock()) is fetched straight from
-            # snapshot.debian.org, no builder/container at all: apt was
-            # never going to have this exact version anyway (that is
-            # the entire reason '--refresh' recorded it), and a plain
-            # HTTPS download needs neither one. '_builder_for()' -- the
-            # actual bootstrap/image-build chain -- is why this stays a
-            # lambda rather than a plain call: it must not run at all
-            # on this path, only inside the other one's body.
+            # A source whose entry already carries a 'snapshot' (set by
+            # '--refresh', see _enrich_for_lock()) is fetched straight
+            # from snapshot.debian.org, no builder/container -- apt was
+            # never going to have this exact version anyway. Stays a
+            # lambda so '_builder_for()' only ever runs on the other path.
             snap = entry.get("snapshot")
             hashes = entry.get("file_hashes")
             tasks.append(Task(
@@ -152,15 +133,10 @@ def fetch_tasks(distro, suite, manifest, options, hostBootstrap, archs=None):
                         expected_hash=bin_hash, options=options)))
     return tasks
 
-# One task per suite, run only once every one of that suite's fetches has
-# already finished -- a separate, later 'tasks.run()' call rather than a
-# 'needs' edge onto the fetch wave, so a failed fetch can be resubmitted
-# (see VendorCmd._run_wave()) without the index task's own 'needs' naming
-# an attempt that no longer exists under that name.
-# 'manifests'/'entries' are VendorCmd._run()'s own -- index() (see its
-# own comment) needs a suite's resolved sources explicitly, and the
-# names 'entries_for(entries, suite)' asks for directly to seed
-# main-vs-extra classification, rather than reading either off disk.
+# One task per suite, run only once that suite's fetches have all
+# finished -- a later, separate 'tasks.run()' call rather than a 'needs'
+# edge, so a failed fetch can be resubmitted under a new name without
+# breaking the index task's own dependency.
 def index_tasks(distro, suites_wanted, options, hostBootstrap, signer,
                 manifests, entries):
     # Qualified for the same reason fetch_tasks() above is.
@@ -180,18 +156,11 @@ def index_tasks(distro, suites_wanted, options, hostBootstrap, signer,
 # 'seine vendor': the CLI surface.
 # ---------------------------------------------------------------------
 
-# Echoes a task's own log file to the terminal as it grows, so a wave run
-# one task at a time (jobs=1) keeps a log file -- read back on failure the
-# same way tasks.py's own '_report()' already would, and by hand for a
-# run that succeeded -- without giving up seeing it live. A file is
-# followed rather than teed at the Python level because it has to be:
-# tasks.py's own 'capture()' hands podman's subprocess the log file's
-# real descriptor to write into directly (see its own docstring), which
-# is not something a Python object standing in for two streams can be.
-#
-# Never used for jobs>1: several tasks' own output interleaved on one
-# terminal is exactly what giving each of them a file of its own avoids
-# (see tasks.py's own 'output()' docstring), and this would put it back.
+# Echoes a task's log file to the terminal as it grows, so jobs=1 still
+# shows live output while keeping a file to read back on failure. Follows
+# the file rather than teeing in Python, since tasks.py hands podman's
+# subprocess the file's own descriptor to write into directly. Never
+# used for jobs>1, where separate log files avoid interleaved output.
 class _LiveFollower:
     def __init__(self, logs):
         self.logs = logs
@@ -215,13 +184,9 @@ class _LiveFollower:
     def say(self, message):
         sys.stderr.write("\n%s\n" % message)
 
-    # 'started()' fires before tasks.py opens the file, so the first
-    # moments poll for it rather than fail over its absence -- then reads
-    # whatever is appended, sleeping between polls the way 'tail -f'
-    # does. 'finished()' setting the stop event does not mean nothing is
-    # left to read: the task may have written its last lines and exited
-    # between this loop's last read and 'stop' being noticed, so one more
-    # read follows before this returns.
+    # Polls for the file first, since 'started()' fires before tasks.py
+    # opens it, then tails it like 'tail -f'. One more read after 'stop'
+    # is noticed, in case the task wrote its last lines just before exiting.
     def _follow(self, path, stop):
         while not stop.is_set() and not os.path.isfile(path):
             time.sleep(0.05)
@@ -243,13 +208,11 @@ class _LiveFollower:
         except OSError:
             return
 
-# A failed fetch is resubmitted as a new Task, up to this many times in
-# total, rather than retried silently inside one Task.run(): each attempt
-# gets a name (and, with several running beside each other, a log file)
-# of its own, an honest place in the record rather than folded into one
-# task's wall clock. Resolving and indexing are not retried -- an apt
-# failure there is almost always the specification asking for something
-# that is not there, which asking again does not fix.
+# A failed fetch is resubmitted as a new Task, up to this many times,
+# rather than retried silently inside one Task.run() -- each attempt gets
+# its own name and log file. Resolving and indexing are never retried: an
+# apt failure there almost always means the spec asked for something
+# that isn't there, and asking again won't fix that.
 MAX_ATTEMPTS = 3
 
 class VendorCmd(Cmd):
@@ -330,12 +293,9 @@ class VendorCmd(Cmd):
             sys.stderr.write("error: vendor command expects a YAML file\n")
             sys.exit(1)
 
-        # Writing a lock (a fresh '--refresh', or a '--check' comparing
-        # against one) needs exactly one physical file to know which
-        # '<file>.lock.yaml' it is about -- 'seine build's own multi-file
-        # composition has no notion of "the" file a lock belongs to (see
-        # [[seine-multiconfig-plan]]), so this is refused rather than
-        # guessed at.
+        # Writing a lock needs exactly one physical file to know which
+        # '<file>.lock.yaml' it belongs to -- refused rather than guessed
+        # at when several are given.
         if (refresh is not False or check) and len(args) != 1:
             sys.stderr.write(
                 "error: %s needs exactly one specification file, to know "
@@ -355,13 +315,10 @@ class VendorCmd(Cmd):
             exclude = exclusions(build.spec)
             extra_archs = extra_architectures(build.spec)
             available = named_suites(entries, distro)
-            # 'load_lock()' expands a binary's own merged hash/version
-            # and a source's own merged file hash/snapshot for their own
-            # callers -- this is the *other* way a lock's data reaches
-            # here, BuildCmd's own generic YAML/jinja loader
-            # (_merge_vendor()'s dict branch), which never goes through
-            # 'load_lock()' at all and so needs the exact same expansion
-            # applied by hand.
+            # 'load_lock()' isn't used here: this data came through
+            # BuildCmd's generic YAML/jinja loader (_merge_vendor()'s
+            # dict branch) instead, so the same expansion is applied
+            # by hand.
             vendor_lock = {
                 suite: dict(doc, sources=_expand_binaries(
                     _expand_files(doc.get("sources", {}))))
@@ -386,12 +343,9 @@ class VendorCmd(Cmd):
                 sys.exit(1)
         wanted = suites_asked if len(suites_asked) > 0 else available
 
-        # Unlike '--suite', narrowing here never skips a resolve: an
-        # architecture's closure is walked the same way regardless of
-        # what a run wants fetched, so a suite's frozen manifest always
-        # stays complete for every architecture 'vendor:' asks for --
-        # only fetch_tasks() (and so what actually reaches the disk)
-        # is scoped down. None (nothing asked) keeps that unscoped.
+        # Unlike '--suite', narrowing here never skips a resolve: the
+        # frozen manifest stays complete for every architecture 'vendor:'
+        # asks for -- only fetch_tasks() (what reaches disk) is scoped.
         available_archs = architectures(entries, distro, extra_archs)
         for arch in archs_asked:
             if arch not in available_archs:
@@ -403,9 +357,8 @@ class VendorCmd(Cmd):
                 sys.exit(1)
         archs = archs_asked if len(archs_asked) > 0 else None
 
-        # Only what this run actually wants needs a configured feed: a
-        # '--suite' run does not fail over a suite it never asked for --
-        # see manifest.py's own named_suites()/unconfigured_suites().
+        # Only what this run actually wants needs a configured feed -- a
+        # '--suite' run doesn't fail over a suite it never asked for.
         unknown = unconfigured_suites(wanted, distro)
         if len(unknown) > 0:
             sys.stderr.write(
@@ -431,42 +384,24 @@ class VendorCmd(Cmd):
             sys.stderr.write("error: vendor was %s\n" % (str(e) or "interrupted"))
             sys.exit(130)
 
-    # 'display' is the same Reporter-shaped sink 'seine build's own
-    # TUI screen already feeds tasks.run() through -- 'started'/
-    # 'finished'/'say', nothing else. None (the CLI's own path, via
-    # main()) keeps '_run_wave()'s existing verbose/'-j 1' live-tail
-    # instead; a caller wanting its own progress view (the vendor
-    # screen) hands one in and gets it on every wave, not just some.
-    #
-    # 'archs' scopes fetch_tasks() alone (see main()'s own comment on
-    # why resolving stays unscoped) -- None fetches every architecture
-    # 'vendor:' asks for, same as before this existed.
-    #
-    # 'extra_archs' is extra_architectures()'s own return
-    # ('distribution: architectures:') -- folded into manifest_digest()
-    # too, so a spec newly naming one re-resolves to actually cover it
-    # rather than keeping a manifest frozen before it was asked for.
+    # 'display' is a Reporter-shaped sink ('started'/'finished'/'say');
+    # None keeps the CLI's own verbose/'-j 1' live-tail instead. 'archs'
+    # scopes fetch_tasks() alone, resolving stays unscoped. 'extra_archs'
+    # also feeds manifest_digest(), so naming a new one re-resolves.
     def _run(self, distro, entries, exclude, wanted, refresh, archs=None,
              extra_archs=(), display=None, vendor_lock=None, lock_path=None,
              check=False):
-        # Qualified: tests replace this by patching 'seine.vendor.
-        # HostBootstrap' (see resolve.py's own comment on the same fix).
+        # Qualified: tests patch 'seine.vendor.HostBootstrap'.
         from seine import vendor
         hostBootstrap = vendor.HostBootstrap(distro, self.options, force_online=True)
         vendor_lock = vendor_lock or {}
 
-        # Which suites need a fresh resolve: every one of them when
-        # '--refresh' was given with no name, one already-frozen entry
-        # refreshed within an otherwise-kept manifest when given one,
-        # every suite with no manifest yet at all, and every suite whose
-        # frozen manifest no longer matches what this spec's own
-        # 'vendor:' section (entries, excludes, profiles/options, feeds)
-        # asks for -- see manifest_digest(). An ordinary, unchanged
-        # rerun still just freezes what an earlier one resolved rather
-        # than asking apt again for it. '--check' forces every suite
-        # stale too, the same as '--refresh' -- it needs a real resolve
-        # to compare against the lock, not whatever the cache already
-        # has lying around.
+        # Which suites need a fresh resolve: every one on a bare
+        # '--refresh', one named suite on '--refresh=NAME', any with no
+        # manifest yet, and any whose manifest digest no longer matches
+        # this spec (see manifest_digest()). '--check' forces every
+        # suite stale too, since it needs a real resolve to compare
+        # against the lock.
         digests = {suite: manifest_digest(distro, entries, exclude, suite,
                                           extra_archs)
                   for suite in wanted}
@@ -474,14 +409,11 @@ class VendorCmd(Cmd):
         manifests = {}
         for suite in wanted:
             # A suite already frozen in a committed lock is never
-            # resolved at all on an ordinary run -- no resolver
-            # container, no apt: its sources are simply trusted, unless
-            # the spec's own 'vendor:' section has moved since the lock
-            # was last written, in which case this refuses outright
-            # rather than silently drifting back to whatever apt
-            # resolves today (that guarantee is the entire point of a
-            # committed lock). '--refresh'/'--check' bypass this and
-            # resolve for real, same as a suite with no lock at all.
+            # resolved on an ordinary run -- trusted outright, unless
+            # the spec's 'vendor:' section moved since the lock was
+            # written, in which case this refuses rather than silently
+            # drifting. '--refresh'/'--check' bypass this and resolve
+            # for real.
             locked = vendor_lock.get(suite)
             if locked is not None and refresh is False and not check:
                 if locked.get("digest") != digests[suite]:
@@ -512,41 +444,29 @@ class VendorCmd(Cmd):
                     old = load_manifest(suite)
                     old_sources = old.get("sources", {})
                     merged = self._merge_refresh(old_sources, fresh, refresh)
-                    # Same selection _merge_refresh() just made for
-                    # 'sources' -- a source kept unchanged (reverted to
-                    # its old entry) keeps its old graph rows too, so the
-                    # two never disagree about a source this run never
-                    # actually touched.
+                    # Same selection _merge_refresh() made for 'sources',
+                    # so an unchanged source keeps its old graph rows too.
                     moved = {name for name in merged
                              if name == refresh or name not in old_sources}
                     graph = self._merge_refresh_graph(
                         old.get("graph", {}), graph, moved)
                     fresh = merged
                 manifests[suite] = fresh
-                # '--check' writes nothing at all, cache manifest
-                # included -- it exists purely to compare a fresh
-                # resolve against the committed lock, never to update
-                # anything on disk.
+                # '--check' writes nothing, cache manifest included --
+                # it only compares against the committed lock.
                 if not check:
                     save_manifest(suite, {"sources": fresh, "digest": digests[suite],
                                           "graph": graph, "graph_version": GRAPH_VERSION})
         else:
-            # The resolve wave above is what builds this, as one of its
-            # own tasks -- skipped entirely when every suite's manifest
-            # is already frozen, which leaves the image the fetch/index
-            # containers stand on still unbuilt (or gone, after 'seine
-            # cache clear images') the first time a run touches nothing
-            # but already-resolved suites. Still run as a one-task wave,
-            # not a bare call: a caller with its own display (the vendor
-            # screen) gets a row and a real log file for it either way --
-            # otherwise this step is invisible on every ordinary rerun,
-            # which is the *common* case once a suite's manifest is
-            # frozen, not a rare one.
+            # Needed even when every suite is already frozen: the resolve
+            # wave above is what builds the image fetch/index stand on,
+            # and skipping it here would leave that unbuilt. Run as a
+            # one-task wave rather than a bare call so a caller's display
+            # still gets a row and log file for it.
             self._run_wave([hostBootstrap.task()], retryable=False, display=display)
 
-        # '--check' stops here: comparing the freshly resolved
-        # sources/versions against the committed lock needs no fetch or
-        # index at all, and the whole point is to touch nothing on disk.
+        # '--check' stops here: comparing against the lock needs no
+        # fetch or index, and the point is to touch nothing on disk.
         if check:
             return self._report_check(vendor_lock, manifests, wanted)
 
@@ -565,30 +485,23 @@ class VendorCmd(Cmd):
         for suite in wanted:
             print("vendored %d source package(s) for %s"
                  % (len(manifests[suite]), suite))
-        # A caller with its own display has nothing to read the prints
-        # above off of (they go to the real terminal, not wherever it is
-        # watching) -- the same summary, one line, through 'say()'.
+        # A caller with its own display can't see the prints above (they
+        # go to the real terminal) -- same summary, one line, via say().
         if display is not None:
             display.say("vendored " + ", ".join(
                 "%d source package(s) for %s" % (len(manifests[suite]), suite)
                 for suite in wanted))
 
-        # '--refresh' always writes (or creates) the lock beside the one
-        # spec file it was given, whether or not one existed before --
-        # bootstrapping a new lock is just the first refresh, same
-        # command as updating an existing one (see docs). Every suite
-        # the existing lock already named is kept as-is except the ones
-        # this run actually touched ('wanted'), so a run scoped by
-        # '--suite' never drops what an earlier run froze for another.
+        # '--refresh' always writes (or creates) the lock beside the
+        # spec file. Every suite the existing lock already named is kept
+        # as-is except the ones this run touched ('wanted'), so a
+        # '--suite'-scoped run never drops what an earlier run froze.
         if refresh is not False and lock_path is not None:
             updated = dict(vendor_lock)
             for suite in wanted:
                 enriched = self._enrich_for_lock(suite, manifests[suite], display=display)
-                # The cache manifest keeps the enrichment too (hashes,
-                # any snapshot.debian.org URL found) -- read-modify-write
-                # so its own 'digest'/'graph'/'graph_version' (already
-                # written, above, right after resolving) survive
-                # untouched; only 'sources' gains what this just found.
+                # Read-modify-write: keeps 'digest'/'graph'/'graph_version'
+                # untouched, only 'sources' gains the enrichment.
                 document = load_manifest(suite)
                 document["sources"] = enriched
                 save_manifest(suite, document)
@@ -598,13 +511,9 @@ class VendorCmd(Cmd):
             print("wrote %s" % lock_path)
         return 0
 
-    # '--check': whether a fresh resolve of every wanted suite still
-    # matches what the committed lock says, without writing anything
-    # back either way. Compared by source name and version only --
-    # binaries/build-deps follow from a source's own version already
-    # (RESOLVE_SCRIPT resolves them together), and this is meant to
-    # answer "did the archive move under us", not to restate the whole
-    # manifest as a diff.
+    # '--check': whether a fresh resolve still matches the committed
+    # lock, writing nothing back. Compared by name/version only --
+    # binaries/build-deps follow from a source's own version.
     def _report_check(self, vendor_lock, manifests, wanted):
         drifted = []
         for suite in wanted:
@@ -632,71 +541,24 @@ class VendorCmd(Cmd):
             return 1
         return 0
 
-    # '--refresh's own enrichment of a suite's freshly-resolved sources --
-    # the only place this runs (see seine/snapshot.py's own docstring
-    # and fetch_source()/fetch_binary()'s use of what this records).
-    # Builds exactly what both the cache manifest and the committed lock
-    # want to carry: every file's sha256 (_file_hashes()/
-    # _binary_hashes(), the lock's own no-deviation guarantee), plus --
-    # when snapshot.debian.org already knows the exact bytes apt just
-    # fetched -- its own sha1 for them ('snapshot'/'binary_snapshot'),
-    # the path a plain 'seine vendor' reaches for once the live feed has
-    # moved past this exact version.
-    #
-    # A source's own scale is thousands of packages, most with several
-    # binaries each, and a lookup is a real network round trip against a
-    # small shared public mirror -- run one at a time, this was by far
-    # the longest, least parallel stretch of a whole '--refresh' (see
-    # the prints right after 'vendored N source package(s)', which is
-    # exactly where this picks up). Every already-cached hit (see
-    # _cached_local_matches()'s own comment) is resolved on the spot,
-    # cheaply, no network and no task; only an actual miss becomes a
-    # Task, one per source (bundling all of that source's own missing
-    # files into the single API call source_files() already makes for
-    # the whole source) and one per (binpkg, version) (binary_files()
-    # already returns every architecture in one call -- see its own
-    # comment -- so archs sharing a version are batched into the same
-    # task rather than each firing an identical query) -- run through
-    # the exact same '_run_wave()' every fetch/resolve/index wave
-    # already does, so '--jobs' governs this the same way, each task's
-    # own 'made' line lands in its own log file instead of interleaving
-    # on one terminal (see tasks.py's own 'output()' docstring). A task
-    # that raises (a real request failure, not just "nothing found") is
-    # left to propagate -- '_run_wave(retryable=True)' only ever retries
-    # what it actually sees fail, so swallowing the error here the way
-    # an earlier version did meant a transient failure was recorded as
-    # a permanent "not on snapshot.debian.org" instead of being retried.
-    #
-    # 'snap_results'/'binary_snap_results' are the shared, task-body-
-    # populated results tasks.py's own 'resolve_tasks()' already uses
-    # this same way (see its own 'results' dict) -- every task writes to
-    # its own key (a source's own name; a (name, binpkg, arch) triple),
-    # never one another's, so nothing here needs a lock the way
-    # '_run_wave()'s own 'failures' list does (that one is genuinely
-    # shared across every task).
-    #
-    # Cross-checked against the sha1 snapshot.debian.org itself declares
-    # for the name/version/filename -- a metadata comparison, not a
-    # second download -- so a mismatch (some other upload sharing this
-    # exact name/version, or the two disagreeing for any other reason)
-    # is never recorded as if it were the same file: a warning, and the
-    # entry is left without a 'snapshot' of its own, exactly like
-    # snapshot.debian.org never having heard of it at all. Neither is an
-    # error -- '--refresh' still succeeds, it just has nothing to fall
-    # back to later for that one file.
+    # '--refresh's own enrichment of a suite's sources: adds each file's
+    # sha256, plus its snapshot.debian.org sha1 when the mirror already
+    # has the exact bytes apt fetched -- the fallback a plain 'seine
+    # vendor' reaches for once the live feed moves past this version. A
+    # cache hit resolves without network; a miss becomes a Task, run
+    # through the usual '_run_wave()'. A downloaded sha1 is cross-checked
+    # against the mirror's own declared hash; a mismatch is a warning,
+    # not a recorded 'snapshot'.
     def _enrich_for_lock(self, suite, sources, display=None):
         where = repository(suite)
         options = self.options
         enriched = {}
         snap_results = {}          # name -> {fname: sha1}
         binary_snap_results = {}   # (name, binpkg, arch) -> sha1
-        # The same (binpkg, arch) can legitimately be reachable from
-        # more than one source's own 'binaries' entry (build-dep
-        # closures overlap) -- fetch_tasks() already dedupes fetching
-        # it twice the same way (its own 'seen_bins'); this is the
-        # same guard for the snapshot lookup, found missing live: two
-        # sources both queuing a 'snapshot-bin:<suite>:ecj:amd64' task
-        # crashed task ordering outright ("duplicate task").
+        # Same dedup guard as fetch_tasks()'s own 'seen_bins': two
+        # sources sharing a (binpkg, arch) (build-dep closures overlap)
+        # otherwise queue the same snapshot task twice and crash with
+        # "duplicate task" -- found live with 'ecj'.
         seen_bins = set()
         tasks = []
 
@@ -719,13 +581,10 @@ class VendorCmd(Cmd):
                         known = snapshot.source_files(sess, name, version)
                         for fname in missing:
                             local = local_hashes[fname]
-                            # Every candidate snapshot.debian.org knows
-                            # for this filename, not just the highest-
-                            # priority one -- the same name/version can
-                            # legitimately carry more than one upload
-                            # under different bytes (see source_files()'s
-                            # own comment), and only the locally fetched
-                            # hash can say which one this actually is.
+                            # Every candidate for this filename, not just
+                            # the top one -- the same name/version can
+                            # carry more than one upload under different
+                            # bytes, and only the local hash tells which.
                             candidates = known.get(fname, [])
                             if any(h == local for h, _ in candidates):
                                 cached[fname] = local
@@ -733,9 +592,8 @@ class VendorCmd(Cmd):
                                 print("warning: '%s' does not match any of "
                                      "snapshot.debian.org's own checksums for "
                                      "it -- not recording a snapshot URL" % fname)
-                            # else: snapshot.debian.org has never heard of
-                            # this filename at all -- not a mismatch, just
-                            # nothing to fall back to yet.
+                            # else: the mirror has never heard of this
+                            # filename -- not a mismatch, just nothing yet.
                         _save_source_snapshot_cache(src_key, cached)
                         snap_results[name] = {fname: h for fname, h in cached.items()
                                               if local_hashes.get(fname) == h}
@@ -811,11 +669,9 @@ class VendorCmd(Cmd):
                     entry["binary_snapshot"] = binary_snap
         return enriched
 
-    # '--refresh=NAME': the freshly-resolved closure with every entry but
-    # NAME put back to what the existing manifest already had -- NAME
-    # moves, and whatever only its updated build-deps now reach (absent
-    # from the old manifest, so there is nothing to put back) moves with
-    # it, but nothing else does.
+    # '--refresh=NAME': the fresh closure with every entry but NAME put
+    # back to what the existing manifest had. Anything only NAME's
+    # updated build-deps now reach moves along with it.
     def _merge_refresh(self, old, fresh, name):
         merged = dict(fresh)
         for source, entry in old.items():
@@ -823,13 +679,10 @@ class VendorCmd(Cmd):
                 merged[source] = entry
         return merged
 
-    # The graph's own half of _merge_refresh(): edges/pruned rows keep
-    # whichever side (old or freshly-resolved) 'moved' says their own
-    # 'source'/'from' belongs to, then 'reverse' is rebuilt from the
-    # combined edges rather than merged row by row -- a 'to' target may
-    # gain or lose a parent on either side, and rebuilding is simpler
-    # (and cheaper, this is never more than a few hundred rows) than
-    # reconciling that by hand.
+    # The graph's half of _merge_refresh(): edges/pruned rows keep
+    # whichever side 'moved' says they belong to, then 'reverse' is
+    # rebuilt from the combined edges rather than merged row by row --
+    # simpler than reconciling a 'to' target's parents by hand.
     def _merge_refresh_graph(self, old, fresh, moved):
         old_edges = old.get("edges", [])
         fresh_edges = fresh.get("edges", [])
@@ -849,65 +702,46 @@ class VendorCmd(Cmd):
         os.makedirs(base, exist_ok=True)
         return tempfile.mkdtemp(dir=base, prefix="vendor-")
 
-    # One 'tasks.run()' call, with retries for the ones that may sensibly
-    # be retried (see MAX_ATTEMPTS above): a task that never got to run
-    # because an earlier failure stopped new ones starting is retried
-    # exactly like one that failed outright -- neither says anything
-    # about that task itself.
+    # One 'tasks.run()' call, with retries up to MAX_ATTEMPTS. A task
+    # that never got to run (an earlier failure stopped the rest) is
+    # retried the same as one that actually failed.
     def _run_wave(self, wave_tasks, retryable, display=None):
         if len(wave_tasks) == 0:
             return
         jobs = self.options["jobs"]
         verbose = self.options["verbose"]
-        # Every wave leaves a log behind, verbose or not -- unlike
-        # 'seine build', which only bothers when nothing is watching
-        # live (see tasks.py's own 'output()' docstring): a resolve can
-        # run for minutes over a large build-dependency closure with a
-        # single line to show for whole stretches of it, and losing that
-        # to a lost terminal is a worse trade than the file costs.
+        # Every wave leaves a log behind, verbose or not -- unlike 'seine
+        # build': a resolve can run for minutes with little to show for
+        # it, and losing that to a lost terminal costs more than the file.
         logs = self._logs()
-        # Optional: a caller tailing this wave's own log files (the
-        # vendor screen) needs to know where they landed -- a fresh
-        # directory every wave, unlike a build's single stable
-        # 'image.logs'. '_LiveFollower' has no use for its own path
-        # back, so this is checked for, not assumed.
+        # Optional: a caller tailing these logs (the vendor screen) needs
+        # to know where a fresh directory landed each wave.
         if display is not None:
             wave_logs = getattr(display, "wave_logs", None)
             if wave_logs is not None:
                 wave_logs(logs)
-        # A caller's own display (the vendor screen's TextualReporter)
-        # wins outright -- verbose/'-j 1' live-tail is the CLI's own
-        # fallback for when nothing else is watching, not a rule that
-        # applies to every caller of this.
+        # A caller's own display wins outright -- verbose/'-j 1' live-tail
+        # is only the CLI's own fallback for when nothing else is watching.
         if display is not None:
             follower = display
         else:
-            # Followed live only when nothing else could be running beside
-            # it to interleave with (see _LiveFollower's own docstring).
             follower = _LiveFollower(logs) if (verbose and jobs <= 1) else None
 
-        # Not retried: 'tasks.run()' as 'seine build' itself already uses
-        # it, stopping (jobs=1) or reporting (jobs>1) the way every other
-        # step of a build does.
+        # Not retried: same stop-or-report behavior as 'seine build's
+        # other steps.
         if retryable == False:
             task_runner.run(wave_tasks, jobs=jobs, logs=logs, verbose=verbose,
                             display=follower)
             return
 
-        # Retried: every fetch is independent of every other (see
-        # fetch_tasks()), so one failing is not a reason for the rest not
-        # to run -- true with jobs=1 as much as with several, unlike a
-        # real build's steps, which is why this does not simply delegate
-        # to 'tasks.run()' the way the branch above does: with jobs=1
-        # that raises straight out of the failing task instead of
-        # collecting it the way jobs>1's 'Failed' does, and stops there.
-        # Each task's own body is wrapped to catch what it raises instead
-        # of letting it propagate, so both paths behave alike.
+        # Retried: fetches are independent, so one failing shouldn't stop
+        # the rest -- true at jobs=1 too, unlike plain 'tasks.run()',
+        # which raises straight out of a jobs=1 failure. Each task body
+        # is wrapped to catch what it raises instead of propagating.
         pending = wave_tasks
-        # A retried task's name stays '<base>#<attempt>', not one '#N'
-        # suffix piled onto the last -- tracked apart from 'pending'
-        # itself so a task retried twice is still named after what it
-        # is, not after its own previous attempt.
+        # A retried task's name stays '<base>#<attempt>', never '#N'
+        # piled onto the last, so a twice-retried task is still named
+        # after what it is.
         bases = {task.name: task.name for task in wave_tasks}
         attempt = 1
         while True:

@@ -20,29 +20,12 @@ ARCH_INFO = {
     "i386":  {"triplet": "i386-linux-gnu",      "host_cpu": "i686"},
 }
 
-# supermin cannot cross-build appliances (it always builds for the arch it
-# itself runs as -- see supermin(1)/guestfs-internals(1)). The documented
-# way around this is the "fixed appliance" mechanism: build a real appliance
-# on a machine that IS the target arch, then point libguestfs at the
-# pre-built kernel/initrd/root via LIBGUESTFS_PATH, skipping its own
-# supermin auto-build entirely. We get a "machine that is the target arch"
-# for free via TargetBootstrap (a mmdebstrap'd rootfs that already
-# runs its own binaries transparently under binfmt).
-#
-# libguestfs-make-fixed-appliance builds this by running `guestfish -a
-# /dev/null run`, i.e. it boots the freshly-built appliance under nested
-# system emulation (qemu-system-<arch> running inside a qemu-user-static
-# emulated container) purely as a side effect of triggering its cache. That
-# boot is where all the cost is -- confirmed via LIBGUESTFS_DEBUG=1, which
-# shows supermin's own package-tarball build finishing near-instantly, well
-# before the (very slow) boot starts. So we call supermin directly with the
-# same arguments libguestfs uses internally and skip the boot: it writes
-# kernel/initrd/root straight into the output directory, and we validate the
-# result afterwards using our own qemu-wrapper harness instead.
+# supermin only builds for its own arch, so libguestfs can't cross-build an
+# appliance itself. Its own "fixed appliance" tool works around this by
+# booting the appliance once (slow) just to warm a cache. We skip that boot
+# and call supermin directly with the same args, then validate separately.
 class ImagerAppliance(Bootstrap):
-    # The appliance libguestfs runs when it cannot build its own, which is
-    # every cross build. Built on the target bootstrap, and the image
-    # whose reuse is the point of carrying images at all.
+    # Appliance libguestfs uses when it can't build its own (every cross build).
     kind = IMAGER_KIND
 
     def __init__(self, source, imagerKernel):
@@ -63,9 +46,8 @@ class ImagerAppliance(Bootstrap):
                 "cross-building the imager appliance for architecture "
                 "'%s' is not yet supported (unknown multiarch triplet)" % arch)
 
-        # This image is built FROM the imager kernel's, which may carry a
-        # sources.list pointing at the rebuilt packages: without the same
-        # mount its own 'apt-get update' would fail.
+        # Built from imagerKernel's image, which may point sources.list at
+        # rebuilt packages -- reuse the same mount or apt-get update fails.
         return self.build(
             IMAGER_APPLIANCE_SCRIPT.format(
                 self.imagerKernel.name, info["host_cpu"], info["triplet"]),

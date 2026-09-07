@@ -11,30 +11,21 @@ from seine.utils import feed_digest
 from seine.utils import TRANSPORT_KIND
 from seine.utils import vendor_mountpoint
 
-# Installing python3/python3-apt/attr is the same small apt install on
-# every single build, immediately made redundant by the next build against
-# the same baseline. Cache that install as its own layer, keyed by the baseline
-# it's built on top of and the target architecture -- a custom 'baseline:'
-# is just an opaque image reference, and the same string could resolve to
-# different content per architecture, so both are needed to avoid a
-# wrong-arch cache hit.
+# Caches the python3/python3-apt/attr install (needed by ansible) as one
+# layer, keyed by baseline + arch since a 'baseline:' string can resolve to
+# different content per architecture.
 class TransportBootstrap(Bootstrap):
-    # A root file-system too, but a baseline image plus the two packages
-    # ansible needs rather than an archive's output, so it does not go
-    # stale when the archive moves and is worth carrying.
     kind = TRANSPORT_KIND
 
-    # 'vendor_digest' is offline_dockerfile_digest()'s return -- see
-    # HostBootstrap's own comment on why it has to be folded into the
-    # Dockerfile text rather than left to Bootstrap.digest() alone.
+    # vendor_digest comes from offline_dockerfile_digest(); see HostBootstrap
+    # for why it must be baked into the Dockerfile text, not left to digest().
     def __init__(self, baseline, distro, options, vendor_digest=None):
         self.baseline = baseline
         self.vendor_digest = vendor_digest
         super().__init__(distro, options)
 
-    # feed_digest() folded in: this bakes base_feed() into the image the
-    # same way TargetBootstrap does, and two specifications sharing a
-    # baseline but not a mirror would otherwise collide on one tag.
+    # Bakes feed_digest() into the tag so specs sharing a baseline but
+    # different mirrors don't collide on one image.
     def defaultName(self):
         baseline_id = self.baseline.replace("/", "-").replace(":", "-")
         return os.path.join("transport-bootstrap", self.distro["architecture"],
@@ -60,7 +51,6 @@ class TransportBootstrap(Bootstrap):
             self.baseline, self._sources(), mount, digest_comment,
             APT_LISTS_CLEANUP), base=self.baseline, options=build_options)
 
-    # base_feed() alone: same reasoning as HostBootstrap's own _sources().
     def _sources(self):
         return apt_sources_dockerfile(self.distro, [base_feed(self.distro)],
                                       offline=self._offline())

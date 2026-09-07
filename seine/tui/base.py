@@ -40,9 +40,8 @@ class CommandSuggester(Suggester):
                     return "/%s --%s%s" % (head, name, "=" if option.endswith("=") else "")
         return None
 
-# The '@fragment' completion pane. Never focused -- Prompt drives
-# Up/Down/Enter into it directly -- and hidden when there's nothing to
-# offer.
+# The '@fragment' completion pane. Never focused: Prompt drives
+# Up/Down/Enter into it directly. Hidden when there's nothing to offer.
 class PathCompletions(OptionList):
     can_focus = False
 
@@ -51,8 +50,8 @@ class PathCompletions(OptionList):
         self.display = False
         self._matches = []
 
-    # No-op on identical matches -- rebuilding resets 'highlighted' to
-    # 0, which would stomp the entry Up/Down just selected.
+    # No-op on identical matches: rebuilding would reset 'highlighted'
+    # to 0, stomping the entry Up/Down just selected.
     def show(self, matches):
         if len(matches) == 0:
             self.hide()
@@ -86,13 +85,10 @@ class Prompt(Input):
             **kwargs)
         self.history = history
         self.completions = completions
-        # Which history.py scopes this screen's Up/Down walks -- e.g.
+        # Which history.py scopes this screen's Up/Down walks, e.g.
         # {'commands', 'chat'} here, {'commands', 'target'} on the
-        # Remote Target screen (BaseScreen.HISTORY_SCOPES). The cursor
-        # below is this Prompt's own: two screens recalling different
-        # scope sets can't share one position and have it mean the same
-        # thing to both, so unlike history.json itself, this never
-        # leaves the widget.
+        # Remote Target screen. This cursor is per-Prompt, not shared,
+        # since different screens walk different scope sets.
         self.scopes = scopes
         self.at = len(history.entries(scopes))
         # Last history string recalled verbatim, so submit can tell
@@ -101,7 +97,7 @@ class Prompt(Input):
         self.recalled = None
 
     # While the '@' pane is open, Up/Down/Enter move its selection
-    # instead of history/recall -- one interaction, not three.
+    # instead of history/recall.
     def action_history_prev(self):
         if self.completions.display:
             self.completions.action_cursor_up()
@@ -138,9 +134,8 @@ class Prompt(Input):
         return at, fragment
 
     # Called from both on_input_changed and action_submit: self.value
-    # updates synchronously but the pane's own Changed handler lags a
-    # tick, so fast Enter must re-sync here rather than trust a stale
-    # pane.
+    # updates synchronously but the pane's Changed handler lags a tick,
+    # so a fast Enter must re-sync here instead of trusting a stale pane.
     def _sync_completions(self):
         active = self._active_fragment()
         if active is None:
@@ -148,8 +143,7 @@ class Prompt(Input):
             return
         _, fragment = active
         matches = complete(fragment)
-        # A single match equal to what's already typed has nothing
-        # left to offer -- don't dangle it in front of Enter.
+        # A single match equal to what's already typed offers nothing.
         if matches == [fragment]:
             matches = []
         self.completions.show(matches)
@@ -161,9 +155,8 @@ class Prompt(Input):
         self._sync_completions()
 
     # Enter accepts the highlighted completion if the pane is showing;
-    # re-syncs synchronously first since a fast 'exa<Enter>' can
-    # otherwise beat the pane's own Changed handler. Falls through to a
-    # real submit otherwise.
+    # re-syncs first since a fast 'exa<Enter>' can otherwise beat the
+    # pane's Changed handler. Falls through to a real submit otherwise.
     async def action_submit(self):
         self._sync_completions()
         try:
@@ -174,17 +167,15 @@ class Prompt(Input):
             return
         await super().action_submit()
 
-    # Broad except: best-effort UI sugar, not build-critical -- any
-    # stale-OptionList exception here means "nothing to accept", not a
-    # crash.
+    # Broad except: best-effort UI sugar, not build-critical. Any
+    # stale-OptionList exception here just means "nothing to accept".
     def _accept_completion(self):
         active = self._active_fragment()
         if active is None:
             self.completions.hide()
             return False
-        # get_option_at_index() + highlighted, not the
-        # highlighted_option property -- missing in Debian trixie's
-        # python3-textual (2.1.2).
+        # get_option_at_index() + highlighted, not highlighted_option:
+        # missing in Debian trixie's python3-textual (2.1.2).
         try:
             index = self.completions.highlighted
             option = None if index is None else self.completions.get_option_at_index(index)
@@ -230,14 +221,9 @@ class Indicators(Static):
         self.update("%d build%s" % (count, "" if count == 1 else "s"))
         self.display = True
 
-# Same role as Indicators above -- a vendor run is exactly the same
-# kind of long-running background thing a build is, deserving the same
-# "still going, and clickable to look at it" chip regardless of which
-# screen is open. A separate widget rather than folded into Indicators
-# itself: 'seine vendor' and a real build can never run at once (see
-# start_vendor()'s own comment), so there is nothing to count -- one
-# vendor is either running or it is not, the same single fact
-# TargetIndicator already shows about a storage write.
+# Same role as Indicators, for a vendor run. A separate widget rather
+# than folded in: a vendor run and a real build never run at once, so
+# there's nothing to count -- just running or not.
 class VendorIndicator(Static):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -247,9 +233,7 @@ class VendorIndicator(Static):
         if self.app.vendor_state.running:
             self.app.show("vendor")
 
-    # Uses state.done, not VendorState.running, for the same reason
-    # Indicators.refresh_text() does: Worker.is_running can still read
-    # True one tick before the worker actually finishes.
+    # See Indicators.refresh_text(): same is_running/done caveat.
     def refresh_text(self):
         state = self.app.vendor_state
         if state.worker is None or state.done:
@@ -258,12 +242,9 @@ class VendorIndicator(Static):
         self.update("vendoring")
         self.display = True
 
-# Same role as Indicators above, one door down: hidden unless a
-# storage write is actually in progress (app.target_state.writing, fed
-# by TargetState.on_event() -- see seine/tui/target.py), showing live
-# progress rather than a plain count since there is only ever one
-# target. Click reruns '/target', switching to the Remote Target screen
-# for a closer look at the write in progress.
+# Same role as Indicators, for a target storage write. Shows live
+# progress since there's only ever one target. Click switches to the
+# Remote Target screen for a closer look.
 class TargetIndicator(Static):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -282,25 +263,18 @@ class TargetIndicator(Static):
         self.display = True
 
 class BaseScreen(Screen):
-    # Textual's own default (App.AUTO_FOCUS = "*") auto-focuses whatever
-    # focusable widget composes first on screen-resume -- harmless on
-    # every other screen (on_mount() below re-focuses the prompt right
-    # after anyway), but TargetScreen's ConsolePane composes before the
-    # prompt and is focusable, so without this override it would win
-    # that transient auto-focus and fire its own on_focus() (a real
-    # ai.confirm() for raw keystroke mode) before anyone asked for it.
+    # Without this, Textual's default auto-focus would land on
+    # TargetScreen's ConsolePane (composed before the prompt) and fire
+    # its on_focus() before anyone asked for it.
     AUTO_FOCUS = "#prompt"
 
-    # Which seine.tui.history scopes this screen's own Prompt recalls
-    # with Up/Down -- 'commands' ('/command'/'!shell') is universal, so
-    # every override still includes it. TargetScreen overrides this to
-    # swap 'chat' for 'target' (its own in-memory-only console lines).
+    # Which history.py scopes this screen's Prompt recalls with
+    # Up/Down. 'commands' is universal; TargetScreen swaps 'chat' for
+    # 'target' (its own in-memory console lines).
     HISTORY_SCOPES = {"commands", "chat"}
 
     # Status-line chips, keyed for subclasses to update/add/remove
-    # rather than redefining HINT wholesale -- hand-typed copies used
-    # to drift (FilesystemScreen once silently lost its own
-    # '→ complete' chip this way).
+    # rather than redefining HINT wholesale.
     HINT_CHIPS = [
         ("command",  "/command"),
         ("shell",    "! shell"),
@@ -329,12 +303,12 @@ class BaseScreen(Screen):
             chips.insert(index, (key, text))
         return " · ".join(t for k, t in chips if k not in self.HINT_REMOVE)
 
-    # '/' refocuses the prompt from elsewhere; not a priority binding,
-    # so a focused Input consumes it as a normal keystroke instead.
+    # '/' refocuses the prompt; not a priority binding, so a focused
+    # Input still consumes it as a normal keystroke.
     BINDINGS = [Binding("/", "focus_prompt", show=False)]
 
-    # An empty prompt gets the summoning '/' preloaded; a prompt with
-    # existing text is only focused, left untouched.
+    # An empty prompt gets the summoning '/' preloaded; existing text
+    # is left untouched.
     def action_focus_prompt(self):
         prompt = self.query_one(Prompt)
         if not prompt.value:
@@ -343,26 +317,25 @@ class BaseScreen(Screen):
         prompt.focus()
 
     # Spec tree on the left, screen content on the right. BuildScreen
-    # overrides compose() outright for its own layout.
+    # overrides compose() for its own layout.
     def compose(self):
         yield Horizontal(
             SpecTree(id="spectree"),
-            # markup=False: arbitrary spec/diff text -- a YAML list
-            # like 'partitions: [a, b]' would else be read as a markup
-            # tag.
+            # markup=False: a YAML list like 'partitions: [a, b]' would
+            # else be read as a markup tag.
             StaticPane(Static(id="body", markup=False), id="cmd"),
             id="main",
         )
         yield from self.footer()
 
-    # Completions pane, prompt, status/indicators/hint in that order --
-    # status stays under the prompt, like a shell's own line.
+    # Completions pane, prompt, status/indicators/hint in that order,
+    # status under the prompt like a shell's own line.
     def footer(self):
         completions = PathCompletions(id="completions")
         yield completions
         yield Prompt(self.app.history, completions, self.HISTORY_SCOPES, id="prompt")
-        # markup=False: same as #body -- engine text (a path, an argv,
-        # an exception message) can contain a bare '['.
+        # markup=False: engine text (a path, an argv, an exception
+        # message) can contain a bare '['.
         yield Horizontal(
             Static(id="status", markup=False),
             Indicators(id="indicators"),
@@ -375,15 +348,14 @@ class BaseScreen(Screen):
     def on_mount(self):
         self.refresh_data()
         self.query_one(Prompt).focus()
-        # Ticks on every screen, not only BuildScreen's own (which has a
-        # separate, faster tick for #tail/#tasklist), so a build kept
-        # running still lights up wherever the spec tree currently is.
+        # Ticks on every screen so a running build stays highlighted
+        # wherever the spec tree currently is (BuildScreen has its own
+        # faster tick for #tail/#tasklist).
         self._scrolled_to = None
         self.set_interval(1.0, self._tick_highlight)
         self._tick_highlight()
 
-    # NoMatches guard: TargetScreen has no spec to show a tree of, so no
-    # #spectree at all -- every other screen still has one, unaffected.
+    # NoMatches guard: TargetScreen has no #spectree.
     def _tick_highlight(self):
         try:
             tree = self.query_one(SpecTree)
@@ -393,9 +365,8 @@ class BaseScreen(Screen):
         wanted |= spectree.highlight_active_test(tree, self.app.test_state)
         self._scrolled_to = spectree.scroll_to_active(tree, wanted, self._scrolled_to)
 
-    # Kept on the base class so every subclass gets it for free on
-    # mount and after /use, rather than repeating the call. Subclasses
-    # override update_body(), not this.
+    # Kept on the base class so every subclass gets it for free.
+    # Subclasses override update_body(), not this.
     def refresh_data(self):
         try:
             tree = self.query_one(SpecTree)
@@ -412,7 +383,6 @@ class BaseScreen(Screen):
     def update_body(self):
         pass
 
-    # CSS class, not markup, for the same reason #status is markup=False.
     def say(self, text, error=False, warning=False):
         status = self.query_one("#status", Static)
         status.set_class(error, "error")
@@ -425,8 +395,8 @@ class BaseScreen(Screen):
         if not line.strip():
             return
         # /side-load's (or /side-unload's) highlight is one-shot: any
-        # other prompt input clears it. Checked before dispatch, so a
-        # fresh one's own highlight isn't wiped right back out.
+        # other prompt input clears it. Checked before dispatch so a
+        # fresh highlight isn't wiped right back out.
         context = self.app.context
         if context.changed_from is not None:
             context.changed_from = None
@@ -435,10 +405,8 @@ class BaseScreen(Screen):
             except NoMatches:
                 pass
         # An unmodified recall is already in history; only a new/edited
-        # line is worth adding. Resets this Prompt's own cursor to "just
-        # past the newest" so the next Up shows what was just added, not
-        # wherever a previous recall walk had left it -- add()/add_side()
-        # can't do this themselves, the cursor moved out of History.
+        # line is worth adding. Resets the cursor to "just past the
+        # newest" so the next Up shows what was just added.
         if event.input.recalled != line:
             self._history_add(line)
             event.input.at = len(self.app.history.entries(event.input.scopes))
@@ -446,10 +414,8 @@ class BaseScreen(Screen):
             self.app.shell_escape(line[1:])
             return
         # Neither a command nor shell: overridable, so a screen with
-        # something better to do with a bare line (TargetScreen sends it
-        # to the target's console) can -- default falls through to
-        # dispatch()'s own "commands start with '/'" error rather than a
-        # confusing "AI isn't set up" message when nothing claims it.
+        # something better to do with a bare line (TargetScreen sends
+        # it to the target's console) can.
         if not line.startswith("/") and self._handle_freeform(line):
             return
         try:
@@ -457,21 +423,16 @@ class BaseScreen(Screen):
         except commands.CommandError as e:
             self.say(str(e), error=True)
 
-    # 'commands' for a '/command' or '!shell' line (persisted, and part
-    # of every screen's own HISTORY_SCOPES -- see the class attribute
-    # below), 'chat' for anything else here. Overridden by TargetScreen
-    # so its own freeform (console) lines go into an in-memory-only
-    # record instead (seine.tui.history's own side_load()/add_side()),
-    # never written to disk.
+    # 'commands' for a '/command' or '!shell' line, 'chat' for anything
+    # else. Overridden by TargetScreen so its freeform console lines go
+    # into an in-memory-only record instead, never written to disk.
     def _history_add(self, line):
         scope = "commands" if line.startswith(("/", "!")) else "chat"
         self.app.history.add(line, scope=scope)
 
-    # A question for the AI chat, once configured -- '/' still means
-    # "run a command" either way, so an unconfigured typo gets the usual
-    # dispatch() error rather than a confusing "AI isn't set up" one.
-    # Returns whether the line was actually handled, so on_input_
-    # submitted() knows whether to fall through.
+    # A question for the AI chat, once configured. Returns whether the
+    # line was handled, so on_input_submitted() knows whether to fall
+    # through.
     def _handle_freeform(self, line):
         from seine.tui import ai
         if ai.configured():

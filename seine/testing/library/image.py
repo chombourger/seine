@@ -1,11 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Wraps the very spec 'test:' came from and the image seine.build/
-# seine.inspect already know how to make and read -- 'create/build/
-# deploy an artifact' from the prompt's own wishlist, without a second
-# build engine: this calls straight into BuildCmd/Inspector, the same
-# classes 'seine build'/'seine inspect' use.
+# Thin wrapper over BuildCmd/Inspector, the same classes 'seine build'
+# and 'seine inspect' use.
 
 from robot.api.deco import keyword, library
 

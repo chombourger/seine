@@ -1,9 +1,9 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# What 'extends: uki:' means: wrapping a built 'linux-image-*' and an
-# 'initrd:' artifact into one Unified Kernel Image. Unlike kernel/module,
-# there is no upstream to fetch -- a uki package carries no 'source:'.
+# What 'extends: uki:' means: wrap a built 'linux-image-*' and an
+# 'initrd:' artifact into one Unified Kernel Image. No upstream to fetch --
+# a uki package carries no 'source:'.
 
 import functools
 import os
@@ -45,8 +45,6 @@ INITRD_NAME = "initrd.img"
 def is_uki_package(package):
     return getattr(package, "uki", False)
 
-# Reads 'extends: uki:' onto the package it was written on, the way
-# kernel.parse()/module.parse() do.
 def parse(package, extends):
     settings = extends.get("uki", {})
     package.uki = "uki" in extends
@@ -93,8 +91,7 @@ def parse(package, extends):
                 "command line may not" % forbidden.strip())
     package.uki_cmdline = cmdline
 
-    # Reserved but not implemented yet: refused rather than silently
-    # building an unsigned UKI nobody asked for.
+    # Not implemented yet: refuse rather than silently build unsigned.
     if "signing-key" in settings or "signing-cert" in settings:
         raise package._error(
             "'extends: uki: signing-key'/'signing-cert' are not yet "
@@ -114,9 +111,7 @@ def _require_initrd(package, distro):
             "first" % (package.name, package.uki_initrd, path))
     return path
 
-# Checked as soon as the spec is parsed, before any bootstrap or fetch
-# work starts -- the same reason kernel/module errors are caught at
-# parse time rather than mid-build.
+# Checked right after parsing, before any bootstrap or fetch work starts.
 def check_initrds(packages, spec):
     distro = distribution(spec)
     for package in packages:
@@ -151,11 +146,9 @@ def _write(path, content):
     with open(path, "w") as f:
         f.write(content)
 
-# Shared between package-build (extend(), templated into debian/rules --
-# shell/make syntax like '"$$vmlinuz"') and image-build time (imager.py,
-# real paths) -- one place for a 'ukify build' invocation, so a future
-# change only touches one function. Quoting is the caller's job:
-# pre-quoted for a shell-rendered caller, plain for an argv-based one.
+# Shared between package-build (extend(), rendered into debian/rules as
+# shell) and image-build (imager.py, real paths). Quoting is the caller's
+# job -- pre-quoted for the shell-rendered caller, plain for argv.
 def ukify_argv(linux, initrd, cmdline, output, extra=()):
     argv = ["ukify", "build", "--linux=%s" % linux, "--initrd=%s" % initrd]
     if cmdline:

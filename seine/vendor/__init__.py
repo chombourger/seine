@@ -1,19 +1,10 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# The 'vendor:' spec section: resolving it into a dependency graph
-# (resolve.py), fetching what it names (fetch.py), the manifest/lock
-# file format both of those read and write (manifest.py), and the
-# task-graph glue plus 'seine vendor' itself (cli.py).
-#
-# Every name below is re-exported so 'from seine import vendor;
-# vendor.<name>' (or 'from seine.vendor import <name>') keeps working
-# exactly as it did with everything in one file. That includes
-# 'HostBootstrap'/'snapshot'/'_builder_for'/'resolve_tasks'/
-# 'fetch_tasks'/'index_tasks', which tests replace by patching this
-# module's own attribute -- see cli.py's and resolve.py's own lazy
-# 'from seine import vendor' at each call site, needed for the same
-# reason a bare name there would never see that patch.
+# The 'vendor:' spec section: resolving (resolve.py), fetching (fetch.py),
+# the manifest/lock format (manifest.py), and 'seine vendor' itself
+# (cli.py). Re-exported here so tests can patch e.g. HostBootstrap and
+# every lazy 'from seine import vendor' call site sees it.
 
 from seine.bootstrap import HostBootstrap
 from seine import snapshot

@@ -1,9 +1,8 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# ext2 is loaded explicitly: reading a *different* group's own /boot is
-# the only reason this build needs it, unlike part_gpt/fat which are
-# already embedded in any x86_64-efi core.img.
+# ext2 must load explicitly: part_gpt/fat come built into core.img,
+# but ext2 does not, and we need it to read another group's /boot.
 GRUB_CFG_HEADER = """insmod part_gpt
 insmod fat
 insmod ext2
@@ -32,9 +31,8 @@ class GrubBootloader(Bootloader):
     def detect(self, g):
         return g.is_file("/usr/sbin/grub-install")
 
-    # 'boot_directory' left unset reproduces today's single-rootfs
-    # behaviour exactly (grub-install's own default: the mounted root's
-    # own /boot). A 'multiconfig:' build passes the ESP itself instead.
+    # No 'boot_directory' means grub-install's default: the mounted
+    # root's own /boot. A 'multiconfig:' build passes the ESP instead.
     def install(self, g, esp_mount, **opts):
         boot_directory = opts.get("boot_directory")
         options = ""
@@ -51,11 +49,9 @@ class GrubBootloader(Bootloader):
             self._cfg_path = "%s/grub/grub.cfg" % boot_directory
             g.write(self._cfg_path, GRUB_CFG_HEADER.encode())
 
-    # A bare call keeps update-grub's own auto-discovery. A real
-    # 'root_partuuid' means a 'multiconfig:' group instead: grub finds it
-    # by filesystem label, since this grub's 'search' has no
-    # '--part-uuid' option. The kernel command line still gets
-    # 'root=PARTUUID=...', resolved by the kernel itself.
+    # No 'root_partuuid' keeps update-grub's normal auto-discovery. A
+    # 'multiconfig:' group passes one instead: grub finds the partition
+    # by label (its 'search' has no '--part-uuid' option).
     def add_entry(self, g, group_label=None, kernel=None, initrd=None,
                   root_partuuid=None, cmdline="", **opts):
         if root_partuuid is None:
@@ -72,10 +68,8 @@ class GrubBootloader(Bootloader):
         g.write_append(self._cfg_path, entry.encode())
 
 
-# A Unified Kernel Image needs no boot entry written anywhere: the Boot
-# Loader Specification finds '/boot/EFI/Linux/*.efi' by itself, on the
-# XBOOTLDR partition ('/boot') if there is one and the root filesystem
-# otherwise -- so add_entry() has nothing to do, ever.
+# A Unified Kernel Image needs no boot entry: the Boot Loader
+# Specification finds '/boot/EFI/Linux/*.efi' on its own.
 class SystemdBootBootloader(Bootloader):
     def detect(self, g):
         return g.is_file("/usr/bin/bootctl")

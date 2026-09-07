@@ -11,37 +11,27 @@ from seine.container import ContainerEngine
 
 # What seine has cached, when it was made and when it was last used.
 #
-# The filesystem knows what is in a cache but not when it was last wanted:
-# atime would say, except that a machine mounted 'relatime' answers to the
-# day and one mounted 'noatime' does not answer at all, and podman does not
-# record a last-used time for an image under any mount options. So seine
-# keeps its own record.
+# Filesystem atime is unreliable ('relatime'/'noatime' mounts, and podman
+# tracks no last-used time at all), so seine keeps its own record.
 #
-# The index is advisory and nothing decides a build from it. Whether a
-# package needs rebuilding is still its stamp, whether a chroot is stale is
-# still the digest beside it, and whether an image is current is still its
-# label. That is what keeps a lost, stale or truncated index a matter of a
-# less useful report rather than a wrong build -- and it is why a missing
-# entry is never an error here.
+# Advisory only: no build decision reads it (rebuild/staleness/currency
+# checks still use their own stamps), so a lost or stale index just makes
+# a worse report, never a wrong build -- a missing entry is never an error.
 #
-# SQLite with a JSON metadata column: scales to many entries, indexed
-# on used/kind, no whole-file rewrite per step, and arbitrary data can
-# be attached to an entry via the metadata column.
+# SQLite + JSON metadata column: scales, indexed on used/kind, no
+# whole-file rewrite per step.
 INDEX = "index.db"
 
-# The kinds of thing recorded, which are the caches that hold objects a
-# build takes one at a time. 'downloads' is not among them: which .deb apt
-# took out of the archive cache is decided by apt inside the container, so
-# the honest unit there is the release, recorded as its own entry.
+# Kinds of cached object. 'downloads' isn't a per-object cache: apt picks
+# .debs from the archive cache itself, so the release is the unit recorded
+# there.
 CHROOT = "chroot"
 IMAGE = "image"
 PACKAGE = "package"
 DOWNLOADS = "downloads"
-# One entry per artifact a 'vendor:' section pinned -- unlike DOWNLOADS,
-# which only ever names the release as a whole (apt decides which .deb it
-# takes out of that cache): a vendor's own repository is what 'seine
-# vendor' built, and what it built is worth naming down to the file, so a
-# superseded version ages out of 'seine cache clear vendor' on its own.
+# One entry per artifact a 'vendor:' section pinned (unlike DOWNLOADS,
+# which only names the release as a whole) -- so a superseded version
+# ages out of 'seine cache clear vendor' on its own.
 VENDOR = "vendor"
 
 class Index:
@@ -80,17 +70,15 @@ class Index:
             return self._connect()
         except sqlite3.DatabaseError:
             # Corrupt store -- advisory index, so start fresh rather than
-            # fail. index.db is a different file from the old index.json,
-            # so there is nothing to migrate here, just a bad file to drop.
+            # fail. Nothing to migrate, just a bad file to drop.
             try:
                 os.unlink(self._path)
             except OSError:
                 pass
             return self._connect()
 
-    # Single entry lookup, advisory: None if not present or on error.
-    # Returns the same merged dict as entries() would (made/used/uses +
-    # metadata keys), or None.
+    # Single entry lookup: None if not present or on error. Same merged
+    # shape as entries() (made/used/uses + metadata keys).
     def get(self, kind, key):
         try:
             conn = self._conn()
@@ -134,9 +122,8 @@ class Index:
                 pass
         return entry
 
-    # Merge patch into metadata for (kind, key) and bump used (hit).
-    # If no entry exists, creates one via hit. Preserves other metadata
-    # keys, unlike hit(..., metadata=...) which replaces wholesale.
+    # Merges patch into existing metadata and bumps used (hit), creating
+    # the entry if missing. Unlike hit(metadata=...), keeps other keys.
     def patch(self, kind, key, patch):
         if not isinstance(patch, dict):
             patch = {"metadata": patch}
@@ -198,10 +185,8 @@ class Index:
             listed.append((kind, key, entry))
         return sorted(listed, key=lambda e: e[2].get("used") or 0)
 
-    # Compatibility shims for tests and any code reaching into the old
-    # JSON-backed internals. Not part of the public API but kept so
-    # existing callers (tests/cache/cache.py's `aged` helper) continue to
-    # work without change. Implemented in terms of the sqlite store.
+    # Compatibility shims for old JSON-backed internals (tests/cache/
+    # cache.py's `aged` helper) -- not public API, kept working via sqlite.
     def _read(self):
         try:
             conn = self._conn()
@@ -305,9 +290,9 @@ class Index:
                 made_val = now
                 used_val = now
                 uses_val = 0 if made else 1
-                # made/used/uses are the real columns; a metadata key of
-                # the same name would be unreadable back (column wins on
-                # read), so it is dropped here rather than stored and lost.
+                # made/used/uses are real columns -- a metadata key with the
+                # same name would be unreadable on read (column wins), so
+                # drop it here.
                 stored = {k: v for k, v in metadata.items()
                           if k not in ("made", "used", "uses")} \
                     if isinstance(metadata, dict) else metadata
@@ -374,11 +359,9 @@ class Index:
                 pass
         return entry
 
-    # What an export carries: what each entry is and when it was made, and
-    # nothing about this machine's use of it. A count of how often someone
-    # else reached for a chroot says nothing about the machine reading it,
-    # and a last-used time from over there would have the first eviction
-    # sweep deleting on another machine's history.
+    # What an export carries: entry identity + made time only, nothing
+    # about this machine's use -- a use count/last-used from elsewhere
+    # would skew this machine's own eviction sweep.
     def stripped(self):
         try:
             conn = self._conn()
@@ -402,10 +385,9 @@ class Index:
             result.setdefault(kind, {})[key] = {"made": made}
         return result
 
-    # The other side of that: what arrives has been used by nobody here, so
-    # it is last-used now -- it arrived now -- and used no times. What it
-    # keeps is when it was made, which is the one thing the other machine
-    # knew and this one cannot work out.
+    # The import side: a carried entry has been used by nobody here, so
+    # it's last-used now, used zero times. Only 'made' carries over --
+    # the one thing this machine can't work out itself.
     def merge(self, carried):
         if not carried:
             return
@@ -493,9 +475,9 @@ class Index:
             except Exception:
                 pass
 
-# What this build reused and what it made, counted where the index is
-# written so the count and the record cannot disagree. A build's steps run
-# beside each other, hence the lock.
+# What this build reused vs made, counted where the index is written so
+# count and record can't disagree. Steps run beside each other, hence
+# the lock.
 _counted = {}
 _counting = threading.Lock()
 
@@ -524,9 +506,8 @@ def plural(kind, count):
         return kind
     return "%ss" % kind
 
-# A line for the log when someone asked to see what a build is doing. The
-# index is where a build's cache decisions are already written down, so this
-# is where they can be said out loud.
+# Logged only in verbose mode -- the index already records cache
+# decisions, this just says them out loud.
 def say(options, message):
     if (options or {}).get("verbose"):
         print("cache: %s" % message)

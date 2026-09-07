@@ -1,17 +1,16 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Filesystem completion for '@fragment' in the prompt -- plain os.listdir,
-# no new dependency, kept apart from the widget that shows it so it is
-# testable without a running App (the same split as render.py).
+# Filesystem completion for '@fragment' in the prompt: plain os.listdir,
+# kept apart from the widget that shows it so it's testable without a
+# running App.
 
 import os
 
 MAX_MATCHES = 100
 
-# 'fragment' is everything typed after '@'. Each match is a full
-# replacement for it, not just the missing tail -- a directory gets a
-# trailing '/' so completing again needs nothing special from the caller.
+# 'fragment' is everything typed after '@'. Each match fully replaces
+# it, not just the missing tail; a directory gets a trailing '/'.
 def complete(fragment):
     if fragment.startswith("/"):
         slash = fragment.rfind("/")

@@ -1,12 +1,10 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Package sources pulled for the AI chat's 'bash'/'read' tools (and by
-# hand, via 'seine source') to inspect -- what a package actually does,
-# rather than what training data guesses it does. Unpacked under
-# ContainerEngine.workbench(), one directory per source, named however
-# dpkg-source names it (same "let the tool name it" rule packages.py's
-# own rebuild fetch follows) rather than something we invent.
+# Fetches package sources into ContainerEngine.workbench() so the AI
+# chat's 'bash'/'read' tools (or 'seine source' by hand) can inspect
+# what a package actually does. Each source keeps dpkg-source's own
+# directory name.
 
 import getopt
 import json
@@ -23,15 +21,9 @@ from seine.utils     import SOURCE_KIND
 
 INDEX_FILE = "index.json"
 
-# Host architecture, never the target's: fetching and unpacking a source
-# package runs no target code, so paying qemu's emulation cost for it (the
-# way a BuilderImage-based fetch would, being sbuild's own chroot arch)
-# buys nothing. Generic per release rather than per specification -- no
-# feed is baked in here, only dpkg-dev -- so every specification on the
-# same release shares one image regardless of which mirror or components
-# its own 'distro' asks for; pull() applies those live, the same split
-# TargetBootstrap/AnsibleContainerRunner._configure_feeds() already use
-# for the target rootfs.
+# Always host architecture: fetching a source package runs no target
+# code, so there is no reason to pay qemu's emulation cost. Generic per
+# release, not per specification -- feeds are applied live by pull().
 class SourceBootstrap(Bootstrap):
     kind = SOURCE_KIND
 
@@ -40,17 +32,11 @@ class SourceBootstrap(Bootstrap):
             self.distro["source"], self.distro["release"]))
 
     def defaultName(self):
-        # Host architecture only -- see the class comment -- so it is left
-        # out of the tag the same way BuilderImage.defaultName() leaves it
-        # out for the same reason.
+        # No arch in the tag: always host arch, see class comment above.
         return os.path.join("source", self.distro["source"], self.distro["release"])
 
-    # No PRIVILEGED_RUN_OPTIONS: unlike BuilderImage, nothing here runs
-    # sbuild or mmdebstrap, or needs a nested user namespace, just
-    # apt-get/dpkg-source.
-    # run_captured() so a caller running from the AI chat's worker
-    # thread gets (returncode, output) back instead of apt's progress
-    # output hitting the terminal raw.
+    # No PRIVILEGED_RUN_OPTIONS: just apt-get/dpkg-source here, no sbuild
+    # or mmdebstrap needing a nested user namespace.
     def exec(self, args, volumes=None, workdir=None):
         cmd = ["container", "run", "--rm"]
         for host, container in volumes or []:
@@ -66,19 +52,9 @@ RUN apt-get update -qqy && \\
     rm -rf /var/lib/apt/lists/*
 """
 
-# One index.json for the whole workbench, 'sources' its own key rather
-# than the whole file -- room for whatever else ends up sharing the
-# workbench later (the 'bash' tool's own use of it, say) without a
-# second index file or a reshuffle of this one.
-#
-# Within 'sources', keyed by name rather than by directory: a name is
-# what a person or the AI chat asks for and removes by, and it is the
-# one thing a directory name alone cannot always be recovered from
-# (dpkg-source's own '<source>-<version>' split is ambiguous for a
-# version containing a dash). Architecture is deliberately not carried
-# here -- fetching a source is host-architecture work regardless of the
-# target's own (see SourceBootstrap's own comment above), so it would
-# only be recorded, never actually distinguish anything.
+# One index.json per workbench, sources keyed by name (not directory,
+# since dpkg-source's '<source>-<version>' split is ambiguous when the
+# version itself has a dash).
 def _index_path(directory):
     return os.path.join(directory, INDEX_FILE)
 
@@ -97,19 +73,14 @@ def _save_index(directory, index):
         f.write("\n")
     os.replace(temporary, path)
 
-# apt's own 'name[=version]' syntax, the one 'seine source pull' and the
-# AI tool's 'name' argument both accept as one string rather than a
-# separate 'version' field.
+# Splits apt's own 'name[=version]' syntax into (name, version).
 def parse(spec):
     name, _, version = spec.partition("=")
     return name, version or None
 
-# Recorded by pull() once a source lands -- split out so the bookkeeping
-# can be tested without a container. 'accessed_at' starts equal to
-# 'pulled_at' -- pulling counts as a first use -- and moves forward with
-# touch()/touch_path() as 'read'/'bash' actually look at it, so
-# housekeeping ("what hasn't been used lately") has a real signal instead
-# of only knowing when a source arrived.
+# Records a pulled source in the index. 'accessed_at' starts equal to
+# 'pulled_at' and moves forward via touch()/touch_path() as 'read'/'bash'
+# use it, for "what hasn't been used lately" housekeeping.
 def record(name, dirname, version, release, requested, directory=None):
     directory = directory or ContainerEngine.workbench()
     index = _load_index(directory)
@@ -119,11 +90,8 @@ def record(name, dirname, version, release, requested, directory=None):
         "requested": requested, "pulled_at": now, "accessed_at": now}
     _save_index(directory, index)
 
-# Bumps 'name' 's own 'accessed_at' to now -- called whenever 'read' or
-# 'bash' actually looks at a pulled source, not on source-list/source-pull
-# (which already touch pulled_at). Silently does nothing for a name not
-# in the index, same as remove()'s own directory-prefix fallback leaves
-# untouched sources alone.
+# Bumps 'name' 's 'accessed_at' to now. Called by 'read'/'bash', not by
+# ls/pull (which already set pulled_at). No-op if name isn't in the index.
 def touch(name, directory=None):
     directory = directory or ContainerEngine.workbench()
     index = _load_index(directory)
@@ -132,10 +100,8 @@ def touch(name, directory=None):
         entry["accessed_at"] = int(time.time())
         _save_index(directory, index)
 
-# touch(), but by path rather than name -- 'path' is resolved against
-# every pulled source's own directory, and the one it falls under (if
-# any) is the one touched. A path outside every pulled source (the
-# workbench root itself, or nothing pulled at all) is left alone.
+# touch(), but by path: finds which pulled source's directory 'path'
+# falls under and touches that one. No match, no-op.
 def touch_path(path, directory=None):
     directory = directory or ContainerEngine.workbench()
     real = os.path.realpath(path)
@@ -145,28 +111,21 @@ def touch_path(path, directory=None):
             touch(name, directory)
             return
 
-# name -> index entry, or None if name was never recorded. Every listed
-# entry's own 'dir' is checked against what is actually on disk, so a
-# directory removed by hand does not linger as a phantom pull.
+# Index entries whose directory still exists on disk, so one removed by
+# hand doesn't linger as a phantom pull.
 def _entries(directory):
     sources = _load_index(directory).get("sources", {})
     return {name: entry for name, entry in sources.items()
             if os.path.isdir(os.path.join(directory, entry["dir"]))}
 
-# (name, entry) pairs, sorted by name, for every source the index knows
-# about and still has a directory for. A directory present on disk but
-# missing from the index (dropped in by hand, or the index lost) is not
-# guessed at here -- see remove()'s own fallback for why a name still
-# reaches it without one.
+# (name, entry) pairs, sorted by name, for sources still in the index.
 def list_pulled(directory=None):
     directory = directory or ContainerEngine.workbench()
     return sorted(_entries(directory).items())
 
-# The index entry first; lacking one (dropped in by hand, or the index
-# lost), the one directory starting 'name-' -- dpkg-source's own naming,
-# same prefix packages.py's _source_dir() relies on. Ambiguous (more
-# than one such directory) or missing either way is refused rather than
-# guessed at.
+# Uses the index entry if there is one, else falls back to the single
+# directory starting 'name-' (dpkg-source's naming). Refuses if that's
+# ambiguous or missing.
 def remove(name, directory=None):
     directory = directory or ContainerEngine.workbench()
     index = _load_index(directory)
@@ -187,10 +146,8 @@ def remove(name, directory=None):
         del sources[name]
         _save_index(directory, index)
 
-# Fetches 'spec' ('name' or 'name=version', apt's own syntax) into the
-# workbench, resolved against 'distro' 's own feeds -- applied live
-# rather than baked into SourceBootstrap, see its class comment. Returns
-# the directory dpkg-source left it in.
+# Fetches 'spec' ('name' or 'name=version') into the workbench using
+# 'distro' 's feeds. Returns the directory dpkg-source left it in.
 def pull(spec, distro, options=None, directory=None):
     name, version = parse(spec)
     directory = directory or ContainerEngine.workbench()
@@ -216,10 +173,8 @@ def pull(spec, distro, options=None, directory=None):
         raise ValueError("'apt-get source %s' failed:\n%s"
                          % (package, output.strip()))
 
-    # apt-get source also leaves the .dsc and the tarballs it unpacked
-    # from beside the directory -- of no further use once unpacked, and
-    # otherwise never cleaned up since nothing here fetches into a
-    # directory of its own the way sbuild's staging does.
+    # apt-get source also leaves the .dsc and source tarballs behind;
+    # remove them, only the unpacked directory is kept.
     new = set(os.listdir(directory)) - before
     new_dirs = [n for n in new if os.path.isdir(os.path.join(directory, n))]
     if len(new_dirs) != 1:
@@ -235,23 +190,17 @@ def pull(spec, distro, options=None, directory=None):
           directory=directory)
     return dirname
 
-# The wall-clock ceiling on one 'bash' call, enforced by podman's own
-# 'container run --timeout' rather than a Python-side subprocess
-# timeout: that kills the container itself, server-side, so a client
-# process this repo does not otherwise babysit is never left to expire
-# in some other way and leak a container behind.
+# Wall-clock ceiling on one 'bash' call, enforced via podman's own
+# 'container run --timeout' so the container is killed server-side.
 BASH_TIMEOUT_SECONDS = 120
 
-# Past this many lines, only the tail is kept -- same reasoning
-# task-log's own LOG_TAIL_LINES follows: one reply cannot become an
-# unbounded wall of text regardless of what the command printed.
+# Past this many lines, only the tail is kept, so output can't grow
+# unbounded.
 BASH_OUTPUT_MAX_LINES = 200
 
-# Runs 'command' in a throwaway, unprivileged container -- host
-# architecture, the same HostBootstrap image every build already made,
-# so this needs no image of its own. cwd is the workbench, or 'cwd'
-# (checked to still resolve under it) -- the only thing bind-mounted
-# in, so nothing else on the host is reachable from inside.
+# Runs 'command' in a throwaway, unprivileged container using the
+# existing HostBootstrap image. Only the workbench (or 'cwd' under it)
+# is bind-mounted in, so nothing else on the host is reachable.
 def bash(command, distro, options=None, cwd=None, directory=None,
         timeout=BASH_TIMEOUT_SECONDS):
     directory = directory or ContainerEngine.workbench()
@@ -351,10 +300,8 @@ class SourceCmd(Cmd):
                 width, name, entry["version"] or "?", entry["release"],
                 size, since(entry.get("accessed_at"))))
 
-    # Loads SPEC the same way 'seine validate'/'seine inspect' do -- just
-    # far enough to reach 'distribution', never touching a container --
-    # so pulling a source needs nothing a real build hasn't already asked
-    # the specification for.
+    # Loads SPEC far enough to reach 'distribution', without touching a
+    # container.
     def _pull(self, rest):
         if len(rest) < 2:
             sys.stderr.write(

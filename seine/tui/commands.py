@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # One command registry, read by the prompt, Tab completion and the
-# command palette alike -- nothing about a command is special-cased in
-# more than one of them.
+# command palette alike; nothing is special-cased in more than one of them.
 
 import getopt
 import inspect
@@ -22,11 +21,11 @@ class Command(NamedTuple):
     run: object       # (app, argv: list[str]) -> None
     args: str = ""
     help: str = ""
-    # Longer text for /help's Commands tab, from run.__doc__ via _doc()
-    # below -- falls back to 'help' alone when empty.
+    # Longer text for /help's Commands tab, from run.__doc__ via
+    # _doc() below; falls back to 'help' alone when empty.
     detail: str = ""
-    # (flags, description) pairs for /help's OPTIONS section -- getopt
-    # et al aren't self-describing, so written out once per command.
+    # (flags, description) pairs for /help's OPTIONS section, written
+    # out once per command since getopt isn't self-describing.
     options: tuple = ()
 
 # Splits a docstring into a short /help list line and an optional
@@ -105,12 +104,10 @@ def _validate(app, argv):
             % (probe.label(), len(probe.builds),
                "" if len(probe.builds) == 1 else "s"))
 
-# Shared by every command below that just switches to a screen over the
-# active spec, optionally naming one first -- the same '/use' + active
-# check either way, only the screen name differs. 'require_image' is for
-# the one screen (plan, so far) that needs the active spec's own
-# 'image:' section -- checked before switching, so a vendor-only spec
-# never lands on a screen that would have nothing to show.
+# Shared by every command that just switches to a screen over the
+# active spec, optionally naming one first. 'require_image' is for the
+# one screen (plan, so far) that needs the active spec's 'image:'
+# section, checked before switching.
 def _show_over_active_spec(app, argv, screen, require_image=False):
     if len(argv) > 0:
         _use(app, argv)
@@ -120,11 +117,9 @@ def _show_over_active_spec(app, argv, screen, require_image=False):
         _require_image(app)
     app.show(screen)
 
-# Shared by '/plan' and '/build': both end up calling into Image, which
-# needs the active spec's own 'image:' section (BuildCmd.parse() skips
-# parsing one at all when it is missing -- see its own comment). A
-# vendor-only specification is legitimately active in the TUI (vendor
-# screen, vendor-graph/vendor-why) without ever having one.
+# Shared by '/plan' and '/build': both call into Image, which needs
+# the active spec's 'image:' section. A vendor-only specification is
+# legitimately active in the TUI without ever having one.
 def _require_image(app):
     if any("image" not in build.spec for build in app.context.builds):
         raise CommandError(
@@ -152,10 +147,8 @@ def _packages(app, argv):
     """rebuilt-from-source packages, and what the last SBOM found"""
     _show_over_active_spec(app, argv, "packages")
 
-# Only -j/--jobs= today, not the whole of BuildCmd.LONG_OPTIONS -- the
-# rest either means something else here, can't work the same way
-# ('--help' calls sys.exit()), or isn't wired up yet. An unrecognised
-# flag raises CommandError rather than silently becoming a filename.
+# Only -j/--jobs= today, not the whole of BuildCmd.LONG_OPTIONS: the
+# rest either means something else here or isn't wired up yet.
 def _build(app, argv):
     """build the active specification
 
@@ -170,9 +163,7 @@ def _build(app, argv):
         raise CommandError(str(e))
     jobs = None
     for o, a in opts:
-        # Same validation 'BuildCmd.main()' applies to '-j'/'--jobs' on
-        # the real CLI (seine/build.py) -- a value it would reject is
-        # not one the TUI should quietly accept either.
+        # Same validation BuildCmd.main() applies to '-j'/'--jobs' on the CLI.
         try:
             jobs = int(a)
         except ValueError:
@@ -183,15 +174,12 @@ def _build(app, argv):
         _use(app, args)
     if not app.context.active:
         raise CommandError("no active specification -- '/use SPEC' first")
-    # A build already running: 'build' just goes to look at it -- typing
-    # the same command again to check progress is not "start a second
-    # one", and must not be refused as if it were.
+    # A build already running: 'build' just goes to look at it, not
+    # refused as if starting a second one.
     if app.build_state.running:
         app.show("build")
         return
-    # seine.tasks.run() keeps its own progress in module-level globals
-    # (interrupted/running/display), never designed for two independent
-    # job graphs at once -- see start_vendor()'s own comment.
+    # seine.tasks.run() isn't built for two job graphs at once.
     if app.vendor_state.running:
         raise CommandError("a vendor is running -- wait for it to finish first")
     _require_image(app)
@@ -202,10 +190,10 @@ def _build(app, argv):
     build = app.context.builds[0]
     if jobs is not None:
         build.options["jobs"] = jobs
-    # TUI builds always write an SBOM, unlike the plain CLI's --sbom-only
-    # default -- ai.py's packages/installed-packages tools need one to read.
+    # TUI builds always write an SBOM: ai.py's packages/installed-packages
+    # tools need one to read.
     build.options["sbom"] = True
-    # Imported here, not at module level: breaks a real import cycle
+    # Imported here, not at module level: breaks an import cycle
     # (seine.tui.build -> seine.tui.base -> this module).
     from seine.tui.build import start_build
     try:
@@ -214,7 +202,7 @@ def _build(app, argv):
         raise CommandError(str(e))
     app.show("build")
 
-# '/help' 's own OPTIONS section for '/build' -- see 'Command.options'.
+# '/help's OPTIONS section for '/build'; see Command.options.
 _build_options = (
     ("-j N, --jobs=N", "Override the parallel job count for this run only."),
 )
@@ -235,8 +223,7 @@ def _vendor(app, argv):
         _use(app, argv)
     if not app.context.active:
         raise CommandError("no active specification -- '/use SPEC' first")
-    # Same "typing it again just looks" shortcut '/build' gives a
-    # running build.
+    # Same "typing it again just looks" shortcut '/build' gives a running build.
     if app.vendor_state.running:
         app.show("vendor")
         return
@@ -247,8 +234,7 @@ def _vendor(app, argv):
             "vendor needs exactly one active group -- multi-group builds "
             "('/use a -- b') aren't driven from the TUI yet")
     build = app.context.builds[0]
-    # Imported here, not at module level: same import-cycle reason
-    # '/build' imports start_build() from seine.tui.build locally.
+    # Same import-cycle reason '/build' imports start_build() locally.
     from seine.tui.vendor import prepare, start_vendor
     try:
         distro, entries, exclude, wanted, extra_archs = prepare(build)
@@ -382,7 +368,7 @@ def _settings(app, argv):
 # two keys, never a Textual name.
 THEMES = {"dark": "textual-dark", "light": "textual-light"}
 
-# jobs/theme/sbom2cve_program/history_pruning only -- startup_commands
+# jobs/theme/sbom2cve_program/history_pruning only; startup_commands
 # is edited from /settings itself.
 def _set(app, argv):
     """change one persisted setting: jobs, theme, sbom2cve_program, or history_pruning
@@ -435,9 +421,8 @@ def _set(app, argv):
 
 def _cancel(app, argv):
     """stop a running build or vendor (same as Ctrl-C)"""
-    # Whichever it is, there is only ever one seine.tasks.run() in
-    # flight at a time (start_vendor()'s own comment) -- interrupt() is
-    # the same global stop either way, so this need not ask which.
+    # Only one seine.tasks.run() is ever in flight, so interrupt() is
+    # the same global stop either way.
     if not app.build_state.running and not app.vendor_state.running:
         raise CommandError("no build or vendor is running")
     tasks.interrupt()
@@ -602,14 +587,13 @@ def _quit(app, argv):
 
 def _help(app, argv):
     """keyboard shortcuts and every command"""
-    # Imported here: seine.tui.help reads commands.REGISTRY, a cycle
-    # broken the same way as in _build()/_filesystem().
+    # Imported here: seine.tui.help reads commands.REGISTRY, same
+    # import-cycle reason as _build()/_filesystem().
     from seine.tui.help import HelpScreen
     app.push_screen(HelpScreen())
 
-# 'name', 'run', 'args' only -- 'help'/'detail' are never typed out here,
-# they come from each function's own docstring via '_doc()', right above
-# its own implementation, not this far away from it.
+# 'name', 'run', 'args' only; 'help'/'detail' come from each function's
+# own docstring via _doc(), not typed out here.
 REGISTRY = {
     c.name: c for c in [
         Command("use",      _use,      "SPEC... [-- SPEC...]...",  *_doc(_use)),
@@ -648,19 +632,17 @@ REGISTRY = {
 }
 REGISTRY["q"] = REGISTRY["quit"]
 
-# What Tab/the palette suggest for a command's own flags. 'build' only
-# offers --jobs= since that's all _build() actually parses -- suggesting
-# a flag that then fails would be worse than not suggesting it.
+# What Tab/the palette suggest for a command's flags. 'build' only
+# offers --jobs= since that's all _build() actually parses.
 OPTIONS = {
     "plan":  BuildCmd.LONG_OPTIONS,
     "build": ["jobs="],
     "issues": ["filter=", "min-urgency=", "rescan"],
 }
 
-# One line, split the way a shell would split it -- so a quoted path
-# with a space works from the prompt the same as it would on a command
-# line. Raises CommandError on an unterminated quote rather than a raw
-# ValueError, so the caller has one exception type to catch.
+# One line, split the way a shell would, so a quoted path with a space
+# works from the prompt. Raises CommandError, not a raw ValueError, on
+# an unterminated quote.
 def split(line):
     try:
         return shlex.split(line)
@@ -677,8 +659,8 @@ def dispatch(app, line):
     if len(tokens) == 0:
         return
     name, argv = tokens[0], tokens[1:]
-    # '@path' is the prompt's filesystem-completion marker; stripped
-    # here so handlers see a plain path. History keeps the '@'.
+    # '@path' is the prompt's filesystem-completion marker; stripped so
+    # handlers see a plain path. History keeps the '@'.
     argv = [token[1:] if token.startswith("@") else token for token in argv]
     command = REGISTRY.get(name)
     if command is None:

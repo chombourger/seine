@@ -23,8 +23,6 @@ from . import MODFINAL, MODULE_LDS, MODULE_LDS_FALLBACK, MODULE_LDS_PATCH
 from . import build_files
 
 
-# The tarball a kernel is grafted onto, which is fetched on its own and
-# has a hash of its own to be checked against.
 def _verify_upstream(builder, package, staging):
     upstream = package.kernel_upstream
     if upstream is None or upstream.scheme != "https":
@@ -32,15 +30,12 @@ def _verify_upstream(builder, package, staging):
     builder._verify(package, staging, os.path.basename(upstream.uri),
                     package.kernel_upstream_sha256, "upstream-sha256")
 
-# Where the tree named by 'upstream' is unpacked. Hidden, so the
-# unpacked distribution source stays the only thing _source_dir()
-# can find while both are on disk.
+# Hidden directory so _source_dir() can still find the unpacked
+# distribution source while both trees are on disk.
 UPSTREAM = ".upstream"
 
-# The tree a kernel is grafted onto, fetched with the source it will be
-# grafted into rather than when the graft happens: it is the largest
-# download seine makes, and there is no reason for it to wait for a
-# build slot.
+# Fetched alongside the distro source rather than at graft time: it's the
+# largest download seine makes, no reason to make it wait for a build slot.
 def fetch_upstream(builder, package, workdir):
     upstream = package.kernel_upstream
     if upstream is None:
@@ -53,19 +48,15 @@ def fetch_upstream(builder, package, workdir):
         workdir=WORKDIR)
     _verify_upstream(builder, package, staging)
 
-# Puts the distribution's packaging on a kernel tree it was not written
+# Puts the distribution's packaging on a kernel tree it wasn't written
 # for, and returns the grafted tree.
 #
-# Everything that makes the resulting .debs true replacements lives in
-# debian/ -- package names, ABI naming, headers split, maintainer
-# scripts -- and none of it is in the tree. So debian/ moves across
-# whole, the series is cut to the patches that touch the build system,
-# and the changelog is given the version of the tree being built.
-#
-# The tree is repackaged as the orig tarball rather than Debian's,
-# which is what makes this a "3.0 (quilt)" source at all: tree and
-# orig are identical outside debian/, so nothing has to be expressed
-# as a patch that is not already one.
+# debian/ moves across whole (package names, ABI naming, headers split,
+# maintainer scripts all live there), the patch series is cut to what
+# still applies, and the changelog gets the version of the tree being
+# built. The tree itself is repackaged as the orig tarball -- tree and
+# orig are identical outside debian/, which is what makes this a
+# "3.0 (quilt)" source at all.
 def graft(builder, package, workdir, sourcedir, epoch):
     upstream = package.kernel_upstream
     staging = os.path.join(workdir, UPSTREAM)
@@ -89,21 +80,18 @@ def graft(builder, package, workdir, sourcedir, epoch):
     _check_series(builder, package, grafted)
     _graft_release(package, grafted, source, version, epoch)
 
-    # What the distribution's own source left behind describes a
-    # version that is no longer being built. dpkg-source would pick
-    # the wrong orig tarball out of it, when it did not simply refuse
-    # to choose.
+    # Leftover files from the distribution's own source describe a
+    # version we're not building; dpkg-source would pick the wrong orig
+    # tarball out of them.
     for name in sorted(os.listdir(workdir)):
         path = os.path.join(workdir, name)
         if os.path.isfile(path):
             os.unlink(path)
 
-    # gzip, not the xz Debian ships: this tarball is written once, read
-    # once by dpkg-source and thrown away, so xz buys nothing that is
-    # ever stored. .git goes too -- dpkg-source ignores it in the tree,
-    # so keeping it in the orig would only make the two differ. Packed
-    # from the parent, so the tarball holds the one top-level directory
-    # an orig tarball is expected to have.
+    # gzip, not Debian's xz: this tarball is written once and read once
+    # by dpkg-source. .git is excluded so the tree and orig stay
+    # identical. Packed from the parent so the tarball has the single
+    # top-level directory an orig tarball is expected to have.
     tarball = "%s_%s.orig.tar.gz" % (source, version)
     tree = os.path.basename(grafted)
     builder.builderImage.exec(
@@ -128,9 +116,9 @@ def _upstream_args(upstream):
     return ["sh", "-c", "%s && cd %s && git checkout --detach %s" % (
         " ".join(args), upstream.name, upstream.parameters["rev"])]
 
-# The source package name, which is not the tree's: Debian's kernel
-# tree unpacks as linux-<version> but the source is 'linux', and the
-# orig tarball and directory both have to be named for the source.
+# The source package name, which the tree's own directory name isn't:
+# Debian's kernel tree unpacks as linux-<version> but the source is
+# 'linux'.
 def _source_name(sourcedir):
     with open(os.path.join(sourcedir, "debian", "changelog"), "r") as f:
         heading = re.match(r"^(\S+) ", f.readline())
@@ -138,10 +126,9 @@ def _source_name(sourcedir):
         raise ValueError("debian/changelog does not start with a source name")
     return heading.group(1)
 
-# The version of a kernel tree, read from its Makefile. EXTRAVERSION is
-# deliberately left out: a BSP commonly puts its own name there, and a
-# Debian upstream version has nowhere to put a '-rc1' that would not be
-# read back as the Debian revision.
+# Read from the Makefile. EXTRAVERSION is left out on purpose: a BSP
+# commonly puts its own name there, with nowhere for a Debian version to
+# put a '-rc1' that wouldn't be read as the Debian revision.
 def _kernel_version(tree):
     fields = {}
     with open(os.path.join(tree, "Makefile"), "r") as f:
@@ -159,12 +146,10 @@ def _kernel_version(tree):
     return "%s.%s.%s" % (fields["VERSION"], fields["PATCHLEVEL"],
                          fields["SUBLEVEL"])
 
-# Cuts the distribution's patch series down to what is being kept.
-#
-# A glob that matches nothing is an error rather than a no-op: the
-# series is restructured from one release to the next, and a
-# specification naming a directory since renamed would otherwise
-# silently build a kernel without the patches it meant to keep.
+# Cuts the distribution's patch series down to what's being kept. A glob
+# matching nothing is an error, not a no-op: the series is restructured
+# release to release, and a stale glob would otherwise silently build a
+# kernel missing patches it meant to keep.
 def _filter_series(package, sourcedir):
     path = os.path.join(sourcedir, "debian", "patches", "series")
     if os.path.isfile(path) == False:
@@ -174,8 +159,8 @@ def _filter_series(package, sourcedir):
         names = [line.strip() for line in f]
 
     patches = os.path.join(sourcedir, "debian", "patches")
-    # Qualified: tests replace this by patching 'seine.kernel.kernel_rules'
-    # (this package's own re-export), which a bare name here would never see.
+    # Qualified: tests patch 'seine.kernel.kernel_rules' (this package's
+    # own re-export), which a bare name here would never see.
     from seine import kernel
     dropped = kernel.kernel_rules().drop_patches + package.kernel_drop_patches
     selected = [n for n in names if len(n) > 0 and not n.startswith("#")]
@@ -191,10 +176,9 @@ def _filter_series(package, sourcedir):
         elif _matches(name, package.kernel_keep_patches):
             kept.append(name)
 
-    # Only the globs the specification wrote are checked. The rules'
-    # own 'drop-patches' is not one of them: a source that carries no
-    # DFSG exclusions is an ordinary thing, not a specification that
-    # has gone stale.
+    # Only the globs the spec itself wrote are checked here -- the rules
+    # file's own 'drop-patches' isn't, since a source with no DFSG
+    # exclusions is normal, not a sign the spec has gone stale.
     for setting, globs, against in [
             ("keep-patches", package.kernel_keep_patches or [], kept),
             ("drop-patches", package.kernel_drop_patches, selected)]:
@@ -211,14 +195,10 @@ def _filter_series(package, sourcedir):
         for name in kept:
             f.write("%s\n" % name)
 
-# Whether the patches being kept apply to this tree, asked before
-# dpkg-source is asked. dpkg-source stops at the first patch that does
-# not, so left to it the question is answered one patch per build.
-#
-# quilt rather than plain patch: a series is cumulative, a patch may
-# depend on the one before it, and quilt is what can put the tree back
-# afterwards. Fuzz is zero because that is what dpkg-source allows, so
-# what is found here is what it would find.
+# Checks the kept patches apply before dpkg-source does, since dpkg-source
+# stops at the first one that doesn't -- answering one patch per build.
+# quilt (not plain patch) is used because push order matters and quilt
+# can restore the tree afterwards; fuzz 0 matches what dpkg-source allows.
 SERIES_CHECK = """
 export QUILT_PATCHES=debian/patches QUILT_PATCH_OPTS='-F 0'
 while [ -n "$(quilt next 2>/dev/null)" ]; do
@@ -236,17 +216,13 @@ def _check_series(builder, package, sourcedir):
     output = builder.builderImage.output(
         ["sh", "-c", SERIES_CHECK], volumes=[(workdir, WORKDIR)],
         workdir="%s/%s" % (WORKDIR, os.path.basename(sourcedir)))
-    # quilt names a patch by its path from the source tree, and the
-    # series names it from debian/patches. Reported as the series
-    # writes it, since that is what 'drop-patches' is matched against.
+    # quilt names a patch by its path from the source tree; reported as
+    # the series writes it, since that's what 'drop-patches' matches against.
     failed = [n.strip().removeprefix("debian/patches/")
               for n in output.decode().split("\n") if len(n.strip()) > 0]
     if len(failed) == 0:
         return
 
-    # Each one is named with what it was trying to change, since that
-    # is what says whether the tree has since got it from upstream --
-    # which is the common reason a packaging patch stops applying.
     patches = os.path.join(sourcedir, "debian", "patches")
     report = []
     for name in failed:
@@ -260,13 +236,11 @@ def _check_series(builder, package, sourcedir):
         % (package.source, len(failed), package.kernel_upstream,
            "\n".join(report)))
 
-# Whether a patch is part of the packaging, decided by what it changes:
-# a patch touching only build files is what the packaging needs to
-# build at all, and one reaching into C source is changing the kernel
-# itself. A patch touching both counts as the second, since taking it
-# means taking the kernel change too. Only debian/ is looked at:
-# bugfix/ and features/ are backports, and one touching only a
-# makefile is still something a newer tree is expected to have.
+# Whether a patch is packaging, decided by what it touches: one that
+# touches only build files is needed just to build; one reaching into C
+# source is changing the kernel itself (kept if not asked for). Only
+# debian/ is checked -- bugfix/ and features/ are backports a newer tree
+# is expected to already have.
 def _packaging_patch(package, name, path):
     if name.startswith("debian/") == False:
         return False
@@ -274,10 +248,9 @@ def _packaging_patch(package, name, path):
     matches = build_files(tuple(package.kernel_build_files))
     return len(touched) > 0 and all(matches.search(f) for f in touched)
 
-# The files a patch changes, as it names them on its '+++' lines. The
-# leading component goes: these apply with -p1, and what is in front of
-# the path is 'a/', 'b/' or the name of a tree, depending on how the
-# patch was made.
+# Files a patch changes, read off its '+++' lines. The leading path
+# component ('a/', 'b/', or a tree name depending on how the patch was
+# made) is stripped since patches apply with -p1.
 def _touches(path):
     touched = set()
     with open(path, "r", errors="replace") as f:
@@ -293,10 +266,9 @@ def _touches(path):
 def _matches(name, globs):
     return any(fnmatch.fnmatch(name, glob) for glob in globs)
 
-# Says in the changelog which tree was built, and gives the package the
-# version of that tree rather than of the packaging it borrowed. Without
-# it the .debs would claim to be the distribution's kernel at the
-# distribution's version while holding another one entirely.
+# Records which tree was built and gives the package that tree's version
+# instead of the packaging's -- otherwise the .debs would claim the
+# distribution's kernel version while holding a different kernel.
 # local_release() runs after this and adds the local revision on top.
 def _graft_release(package, sourcedir, source, version, epoch):
     path = os.path.join(sourcedir, "debian", "changelog")
@@ -312,12 +284,10 @@ def _graft_release(package, sourcedir, source, version, epoch):
     with open(path, "w") as f:
         f.write(entry + changelog)
 
-# Whether anything in the series already looks for module.lds where
-# Debian puts it. Asked of the patches rather than of the tree, since
-# the tree is unpatched here and stays that way: dpkg-source applies
-# them. Debian's own patch answers when it was kept, and so does one a
-# specification rebased and listed under 'patches' -- which is why this
-# runs after both are in the series rather than during the graft.
+# Whether the kept patch series already looks for module.lds where Debian
+# puts it. Checked against the patches (the tree itself stays unpatched
+# here; dpkg-source applies them later), which is why this runs after the
+# series is finalized.
 def _modfinal_is_patched(sourcedir):
     patches = os.path.join(sourcedir, "debian", "patches")
     series = os.path.join(patches, "series")
@@ -332,12 +302,8 @@ def _modfinal_is_patched(sourcedir):
             return True
     return False
 
-# The patch Debian carries, written for the tree that was grafted.
-#
-# Only when nothing else answers for it, and only for a tree that asks
-# for module.lds somewhere no package installs it. What comes out is
-# the same idea as Debian's: a name that is whichever of the two
-# places has the file, used everywhere the rule named one.
+# Writes the same fix Debian carries, but for the tree in hand, only when
+# nothing else already provides it and the tree actually needs it.
 def module_lds_patch(package, sourcedir):
     path = os.path.join(sourcedir, MODFINAL)
     if os.path.isfile(path) == False:
@@ -351,8 +317,7 @@ def module_lds_patch(package, sourcedir):
         return
 
     after = MODULE_LDS.sub("$(ARCH_MODULE_LDS)", before)
-    # In front of the first rule that reads it, which is where Debian
-    # puts it too.
+    # In front of the first rule that reads it, same place Debian puts it.
     anchor = "quiet_cmd_ld_ko_o"
     if anchor not in after:
         raise package._error(
@@ -361,8 +326,8 @@ def module_lds_patch(package, sourcedir):
             "knows how to patch." % (MODFINAL, anchor))
     after = after.replace(anchor, "%s\n\n%s" % (MODULE_LDS_FALLBACK, anchor), 1)
 
-    # Written with no dates in it, so the same tree makes the same
-    # source package twice running.
+    # No dates in the diff, so the same tree produces the same source
+    # package on a second run.
     diff = difflib.unified_diff(
         before.splitlines(keepends=True), after.splitlines(keepends=True),
         fromfile="a/" + MODFINAL, tofile="b/" + MODFINAL, n=3)

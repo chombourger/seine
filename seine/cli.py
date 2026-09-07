@@ -17,8 +17,7 @@ from seine.secscan import IssuesCmd
 from seine.sources import SourceCmd
 from seine.testing.cmd import TestCmd
 
-# Deliberately doesn't import seine.tui (and hence textual) at module
-# level -- only once "tui" is the command actually given.
+# Import seine.tui (and textual) only once "tui" is actually the command given.
 class TuiCmd(Cmd):
     NAME = "tui"
     USAGE = """
@@ -37,8 +36,7 @@ resolving, a spec file being written, ...).
 """
 
     def main(self, argv):
-        # Answered without importing 'seine.tui': '--help' works whether
-        # or not the extra is installed, same as every other command.
+        # '--help' works even without the 'tui' extra installed.
         if argv and argv[0] in ("-h", "--help"):
             print(self.USAGE)
             return
@@ -54,8 +52,7 @@ resolving, a spec file being written, ...).
             sys.exit(1)
         run(argv or None)
 
-# Just the probe/load/parse 'seine build' does before touching a
-# container -- the same BuildCmd.load_all()/.parse() calls, not a copy.
+# Reuses BuildCmd.load_all()/.parse(), the part before it touches a container.
 class ValidateCmd(Cmd):
     NAME = "validate"
     USAGE = """
@@ -91,9 +88,7 @@ same probe/load/parse 'seine build' does before any of that.
             sys.exit(3)
         print("valid: %s" % " -- ".join(" ".join(files) for files in groups))
 
-# Read-only browsing of a finished image, via seine/inspect.py.
-# guestfs is already a hard dependency of core seine (unlike textual),
-# so no import guarding needed.
+# guestfs is a hard dependency of core seine, so no import guard is needed here.
 class InspectCmd(Cmd):
     NAME = "inspect"
     SHORT_OPTIONS = "h"
@@ -162,8 +157,7 @@ to write an image.
             sys.stderr.write("error: %s\n" % e)
             sys.exit(4)
 
-# Whether the machine has what a real build assumes -- 'seine/doctor.py'
-# runs the checks, this only prints them.
+# seine/doctor.py runs the checks; this only prints them.
 class DoctorCmd(Cmd):
     NAME = "doctor"
     SHORT_OPTIONS = "h"
@@ -203,8 +197,7 @@ reached (not pulled).
         print(doctor.render(checks))
         sys.exit(1 if doctor.errors(checks) > 0 else 0)
 
-# What BuildCmd.changed() already computes for 'seine plan', exposed on
-# its own -- no build needed in between.
+# Exposes BuildCmd.changed(), the same diff 'seine plan' shows, without a build.
 class DiffCmd(Cmd):
     NAME = "diff"
     SHORT_OPTIONS = "h"
@@ -281,9 +274,7 @@ class PodmanCmd(Cmd):
         env = ContainerEngine._podman_env()
         os.execvpe(cmd[0], cmd, env)
 
-# What seine can be asked to do. Each command says the rest for itself, with
-# '-h' -- there is no point restating a command's flags here, where they
-# would go out of date the day one is added.
+# Each command explains its own flags via '-h', so we don't restate them here.
 COMMANDS = {
     "build": (BuildCmd, "build an image from one or more specification files"),
     "plan":  (PlanCmd, "say what a build would do, without doing any of it"),
@@ -314,8 +305,8 @@ Commands:
 Run 'seine COMMAND --help' for what a command takes.
 """ % "\n".join("  %-9s %s" % (name, what) for name, (_, what) in COMMANDS.items())
 
-# Whether 'seine.tui' can even be imported, without importing 'textual'
-# to find out: 'find_spec' only has to locate the module, not run it.
+# find_spec only locates the module, so this checks seine.tui is importable
+# without pulling in textual.
 def _tui_available():
     import importlib.util
     return importlib.util.find_spec("seine.tui.app") is not None
@@ -328,10 +319,8 @@ def main():
         sys.exit()
 
     if len(argv) == 0:
-        # 'seine' with nothing else: the TUI if one could plausibly show up
-        # on this terminal, today's exact USAGE otherwise -- so every CI
-        # job, pipe or script that runs bare 'seine' today keeps doing
-        # exactly what it already does.
+        # Bare 'seine': open the TUI if the terminal allows it, else USAGE
+        # as before -- so scripts running plain 'seine' keep working.
         if (not os.environ.get("SEINE_NO_TUI")
                 and interactive(sys.stdout, os.environ) and _tui_available()):
             TuiCmd().main([])

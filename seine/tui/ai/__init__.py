@@ -2,22 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Optional AI chat: a LiteLLM tool-calling loop over the same read-only
-# render layer every screen uses, plus tools that write (start-build/
-# cancel-build/spec-update/spec-create), each gated by ConfirmAction.
-# Off unless llm_model is set (configured() below).
+# render layer every screen uses, plus write tools (start-build/
+# cancel-build/spec-update/spec-create) gated by ConfirmAction. Off
+# unless llm_model is set.
 #
-# litellm/ruamel.yaml are the only new dependencies, scoped to this
-# package alone (setup.py's 'ai' extra). ruamel.yaml specifically for
-# spec-update: it round-trips comments/formatting that a plain PyYAML
-# parse-then-dump would silently drop -- see _spec_update_plan() in
-# tools_spec.py.
-#
-# Split by tool domain: this file holds the shared infrastructure
-# (settings/config, Preview/Plan/Tool, the tool registry, ConfirmAction/
-# confirm/_dispatch, AIState and the chat loop itself) plus a handful of
-# tools with no better home (overview/plan/.../doctor/bash). Every other
-# tool lives in tools_<domain>.py or web.py, each contributing its own
-# module-level TOOLS list that gets folded into the one below.
+# This file holds the shared infrastructure (settings, Preview/Plan/
+# Tool, the registry, ConfirmAction/confirm/_dispatch, AIState, the chat
+# loop) plus a few tools with no better home. Other tools live in
+# tools_<domain>.py or web.py.
 
 import difflib
 import json
@@ -38,17 +30,15 @@ from seine import settings
 from seine.container import ContainerEngine
 from seine.utils import redact, redactions
 
-# Same duck-typing as seine.tui.target's own _socket_send(): 'app' here
-# is not always a real SeineApp (see MtdaTools's stand-in app in
-# tests/tui/ai.py, which has no '_socket_send' at all).
+# 'app' is not always a real SeineApp (tests use a stand-in with no
+# '_socket_send' at all), so check before calling.
 def _socket_send(app, event):
     send = getattr(app, "_socket_send", None)
     if send is not None:
         send(event)
 
-# SEINE_LLM_MODEL/SEINE_LLM_API_BASE override the settings.json values,
-# same as SEINE_CACHE_DIR does elsewhere. SEINE_LLM_API_KEY has no
-# settings.json field at all -- it is the only source, always.
+# SEINE_LLM_MODEL/SEINE_LLM_API_BASE override settings.json.
+# SEINE_LLM_API_KEY has no settings.json field -- env only.
 def _resolved():
     current = settings.load()
     model = os.environ.get("SEINE_LLM_MODEL") or current["llm_model"]
@@ -60,15 +50,13 @@ def configured():
     model, _, _ = _resolved()
     return bool(model)
 
-# Not yet looked up, told apart from "looked up, and it's unknown"
-# (None) -- the lookup below is one HTTP round-trip, done once per
-# AIState rather than once per question.
+# Distinguishes "not looked up yet" from "looked up, unknown" (None).
+# Looked up once per AIState, not once per question.
 _UNSET = object()
 
-# Two sources for the number ChatScreen's context-fill bar needs: the
-# server's own /models listing first, then litellm.get_max_tokens()'s
-# static database. Neither working is not an error -- None either way,
-# read as "show the raw count, no bar against a guessed ceiling".
+# Tries the server's /models listing first, then litellm's static
+# database. Neither working is not an error -- None just means "show
+# the raw count, no bar against a guessed ceiling".
 def _lookup_context_max(model, api_base, api_key):
     if api_base:
         try:
@@ -78,7 +66,7 @@ def _lookup_context_max(model, api_base, api_key):
                 request.add_header("Authorization", "Bearer %s" % api_key)
             with urllib.request.urlopen(request, timeout=5) as response:
                 data = json.loads(response.read())
-            wanted = model.split("/", 1)[-1]  # litellm's 'openai/<name>' prefix, stripped
+            wanted = model.split("/", 1)[-1]  # strip litellm's 'openai/<name>' prefix
             for entry in data.get("data", []):
                 if entry.get("id") == wanted and entry.get("max_model_len"):
                     return entry["max_model_len"]
@@ -90,21 +78,14 @@ def _lookup_context_max(model, api_base, api_key):
     except Exception:
         return None
 
-# Plain text, not a Python string -- editing wording (or feeding a
-# frontier model both this file and a batch of real transcripts,
-# ContainerEngine.chats() below, to suggest a better one) needs no code
-# change either way. Read fresh each call ('seine/kernel's own
-# 'KERNEL_RULES' follows the same "a path constant, opened by whoever
-# needs it" shape), not cached at import -- a person iterating on the
-# wording sees the next question pick it up without restarting.
+# Plain text file, read fresh each call -- editing the wording needs no
+# code change and no restart.
 SYSTEM_PROMPT_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "data", "system_prompt.txt")
 
-# Everything above the file's own '\n---\n' marker is editing guidance
-# for whoever next changes system_prompt.txt, not the model -- costs
-# nothing every turn. No marker (edited without it) falls back to the
-# whole file rather than sending nothing.
+# Everything above the '\n---\n' marker is editing guidance for humans,
+# not sent to the model. No marker: send the whole file.
 def _system_prompt():
     with open(SYSTEM_PROMPT_FILE) as f:
         text = f.read()
@@ -122,10 +103,8 @@ def _single_group(app):
 NO_SINGLE_GROUP = ("no single active specification -- '/use SPEC' first "
                    "(multi-group builds aren't driven from the TUI yet)")
 
-# A tool that just wraps one render_*() -- the same text a person
-# reading that screen already sees, nothing computed twice. str()'d:
-# render_doctor() hands back a styled rich.Text (for the Doctor
-# screen's colouring), not a plain str like every other render_*().
+# Wraps one render_*(), same text its screen shows. str()'d since
+# render_doctor() returns a styled rich.Text, not a plain str.
 def _render_tool(name, with_context=True):
     def run(app, arguments):
         from seine.tui import render
@@ -140,10 +119,8 @@ _tool_analyze = _render_tool("render_analyze")
 _tool_artifacts = _render_tool("render_artifacts")
 _tool_doctor = _render_tool("render_doctor", with_context=False)
 
-# Installed (seine/data/docs/, generated at build time) is checked
-# first; a checkout or editable install (never build_py'd) falls back
-# to the repo root's own docs/. Read fresh each call, not cached --
-# same spirit as SYSTEM_PROMPT_FILE's own lookup.
+# Installed docs (seine/data/docs/) checked first; a checkout without a
+# build falls back to the repo root's own docs/.
 def _docs_dir():
     installed = os.path.join(os.path.dirname(SYSTEM_PROMPT_FILE), "docs")
     if os.path.isdir(installed):
@@ -153,19 +130,13 @@ def _docs_dir():
         "docs")
     return checkout if os.path.isdir(checkout) else None
 
-# Sibling of SYSTEM_PROMPT_FILE, not the installed/checkout dance
-# _docs_dir() does -- these cluster files ship as ordinary package_data
-# (setup.py) the same way system_prompt.txt itself does, so there is
-# normally no "not shipped" case the way a repo's own docs/ has; still
-# checked defensively below, a broken install being no reason to crash
-# the one tool that could otherwise say so.
+# Sibling of SYSTEM_PROMPT_FILE, shipped as package_data the same way --
+# checked defensively in case of a broken install.
 PROMPT_DOCS_DIR = os.path.join(os.path.dirname(SYSTEM_PROMPT_FILE), "prompt")
 
-# One tool, two directories -- the prompt's own cluster files (always
-# there) and the project's written docs/*.md (only with a checkout or a
-# build that included it) -- rather than a second tool the model has to
-# learn is a near-duplicate of this one. Different extensions keep a
-# name from ever meaning two different files at once.
+# One tool, two directories: the prompt's own cluster files (always
+# there) and the project's docs/*.md (only with a checkout or full
+# build). Different extensions so a name never means two files at once.
 def _doc_sources():
     sources = []
     if os.path.isdir(PROMPT_DOCS_DIR):
@@ -175,40 +146,33 @@ def _doc_sources():
         sources.append((docs_dir, ".md"))
     return sources
 
-# A gated tool's own preview, handed back to _dispatch(): ok=False means
-# refuse outright before ConfirmAction ever opens; ok=True means message
-# is a redacted diff to show for review.
+# A gated tool's own preview: ok=False refuses before ConfirmAction ever
+# opens; ok=True carries a redacted diff to show for review.
 class Preview(NamedTuple):
     ok: bool
     message: str
 
-# The edit a spec-update call would make, computed once and shared by
-# its preview and its run so the two can never drift apart.
+# The edit a spec-update call would make, shared by its preview and its
+# run so the two can never drift apart.
 class Plan(NamedTuple):
     ok: bool
     message: str        # the error (not ok), or a redacted diff (ok)
     path: str = None    # real on-disk path to write -- only when ok
     new_text: str = None  # the whole file's new content -- only when ok
 
-# A unified diff with every redact: pattern applied line by line -- this
-# diff lands in the tool's return text and reaches the remote model, so
-# it needs the same redaction dump_file() applies elsewhere. The real
-# new/old text (unredacted) is what actually gets written on approval.
-# 'spec' is the active build's own spec (for its 'redact:' patterns), or
-# None where there isn't one to redact against -- a gist lives outside
-# any build.
+# A unified diff, redacted since it reaches the remote model -- the
+# real (unredacted) text is what gets written on approval. 'spec' is
+# None when there's nothing to redact against (e.g. a gist).
 def _redacted_diff(spec, old_text, new_text, from_path, to_path):
     patterns = redactions(spec)
     diff = difflib.unified_diff(old_text.splitlines(), new_text.splitlines(),
                                 fromfile=from_path, tofile=to_path, lineterm="")
     return "\n".join(redact(line, patterns) for line in diff)
 
-# ruamel.yaml's round trip preserves comments/ordering, but dumps at its
-# own fixed default indent regardless of what the source file used --
-# without this, a one-line edit to a deeper-indented file reflows the
-# whole thing. Detected from the file's own first sequence/mapping
-# occurrence and reused for the whole document -- an improvement, not a
-# full fix, since YAML().indent() has no per-node granularity.
+# ruamel.yaml dumps at its own fixed indent regardless of the source
+# file's -- without this a small edit reflows the whole file. Detected
+# from the file's first sequence/mapping and reused for the whole
+# document (not perfect: YAML().indent() has no per-node granularity).
 _SEQUENCE_INDENT_RE = re.compile(r"^([ ]*)\S[^\n]*:[ \t]*\n([ ]*)-[ ]", re.MULTILINE)
 _MAPPING_INDENT_RE = re.compile(r"^([ ]*)\S[^\n]*:[ \t]*\n([ ]*)[^-\s][^\n]*:", re.MULTILINE)
 
@@ -228,10 +192,8 @@ def _detect_indent(text):
             kwargs["mapping"] = child - parent
     return kwargs
 
-# Says nothing about how this runs (a throwaway container, HostBootstrap,
-# a bind mount) -- same as start-build's own description never mentions
-# the container it starts. All of that is sources.bash()'s business, not
-# a contract the model needs.
+# How this actually runs (container, HostBootstrap, bind mount) is
+# sources.bash()'s business, not a contract the model needs to know.
 def _tool_bash(app, arguments):
     build = _single_group(app)
     if build is None:
@@ -252,23 +214,17 @@ class Tool(NamedTuple):
     parameters: dict
     gated: bool
     run: object  # (app, arguments: dict) -> str
-    # (app, arguments: dict) -> Preview, only for a gated tool whose
-    # effect depends on 'arguments' -- 'None' (every gated tool before
-    # 'spec-update'/'spec-create') keeps 'confirm()' 's own fallback: the
-    # tool's static 'description' plus a plain dump of 'arguments'.
+    # (app, arguments: dict) -> Preview; None falls back to confirm()'s
+    # default (description plus a dump of 'arguments').
     preview: object = None
 
-# Imported here, after Tool/_no_args/_single_group/NO_SINGLE_GROUP/
-# Preview/Plan/_redacted_diff/_detect_indent/_doc_sources/_socket_send
-# above, before TOOLS below -- each submodule's own 'from . import ...'
-# reaches back into this still-loading package, so those names must
-# already exist when it runs.
+# Must come after the names above -- each submodule imports back into
+# this still-loading package.
 from . import tools_build, tools_gist, tools_source, tools_spec, tools_target, tools_test
 from . import web as web_tools
 
-# Re-exported so 'self.ai.AUDIT_LOG_MAX_ROWS' etc keeps working the same
-# way it did when everything lived in one file -- these are read-only,
-# never monkeypatched by a test, so a plain import is enough.
+# Re-exported so 'self.ai.AUDIT_LOG_MAX_ROWS' etc still works as before
+# the split into submodules.
 from .tools_build import AUDIT_LOG_MAX_ROWS, LOG_TAIL_LINES
 from .tools_spec import SPEC_DUMP_CHUNK_LINES
 
@@ -314,16 +270,9 @@ TOOL_SCHEMAS = [{"type": "function",
                              "parameters": t.parameters}}
                 for t in TOOLS.values()]
 
-# A pending action's own modal -- "Yes"/"No" as a two-row OptionList,
-# same shape as SettingsScreen/HelpScreen. on_result is called with a
-# bool from the UI thread; the worker thread that opened this is
-# blocked on a threading.Event until then -- pushing a modal is
-# fire-and-forget from here, the wait happens on the caller's thread.
-#
-# A unified diff line by line, into a Text built with .append(literal,
-# style=...) rather than a markup string, so a package name containing
-# a literal '[' cannot spoof or break the review dialog's formatting.
-# +++/--- checked before a bare +/- line, since a header starts with one too.
+# Built with .append(literal, style=...) rather than a markup string,
+# so a literal '[' in a diff can't spoof or break the dialog. +++/---
+# checked before bare +/-, since a header line starts with one too.
 def _diff_text(diff):
     text = Text()
     for line in diff.splitlines():
@@ -361,26 +310,21 @@ class ConfirmAction(ModalScreen):
         super().__init__()
         self.tool = tool
         self.arguments = arguments
-        # A redacted diff when tool.preview produced one, None for a
-        # gated tool that doesn't (start-build/cancel-build) -- decides
-        # which review layout compose() below shows.
+        # A redacted diff, or None for a gated tool with no preview
+        # (start-build/cancel-build) -- picks the layout compose() uses.
         self.preview = preview
         self.on_result = on_result
 
-    # No preview: plain 'key: value' lines, not markup (an argument
-    # value is arbitrary model/tool-supplied text). With preview: a
-    # 'file:' line plus the diff, coloured, in its own scrollable region
-    # -- a long diff must not push Yes/No off screen.
+    # No preview: plain 'key: value' lines (not markup -- values are
+    # arbitrary model text). With preview: a 'file:' line plus the
+    # coloured diff, in its own scrollable region.
     def compose(self):
         with Vertical(id="confirmpane"):
             yield Static("seine wants to run: %s" % self.tool.name, id="confirmtitle")
             yield Static(self.tool.description, id="confirmdesc")
             if self.preview is not None:
-                # 'path' (spec-update/spec-create): a file about to be
-                # written. 'fragment' (side-load/side-unload): a file
-                # about to be loaded into (or dropped out of) the
-                # session, nothing written -- same "what does this
-                # touch" clarity, worded for which one it actually is.
+                # 'path': a file about to be written. 'fragment': a
+                # file about to be loaded/unloaded, nothing written.
                 path = self.arguments.get("path")
                 fragment = self.arguments.get("fragment")
                 if path:
@@ -409,14 +353,9 @@ class ConfirmAction(ModalScreen):
         self.on_result(approved)
         self.app.pop_screen()
 
-# Blocks the worker thread, not the UI thread, until a person answers.
-# Polled rather than a bare event.wait(): quitting while a modal sits
-# open would otherwise block forever, since nothing would ever call
-# resolved() once the app is gone. Cancellation is treated as a denial
-# -- quitting mid-approval must never quietly do the thing it was
-# about to ask about. Public (no leading '_'): commands.py's '/target'
-# calls this too, from its own thread worker -- same requirement, same
-# modal, not a separate confirm system.
+# Blocks the worker thread until a person answers. Polled instead of a
+# bare event.wait() so quitting mid-approval doesn't block forever --
+# cancellation counts as a denial. Public: '/target' calls this too.
 def confirm(app, tool, arguments, preview):
     from textual.worker import get_current_worker
     event = threading.Event()
@@ -442,9 +381,8 @@ def confirm(app, tool, arguments, preview):
     return answer.get("approved", False)
 
 # Append-only audit trail of gated tool calls -- what the AI actually
-# did (or was refused), not the chat transcript's own record of what was
-# said. 'result' is capped: it's already what was sent back to the
-# model, not a place to duplicate a multi-KB task-log for its own sake.
+# did or was refused, separate from the chat transcript. Capped since
+# this shouldn't duplicate a multi-KB task log.
 AUDIT_RESULT_CAP = 2000
 
 def _audit(tool, arguments, approved, result, started):
@@ -466,10 +404,9 @@ def _dispatch(app, call):
     if tool.gated:
         started = time.time()
         preview = None
-        # A bad call is refused here, before anyone is asked to approve
-        # anything -- confirm()'s modal is for reviewing a real, valid
-        # change, not for rejecting a broken request. Not audited: no
-        # real action was ever on the table to approve or deny.
+        # A bad call is refused here, before confirm()'s modal opens --
+        # that's for reviewing a real change, not rejecting a broken
+        # request. Not audited: nothing was ever on the table.
         if tool.preview:
             pre = tool.preview(app, arguments)
             if not pre.ok:
@@ -483,13 +420,10 @@ def _dispatch(app, call):
         return result
     return tool.run(app, arguments)
 
-# RichLog.write() is one full row per call, not an append-in-place
-# stream -- a reply still arriving lands in a small Static (#draft)
-# that Static.update() redraws each token into. A finished line never
-# goes into #chatlog directly though: ChatScreen rebuilds the whole
-# thing from messages on every on_change, since a tool call's own
-# summary row can flip between collapsed/expanded well after it was
-# first written, and RichLog can't redraw one row in place.
+# ChatScreen rebuilds #chatlog whole from messages on every on_change
+# (a tool-call row can flip collapsed/expanded well after being
+# written, and RichLog can't redraw one row in place) -- only a
+# still-streaming reply lands directly, in the #draft Static.
 class AIState:
     def __init__(self):
         self.messages = []
@@ -498,21 +432,15 @@ class AIState:
         self.completion_tokens = 0
         self.busy = False
         self.context_max = _UNSET
-        # Set by 'ask()', read by 'ChatScreen' 's own ticking "working"
-        # indicator to say how long the current turn has been running --
-        # not reset when the turn ends, so it just stops being read.
+        # Set by ask(); read by ChatScreen's ticking "working" indicator.
+        # Not reset when the turn ends -- it just stops being read.
         self.turn_started_at = None
-        # The file this conversation is written to (below) -- 'None'
-        # until the first message actually needs one, assigned once and
-        # kept for the rest of this conversation. Cleared by 'reset()',
-        # so the next one starts a file of its own rather than
-        # continuing to overwrite what came before it.
+        # None until the first message needs a chat file, then kept for
+        # the rest of the conversation. Cleared by reset().
         self.chat_file = None
         self.chat_started = None
-        # Set by 'ChatScreen.on_mount()'/cleared by 'on_unmount()' --
-        # the same "redraw, if anyone is looking" indirection
-        # 'FilesystemState.on_change' already uses, so this module
-        # never imports a screen that would import it back.
+        # Set/cleared by ChatScreen's mount/unmount -- "redraw if anyone
+        # is looking", so this module never imports a screen back.
         self.on_change = None      # () -> None: 'messages'/'errors' changed
         self.on_delta = None       # (text) -> None: one more fragment
         self.on_delta_done = None  # () -> None: the streaming reply is over
@@ -528,17 +456,14 @@ class AIState:
         self.chat_started = None
         self.prompt_tokens = 0
         self.completion_tokens = 0
-        # 'context_max' is not reset -- it is a property of the server
-        # this conversation is talking to, not of the conversation
-        # itself, and re-asking it on every 'reset-conversation' would
-        # be a network round-trip nothing needs.
+        # Not reset -- a property of the server, not the conversation;
+        # re-asking on every reset would be a needless round trip.
         self._notify(self.on_stats)
         self.changed()
 
-    # 'on_*' callbacks are bound ChatScreen methods, normally paired
-    # with mount/unmount. notify_build_finished() can fire mid-transition,
-    # hitting a torn-down widget -- caught as "nothing to redraw", since
-    # on_mount() always rebuilds fresh on the next real mount.
+    # 'on_*' callbacks are bound ChatScreen methods. notify_build_finished()
+    # can fire mid-transition, hitting a torn-down widget -- caught here
+    # as nothing to redraw.
     def _notify(self, callback, *args):
         if callback is None:
             return
@@ -547,10 +472,8 @@ class AIState:
         except NoMatches:
             pass
 
-    # The conversation's own size right now, were it sent as the next
-    # request -- local, no network call ('litellm.token_counter()'),
-    # read by '#stats' 's context-fill bar against 'context_max' once
-    # that lookup (below) has actually run.
+    # Local count, no network call -- read by #stats' context-fill bar
+    # against context_max once that lookup has run.
     def used_tokens(self, model):
         import litellm
         try:
@@ -584,9 +507,8 @@ class AIState:
 
 
     # One JSON file per conversation, rewritten whole on every change,
-    # same atomic-write shape as settings.save(), under
-    # ContainerEngine.chats(). Nothing written with no question asked
-    # yet. Kept purely local -- read back by a person, never sent anywhere.
+    # under ContainerEngine.chats(). Nothing written until a question is
+    # asked. Kept purely local, never sent anywhere.
     def _persist(self):
         if not self.messages:
             return
@@ -597,10 +519,8 @@ class AIState:
         if self.chat_file is None:
             chats = ContainerEngine.chats()
             os.makedirs(chats, exist_ok=True)
-            # Microseconds, not just seconds -- two conversations
-            # started the same second (readily hit by a fast test, or
-            # scripted use) must not collide and silently overwrite
-            # each other.
+            # Microseconds so two conversations started the same second
+            # don't collide and overwrite each other.
             stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S%f")
             self.chat_file = os.path.join(chats, "%s.json" % stamp)
             self.chat_started = time.time()
@@ -623,10 +543,8 @@ class AIState:
         self.completion_tokens += completion
         self._notify(self.on_stats)
 
-# Asked from any screen's prompt once configured() is true -- switches
-# to ChatScreen right away, then runs the call in a worker thread
-# (exclusive/group, same shape as build.py's, so a second question
-# mid-answer replaces the first rather than running both at once).
+# Asked from any screen's prompt once configured() is true. Runs on an
+# exclusive worker so a second question mid-answer replaces the first.
 def ask(app, question):
     if app.ai_state.busy:
         app.say("still waiting on the last answer", error=True)
@@ -638,11 +556,9 @@ def ask(app, question):
     app.show("chat")
     app.run_worker(lambda: _run(app), thread=True, exclusive=True, group="ai")
 
-# Fired from App._build_finished() when the finished build is the one
-# 'start-build' itself started (BuildState.notify_ai) -- same shape as
-# ask(), triggered by the build's outcome. Screen switch is already
-# decided by the caller; this only appends the turn. Skipped if a turn
-# is already in flight (rare); _live_status() covers it passively next turn.
+# Fired from App._build_finished() when start-build (BuildState.notify_ai)
+# started the finished build. Skipped if a turn is already in flight --
+# _live_status() covers it passively next turn.
 def notify_build_finished(app):
     if app.ai_state.busy:
         return
@@ -654,20 +570,14 @@ def notify_build_finished(app):
         "content": "(seine) The build you started with start-build has "
                    "%s. Check it and report back." % outcome})
     app.ai_state.changed()
-    # app.say() has no mount/unmount pairing (unlike _notify() above) --
-    # it just queries whatever screen is current, which can be mid-
-    # transition here. A lost status line is fine; it's a courtesy, not
-    # something the turn below depends on.
+    # A lost status line here is fine -- a courtesy, not load-bearing.
     try:
         app.say("AI chat: build %s -- checking in" % outcome)
     except NoMatches:
         pass
     app.run_worker(lambda: _run(app), thread=True, exclusive=True, group="ai")
 
-# 'vendor_state''s own twin of notify_build_finished() above -- same
-# one-shot, "only a run start-vendor itself started" wiring, fired from
-# App._vendor_finished() the way notify_build_finished() is from
-# _build_finished().
+# notify_build_finished()'s twin for vendor runs.
 def notify_vendor_finished(app):
     if app.ai_state.busy:
         return
@@ -685,11 +595,9 @@ def notify_vendor_finished(app):
         pass
     app.run_worker(lambda: _run(app), thread=True, exclusive=True, group="ai")
 
-# Appended to the system prompt fresh every turn (in _run()'s loop, not
-# injected into state.messages, so it never appears in the chat pane) --
-# a build/vendor started or finished mid-conversation is state the model
-# has no other way to notice. Overall state only, not a per-step
-# breakdown: build-status/'vendor' already cover that on demand.
+# Appended to the system prompt each turn, never into state.messages
+# (so it never appears in the chat pane) -- the model has no other way
+# to notice a build/vendor starting or finishing mid-conversation.
 def _state_overall(state):
     if state.running:
         return "running"
@@ -718,15 +626,13 @@ def _live_status(app):
             "it's done." % _state_overall(vendor))
     return ("\n\n" + "\n\n".join(parts)) if parts else ""
 
-# Reasoning models (seen live: Qwen3) stream 'delta.reasoning_content'
-# separately from 'delta.content' -- only the latter is ever shown,
-# same as a person reading the TUI would only ever see the final
-# answer, not a model's own internal monologue on the way there.
+# Reasoning models stream 'delta.reasoning_content' separately from
+# 'delta.content' -- only the latter is shown, never the model's
+# internal monologue.
 def _run(app):
     import litellm
-    # An unrecognised model name makes litellm print a warning straight
-    # to stderr -- inside the TUI's alternate screen buffer that's
-    # corruption, not a readable log line.
+    # An unrecognised model name makes litellm print a warning to stderr
+    # -- inside the TUI's alternate screen that's corruption.
     litellm.suppress_debug_info = True
     model, api_base, api_key = _resolved()
     state = app.ai_state
@@ -735,15 +641,9 @@ def _run(app):
     try:
         while True:
             full = [{"role": "system", "content": _system_prompt() + _live_status(app)}] + state.messages
-            # 'timeout' is a per-read stall bound (httpx measures it from
-            # each socket read, not from request start), not a total-
-            # reply budget -- a live stream keeps resetting it. Without
-            # it, a backend that stops sending mid-stream (seen live:
-            # Ollama Cloud dropping a request server-side without
-            # closing the connection) hangs this whole thread, and with
-            # it #draft/#chatcol's spinner, forever -- caught below as
-            # just another 'except Exception', same as any other
-            # request failure.
+            # 'timeout' is a per-read stall bound, reset by each chunk of
+            # a live stream -- without it a backend that stops sending
+            # mid-stream hangs this thread (and the spinner) forever.
             stream = litellm.completion(model=model, api_base=api_base, api_key=api_key,
                                         messages=full, tools=TOOL_SCHEMAS,
                                         tool_choice="auto", stream=True,
@@ -768,9 +668,8 @@ def _run(app):
             app.call_from_thread(state.changed)
             if not message.tool_calls:
                 break
-            # A tool call's row in #chatlog starts collapsed; recorded in
-            # state.messages either way, so the model gets the real
-            # result regardless of what a person has expanded.
+            # A tool call's #chatlog row starts collapsed, but the real
+            # result always goes into state.messages regardless.
             for call in message.tool_calls:
                 result = _dispatch(app, call)
                 state.messages.append({"role": "tool", "tool_call_id": call.id,
@@ -781,7 +680,6 @@ def _run(app):
         app.call_from_thread(state.changed)
     finally:
         state.busy = False
-        # The one true "turn is done" signal -- every message/tool-call
-        # round trip within the turn has already run by the time this
-        # fires, gated tool calls included.
+        # The one true "turn is done" signal, fired after every
+        # message/tool-call round trip in the turn has run.
         app._socket_send({"type": "ai_turn_finished"})

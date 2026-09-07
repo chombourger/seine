@@ -14,54 +14,27 @@ from seine.utils                import feeds
 from seine.utils                import offline_apt_script
 from seine.utils                import vendor_mountpoint
 
-# Where the downloads cache is mounted, which is deliberately not apt's own
-# archives directory.
-#
-# It used to be exactly that, and the cache is one directory per release
-# shared by every build on the machine -- so two builds reaching the point
-# of installing packages at the same time put two apts on one archives
-# directory, and apt takes a lock there. The second does not wait for it:
-#
-#   E: Unable to lock directory /var/cache/apt/archives/
-#
-# apt gets an archives directory of the container's own instead, seeded
-# from the cache and copied back when the playbooks are done -- which is
-# what the bootstrap already does with mmdebstrap's sync-in and sync-out
-# hooks, for the same reason.
+# Mount point for the shared downloads cache. Not apt's own archives dir:
+# that dir is shared by all builds, so two builds installing packages at
+# once would fight over apt's lock there.
 DOWNLOADS = "/var/cache/seine/downloads"
 
-# What a running system keeps in memory rather than on the disk. This
-# container's file-system is exported as the image, so what a maintainer
-# script writes to either of these would otherwise ship: podman's own
-# /run/.containerenv did, saying in every image that it was made in a
-# container. A tmpfs is not part of the export, and it is what the target
-# mounts there anyway -- /run always, /tmp from trixie on.
-#
-# podman's defaults are what a system would use: /tmp keeps its 1777, both
-# are nosuid and nodev, and neither is noexec, which a maintainer script
-# running something out of /tmp would need.
+# /run and /tmp must not leak into the exported image (e.g. podman's own
+# /run/.containerenv), so mount them as tmpfs instead of writing to disk.
 TMPFS = ["--tmpfs", "/run", "--tmpfs", "/tmp"]
 
-# apt's own, inside the container and nobody else's.
 ARCHIVES = "/var/cache/apt/archives"
 
-# Where the feeds TargetBootstrap left for here are written. Its own file,
-# not sources.list itself, so nothing here has to parse or rewrite what
-# mmdebstrap already put there.
+# File TargetBootstrap leaves feeds in. Separate from sources.list so we
+# don't have to parse/rewrite what mmdebstrap already wrote there.
 FEEDS_LIST = "/etc/apt/sources.list.d/seine-feeds.list"
 
-# Runs the spec's Ansible playbooks against a live, host-architecture-driven
-# ansible-playbook process connecting into the (possibly foreign-arch)
-# target container via the containers.podman connection plugin, instead of
-# installing ansible into the target rootfs and running it there under
-# qemu-user-static emulation. Only python3/python3-apt/attr -- what
-# ansible's modules and our own xattr capture need -- ever lands in the
-# target container, and it is autoremoved again once the playbooks are
-# done, same as AnsibleBootstrap's ansible install was before it.
+# Runs the spec's playbooks with a host-side ansible-playbook connecting
+# into the (possibly foreign-arch) target container over containers.podman,
+# instead of running ansible inside the target under qemu emulation.
 class AnsibleContainerRunner:
-    # 'vendor_digest' is offline_dockerfile_digest()'s return, passed
-    # straight through to TransportBootstrap -- see its own comment on
-    # why it has to be folded into the Dockerfile text.
+    # vendor_digest comes from offline_dockerfile_digest() and is passed
+    # through to TransportBootstrap.
     def __init__(self, baseline, distro, options, verbose=False, vendor_digest=None):
         self.baseline = baseline
         self.distro = distro
@@ -73,8 +46,7 @@ class AnsibleContainerRunner:
     def _exec(self, args, check=True):
         return ContainerEngine.run(["container", "exec", self.cid] + args, check=check)
 
-    # The container the playbooks run against, which is also what is
-    # exported as the image.
+    # Container the playbooks run against; also what gets exported as the image.
     def container_command(self, image):
         return (["container", "run", "-d"] + self._volumes() + TMPFS
                 + [image, "sleep", "infinity"])
@@ -82,24 +54,14 @@ class AnsibleContainerRunner:
     def _volumes(self):
         volumes = ["-v", "%s:%s" % (
             ContainerEngine.downloads(self.distro["release"]), DOWNLOADS)]
-        # Packages rebuilt from the spec's 'packages' section, if any, so the
-        # playbooks can install them with a plain apt task. One repository
-        # holds every architecture that was built for, and apt takes from
-        # it what this root file-system's architecture can use.
+        # Packages rebuilt from the spec's 'packages' section (if any), so
+        # playbooks can install them via a plain apt task.
         if packages.has_packages(self.distro):
             volumes += ["-v", "%s:%s" % (packages.repository(self.distro),
                                          packages.REPOSITORY)]
-        # 'vendor:'s own *delivered* repository for this build's own
-        # release -- read-only, since nothing running inside the target
-        # has any business adding to a vendor. Not vendor.repository()
-        # (the cache of raw fetched files, which carries no pool/dists
-        # of its own), and not one mount per suite: 'seine build's own
-        # vendor task (Image._vendor_task()) only ever vendors the
-        # release itself -- a resolve sees every feed of the release
-        # (main, updates, security -- see _suite_distro()'s own
-        # comment), but what it delivers is one repository, named for
-        # the release alone. Built by that task, and by the time this
-        # runs it already has, since 'rootfs' waits on it.
+        # 'vendor:'s delivered repository for this release, read-only:
+        # nothing in the target should add to a vendor repo. Built by
+        # 'seine build's own vendor task, which 'rootfs' already waits on.
         if self.distro.get("apt-pull-mode") == "offline":
             from seine import vendor
             release = self.distro["release"]
@@ -107,22 +69,16 @@ class AnsibleContainerRunner:
                                             vendor_mountpoint(release))]
         return volumes
 
-    # The cache into apt's own archives directory, so what another build
-    # already fetched is not fetched again.
+    # Copy cached .debs into apt's archives dir so they aren't re-fetched.
     def _seed_downloads(self):
         self._exec(["sh", "-c",
                     "mkdir -p %(to)s && "
                     "cp -n %(from)s/*.deb %(to)s/ 2>/dev/null; "
                     "true" % {"from": DOWNLOADS, "to": ARCHIVES}])
 
-    # And back again, for the build after this one. One file at a time and
-    # through a rename, since another build may be seeding itself from this
-    # directory while this runs: a whole .deb appears under its name or
-    # nothing does, and the dot keeps what is half-written out of the glob
-    # that reads it.
-    #
-    # Nothing here fails a build. What this writes is a saving for the next
-    # one rather than anything this one needs.
+    # Copy .debs back to the cache for the next build. Written one at a
+    # time via a temp name + rename, so a concurrent build never sees a
+    # half-written file. Never fails the build: this is just a saving.
     def _save_downloads(self):
         self._exec(["sh", "-c",
                     'for deb in %(from)s/*.deb; do '
@@ -133,15 +89,9 @@ class AnsibleContainerRunner:
                     '    mv "%(to)s/.$name.$$" "%(to)s/$name"; '
                     'done; true' % {"from": ARCHIVES, "to": DOWNLOADS}], check=False)
 
-    # Every feed but base_feed() -- see TargetBootstrap.create() for why
-    # those aren't baked in. Nothing to do for the common case of one
-    # feed, unless this went offline: base_feed() is baked into the
-    # image pointing at the network same as ever (vendor:'s own repository
-    # never covers the minimal set TargetBootstrap bootstraps from -- see
-    # docs/specification.md's own 'vendor' section), so what apt reads
-    # from here on has to be replaced outright rather than added to, or
-    # the baked-in entry would still reach for the network right beside
-    # the one just written for it.
+    # Adds the feeds beyond base_feed() (already baked in by
+    # TargetBootstrap). Offline mode instead replaces all feeds outright
+    # with the vendor repo, so apt never falls back to the network.
     def _configure_feeds(self):
         if self.distro.get("apt-pull-mode") != "offline":
             extra = feeds(self.distro)[1:]
@@ -150,13 +100,8 @@ class AnsibleContainerRunner:
             script = offline_apt_script(self.distro, extra, FEEDS_LIST)
             self._exec(["sh", "-c", script])
             return
-        # Offline: every apt source this container had -- base_feed()
-        # included -- is replaced by a single vendor entry for the
-        # build's own release, not one per suite/component: the
-        # delivered repository already covers the whole release in one
-        # 'dists/<release>/' (main and extra alike -- see vendor.py's
-        # own index()), so one deb line and one deb-src line naming
-        # both components is everything apt needs to read from it.
+        # vendor's repo covers the whole release in one place, so one
+        # deb + deb-src line (both components) replaces every apt source.
         from seine import vendor
         release = self.distro["release"]
         where = vendor_mountpoint(release)
@@ -171,15 +116,8 @@ class AnsibleContainerRunner:
         script += "".join("echo '%s' >> %s; " % (line, FEEDS_LIST) for line in lines)
         self._exec(["sh", "-c", script])
 
-    # 'apt-pull-mode: offline' above replaced every feed -- base_feed()
-    # included -- with the local vendor for the length of this run alone.
-    # What ships has to read from the real feeds like any other image, or
-    # the first 'apt-get update' the device itself ever runs fails
-    # reaching for a container path that only ever existed on the machine
-    # that built it. Rewritten fresh rather than restored from a backup:
-    # _configure_feeds() deleted the base feed TargetBootstrap baked in
-    # along with everything else, going offline, so there is nothing left
-    # to put back other than by asking apt_sources() again.
+    # Undoes _configure_feeds()'s offline swap: the shipped image must
+    # read from the real feeds, not a vendor path only the build host has.
     def _restore_online_feeds(self):
         if self.distro.get("apt-pull-mode") != "offline":
             return
@@ -205,10 +143,6 @@ class AnsibleContainerRunner:
                     keyring=packages.keyring(self.distro))])
             self._seed_downloads()
             self._configure_feeds()
-            # Keep apt's package index in sync with what TransportBootstrap
-            # baked in and the feeds just configured above, same as the
-            # Dockerfile-based path used to do before running its own
-            # playbooks.
             self._exec(["apt-get", "update", "-qqy"])
             self._run_playbooks(playbooks)
             self._save_downloads()
@@ -221,18 +155,12 @@ class AnsibleContainerRunner:
         return self.cid
 
     def _run_playbooks(self, playbooks):
-        # Nothing to configure beyond what the bootstrap already baked in
-        # -- 'ansible-playbook' itself refuses an empty play list rather
-        # than treating it as a no-op. A disk-owning specification whose
-        # every partition/volume names a 'source:' (nothing of its own to
-        # build) is exactly this case.
+        # ansible-playbook errors on an empty play list, so skip it here.
         if len(playbooks) == 0:
             return
 
-        # On copies, not 'playbooks' itself: it is 'spec["playbook"]', and
-        # a step that changed it after 'seine analyze' recorded a digest
-        # of the specification would leave nothing later reloading those
-        # same files could ever match again.
+        # Mutate copies, not 'playbooks' itself (it's 'spec["playbook"]'):
+        # changing the spec here would break digest matching in 'seine analyze'.
         run = []
         for playbook in playbooks:
             playbook = dict(playbook)
@@ -246,9 +174,8 @@ class AnsibleContainerRunner:
         ansiblefile.close()
 
         inventoryfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        # The same storage and runroot our own podman calls use: a
-        # connection plugin talking to our storage with podman's default
-        # runroot is the mismatch this pair exists to avoid.
+        # Must match our own podman calls' storage/runroot, or the
+        # connection plugin looks in the wrong place.
         storage = "--root %s --runroot %s" % (
             ContainerEngine.root(), ContainerEngine.runroot())
         inventoryfile.write(
@@ -290,11 +217,9 @@ class AnsibleContainerRunner:
             os.unlink(ansiblefile.name)
             os.unlink(inventoryfile.name)
 
-    # Rebuilds every kernel's initrd, whichever generator is installed --
-    # Debian's dracut package Conflicts: initramfs-tools, so only one is
-    # ever present. dracut's own default filename differs, so the name
-    # is spelled out here to match what imager.py's _deploy_initrd()/
-    # _boot_files() expect.
+    # Rebuilds every kernel's initrd with whichever generator is installed
+    # (only one ever is: dracut Conflicts: initramfs-tools). dracut's
+    # output name is spelled out to match what imager.py expects.
     def _finalize(self):
         self._exec(["sh", "-c",
             "for k in /boot/vmlinuz-*; do "

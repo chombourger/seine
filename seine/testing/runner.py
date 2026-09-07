@@ -1,14 +1,10 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Loads 'files' the same way 'seine build' does (BuildCmd -- 'requires:',
-# '[[ ]]' variables, several files on one command line, all of it), reads
-# the merged specification's own 'test:' section, and runs it. Reports
-# the outcome two ways: through the same seine.reporter.Reporter every
-# build already reports through (progress.Display on the command line,
-# TextualReporter in the TUI -- neither needed a line of new code to work
-# with tests), and as Robot's own output.xml, kept for anyone wanting
-# Robot's richer log.html/rebot tooling rather than seine's own summary.
+# Loads 'files' the same way 'seine build' does (BuildCmd), reads the
+# merged spec's 'test:' section, and runs it. Reports through
+# seine.reporter.Reporter (progress.Display / TextualReporter) and as
+# Robot's own output.xml, for anyone wanting log.html/rebot tooling.
 
 import os
 import time
@@ -16,9 +12,8 @@ import time
 from seine.testing import context as ctx
 from seine.testing import loader
 
-# Shared by 'seine test', '/test', and the AI chat's 'run-test' tool --
-# the same logs root a multi-group build's own logs land under
-# (multiconfig.py's own _logs()), one timestamped directory per run.
+# Shared by 'seine test', '/test', and 'run-test': one timestamped
+# directory per run, under the same logs root builds use.
 def default_outdir():
     from seine.container import ContainerEngine
     base = os.path.join(ContainerEngine.logs_root(), "tests")
@@ -53,18 +48,15 @@ class SuiteResult:
         return "%d test%s, %d passed, %d failed, %d skipped" % (
             len(self.tests), "" if len(self.tests) == 1 else "s", passed, failed, skipped)
 
-# Bridges Robot's own listener callbacks onto seine.reporter.Reporter --
-# 'started(name)'/'finished(name, failed=)' per test (not per keyword: a
-# test is the unit a build's own Task already reports at), 'say(text)'
-# for anything else worth a line while it runs.
+# Bridges Robot's listener callbacks onto seine.reporter.Reporter:
+# 'started'/'finished' per test, 'say' for anything else worth a line.
 class _Listener:
     def __init__(self, reporter, outcomes):
         self.reporter = reporter
         self.outcomes = outcomes
         self._started = {}
-        # The test currently running, for log_message() below to
-        # attribute a line to -- None outside any test (suite setup,
-        # library import), where there is no single test to blame it on.
+        # Test currently running, for log_message() to attribute a line
+        # to; None outside any test (suite setup, library import).
         self._current = None
 
     def start_test(self, data, result):
@@ -85,9 +77,8 @@ class _Listener:
         if self.reporter:
             self.reporter.finished(name, failed=(result.status == "FAIL"))
 
-    # Every message Robot's own log level lets through (INFO by
-    # default) reaches 'output' (optional, a no-op if unsupported);
-    # only FAIL/WARN also become the transient 'say' status line.
+    # Every message Robot's log level lets through (INFO by default)
+    # reaches 'output'; only FAIL/WARN also become the 'say' status line.
     def log_message(self, message):
         if not self.reporter:
             return
@@ -102,10 +93,9 @@ class NoTests(ValueError):
     pass
 
 # load_all() only, not .parse(): the latter also resolves partitions
-# and requires a valid 'image:' section for that, which a fragment
-# contributing only a 'test:' entry has no reason to carry.
-# 'requires:'/'[[ ]]' are both already resolved by load_all() alone;
-# 'Build Image' (ImageLibrary) runs its own full parse() when needed.
+# and needs a valid 'image:' section, which a 'test:'-only fragment has
+# no reason to carry. 'Build Image' (ImageLibrary) runs parse() itself
+# when it actually needs to build.
 def _load_spec(files):
     from seine.build import BuildCmd
     build = BuildCmd()
@@ -140,11 +130,9 @@ def run_spec(files, tags=None, outdir=None, reporter=None, dryrun=False, spec=No
     return SuiteResult(outcomes, output_xml)
 
 # One JSON file naming every real-hardware action and artifact this run
-# made, in order -- so a person (or a CI job) has one place to start a
-# post-mortem from without already knowing which test produced which
-# screenshot, or that a console.log even exists. Robot's own output.xml
-# already has the full keyword-by-keyword trace; this doesn't repeat
-# it, only what output.xml has no notion of.
+# made, in order, so a post-mortem has one place to start from. Robot's
+# output.xml already has the full keyword trace; this adds only what
+# output.xml has no notion of.
 def _ensure_console_cast(context, path=None):
     cast = path or getattr(context, "console_cast_path", None)
     if not cast:

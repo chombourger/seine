@@ -9,8 +9,8 @@ from seine.container import ContainerEngine
 
 from . import Preview, Tool, _no_args, _single_group, NO_SINGLE_GROUP
 
-# 'source-list' reads no active spec, same reasoning as 'gist-list':
-# a pulled source outlives whichever build asked for it.
+# Reads no active spec, same as gist-list -- a pulled source outlives
+# whichever build asked for it.
 def _tool_source_list(app, arguments):
     from seine import sources
     found = sources.list_pulled()
@@ -28,10 +28,9 @@ def _tool_source_list(app, arguments):
             os.path.join(directory, entry["dir"])))
     return "\n".join(lines)
 
-# No diff to show ahead of a fetch (nothing local changes until
-# 'apt-get source' actually runs) -- this only says what would run and
-# refuses early what pull() would refuse anyway, same "check without
-# the side effect" spirit spec-update's own preview follows.
+# No diff to show ahead of a fetch -- nothing local changes until
+# 'apt-get source' runs. Just says what would run and refuses early
+# what pull() would refuse anyway.
 def _source_pull_preview(app, arguments):
     package = arguments.get("package")
     if not package:
