@@ -13,6 +13,7 @@ import yaml
 
 from seine            import settings
 from seine.image      import Image
+from seine            import module
 from seine.cmd        import Cmd
 from seine.partition  import PartitionHandler
 from seine.tasks      import Interrupted
@@ -874,11 +875,13 @@ class BuildCmd(Cmd):
         if "image" in self.spec:
             self.spec = self.partitionHandler.parse(self.spec)
             self.spec = self.image.parse(self.spec)
+            module.check_kbuild(self.image.packages)
         elif "initrd" in self.spec or "packages" in self.spec or "playbook" in self.spec:
             # No 'image:' section, but something to build: the root
             # file-system tarball itself becomes this build's real
             # output (Image.parse()/own_tasks()).
             self.spec = self.image.parse(self.spec)
+            module.check_kbuild(self.image.packages)
         else:
             from seine import vendor
             distro = distribution(self.spec)
