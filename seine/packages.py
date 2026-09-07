@@ -578,7 +578,16 @@ class Builder:
             source = package.source_name
             if package.version is not None:
                 source = "%s=%s" % (package.source_name, package.version)
-            return ["apt-get", "source", source]
+            args = ["apt-get", "source", source]
+            # The builder image's own apt lists are dropped right after
+            # it is built (APT_CLEANUP, image size), so a fresh
+            # 'apt-get update' is needed here first. Skipped when
+            # '_offline_fetch' is about to rewrite sources.list and
+            # already runs its own update.
+            if len(offline_suites(self.distro)) == 0:
+                return ["sh", "-c", "apt-get update -qqy && %s"
+                        % shlex.join(args)]
+            return args
 
         if package.scheme == "https":
             # -u: a rebuilt or third-party .dsc need not be signed by a
