@@ -6,7 +6,11 @@ Build-Depends: debhelper-compat (= 13),
                dh-python,
                python3-all,
                python3-pip,
-               python3-setuptools
+               python3-requests,
+               python3-rich,
+               python3-setuptools,
+               python3-textual,
+               python3-yaml
 Standards-Version: 4.7.2
 Rules-Requires-Root: no
 Homepage: https://github.com/chombourger/seine
