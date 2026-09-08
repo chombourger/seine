@@ -9,11 +9,10 @@
 
 from rich.text import Text
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 
 from seine import settings
+from seine.tui.modal import ModalBase
 
 ADD_LABEL = "+ add command…"
 
@@ -63,21 +62,14 @@ class ThemePicker(OptionList):
 # OptionList never highlights a row on its own: clear_options() leaves
 # highlighted None, so every list above sets it explicitly.
 
-class SettingsScreen(ModalScreen):
+class SettingsScreen(ModalBase):
+    TITLE = "Settings"
+
     BINDINGS = [
-        Binding("escape", "dismiss",       show=False),
         Binding("delete", "clear_selected", show=False),
     ]
 
     DEFAULT_CSS = """
-    SettingsScreen { align: center middle; }
-    #settingspane {
-        width: 70%; height: 70%;
-        border: round $border;
-        background: $surface;
-        padding: 1 2;
-    }
-    #settingstitle { color: blue; text-style: bold; }
     #generallabel { text-style: bold; }
     #general { height: 6; border: round $border-blurred; }
     #general:focus { border: round $border; }
@@ -87,7 +79,6 @@ class SettingsScreen(ModalScreen):
     #editlabel { text-style: bold; padding-top: 1; }
     #themepicker { height: 4; border: round $border-blurred; }
     #themepicker:focus { border: round $border; }
-    #settingshint { color: $text-muted; padding-top: 1; height: auto; }
     """
 
     def __init__(self):
@@ -95,17 +86,15 @@ class SettingsScreen(ModalScreen):
         # (section, index) of the row being edited, or None if a list has focus.
         self._editing = None
 
-    def compose(self):
-        with Vertical(id="settingspane"):
-            yield Static("Settings", id="settingstitle")
-            yield Static("GENERAL", id="generallabel")
-            yield GeneralSettings(id="general")
-            yield Static("STARTUP COMMANDS", id="startuplabel")
-            yield StartupCommands(id="startup")
-            yield Static(id="editlabel")
-            yield Input(id="editrow")
-            yield ThemePicker(id="themepicker")
-            yield Static(HINT, id="settingshint")
+    def compose_body(self):
+        yield Static("GENERAL", id="generallabel")
+        yield GeneralSettings(id="general")
+        yield Static("STARTUP COMMANDS", id="startuplabel")
+        yield StartupCommands(id="startup")
+        yield Static(id="editlabel")
+        yield Input(id="editrow")
+        yield ThemePicker(id="themepicker")
+        yield Static(HINT, id="modalhint")
 
     def on_mount(self):
         self._redraw(focus="general")
@@ -122,7 +111,7 @@ class SettingsScreen(ModalScreen):
     def _redraw(self, focus=None):
         self.query_one(GeneralSettings).refresh_from()
         self.query_one(StartupCommands).refresh_from(settings.load()["startup_commands"])
-        self.query_one("#settingshint", Static).update(HINT)
+        self.query_one("#modalhint", Static).update(HINT)
         editing = self._editing is not None
         theme_edit = self._editing_key() == "theme"
         self.query_one("#editlabel", Static).display = editing
@@ -139,15 +128,13 @@ class SettingsScreen(ModalScreen):
         elif focus == "startup":
             self.query_one(StartupCommands).focus()
 
-    # Esc backs out one level at a time: an edit in progress first,
-    # then the whole screen, same two-step HelpScreen.action_dismiss() uses.
-    def action_dismiss(self):
+    def _pop_inner(self):
         if self._editing is not None:
             section, _ = self._editing
             self._editing = None
             self._redraw(focus=section)
-            return
-        self.app.pop_screen()
+            return True
+        return False
 
     # Input claims 'delete' itself while focused, so this only runs
     # while a list has focus.
@@ -267,4 +254,4 @@ class SettingsScreen(ModalScreen):
         self._redraw(focus="startup")
 
     def _edit_error(self, message):
-        self.query_one("#settingshint", Static).update(message)
+        self.query_one("#modalhint", Static).update(message)

@@ -8,11 +8,10 @@ import textwrap
 
 from rich.text import Text
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 
 from seine.tui import commands
+from seine.tui.modal import ModalBase
 
 TABS = ["General", "Commands"]
 
@@ -112,9 +111,10 @@ def _detail_text(c):
 LIST_HINT = "← → tabs · ↑↓ move · Enter open · Esc close"
 DETAIL_HINT = "Enter fill prompt · Esc back to the list"
 
-class HelpScreen(ModalScreen):
+class HelpScreen(ModalBase):
+    TITLE = "Help"
+
     BINDINGS = [
-        Binding("escape", "dismiss",     show=False),
         Binding("left",   "prev_tab",    show=False),
         Binding("right",  "next_tab",    show=False),
         # Only reached while a detail page shows: CommandList binds its
@@ -123,20 +123,10 @@ class HelpScreen(ModalScreen):
     ]
 
     DEFAULT_CSS = """
-    HelpScreen { align: center middle; }
-    #helppane {
-        width: 70%; height: 70%;
-        /* 'round', not 'tall' -- see app.py's CSS comment. */
-        border: round $border;
-        background: $surface;
-        padding: 1 2;
-    }
-    #helptitle { color: blue; text-style: bold; }
     #helptabs { padding: 1 0; height: auto; }
     #helpbody { height: 1fr; }
     #helplist { height: 1fr; }
     #helpdetail { height: 1fr; }
-    #helphint { color: $text-muted; padding-top: 1; height: auto; }
     """
 
     def __init__(self):
@@ -146,26 +136,21 @@ class HelpScreen(ModalScreen):
         # (or General tab) is showing.
         self._detail = None
 
-    def compose(self):
-        with Vertical(id="helppane"):
-            yield Static("Help", id="helptitle")
-            yield Static(id="helptabs")
-            yield Static(id="helpbody", markup=False)
-            yield CommandList(id="helplist")
-            yield Static(id="helpdetail", markup=False)
-            yield Static(LIST_HINT, id="helphint")
-
-    def on_mount(self):
-        self._redraw()
+    def compose_body(self):
+        yield Static(id="helptabs")
+        yield Static(id="helpbody", markup=False)
+        yield CommandList(id="helplist")
+        yield Static(id="helpdetail", markup=False)
+        yield Static(LIST_HINT, id="modalhint")
 
     # Esc backs out one level at a time: detail page first, then the
     # whole screen.
-    def action_dismiss(self):
+    def _pop_inner(self):
         if self._detail is not None:
             self._detail = None
             self._redraw()
-            return
-        self.app.pop_screen()
+            return True
+        return False
 
     def action_prev_tab(self):
         if self._detail is not None:
@@ -203,7 +188,7 @@ class HelpScreen(ModalScreen):
         body.display = not showing_commands
         clist.display = showing_commands and not showing_detail
         detail.display = showing_detail
-        self.query_one("#helphint", Static).update(
+        self.query_one("#modalhint", Static).update(
             DETAIL_HINT if showing_detail else LIST_HINT)
         if showing_detail:
             detail.update(_detail_text(commands.REGISTRY[self._detail]))
