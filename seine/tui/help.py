@@ -8,6 +8,7 @@ import textwrap
 
 from rich.text import Text
 from textual.binding import Binding
+from textual.containers import VerticalScroll
 from textual.widgets import OptionList, Static
 
 from seine.tui import commands
@@ -124,9 +125,11 @@ class HelpScreen(ModalBase):
 
     DEFAULT_CSS = """
     #helptabs { padding: 1 0; height: auto; }
-    #helpbody { height: 1fr; }
+    #helpbodyscroll { height: 1fr; }
+    #helpbody { height: auto; }
     #helplist { height: 1fr; }
-    #helpdetail { height: 1fr; }
+    #helpdetailscroll { height: 1fr; }
+    #helpdetail { height: auto; }
     """
 
     def __init__(self):
@@ -138,9 +141,11 @@ class HelpScreen(ModalBase):
 
     def compose_body(self):
         yield Static(id="helptabs")
-        yield Static(id="helpbody", markup=False)
+        with VerticalScroll(id="helpbodyscroll"):
+            yield Static(id="helpbody", markup=False)
         yield CommandList(id="helplist")
-        yield Static(id="helpdetail", markup=False)
+        with VerticalScroll(id="helpdetailscroll"):
+            yield Static(id="helpdetail", markup=False)
         yield Static(LIST_HINT, id="modalhint")
 
     # Esc backs out one level at a time: detail page first, then the
@@ -180,9 +185,9 @@ class HelpScreen(ModalBase):
     # Not '_render': that's Widget._render(), an internal Textual hook.
     def _redraw(self):
         self.query_one("#helptabs", Static).update(_tab_bar(self._active))
-        body = self.query_one("#helpbody", Static)
+        body = self.query_one("#helpbodyscroll", VerticalScroll)
         clist = self.query_one(CommandList)
-        detail = self.query_one("#helpdetail", Static)
+        detail = self.query_one("#helpdetailscroll", VerticalScroll)
         showing_commands = TABS[self._active] == "Commands"
         showing_detail = showing_commands and self._detail is not None
         body.display = not showing_commands
@@ -191,12 +196,12 @@ class HelpScreen(ModalBase):
         self.query_one("#modalhint", Static).update(
             DETAIL_HINT if showing_detail else LIST_HINT)
         if showing_detail:
-            detail.update(_detail_text(commands.REGISTRY[self._detail]))
+            self.query_one("#helpdetail", Static).update(_detail_text(commands.REGISTRY[self._detail]))
         elif showing_commands:
             clist.set_commands()
             clist.focus()
         else:
-            body.update(_general_text())
+            self.query_one("#helpbody", Static).update(_general_text())
 
     # Enter on a command row opens its detail page; action_activate()
     # fills the prompt from there, one Enter later.
