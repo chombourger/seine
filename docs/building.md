@@ -192,6 +192,28 @@ wait on I/O rather than on the CPU -- and set `parallel=1` in a
 package's own `options` for packaging whose build is broken in parallel,
 which beats both.
 
+`--jobs` caps concurrency per resource class rather than by step count
+alone: every step has a class -- `cpu` by default -- and a cost weighed
+against that class's capacity. A package's build step costs `cpu`
+(weighted by `--parallel`), its fetch costs `net`, and its
+rootfs/tarball/disk steps cost `io`; `cost:` in a package's specification
+overrides this, either a bare number for its build step or a `{class:
+cost}` mapping for its other steps. `--resource CLASS=N` sets a class's
+capacity on the command line (`net=2`, `io=4`); a class nothing
+configures falls back to `--jobs`.
+
+A step waiting a long time for its class's capacity to free up is
+preferred over steps that turned ready more recently, so a costly step
+does not starve behind a stream of cheap ones repeatedly filling the same
+class. This only reorders which ready step a scheduling pass tries
+first -- it never changes what a step costs, what a class can hold at
+once, or lets a step run before it actually fits.
+
+"A long time" is a fixed 30 seconds, not something a specification or the
+command line can change: long enough that two steps turning ready
+moments apart are still treated as equally new, short enough to still
+matter well before an ordinary build is done.
+
 While more than one step is running, each writes to a file of its own,
 under a directory the build names when it starts, so two kernels do not
 interleave into something unreadable. A step that fails has its output

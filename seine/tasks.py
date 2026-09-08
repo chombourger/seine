@@ -229,12 +229,22 @@ def describe(tasks):
 def _capacity(cls, jobs, resources):
     return jobs if resources is None else resources.get(cls, jobs)
 
+# Starvation guard, not a priority system: only reorders the ready list.
+# Fixed, not configurable: long enough to ignore two tasks becoming ready
+# moments apart, short enough to matter within an ordinary build.
+AGING_INTERVAL = 30  # seconds
+
+# Whole intervals waited, rounded down.
+def _age(now, since):
+    return int((now - since) // AGING_INTERVAL)
+
 # Runs the tasks. 'jobs' caps how many run at once (1 = sequential, the
 # default) and is also the "cpu" class's capacity. 'resources' sets other
 # classes' capacity, e.g. {"net": 1}; an unnamed class falls back to
 # 'jobs'. 'verbose' prints each task's duration. Ready tasks are tried in
-# list order with no priority or fairness between them.
-def run(tasks, jobs=1, resources=None, verbose=False, logs=None, display=None):
+# list order, aged by how long they have waited. 'clock' is a test hook.
+def run(tasks, jobs=1, resources=None, verbose=False, logs=None, display=None,
+        clock=time.monotonic):
     global _display
     tasks = ordered(tasks)
     if logs is not None:
@@ -250,7 +260,7 @@ def run(tasks, jobs=1, resources=None, verbose=False, logs=None, display=None):
             classes = {t.resource for t in tasks}
             workers = max(1, sum(_capacity(c, jobs, resources) for c in classes))
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                _parallel(tasks, pool, jobs, resources, verbose, logs, display)
+                _parallel(tasks, pool, jobs, resources, verbose, logs, display, clock)
     finally:
         _display = None
 
@@ -262,17 +272,24 @@ def _sequential(tasks, verbose, logs, display):
     if _interrupted.is_set():
         raise Interrupted([])
 
-def _parallel(tasks, pool, jobs, resources, verbose, logs, display):
+def _parallel(tasks, pool, jobs, resources, verbose, logs, display, clock=time.monotonic):
     done = set()
     failures = []
     running = {}
     waiting = list(tasks)
     used = {}  # resource class -> capacity currently in use
+    ready_since = {}  # task name -> clock() when it first turned ready
 
     while len(waiting) > 0 or len(running) > 0:
         # Start nothing new after a failure or interrupt; let running tasks finish.
         if len(failures) == 0 and _interrupted.is_set() == False:
+            now = clock()
             ready = [t for t in waiting if all(n in done for n in t.needs)]
+            for task in ready:
+                ready_since.setdefault(task.name, now)
+            # Longest-waiting task first, so smaller ones can't starve it
+            # out forever. Stable sort, so equal age keeps declaration order.
+            ready.sort(key=lambda t: -_age(now, ready_since[t.name]))
             for task in ready:
                 capacity = _capacity(task.resource, jobs, resources)
                 spoken_for = used.get(task.resource, 0)
