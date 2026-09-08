@@ -1,0 +1,30 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# Rebuilds linux-image-amd64 with examples/slim-kernel.yml's own trim
+# (docs/kernels.md) -- same package name, so every role that installs
+# 'linux-image-amd64' picks up the slim rebuild in place, with nothing
+# else in the pipeline changing.
+#
+# Merged into BOTH the 'initrd' and 'uki' groups by main.yaml's
+# multiconfig: -- the UKI's embedded kernel and the initrd's dracut
+# modules must be built from the very same kernel, or the initrd's
+# copy of dm-verity's kernel module (dm_mod/dm-verity) won't match the
+# running kernel's own ABI and can't load. Same content in both groups
+# means the same package either way, but 'multiconfig:' groups plan
+# their own tasks separately (unlike CLI '--' groups), so a cold cache
+# builds it once per group, not once overall.
+
+packages:
+    - source: apt://linux
+      extends:
+          kernel:
+              fragments:
+                  - ../configs/slim-common.fragment
+                  - ../configs/slim-amd64.fragment
+      profiles:
+          - pkg.linux.nokerneldbginfo
+          - pkg.linux.mintools
+          - pkg.linux.nosource
+          - nodoc
+          - noudeb

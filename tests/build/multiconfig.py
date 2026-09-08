@@ -653,6 +653,38 @@ image:
             # (the field test above), so own_tasks() never adds a disk.
             self.assertNotIn("%s:disk" % label, names)
 
+# Unlike CLI '--' groups (MultiGroupSharesPackagesWithinAnArchCohort),
+# 'multiconfig:' groups plan packages separately: the same package in
+# two groups gets two 'package:' tasks, not one shared task.
+class MulticonfigKeyDoesNotShareAPackageTaskAcrossGroups(avocado.Test):
+    def test(self):
+        base = self.workdir
+        one = _subgroup(os.path.join(base, "one.yaml"), "linux")
+        two = _subgroup(os.path.join(base, "two.yaml"), "linux")
+
+        build = BuildCmd()
+        build.loads("""
+distribution:
+    release: trixie
+    architecture: amd64
+    uri: http://example.com/debian
+multiconfig:
+    one:
+        - %s
+    two:
+        - %s
+image:
+    filename: disk.img
+    partitions:
+        - label: rootfs
+          where: /
+""" % (one, two))
+        build.parse()
+
+        names = {t.name for t in build.image.tasks()}
+        self.assertIn("one:package:linux", names)
+        self.assertIn("two:package:linux", names)
+
 class MulticonfigLabelOverride(avocado.Test):
     def test_a_declared_name_wins_over_a_derived_one(self):
         build = _group("something-else.img")

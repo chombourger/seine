@@ -483,6 +483,11 @@ packages:
     - source: apt://library
 ```
 
+`before`/`after` only order seine's own build graph and chain the cache
+digest so a rebuild upstream forces one downstream; they install nothing
+into the build chroot. The package's real Build-Depends (in its
+debian/control) is what apt/sbuild still resolve there, unchanged.
+
 Naming a package that the specification does not build is an error rather
 than a constraint that is quietly ignored, as is a set of packages whose
 constraints depend on each other in a circle.
