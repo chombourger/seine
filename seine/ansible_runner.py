@@ -245,3 +245,9 @@ class AnsibleContainerRunner:
         # would break the first 'apt-get update' run on the target.
         self._exec(["sh", "-c", packages.apt_deconfiguration()])
         self._exec(["sh", "-c", "rm -rf /var/lib/apt/lists/*"])
+        # _seed_downloads() copied every .deb the shared per-release cache
+        # ever held into here, saved back by _save_downloads() already --
+        # a build cache, not part of the image, else the shipped rootfs
+        # grows with every package any build ever downloaded for this
+        # release, not just what this spec installed.
+        self._exec(["sh", "-c", "rm -rf %s/*" % ARCHIVES])
