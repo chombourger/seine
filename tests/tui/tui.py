@@ -572,6 +572,7 @@ class SettingsRendering(avocado.Test):
     def test_nothing_set_says_default(self):
         text = self.render_settings()
         self.assertIn("jobs             1 (default)", text)
+        self.assertIn("resources        (unset, follows jobs)", text)
         self.assertIn("theme            dark (default)", text)
         self.assertIn("llm_model        (unset)", text)
         self.assertIn("llm_api_base     (unset)", text)
@@ -580,11 +581,13 @@ class SettingsRendering(avocado.Test):
         from seine import settings
         current = settings.load()
         current["jobs"] = 4
+        current["resources"] = {"net": 2, "io": 4}
         current["theme"] = "dark"
         current["llm_model"] = "openai/some-model"
         settings.save(current)
         text = self.render_settings()
         self.assertIn("jobs             4", text)
+        self.assertIn("resources        io=4,net=2", text)
         self.assertIn("theme            dark", text)
         self.assertIn("llm_model        openai/some-model", text)
 

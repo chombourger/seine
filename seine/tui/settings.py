@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # /settings: a modal overlay, same shape as /help. Two focusable,
-# Tab-cycled lists: GeneralSettings for jobs/theme, StartupCommands for
-# the command list. jobs/startup commands edit through '#editrow'
+# Tab-cycled lists: GeneralSettings for jobs/resources/theme, StartupCommands
+# for the command list. jobs/startup commands edit through '#editrow'
 # (empty submit clears the row); theme is a closed choice, so it uses
 # ThemePicker instead. Del clears the highlighted row on either list.
 
@@ -22,7 +22,9 @@ HINT = "Tab switch · Up/Down move · Enter edit · Del clear · Esc close"
 # formatting each setting a second way; KEYS maps a row index to
 # which setting it was.
 class GeneralSettings(OptionList):
-    KEYS = ["jobs", "theme", "llm_model", "llm_api_base"]
+    # Keep 'resources' last, not right after 'jobs': existing tests and
+    # navigation both expect 'theme' one 'down' press from the top.
+    KEYS = ["jobs", "theme", "llm_model", "llm_api_base", "resources"]
 
     def refresh_from(self):
         from seine.tui.render import render_settings
@@ -71,7 +73,7 @@ class SettingsScreen(ModalBase):
 
     DEFAULT_CSS = """
     #generallabel { text-style: bold; }
-    #general { height: 6; border: round $border-blurred; }
+    #general { height: 7; border: round $border-blurred; }
     #general:focus { border: round $border; }
     #startuplabel { text-style: bold; padding-top: 1; }
     #startup { height: 1fr; border: round $border-blurred; }
@@ -186,7 +188,11 @@ class SettingsScreen(ModalBase):
         if section == "general":
             key = self.query_one(GeneralSettings).key_at(index)
             value = settings.load()[key]
-            editrow.value = str(value) if value is not None else ""
+            if key == "resources":
+                from seine.build import format_resources
+                editrow.value = format_resources(value)
+            else:
+                editrow.value = str(value) if value is not None else ""
             label = key
         else:
             lines = settings.load()["startup_commands"]
@@ -205,8 +211,9 @@ class SettingsScreen(ModalBase):
         else:
             self._commit_startup(index, value)
 
-    # 'theme' is picked, not typed, so never reaches this. 'jobs' is
-    # validated; llm_model/llm_api_base are free text, litellm's to judge.
+    # 'theme' is picked, not typed, so never reaches this. 'jobs' and
+    # 'resources' are validated; llm_model/llm_api_base are free text,
+    # litellm's to judge.
     def _commit_general(self, index, value):
         key = self.query_one(GeneralSettings).key_at(index)
         current = settings.load()
@@ -222,6 +229,13 @@ class SettingsScreen(ModalBase):
                 self._edit_error("jobs shall be at least 1")
                 return
             current[key] = jobs
+        elif key == "resources":
+            from seine.build import parse_resources
+            try:
+                current[key] = parse_resources(value)
+            except ValueError as e:
+                self._edit_error("resources %s" % e)
+                return
         else:
             current[key] = value
         settings.save(current)

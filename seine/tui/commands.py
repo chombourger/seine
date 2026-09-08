@@ -368,15 +368,17 @@ def _settings(app, argv):
 # two keys, never a Textual name.
 THEMES = {"dark": "textual-dark", "light": "textual-light"}
 
-# jobs/theme/sbom2cve_program/history_pruning only; startup_commands
-# is edited from /settings itself.
+# jobs/resources/theme/sbom2cve_program/history_pruning only;
+# startup_commands is edited from /settings itself.
 def _set(app, argv):
-    """change one persisted setting: jobs, theme, sbom2cve_program, or history_pruning
+    """change one persisted setting: jobs, resources, theme, sbom2cve_program, or history_pruning
 
     Changes one persisted setting and saves it straight away -- 'jobs'
     (an int >= 1, the default '/build'/'seine build' falls back to when
-    no '--jobs' is given), 'theme' ('dark' or 'light', applied
-    immediately, not just on the next startup), 'sbom2cve_program'
+    no '--jobs' is given), 'resources' ('CLASS=N,CLASS=N', the capacity
+    a resource class other than "cpu" defaults to -- same as '--resource'
+    on the CLI, see 'seine build --help'), 'theme' ('dark' or 'light',
+    applied immediately, not just on the next startup), 'sbom2cve_program'
     (a program run as 'PROGRAM SBOM_PATH' by '/issues' and 'seine
     issues' in place of debsbom's own container, expected to write the
     same JSON-lines shape 'debsbom sec-scan -f json' does), or
@@ -398,6 +400,12 @@ def _set(app, argv):
         if jobs < 1:
             raise CommandError("jobs shall be at least 1")
         current["jobs"] = jobs
+    elif key == "resources":
+        from seine.build import parse_resources
+        try:
+            current["resources"] = parse_resources(value)
+        except ValueError as e:
+            raise CommandError("resources %s" % e)
     elif key == "theme":
         if value not in THEMES:
             raise CommandError("theme is 'dark' or 'light', not '%s'" % value)
@@ -414,8 +422,8 @@ def _set(app, argv):
         current["history_pruning"] = value
     else:
         raise CommandError(
-            "unknown setting '%s' -- jobs, theme, sbom2cve_program, or "
-            "history_pruning" % key)
+            "unknown setting '%s' -- jobs, resources, theme, "
+            "sbom2cve_program, or history_pruning" % key)
     settings.save(current)
     app.say("%s = %s" % (key, value))
 

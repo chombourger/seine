@@ -10,8 +10,8 @@ import os
 # None means "use built-in default", e.g. llm_model=None disables AI
 # chat, history_pruning=None keeps the 30-day default (see
 # seine.tui.history.parse_prune_after()).
-DEFAULTS = {"jobs": None, "theme": None, "startup_commands": [],
-           "llm_model": None, "llm_api_base": None,
+DEFAULTS = {"jobs": None, "resources": None, "theme": None,
+           "startup_commands": [], "llm_model": None, "llm_api_base": None,
            "sbom2cve_program": None, "history_pruning": None}
 
 def default_path():

@@ -38,6 +38,28 @@ TEMPLATE = jinja2.Environment(
 # get set, then thrown away.
 PROBE = TEMPLATE.overlay(undefined=jinja2.ChainableUndefined)
 
+# Parses "CLASS=N[,CLASS=N...]" into a {class: capacity} dict, merged
+# onto 'previous'. Shared by the CLI and the TUI settings.
+def parse_resources(text, previous=None):
+    resources = dict(previous or {})
+    for entry in text.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        cls, _, value = entry.partition("=")
+        try:
+            capacity = int(value)
+        except ValueError:
+            raise ValueError("expects CLASS=N, got '%s'" % entry)
+        if capacity < 1:
+            raise ValueError("capacity shall be at least 1 ('%s')" % entry)
+        resources[cls] = capacity
+    return resources
+
+def format_resources(resources):
+    return ",".join("%s=%d" % (cls, cap)
+                    for cls, cap in sorted((resources or {}).items()))
+
 class BuildCmd(Cmd):
     # Command name and its '-h' text. A variant of this command (see
     # PlanCmd) overrides these instead of copying main().
@@ -55,6 +77,7 @@ class BuildCmd(Cmd):
         "parallel=",
         "rebuild",
         "require-hashes",
+        "resource=",
         "rootfs-only",
         "sbom",
         "sign-key=",
@@ -73,6 +96,7 @@ class BuildCmd(Cmd):
                          "jobs": settings.load().get("jobs") or 1, "keep": False,
                          "packages_only": False, "parallel": None,
                          "rebuild": False, "require_hashes": False,
+                         "resources": settings.load().get("resources"),
                          "rootfs_only": False,
                          "sbom": False, "sign_key": None, "spec": True,
                          "target": None,
@@ -1094,6 +1118,15 @@ class BuildCmd(Cmd):
                     sys.exit(1)
             elif o in ("--require-hashes"):
                 self.options["require_hashes"] = True
+            elif o in ("--resource"):
+                # 'net=2' -> capacity 2 for tasks costed against "net".
+                # A class no --resource names falls back to --jobs.
+                try:
+                    self.options["resources"] = parse_resources(
+                        a, self.options["resources"])
+                except ValueError as e:
+                    sys.stderr.write("error: --resource %s\n" % e)
+                    sys.exit(1)
             elif o in ("--rebuild"):
                 self.options["rebuild"] = True
             elif o in ("--sign-key"):
@@ -1240,6 +1273,9 @@ Flags:
   --require-hashes      refuse to build when a source is fetched over http with
                         no sha256 to check it against. Reported when the
                         specification is parsed, before anything is downloaded
+  --resource CLASS=N    capacity N for a resource class steps may cost against
+                        (e.g. 'net=2', 'io=4'). A class not given this falls
+                        back to --jobs; may be given more than once
   --rootfs-only         build the root file-system as a tarball and stop,
                         without writing a disk image. What looking inside a
                         build rather than booting it wants

@@ -225,20 +225,24 @@ def render_chat_header(context):
         return "%s -- %s" % (spec, model)
     return "%s -- not configured ('/settings' sets llm_model)" % spec
 
-# Not spec-scoped: jobs/theme/llm_* only; startup_commands has its own
-# widget on Settings. Unset shows the real fallback value; llm_model/
-# llm_api_base have no fallback, so '(unset)' is used for those instead.
+# Not spec-scoped: jobs/resources/theme/llm_* only; startup_commands has
+# its own widget on Settings. Unset shows the real fallback value;
+# llm_model/llm_api_base have no fallback, so '(unset)' is used instead.
 def render_settings():
     from seine import settings
+    from seine.build import format_resources
     current = settings.load()
     jobs = str(current["jobs"]) if current["jobs"] is not None else "1 (default)"
+    resources = format_resources(current["resources"]) or "(unset, follows jobs)"
     theme = current["theme"] or "dark (default)"
     llm_model = current["llm_model"] or "(unset)"
     llm_api_base = current["llm_api_base"] or "(unset)"
+    # Order matches GeneralSettings.KEYS (seine/tui/settings.py):
+    # 'resources' last so 'theme' stays one 'down' press from the top.
     return "\n".join(
         "%-16s %s" % (key, value) for key, value in
-        [("jobs", jobs), ("theme", theme),
-         ("llm_model", llm_model), ("llm_api_base", llm_api_base)]
+        [("jobs", jobs), ("theme", theme), ("llm_model", llm_model),
+         ("llm_api_base", llm_api_base), ("resources", resources)]
     ) + "\n"
 
 # Same "exactly one active group" restriction ai.py's tools apply to a

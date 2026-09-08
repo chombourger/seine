@@ -52,12 +52,16 @@ def install():
     if not isinstance(sys.stdout, _Stdout):
         sys.stdout = _Stdout(sys.stdout)
 
-# One step of a build, and what it needs before it can run.
+# One step of a build. 'resource' picks its capacity class ("cpu" by
+# default); 'cost' is a relative weight in that class, not a literal
+# CPU/socket count. No priority or fairness between tasks.
 class Task:
-    def __init__(self, name, run, needs=None):
+    def __init__(self, name, run, needs=None, resource="cpu", cost=1):
         self.name = name
         self.run = run
         self.needs = list(needs or [])
+        self.resource = resource
+        self.cost = cost
         # Timing and outcome, filled in as the task runs.
         self.started = None
         self.ended = None
@@ -221,9 +225,16 @@ def describe(tasks):
         else:
             print("  %-24s after %s" % (task.name, ", ".join(task.needs)))
 
-# Runs the tasks. 'jobs' caps how many run at once (1 = sequential,
-# the default). 'verbose' prints each task's duration.
-def run(tasks, jobs=1, verbose=False, logs=None, display=None):
+# Capacity of one resource class: 'resources[cls]' if given, else 'jobs'.
+def _capacity(cls, jobs, resources):
+    return jobs if resources is None else resources.get(cls, jobs)
+
+# Runs the tasks. 'jobs' caps how many run at once (1 = sequential, the
+# default) and is also the "cpu" class's capacity. 'resources' sets other
+# classes' capacity, e.g. {"net": 1}; an unnamed class falls back to
+# 'jobs'. 'verbose' prints each task's duration. Ready tasks are tried in
+# list order with no priority or fairness between them.
+def run(tasks, jobs=1, resources=None, verbose=False, logs=None, display=None):
     global _display
     tasks = ordered(tasks)
     if logs is not None:
@@ -231,13 +242,15 @@ def run(tasks, jobs=1, verbose=False, logs=None, display=None):
     _display = display
     try:
         with _interruptible():
-            if jobs <= 1:
+            if jobs <= 1 and not resources:
                 _sequential(tasks, verbose, logs, display)
                 return
 
             install()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-                _parallel(tasks, pool, jobs, verbose, logs, display)
+            classes = {t.resource for t in tasks}
+            workers = max(1, sum(_capacity(c, jobs, resources) for c in classes))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                _parallel(tasks, pool, jobs, resources, verbose, logs, display)
     finally:
         _display = None
 
@@ -249,18 +262,26 @@ def _sequential(tasks, verbose, logs, display):
     if _interrupted.is_set():
         raise Interrupted([])
 
-def _parallel(tasks, pool, jobs, verbose, logs, display):
+def _parallel(tasks, pool, jobs, resources, verbose, logs, display):
     done = set()
     failures = []
     running = {}
     waiting = list(tasks)
+    used = {}  # resource class -> capacity currently in use
 
     while len(waiting) > 0 or len(running) > 0:
         # Start nothing new after a failure or interrupt; let running tasks finish.
         if len(failures) == 0 and _interrupted.is_set() == False:
             ready = [t for t in waiting if all(n in done for n in t.needs)]
-            for task in ready[:jobs - len(running)]:
+            for task in ready:
+                capacity = _capacity(task.resource, jobs, resources)
+                spoken_for = used.get(task.resource, 0)
+                # An oversized task still runs once its class is idle,
+                # rather than waiting forever for capacity it can't fit.
+                if spoken_for > 0 and spoken_for + task.cost > capacity:
+                    continue
                 waiting.remove(task)
+                used[task.resource] = spoken_for + task.cost
                 running[pool.submit(_run_one, task, verbose, logs, display)] = task
 
         if len(running) == 0:
@@ -269,6 +290,7 @@ def _parallel(tasks, pool, jobs, verbose, logs, display):
             running, return_when=concurrent.futures.FIRST_COMPLETED)
         for future in finished:
             task = running.pop(future)
+            used[task.resource] -= task.cost
             error = future.exception()
             if error is None:
                 done.add(task.name)

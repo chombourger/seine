@@ -339,6 +339,132 @@ class IndependentTasksRunAtOnce(avocado.Test):
         tasks = [Task("one", started.wait), Task("two", started.wait)]
         run(tasks, jobs=2)
 
+class ATaskDefaultsToOneCpu(avocado.Test):
+    def test(self):
+        t = task("plain")
+        self.assertEqual(t.resource, "cpu")
+        self.assertEqual(t.cost, 1)
+
+# A class left out of 'resources' is still capped, by 'jobs'.
+class AnUnconfiguredClassFallsBackToJobs(avocado.Test):
+    def test(self):
+        import threading
+        import time
+        from seine.tasks import Task, run
+
+        lock = threading.Lock()
+        running, peak = set(), []
+        def make(name):
+            def one():
+                with lock:
+                    running.add(name)
+                    peak.append(len(running))
+                time.sleep(0.1)
+                with lock:
+                    running.discard(name)
+            return one
+
+        # Three "io" tasks, jobs=2, no 'resources' for "io": never more
+        # than two running at once.
+        tasks = [Task(n, make(n), resource="io") for n in ("a", "b", "c")]
+        run(tasks, jobs=2)
+        self.assertEqual(max(peak), 2)
+
+class DifferentClassesRunBesideEachOther(avocado.Test):
+    def test(self):
+        import threading
+        from seine.tasks import Task, run
+
+        # jobs=1 caps "cpu" at one, but "net" has its own capacity --
+        # both tasks must be running at once for the barrier to open.
+        started = threading.Barrier(2, timeout=30)
+        tasks = [Task("build", started.wait, resource="cpu"),
+                 Task("download", started.wait, resource="net")]
+        run(tasks, jobs=1, resources={"net": 1})
+
+class CostIsWeighedAgainstCapacity(avocado.Test):
+    def test(self):
+        from seine.tasks import Task, run
+
+        # capacity 4, two tasks costing 3 each: the second must wait for
+        # the first to finish rather than run beside it.
+        running = []
+        peak = []
+        def costly():
+            running.append(1)
+            peak.append(len(running))
+            running.pop()
+
+        tasks = [Task("a", costly, cost=3), Task("b", costly, cost=3)]
+        run(tasks, jobs=4)
+        self.assertEqual(max(peak), 1)
+
+class CheapTasksShareCapacityAConcurrently(avocado.Test):
+    def test(self):
+        import threading
+        from seine.tasks import Task, run
+
+        # capacity 4, two cost=2 tasks: both fit at once.
+        started = threading.Barrier(2, timeout=30)
+        tasks = [Task("a", started.wait, cost=2),
+                 Task("b", started.wait, cost=2)]
+        run(tasks, jobs=4)
+
+# Cost is a hint, not a hard cap: a task costing more than its class's
+# whole capacity still has to run somehow, rather than waiting forever.
+class AnOversizedTaskStillRuns(avocado.Test):
+    def test(self):
+        from seine.tasks import Task, run
+
+        ran = []
+        tasks = [Task("huge", lambda: ran.append("huge"), cost=100)]
+        run(tasks, jobs=4)
+        self.assertEqual(ran, ["huge"])
+
+# "cpu" (capacity 8) admits only one cost=5 task at a time, "net"
+# (capacity 2) admits both cost=1 tasks at once, and a "net" task can
+# run alongside a "cpu" task: the two classes track capacity apart.
+class WeightedMultiResourceAdmission(avocado.Test):
+    def test(self):
+        import threading
+        import time
+        from seine.tasks import Task, run
+
+        lock = threading.Lock()
+        running = set()
+        cpu_peak = []
+        net_peak = []
+        cross_class_overlap = []
+
+        def make(name, resource):
+            def one():
+                with lock:
+                    running.add(name)
+                    if resource == "cpu":
+                        cpu_peak.append(
+                            sum(1 for n in running if n.startswith("cpu")))
+                    else:
+                        net_peak.append(
+                            sum(1 for n in running if n.startswith("net")))
+                        cross_class_overlap.append(
+                            any(n.startswith("cpu") for n in running))
+                time.sleep(0.1)
+                with lock:
+                    running.discard(name)
+            return one
+
+        tasks = [
+            Task("cpu-a", make("cpu-a", "cpu"), resource="cpu", cost=5),
+            Task("cpu-b", make("cpu-b", "cpu"), resource="cpu", cost=5),
+            Task("net-a", make("net-a", "net"), resource="net", cost=1),
+            Task("net-b", make("net-b", "net"), resource="net", cost=1),
+        ]
+        run(tasks, jobs=1, resources={"cpu": 8, "net": 2})
+
+        self.assertLessEqual(max(cpu_peak), 1)
+        self.assertEqual(max(net_peak), 2)
+        self.assertTrue(any(cross_class_overlap))
+
 class DependenciesStillWaitWhenRunningInParallel(avocado.Test):
     def test(self):
         from seine.tasks import run

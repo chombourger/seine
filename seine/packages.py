@@ -109,6 +109,7 @@ class Package:
         self.patches = self._parse_list(spec, "patches")
         self.profiles = self._parse_list(spec, "profiles")
         self.sha256 = self._parse_digest(spec, "sha256")
+        self.cost = self._parse_cost(spec)
         # A kernel with 'derived-flavours' defaults its revision to the
         # name(s) it derives, not 'mod1' -- else two flavours built from
         # different files would collide on one '<source>_<version>+mod1.dsc'.
@@ -149,7 +150,7 @@ class Package:
 
     # Settings ignored when comparing two entries for 'same_as': neither
     # is part of what actually gets built.
-    IGNORED_SETTINGS = ("_origins", "priority")
+    IGNORED_SETTINGS = ("_origins", "priority", "cost")
 
     def same_as(self, other):
         mine = {k: v for k, v in self.spec.items()
@@ -373,6 +374,31 @@ class Package:
             if type(value) != type(""):
                 raise self._error("'%s' shall be a list of strings" % key)
         return values
+
+    # A bare number weighs the "cpu" build step; a mapping can also
+    # weigh other steps, e.g. a big clone's "net" cost.
+    def _parse_cost(self, spec):
+        value = spec.get("cost")
+        if value is None:
+            return None
+        if type(value) == type(0):
+            value = {"cpu": value}
+        if type(value) != type({}):
+            raise self._error(
+                "'cost' shall be a positive integer, or a mapping of "
+                "resource class name to positive integer")
+        for cls, weight in value.items():
+            if type(cls) != type("") or type(weight) != type(0) or weight < 1:
+                raise self._error(
+                    "'cost' entries shall map a resource class name to a "
+                    "positive integer")
+        return value
+
+    # 'default' unless 'cost' names 'resource' explicitly.
+    def cost_for(self, resource, default):
+        if self.cost is None:
+            return default
+        return self.cost.get(resource, default)
 
     def _parse_epoch(self, spec):
         value = spec.get("source_date_epoch")
@@ -1445,7 +1471,8 @@ class Builder:
                                        fetch_key, used)
                 fetch_tasks[fetch_key] = Task(
                     name, functools.partial(self._fetch, package),
-                    needs=["packages-prepare"])
+                    needs=["packages-prepare"], resource="net",
+                    cost=package.cost_for("net", 1))
 
             upstream_key = self._upstream_key(package)
             if upstream_key is not None and upstream_key not in upstream_tasks:
@@ -1454,7 +1481,8 @@ class Builder:
                                        upstream_key, used)
                 upstream_tasks[upstream_key] = Task(
                     name, functools.partial(self._fetch_upstream, package),
-                    needs=["packages-prepare"])
+                    needs=["packages-prepare"], resource="net",
+                    cost=package.cost_for("net", 1))
         tasks += list(fetch_tasks.values()) + list(upstream_tasks.values())
 
         # How many prepare:<name> tasks will copy from each fetch, known
@@ -1486,10 +1514,11 @@ class Builder:
             built = []
             for architecture, stamp in builds:
                 step = "package:%s" % self.label(package, architecture)
+                cost = package.cost_for("cpu", self.parallel(package))
                 tasks.append(Task(step,
                                   functools.partial(self._rebuild, package,
                                                     architecture, stamp),
-                                  needs=waits))
+                                  needs=waits, cost=cost))
                 built.append(step)
 
             # One publishing step per package, covering every

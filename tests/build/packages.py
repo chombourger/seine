@@ -278,6 +278,122 @@ class RevisionNotAString(avocado.Test):
         except ValueError:
             pass
 
+# A bare 'cost' weighs the build step's "cpu" cost, since that is the
+# step every package has and the one --parallel already sizes for.
+class BareCostWeighsTheCpuStep(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://busybox
+                    - source: apt://linux
+                      cost: 16
+        """)
+        packages = {p.name: p for p in build.image.packages}
+        self.assertIsNone(packages["busybox"].cost)
+        self.assertEqual(packages["linux"].cost_for("cpu", 1), 16)
+        # A class not named in 'cost' still falls back to the default
+        # a caller passes it -- 'cost: 16' says nothing about 'net'.
+        self.assertEqual(packages["linux"].cost_for("net", 1), 1)
+        self.assertEqual(packages["busybox"].cost_for("cpu", 2), 2)
+
+class MappingCostWeighsSeveralSteps(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: git://example.com/big.git;rev=deadbeef
+                      cost: {cpu: 8, net: 4}
+        """)
+        package = build.image.packages[0]
+        self.assertEqual(package.cost_for("cpu", 1), 8)
+        self.assertEqual(package.cost_for("net", 1), 4)
+
+class CostRejectsBadValues(avocado.Test):
+    def test_not_a_positive_integer(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      cost: 0
+            """)
+            self.fail("parsing succeeded for a zero 'cost'!")
+        except ValueError:
+            pass
+
+    def test_not_a_number_or_mapping(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      cost: [1, 2]
+            """)
+            self.fail("parsing succeeded for a list 'cost'!")
+        except ValueError:
+            pass
+
+    def test_a_mapping_entry_not_a_positive_integer(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://busybox
+                      cost: {cpu: 0}
+            """)
+            self.fail("parsing succeeded for a zero-weight 'cost' entry!")
+        except ValueError:
+            pass
+
+# 'cost' only steers the scheduler -- it changes nothing about what gets
+# built, so two specifications that only disagree there still describe
+# the same package (see Package.same_as(), used by multiconfig groups).
+class CostDoesNotAffectSameAs(avocado.Test):
+    def test(self):
+        low = parse("""
+                packages:
+                    - source: apt://linux
+                      cost: 4
+        """).image.packages[0]
+        high = parse("""
+                packages:
+                    - source: apt://linux
+                      cost: 16
+        """).image.packages[0]
+        self.assertTrue(low.same_as(high))
+
+# Same guarantee as CostDoesNotAffectSameAs, at the cache layer this
+# time: Builder.stamp() must not fold 'cost' into the digest either, or
+# changing a scheduling weight would look like an edit worth rebuilding.
+class CostDoesNotAffectTheCacheStamp(avocado.Test):
+    def stamp(self, cost):
+        from seine.packages import Builder
+        from seine.sbuild import BuilderImage
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      cost: %d
+        """ % cost)
+        builder = Builder(distro, {}, BuilderImage(distro, {}))
+        [(_, _, stamp)] = builder.stamps(build.image.packages)
+        return stamp
+
+    def test(self):
+        self.assertEqual(self.stamp(4), self.stamp(16))
+
+class FetchAndBuildCostThePackageDifferently(avocado.Test):
+    def test(self):
+        build = parse_for("amd64", """
+                packages:
+                    - source: apt://linux
+                      cost: {cpu: 16, net: 4}
+        """)
+        tasks = {t.name: t for t in build.image.tasks()}
+        [fetch] = [t for t in tasks.values() if t.name.startswith("fetch:")]
+        [package] = [t for t in tasks.values() if t.name.startswith("package:")]
+        self.assertEqual(fetch.resource, "net")
+        self.assertEqual(fetch.cost, 4)
+        self.assertEqual(package.resource, "cpu")
+        self.assertEqual(package.cost, 16)
+
 class DependentsRebuildWithTheirDependencies(avocado.Test):
     def stamps(self, profiles):
         from seine.packages import Builder
