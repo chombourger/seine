@@ -1,13 +1,12 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
-# Orders kernel.yaml's rebuild before the UKI packages that Build-Depend
+# Orders kernel.yaml's rebuild before the UKI package that Build-Depends
 # on it -- amends (peer merge, docs/merging.md) rather than repeating
-# kernel.yaml's own fields. Only the 'uki' group needs this: those two
-# packages don't exist in 'initrd', where kernel.yaml is merged alone.
+# kernel.yaml's own fields. Only the 'uki' group needs this: that
+# package doesn't exist in 'initrd', where kernel.yaml is merged alone.
 
 packages:
     - source: apt://linux
       before:
           - linux-uki-amd64
-          - linux-uki-efibootguard-amd64
