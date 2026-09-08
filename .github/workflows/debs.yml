@@ -38,9 +38,8 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          apt-get install -y --no-install-recommends \
-            build-essential debhelper dh-python python3-all python3-pip \
-            python3-setuptools podman
+          apt-get install -y --no-install-recommends devscripts equivs podman
+          mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 
       - name: Build ${{ matrix.arch }} packages
         run: dpkg-buildpackage -b -uc -a ${{ matrix.arch }}
