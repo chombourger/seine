@@ -241,11 +241,16 @@ def _qemu_fetch(architecture, emulated=False):
         "cd / && rm -rf /qemu-extract"
     ) % wanted
 
+# ca-certificates is installed before the feed switch below, using the
+# base image's own default sources: a pinned feed can be https, and
+# apt can't trust https without ca-certificates first.
 HOST_BOOTSTRAP_SCRIPT = """
 FROM {0}:{1} AS base
 {5}
 RUN --mount=type=cache,target=/var/cache/apt/archives,id={2},sharing=locked {4} \
      rm -f /etc/apt/apt.conf.d/docker-clean &&    \
+     apt-get update -qqy &&                       \
+     apt-get install -qqy --no-install-recommends ca-certificates && \
      rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \
            /etc/apt/sources.list.d/*.list &&      \
      {3} &&                                       \
@@ -257,12 +262,16 @@ FROM base AS clean-base
 RUN {7}
 """
 
+# ca-certificates is included so anything built from this rootfs can
+# already trust an https feed (a snapshot pin), without installing it
+# itself first.
 TARGET_BOOTSTRAP_SCRIPT = """
 FROM {0} AS bootstrap
 RUN --mount=type=cache,target=/var/cache/mmdebstrap,id={4},sharing=locked \
     export container=lxc;                                            \
     mkdir -p rootfs &&                                               \
-    mmdebstrap --mode=root --variant=minbase --include=zstd          \
+    mmdebstrap --mode=root --variant=minbase                         \
+        --include=zstd,ca-certificates                               \
         --skip=essential/unlink                                      \
         --setup-hook='mkdir -p "$1"/var/cache/apt/archives/'         \
         --setup-hook='sync-in /var/cache/mmdebstrap /var/cache/apt/archives/' \

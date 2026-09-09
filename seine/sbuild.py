@@ -182,6 +182,9 @@ class SbuildChroot:
         args = [
             "mmdebstrap", "--mode=root", "--variant=buildd",
             "--arch=%s" % self.architecture,
+            # sbuild re-runs apt-get update in this chroot, which needs
+            # ca-certificates to trust an https feed (a snapshot pin).
+            "--include=ca-certificates",
             "--setup-hook=mkdir -p \"$1\"/var/cache/apt/archives/",
             "--setup-hook=sync-in /var/cache/mmdebstrap /var/cache/apt/archives/",
             # 'partial' is owned by a chroot-internal user, so copying it
