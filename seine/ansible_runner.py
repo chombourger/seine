@@ -39,12 +39,13 @@ FEEDS_LIST = "/etc/apt/sources.list.d/seine-feeds.list"
 class AnsibleContainerRunner:
     # vendor_digest comes from offline_dockerfile_digest() and is passed
     # through to TransportBootstrap.
-    def __init__(self, baseline, distro, options, verbose=False, vendor_digest=None):
+    def __init__(self, baseline, distro, options, verbose=False, vendor_digest=None, epoch=None):
         self.baseline = baseline
         self.distro = distro
         self.options = options
         self.verbose = verbose
         self.vendor_digest = vendor_digest
+        self.epoch = epoch
         self.cid = None
 
     def _exec(self, args, check=True):
@@ -225,7 +226,10 @@ class AnsibleContainerRunner:
     # (only one ever is: dracut Conflicts: initramfs-tools). dracut's
     # output name is spelled out to match what imager.py expects.
     def _finalize(self):
+        # mkinitramfs picks zstd -T0 (multithreaded, non-reproducible
+        # frame layout) unless SOURCE_DATE_EPOCH is set.
         self._exec(["sh", "-c",
+            "export SOURCE_DATE_EPOCH=%d; " % self.epoch +
             "for k in /boot/vmlinuz-*; do "
             "[ -e \"$k\" ] || continue; "
             "v=${k#/boot/vmlinuz-}; "
@@ -259,6 +263,9 @@ class AnsibleContainerRunner:
                     "truncate -s0 /var/log/apt/history.log "
                     "/var/log/apt/term.log /var/log/dpkg.log "
                     "/var/log/alternatives.log 2>/dev/null; true"])
+        # systemd assigns this a random ID on install; emptying it means
+        # each real deployment gets its own unique ID at its first boot.
+        self._exec(["sh", "-c", "truncate -s0 /etc/machine-id 2>/dev/null; true"])
         # _seed_downloads() copied every .deb the shared per-release cache
         # ever held into here, saved back by _save_downloads() already --
         # a build cache, not part of the image, else the shipped rootfs
