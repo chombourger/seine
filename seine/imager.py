@@ -7,6 +7,7 @@ import shutil
 import stat
 import tarfile
 import tempfile
+import uuid
 
 import guestfs
 
@@ -24,9 +25,20 @@ from seine.utils            import HOST_ARCH
 
 DEVICE = "/dev/sda"
 
+# Rebuilding an ext mount (see _normalize_ext_mount()) needs room for a
+# captured copy of its content plus the freshly built replacement image,
+# at the same time as the original -- more than any one partition has
+# spare. A second, disposable virtual disk gives that room without
+# eating into any real partition's own space.
+SCRATCH_DEVICE = "/dev/sdb"
+SCRATCH_MOUNT = "/.ext-scratch-disk"
+
 # squashfs/erofs are not g.mkfs() targets, so RO_FSTYPES mounts are
 # staged as this and replaced later (see create()'s finalize pass).
 STAGING_TYPE = "ext4"
+
+# Fixed, so the same spec always derives the same GPT/filesystem UUIDs.
+UUID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "seine.debian.org")
 
 # GPT partition type GUIDs.
 GPT_TYPE_ESP = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
@@ -180,9 +192,20 @@ class Imager:
 
     def _mkfs(self, g, part, dev):
         fstype = STAGING_TYPE if part["type"] in RO_FSTYPES else part["type"]
+        label = part.get("label")
+        # For FAT this is a throwaway format: _normalize_fat_tree() redoes
+        # it later with mtools, which alone can pin the volume serial and
+        # every file's timestamp. Just needs to exist for now, so grub
+        # and friends have somewhere to write to.
         g.mkfs(fstype, dev)
-        if "label" in part:
-            g.set_label(dev, part["label"])
+        if label:
+            g.set_label(dev, label)
+        # Not every fstype supports a UUID. Report it if this one fails,
+        # instead of hiding it.
+        try:
+            g.set_uuid(dev, self._uuid_for("fs", label or dev))
+        except RuntimeError as e:
+            print("  note: could not set a UUID on '%s' (%s): %s" % (dev, fstype, e))
 
     # DPS role GUID for a plain (non-ESP/LVM/XBOOTLDR) partition.
     # 'None' means no DPS role -- parted keeps its generic default GUID.
@@ -218,6 +241,9 @@ class Imager:
         g.part_add(DEVICE, prlogex, start_sect, end_sect)
         if table == "gpt":
             g.part_set_name(DEVICE, index, part["label"])
+            # A verity partition's own GUID is set again later, from its
+            # root hash (see _build_verity()) -- this one is overwritten.
+            g.part_set_gpt_guid(DEVICE, index, self._uuid_for("partition", part["label"]))
             if "boot" in flags:
                 g.part_set_gpt_type(DEVICE, index, GPT_TYPE_ESP)
             elif "lvm" in flags:
@@ -254,6 +280,11 @@ class Imager:
                 what = "PARTUUID=%s" % self._partuuid(g, part_index, m)
             elif ro:
                 what = "PARTLABEL=%s" % m["label"]
+            elif m["type"] in ("vfat", "msdos"):
+                # Not g.vfs_uuid(dev): fstab is written before the FAT
+                # rebuild that actually sets this serial on the device.
+                serial = self._fat_serial(m.get("label"), dev)
+                what = "UUID=%s-%s" % (serial[:4], serial[4:])
             else:
                 what = "UUID=%s" % g.vfs_uuid(dev)
             options = "defaults"
@@ -269,6 +300,208 @@ class Imager:
                 options = "umask=0077"
             fstab.append("%s %s %s %s 0 %d" % (what, m["_prefix"], m["type"], options, passno))
         g.write("/etc/fstab", ("\n".join(fstab) + "\n").encode())
+
+    # Files the imager writes directly (fstab, grub.cfg, EFI binaries)
+    # get a real 'now' timestamp. Reset any such file back to a fixed
+    # time, so two builds of the same spec match.
+    def _normalize_mount_timestamps(self, g, mounts, mount_devices):
+        epoch = self.source._epoch()
+        started = int(self.source._started)
+        for m in mounts:
+            if m["type"] in RO_FSTYPES:
+                continue
+            # '-xdev': skip /proc and /sys, mounted here too but not
+            # part of the disk image.
+            g.sh("find %s -xdev -newermt '@%d' -exec touch --no-dereference "
+                 "--date=@%d {} +" % (m["_prefix"], started, epoch))
+            if m["type"] in ("vfat", "msdos"):
+                self._normalize_fat_tree(g, m, mount_devices[id(m)])
+
+        # ext2/3/4 has no syscall for ctime/crtime either, so it's
+        # rebuilt with mke2fs -d, same idea as FAT above. Deepest first:
+        # root goes last, once its children are already rebuilt.
+        ext_mounts = [m for m in mounts if m["type"] in ("ext2", "ext3", "ext4")]
+        if ext_mounts:
+            # Unmounted again by this source's own g.umount_all(), same as
+            # every other mount here -- freshly (re)mounted per source.
+            g.mkdir_p(SCRATCH_MOUNT)
+            g.mount(SCRATCH_DEVICE, SCRATCH_MOUNT)
+        for m in sorted(ext_mounts, key=lambda m: m["_depth"], reverse=True):
+            self._normalize_ext_mount(g, m, mounts, mount_devices)
+
+    def _normalize_ext_mount(self, g, m, mounts, mount_devices):
+        dev = mount_devices[id(m)]
+        prefix = m["_prefix"]
+        epoch = self.source._epoch()
+        # A parent (usually root) must let go of any mounted child
+        # before capturing its own content, or the capture would
+        # wrongly include that child's own, separately-rebuilt files.
+        children = [c for c in mounts if c is not m
+                   and c["_prefix"] != prefix and c["_prefix"].startswith(prefix)]
+        for c in children:
+            g.umount(c["_prefix"])
+
+        # Captured onto the separate scratch disk, not next to the
+        # original: a copy there needs room for both at once, more than
+        # the partition holds, and it keeps 'prefix' itself mounted and
+        # usable for g.sh()'s chroot until its real device is replaced.
+        tag = m.get("label") or os.path.basename(dev)
+        content = "%s/content-%s" % (SCRATCH_MOUNT, tag)
+        g.mkdir_p(content)
+        # One entry at a time, in a fixed sorted order: a plain 'cp -a'
+        # would follow prefix's own random per-build hash-seed order,
+        # reordering an otherwise identical rebuild.
+        scratch_prefix = "/%s" % os.path.basename(SCRATCH_MOUNT)
+        # g.find() drops each entry's own leading '/' whenever the path
+        # given to it ends in '/' -- true of every '_prefix' here,
+        # root ('/') included, so put the '/' back rather than avoid it.
+        root = prefix.rstrip("/")
+        raw = (e if e.startswith("/") else "/" + e for e in g.find(prefix))
+        entries = sorted(e for e in raw
+                          if e != scratch_prefix and not e.startswith(scratch_prefix + "/"))
+        dirs = []
+        for e in entries:
+            src = "%s%s" % (root, e)
+            dst = "%s%s" % (content, e)
+            if g.is_dir(src):
+                g.mkdir_p(dst)
+                dirs.append(dst)
+            else:
+                g.cp_a(src, dst)
+        # Fixed up only now that nothing more will be added under them:
+        # creating a file bumps its parent directory's own mtime, and
+        # 'mkdir' (unlike 'cp -a' for files) never preserved it anyway.
+        for dst in dirs:
+            g.utimens(dst, epoch, 0, epoch, 0)
+
+        label = m.get("label")
+        identifier = self._uuid_for("fs", label or dev)
+        # The real device size, not the spec's nominal 'size': LVM rounds
+        # volumes up to its extent size, so the two can differ.
+        size = g.blockdev_getsize64(dev)
+        image = "%s/image-%s.img" % (SCRATCH_MOUNT, tag)
+        tools_dir = self._upload_tools(g, "%s/tools" % SCRATCH_MOUNT, self._extra_tools_files)
+        # SOURCE_DATE_EPOCH fixes file timestamps, E2FSPROGS_FAKE_TIME
+        # fixes the superblock's own creation time; the htree hash seed
+        # isn't time-based, so it needs its own fixed value here.
+        hash_seed = self._uuid_for("fs-hash-seed", label or dev)
+        env = ("SOURCE_DATE_EPOCH=%d E2FSPROGS_FAKE_TIME=%d LD_LIBRARY_PATH=%s"
+               % (epoch, epoch, tools_dir))
+        g.sh("%s %s/mke2fs -q -F -t %s -b 4096 -U %s -E hash_seed=%s%s -d %s %s %d" % (
+            env, tools_dir, m["type"], identifier, hash_seed,
+            " -L %s" % label if label else "", content, image, size // 4096))
+        # mke2fs always stamps ctime with the real time, and atime
+        # sometimes too. 'lost+found' also needs mtime fixed: mke2fs
+        # makes that one itself, so the earlier touch pass never saw it.
+        lines = ["set_inode_field %s %s @%d" % (e, field, epoch)
+                 for e in entries for field in ("ctime", "atime")]
+        lines += ["set_inode_field /lost+found %s @%d" % (field, epoch)
+                  for field in ("ctime", "atime", "mtime")]
+        script = "\n".join(lines)
+        script_path = "%s/ctimefix-%s" % (SCRATCH_MOUNT, tag)
+        g.write(script_path, script.encode())
+        # debugfs echoes every command it runs -- for root's ~15000
+        # entries that reply can exceed the guestfs protocol's own
+        # message-size limit, so it's discarded rather than returned.
+        g.sh("%s %s/debugfs -w -f %s %s > /dev/null 2>&1" % (
+            env, tools_dir, script_path, image))
+        g.rm(script_path)
+
+        # Pulled onto the host first: if 'm' is root, the scratch disk
+        # (mounted under it) must be unmounted before root can be, and
+        # 'image' stops being reachable by path once that happens.
+        host_copy = tempfile.NamedTemporaryFile(delete=False, dir=self._output_dir)
+        host_copy.close()
+        g.download(image, host_copy.name)
+        g.rm_rf(content)
+        g.rm(image)
+        g.rm_rf(tools_dir)
+
+        # Root is always the last ext mount processed, so nothing here
+        # still needs the scratch disk once its content is off it.
+        if prefix == "/":
+            g.umount(SCRATCH_MOUNT)
+        g.umount(prefix)
+        # pwrite_device's RPC has a hard message-size cap well under 32M.
+        chunk_size = 1024 * 1024
+        with open(host_copy.name, "rb") as f:
+            offset = 0
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                g.pwrite_device(dev, chunk, offset)
+                offset = offset + len(chunk)
+        os.remove(host_copy.name)
+        # Read-only: fstab and grub are already written, and a
+        # read-write mount would stamp the superblock's own mount/write
+        # time with the real time, undoing the fix just made above.
+        g.mount_ro(dev, prefix)
+        for c in sorted(children, key=lambda c: c["_depth"]):
+            g.mount_ro(mount_devices[id(c)], c["_prefix"])
+
+    # The vfat volume serial, matching what _normalize_fat_tree() will
+    # write with mformat -- also needed early by _write_fstab(), since
+    # g.mkfs() can't set a real vfat UUID for it to read back.
+    def _fat_serial(self, label, dev):
+        return self._uuid_for("fs", label or dev).replace("-", "")[:8].upper()
+
+    # FAT's volume serial and file timestamps are set once at write
+    # time and can't be touched again through the mount, so the whole
+    # partition is rebuilt from scratch with mtools instead.
+    def _normalize_fat_tree(self, g, m, dev):
+        scratch = "/.fat-scratch"
+        g.mkdir_p(scratch)
+        g.cp_a(m["_prefix"], scratch)
+        base = "%s/%s" % (scratch, os.path.basename(m["_prefix"].rstrip("/")))
+        # Sorted, and read while still mounted: 'mcopy -s' would instead
+        # walk the scratch copy's own random per-build hash-seed order,
+        # allocating FAT clusters differently for identical content.
+        entries = sorted(g.find(m["_prefix"]))
+        dirs = {e for e in entries if g.is_dir("%s/%s" % (m["_prefix"], e))}
+        g.umount(m["_prefix"])
+
+        # mformat only rewrites the boot sector, FAT and root directory
+        # -- old data (real timestamps included) survives a reformat
+        # wherever this build's files don't land on the same clusters.
+        g.zero_device(dev)
+
+        tools_dir = self._upload_tools(g, "/.imager-extra-tools", self._extra_tools_files)
+        # Set before mformat too: '-v' makes it write a volume-label
+        # entry of its own, timestamped like any other.
+        env = "LD_LIBRARY_PATH=%s SOURCE_DATE_EPOCH=%d" % (
+            tools_dir, self.source._epoch())
+        label = m.get("label")
+        serial = self._fat_serial(label, dev)
+        # mtools can't work out a partition device's own geometry on its
+        # own ("Hidden ... does not match sectors"); its disk offset is
+        # the one BPB field that has to be told, not left to guessing.
+        hidden = 0 if m["_lvm"] else m["_start_mib"] * 2048
+        g.sh("%s %s/mformat -i %s -H %d -N %s%s ::" % (
+            env, tools_dir, dev, hidden, serial,
+            " -v %s" % label.upper()[:11] if label else ""))
+
+        for entry in entries:
+            target = "::/%s" % entry
+            if entry in dirs:
+                g.sh("%s %s/mmd -i %s %s" % (env, tools_dir, dev, target))
+            else:
+                g.sh("%s %s/mcopy -Q -i %s %s/%s %s" % (
+                    env, tools_dir, dev, base, entry, target))
+
+        g.rm_rf(scratch)
+        g.rm_rf(tools_dir)
+        g.mount(dev, m["_prefix"])
+
+    # Uploads 'host_files' into a scratch dir, ready to run via
+    # 'LD_LIBRARY_PATH=<dir> <dir>/<name>'.
+    def _upload_tools(self, g, tools_dir, host_files):
+        g.mkdir_p(tools_dir)
+        for host_path in host_files:
+            remote_path = "%s/%s" % (tools_dir, os.path.basename(host_path))
+            g.upload(host_path, remote_path)
+            g.chmod(0o755, remote_path)
+        return tools_dir
 
     def _label_selinux(self, g, mount_order):
         se_contexts = "/etc/selinux/default/contexts/files/file_contexts"
@@ -315,6 +548,13 @@ class Imager:
             if m and m.group(1).strip():
                 parts.append(m.group(1).strip())
         return " ".join(parts)
+
+    # A GUID/UUID derived from the spec, so a rebuild gets the same one
+    # and a changed spec gets a different one. 'parts' picks out which
+    # GUID this is (disk, a partition, a filesystem) so none collide.
+    def _uuid_for(self, *parts):
+        seed = ":".join([self.source.spec_digest()] + list(parts))
+        return str(uuid.uuid5(UUID_NAMESPACE, seed))
 
     # systemd-repart's scheme: a verity pair's root hash is its two GPT
     # GUIDs concatenated (data = high 128 bits, hash = low 128). Not
@@ -439,12 +679,7 @@ class Imager:
             return built_sizes
 
         mounted = {id(m) for m in mounts}
-        tools_dir = "/.imager-extra-tools"
-        g.mkdir_p(tools_dir)
-        for host_path in self._extra_tools_files:
-            remote_path = "%s/%s" % (tools_dir, os.path.basename(host_path))
-            g.upload(host_path, remote_path)
-            g.chmod(0o755, remote_path)
+        tools_dir = self._upload_tools(g, "/.imager-extra-tools", self._extra_tools_files)
 
         for m in sorted(ro_mounts, key=lambda m: m["_depth"], reverse=True):
             print("Building %s image for '%s'..." % (m["type"], m["label"]))
@@ -572,12 +807,16 @@ class Imager:
 
     def _prepare_extra_tools(self, output_dir):
         mounts = self.source.partitionHandler.mounts
-        if not any(m["type"] in RO_FSTYPES for m in mounts):
+        need_ro = any(m["type"] in RO_FSTYPES for m in mounts)
+        need_fat = any(m["type"] in ("vfat", "msdos") for m in mounts)
+        need_ext = any(m["type"] in ("ext2", "ext3", "ext4") for m in mounts)
+        if not (need_ro or need_fat or need_ext):
             self._extra_tools = None
             return []
-        print("Preparing read-only file-system tools...")
+        print("Preparing imager tools...")
         need_verity = any(m.get("verity") for m in mounts)
-        tools = ExtraImagerTools(self.source, need_verity=need_verity)
+        tools = ExtraImagerTools(self.source, need_verity=need_verity,
+                                 need_fat=need_fat, need_ext=need_ext)
         tools.create()
         # Kept beyond this method: _build_ro_images()'s UKI step runs
         # objcopy/ukify/sbsign against this built image (tools.name).
@@ -598,6 +837,18 @@ class Imager:
             print("Starting imager appliance...")
             g = guestfs.GuestFS(python_return_dict=True)
             g.add_drive_opts(disk, format="raw", readonly=False)
+            need_ext = self._extra_tools and self._extra_tools.need_ext
+            if need_ext:
+                ext_mounts = [m for m in ph.mounts if m["type"] in ("ext2", "ext3", "ext4")]
+                # Room for one mount's captured content plus its rebuilt
+                # image at once -- never more than twice its own biggest
+                # partition, plus a little slack for filesystem overhead.
+                largest = max(m["_size"] for m in ext_mounts)
+                scratch_size = 2 * largest + 128 * 1024 * 1024
+                scratch_disk = os.path.join(output_dir, "ext-scratch.raw")
+                with open(scratch_disk, "wb") as f:
+                    f.truncate(scratch_size)
+                g.add_drive_opts(scratch_disk, format="raw", readonly=False)
             if hypervisor:
                 if self.verbose:
                     print("  hypervisor: %s" % hypervisor)
@@ -607,6 +858,12 @@ class Imager:
             before_launch()
             try:
                 g.launch()
+                if need_ext:
+                    # No htree hashing: its read-back order would depend
+                    # on a random per-build hash seed, silently reordering
+                    # how mke2fs -d later lays out an otherwise identical
+                    # rebuild -- see _normalize_ext_mount()'s own capture.
+                    g.mkfs("ext4", SCRATCH_DEVICE, features="^dir_index")
 
                 part_devices, part_index, hash_part_for = self._create_partitions(g, ph)
                 vol_devices = self._create_volumes(g, ph, part_devices)
@@ -638,6 +895,7 @@ class Imager:
                         g, ph, source, mounts, part_devices, vol_devices, part_index)
                     self._install_boot_entry(
                         g, part_index, source, mounts, boot_owner, boot_entries)
+                    self._normalize_mount_timestamps(g, mounts, mount_devices)
                     built_sizes = self._build_ro_images(
                         g, mounts, mount_devices, part_index, hash_part_for)
                     self._print_disk_usage(g, ph, mounts, built_sizes)
@@ -657,6 +915,8 @@ class Imager:
     def _create_partitions(self, g, ph):
         print("Partitioning (%s)..." % ph._table)
         g.part_init(DEVICE, ph._table)
+        if ph._table == "gpt":
+            g.part_set_disk_guid(DEVICE, self._uuid_for("disk"))
         target_arch = self.source.spec["distribution"]["architecture"]
         partitions_by_label = {p["label"]: p for p in ph.partitions}
         hash_part_for = {p["verity-for"]: p for p in ph.partitions
@@ -726,6 +986,21 @@ class Imager:
         self._label_selinux(g, mounts)
         return mount_devices
 
+    # 'update-grub' embeds the root LV's random LVM UUIDs as a boot
+    # search hint. Safe to fake: it only speeds up the search, actual
+    # booting still goes by our own fixed filesystem UUID.
+    def _normalize_grub_lvmid(self, g):
+        path = "/boot/grub/grub.cfg"
+        if not g.is_file(path):
+            return
+        def fake_uuid(seed):
+            h = self._uuid_for(seed).replace("-", "")
+            return "-".join([h[0:6], h[6:10], h[10:14], h[14:18], h[18:22], h[22:26], h[26:32]])
+        cfg = g.read_file(path).decode()
+        cfg = re.sub(r"lvmid/[\w-]+/[\w-]+",
+                     "lvmid/%s/%s" % (fake_uuid("grub-lvmid-vg"), fake_uuid("grub-lvmid-lv")), cfg)
+        g.write(path, cfg.encode())
+
     def _install_boot_entry(self, g, part_index, source, mounts, boot_owner, boot_entries):
         # source is None: plain single update-grub call. A declared group
         # instead records its boot info; the boot owner (last) writes every
@@ -737,6 +1012,7 @@ class Imager:
                 print("Installing grub...")
                 bootloader.install(g, "/efi")
                 bootloader.add_entry(g)
+                self._normalize_grub_lvmid(g)
         elif root_m is not None:
             boot_files = self._boot_files(g)
             if boot_files is not None:
