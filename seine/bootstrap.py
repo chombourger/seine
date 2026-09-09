@@ -84,7 +84,10 @@ class Bootstrap(ABC):
                  locked(os.path.join(ContainerEngine.root(), "images.d",
                                      self.name)):
                 ContainerEngine.run(
-                    ["build", "--rm"] + (options or []) +
+                    # '--no-hostname': without it, podman writes a new
+                    # random '/etc/hostname' for every RUN step, which
+                    # ends up baked into the built image.
+                    ["build", "--rm", "--no-hostname"] + (options or []) +
                     ["--label", "%s=%s" % (INPUTS_LABEL,
                                            self.digest(dockerfile, base)),
                      "--label", "%s=%s" % (KIND_LABEL, self.kind),

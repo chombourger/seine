@@ -23,6 +23,10 @@ DOWNLOADS = "/var/cache/seine/downloads"
 # /run/.containerenv), so mount them as tmpfs instead of writing to disk.
 TMPFS = ["--tmpfs", "/run", "--tmpfs", "/tmp"]
 
+# Without '--hostname', podman uses a random container id as the
+# hostname, so this stays fixed for reproducible builds.
+HOSTNAME = ["--hostname", "target"]
+
 ARCHIVES = "/var/cache/apt/archives"
 
 # File TargetBootstrap leaves feeds in. Separate from sources.list so we
@@ -48,7 +52,7 @@ class AnsibleContainerRunner:
 
     # Container the playbooks run against; also what gets exported as the image.
     def container_command(self, image):
-        return (["container", "run", "-d"] + self._volumes() + TMPFS
+        return (["container", "run", "-d"] + self._volumes() + TMPFS + HOSTNAME
                 + [image, "sleep", "infinity"])
 
     def _volumes(self):
@@ -245,6 +249,16 @@ class AnsibleContainerRunner:
         # would break the first 'apt-get update' run on the target.
         self._exec(["sh", "-c", packages.apt_deconfiguration()])
         self._exec(["sh", "-c", "rm -rf /var/lib/apt/lists/*"])
+        # apt's and ldconfig's own caches are rebuilt from mtimes, so they
+        # are never the same twice. Both are regenerated on next use.
+        self._exec(["sh", "-c", "rm -f /var/cache/apt/*.bin"])
+        self._exec(["sh", "-c", "rm -f /var/cache/ldconfig/aux-cache"])
+        # apt/dpkg logs record the real time of this build. Truncated,
+        # not removed: apt/dpkg expect the files to exist.
+        self._exec(["sh", "-c",
+                    "truncate -s0 /var/log/apt/history.log "
+                    "/var/log/apt/term.log /var/log/dpkg.log "
+                    "/var/log/alternatives.log 2>/dev/null; true"])
         # _seed_downloads() copied every .deb the shared per-release cache
         # ever held into here, saved back by _save_downloads() already --
         # a build cache, not part of the image, else the shipped rootfs
