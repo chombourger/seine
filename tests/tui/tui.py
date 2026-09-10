@@ -294,6 +294,85 @@ class RootNodeRendering(avocado.Test):
         self.assertNotIn("M", line)
         self.assertNotIn("?", line)
 
+# render_image_node(): proportional boxes over a plain 'image:' dict --
+# no Context/BuildCmd needed, since role()/_is_container() only read
+# fields PartitionHandler always resolves ('where'/'group'/'flags'/
+# 'type'/'size'), not any of its private bookkeeping.
+class ImageNodeRendering(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.render import render_image_node
+        self.render_image_node = render_image_node
+
+    def test_no_partitions_says_so(self):
+        text = self.render_image_node({})
+        self.assertIn("no partitions defined", text.plain)
+
+    def test_plain_partitions_render_as_boxes(self):
+        image_spec = {
+            "partitions": [
+                {"label": "efi", "type": "vfat", "size": 16 * 1024 * 1024,
+                 "where": "/efi", "flags": ["boot"]},
+                {"label": "root", "type": "ext4", "size": 128 * 1024 * 1024,
+                 "where": "/"},
+            ],
+        }
+        text = self.render_image_node(image_spec)
+        plain = text.plain
+        self.assertIn("efi", plain)
+        self.assertIn("root", plain)
+        self.assertIn("16.0MiB", plain)
+        self.assertIn("128.0MiB", plain)
+        legend = plain.splitlines()[0]
+        self.assertIn("boot", legend)
+        self.assertIn("root", legend)
+        self.assertNotIn("lvm", legend)
+        styles = {str(span.style) for span in text.spans}
+        self.assertIn("cyan", styles)
+        self.assertIn("green", styles)
+
+    def test_lvm_partition_nests_its_volumes(self):
+        image_spec = {
+            "partitions": [
+                {"label": "sys", "type": "ext4", "size": 200 * 1024 * 1024,
+                 "group": "vg", "flags": ["lvm"]},
+            ],
+            "volumes": [
+                {"label": "lv_root", "type": "ext4", "size": 100 * 1024 * 1024,
+                 "where": "/", "group": "vg"},
+                {"label": "lv_var", "type": "ext4", "size": 50 * 1024 * 1024,
+                 "where": "/var", "group": "vg"},
+            ],
+        }
+        text = self.render_image_node(image_spec)
+        plain = text.plain
+        self.assertIn("sys", plain)
+        self.assertIn("lv_root", plain)
+        self.assertIn("lv_var", plain)
+        # A nested box's own top border, wrapped one level in.
+        self.assertIn("│ ┌", plain)
+
+    # A partition/volume this large would be huge indeed -- confirms
+    # _extra_rows() actually grows a box's rendered height (not just
+    # its unused 'rows' field), not just that the label appears.
+    def test_a_much_larger_partition_renders_taller(self):
+        image_spec = {
+            "partitions": [
+                {"label": "small", "type": "ext4", "size": 1 * 1024 * 1024,
+                 "where": "/small"},
+                {"label": "big", "type": "ext4", "size": 100 * 1024 * 1024,
+                 "where": "/big"},
+            ],
+        }
+        text = self.render_image_node(image_spec)
+        plain = text.plain
+        small_rows = plain.split("small")[1].split("└")[0].count("\n")
+        big_rows = plain.split("big")[1].split("└")[0].count("\n")
+        self.assertGreater(big_rows, small_rows)
+
 # What the last build actually wrote: a stat-based listing of
 # 'ContainerEngine.deploy_root()/<release>/', nothing tracked separately.
 class ArtifactsRendering(avocado.Test):
@@ -974,6 +1053,26 @@ class App(avocado.Test):
                 text = _content(body)
                 self.assertIn("spec files:", text)
                 self.assertIn(NATIVE_IMAGE, text)
+        _run(scenario)
+
+    # Selection is injected by path (SpecTree.path_for()) rather than
+    # counting Down presses to the 'image' branch: its position among a
+    # group's other top-level keys depends on spec dict order, which
+    # this test has no reason to hardcode.
+    def test_selecting_the_image_node_shows_proportional_boxes(self):
+        async def scenario():
+            from seine.tui.spectree import SpecTree
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test():
+                tree = app.screen.query_one(SpecTree)
+                group = tree.root.children[0]
+                image_node = next(c for c in group.children if c.data == "image")
+                app.screen._selected_path = tree.path_for(image_node)
+                app.screen.update_body()
+                body = app.screen.query_one("#body")
+                text = _content(body)
+                self.assertIn("legend:", text)
+                self.assertIn("┌", text)
         _run(scenario)
 
     def test_startup_with_a_bad_spec_shows_the_error_not_a_crash(self):

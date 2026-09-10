@@ -30,8 +30,9 @@ from seine.tui.history import History
 from seine.tui.issues import IssuesScreen
 from seine.tui.vendor import VendorScreen, VendorState
 from seine.tui.render import (render_analyze, render_artifacts, render_cache,
-                              render_doctor, render_node, render_overview,
-                              render_packages, render_plan, render_root_node)
+                              render_doctor, render_image_node, render_node,
+                              render_overview, render_packages, render_plan,
+                              render_root_node)
 from seine.tui.spectree import SpecTree
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
@@ -81,6 +82,10 @@ class OverviewScreen(BaseScreen):
             index = tree.root.children.index(node)
             context = self.app.context
             text = render_root_node(context.groups[index], context.builds[index])
+        elif node.data == "image" and node.parent is not None and node.parent.parent is tree.root:
+            index = tree.root.children.index(node.parent)
+            build = self.app.context.builds[index]
+            text = render_image_node(build.spec.get("image") or {})
         else:
             text = render_node(node)
         self.query_one("#body", Static).update(text)
