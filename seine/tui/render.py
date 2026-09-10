@@ -13,6 +13,7 @@ import subprocess
 import time
 
 from seine import analyze
+from seine import multiconfig
 from seine import packages
 from seine import sbom
 from seine import secscan
@@ -20,40 +21,71 @@ from seine.diffing import diff, recall
 from seine.progress import elapsed
 from seine.sbuild import BuilderImage
 from seine.container import ContainerEngine
+from seine.utils import git_status, lock_sibling
+
+# One build's overview lines: distro/arch, last-build history,
+# baseline-diff status, output path. Shared by render_overview() (every
+# active group, one after another) and render_root_node() (just the one
+# group a root node was selected for).
+def _overview_lines(files, build, name):
+    parts = []
+    distro = build.spec["distribution"]
+    output = build.image._output
+    parts.append("%s -- %s/%s" % (name, distro["release"], distro["architecture"]))
+
+    digest = analyze.spec_digest(build.spec)
+    history = analyze.runs(digest)
+    if history:
+        latest = history[0]
+        ago = max(0, time.time() - latest["started"])
+        status = "built" if latest.get("ok", True) else "FAILED"
+        parts.append("  last build: %s %s ago, took %s"
+                    % (status, elapsed(ago), elapsed(analyze.spent(latest))))
+    else:
+        parts.append("  never built from here")
+
+    baseline = recall(files)
+    if baseline is None:
+        parts.append("  spec: not built from here yet")
+    elif build.dump(build.spec) == baseline:
+        parts.append("  spec: unchanged since the last build")
+    else:
+        parts.append("  spec: changed since the last build -- '/plan' shows how")
+
+    if output:
+        parts.append("  would write: %s" % output)
+    return parts
 
 def render_overview(context):
     if not context.active:
         return "no active specification -- '/use SPEC...' picks one\n"
     parts = []
     for files, build in zip(context.groups, context.builds):
-        distro = build.spec["distribution"]
         output = build.image._output
         name = output.rsplit("/", 1)[-1].rsplit(".", 1)[0] if output else \
                context.label()
-        parts.append("%s -- %s/%s" % (name, distro["release"], distro["architecture"]))
-
-        digest = analyze.spec_digest(build.spec)
-        history = analyze.runs(digest)
-        if history:
-            latest = history[0]
-            ago = max(0, time.time() - latest["started"])
-            status = "built" if latest.get("ok", True) else "FAILED"
-            parts.append("  last build: %s %s ago, took %s"
-                        % (status, elapsed(ago), elapsed(analyze.spent(latest))))
-        else:
-            parts.append("  never built from here")
-
-        baseline = recall(files)
-        if baseline is None:
-            parts.append("  spec: not built from here yet")
-        elif build.dump(build.spec) == baseline:
-            parts.append("  spec: unchanged since the last build")
-        else:
-            parts.append("  spec: changed since the last build -- '/plan' shows how")
-
-        if output:
-            parts.append("  would write: %s" % output)
+        parts += _overview_lines(files, build, name)
     return "\n".join(parts) + "\n"
+
+# Root/group node: the spec files this group loaded, each marked with
+# its 'git status --porcelain' code (mirrors git's own vocabulary
+# rather than a single invented "changed" marker, so worktree/index/
+# untracked nuance comes for free) and a lock icon for any with a
+# loaded '.lock.yaml' sibling, then the same per-build stats
+# render_overview() shows above, scoped to just this one group.
+def render_root_node(files, build):
+    lines = ["spec files:"]
+    for path in files:
+        status = git_status(path) or "  "
+        sibling = lock_sibling(path)
+        lock = "\U0001F512 " if sibling and os.path.isfile(sibling) else ""
+        lines.append("  %s %s%s" % (status, lock, path))
+    output = build.image._output
+    name = (output.rsplit("/", 1)[-1].rsplit(".", 1)[0] if output else
+           multiconfig._label(build))
+    lines.append("")
+    lines += _overview_lines(files, build, name)
+    return "\n".join(lines) + "\n"
 
 # Fallback right-pane content for a selected spec-tree node without a
 # dedicated renderer of its own (root/image/logs get one; everything
