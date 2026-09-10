@@ -13,6 +13,7 @@ import time
 
 from seine import analyze
 from seine import cache_index
+from seine import logindex
 from seine import progress
 from seine import tasks
 from seine import utils
@@ -245,12 +246,25 @@ def merged_tasks(builds):
 # its own outcome, keyed by that group's own spec_digest -- not the
 # whole invocation's. A group is 'ok' if its tasks all ran, even if a
 # sibling group failed afterward.
-def _record_group(build, all_tasks, jobs, machine, digest):
+#
+# 'files'/'logs' feed logindex.record() alongside analyze.record(),
+# over the same 'group_tasks' (this group's own tasks plus the shared
+# ones it stood on -- same set analyze.record() gets, so the two stay
+# consistent about what counts as "this group's own run").
+def _record_group(build, files, all_tasks, jobs, machine, digest, logs):
     own = [t.name for t in all_tasks
           if t.name.startswith("%s:" % _label(build))]
     group_tasks = tasks.ancestors(all_tasks, own)
     ok = tasks.succeeded(group_tasks)
     analyze.record(group_tasks, digest, jobs=jobs, ok=ok, machine=machine)
+    if logs:
+        logindex.record(
+            files, build.spec["distribution"]["release"],
+            build.spec["distribution"]["architecture"], logs,
+            [{"name": t.name, "failed": t.failed, "cached": False,
+             "log": os.path.join(logs, "%s.log" % t.name)}
+            for t in group_tasks if t.started is not None],
+            ok)
     return ok
 
 # Same prune Image.build() does after a single build, done once here
@@ -336,9 +350,9 @@ def run(groups_files, options):
         finally:
             analyze.record(all_tasks, combined_digest,
                            jobs=jobs, ok=ok, machine=machine)
-            for build in builds:
+            for files, build in zip(groups_files, builds):
                 group_ok[build] = _record_group(
-                    build, all_tasks, jobs, machine, group_digests[build])
+                    build, files, all_tasks, jobs, machine, group_digests[build], logs)
     _prune()
 
     said = cache_index.summary()
