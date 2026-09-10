@@ -856,6 +856,11 @@ class Imager:
                 if self.verbose:
                     print("  hypervisor: %s" % hypervisor)
                 g.set_hv(hypervisor)
+            if ph.groups:
+                # pvcreate/vgcreate/lvcreate stamp wall-clock time into
+                # their metadata; the appliance's wrapper
+                # (imager_appliance.py) freezes it via libfaketime when set.
+                g.set_append("faketime=%d" % self.source._epoch())
             # Wraps the whole session, not just g.launch(): libguestfs forks
             # again on g.shutdown()/g.close(), which hangs if left unguarded.
             before_launch()
