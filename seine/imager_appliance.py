@@ -124,16 +124,19 @@ directly (see seine/imager_appliance.py). Point LIBGUESTFS_PATH at this
 directory to use it in place of libguestfs's own supermin auto-build.
 """
 
-# lvm2 dispatches all three commands through one 'lvm' binary chosen by
-# argv[0]'s basename, so the real binary moves aside and this wrapper
-# takes its name, LD_PRELOADing libfaketime when 'faketime=<epoch>' is set.
+# lvm2 dispatches pvcreate/vgcreate/lvcreate through one 'lvm' binary
+# chosen by argv[0]'s basename, and gives each a random UUID with no
+# override -- this wrapper freezes the time and pins the UUIDs instead.
 LVM_WRAPPER_SCRIPT = r"""#!/usr/bin/python3
+import hashlib
 import os
 import re
+import subprocess
 import sys
 import time
 
 REAL = "/usr/sbin/.lvm-real/lvm"
+BACKUP = "/tmp/seine-vgcfg-restore"
 
 def cmdline(name):
     with open("/proc/cmdline") as f:
@@ -141,12 +144,84 @@ def cmdline(name):
     return m.group(1) if m else None
 
 epoch = cmdline("faketime")
+seed = cmdline("seed")
+
 if epoch:
     os.environ["TZ"] = "UTC"
     os.environ["LD_PRELOAD"] = "@LIBFAKETIME@"
     os.environ["FAKETIME"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(epoch)))
 
-os.execv(REAL, [REAL] + sys.argv[1:])
+def run(*args):
+    subprocess.run([REAL] + list(args), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+# A stable UUID derived from the spec's own seed plus a name, so the same
+# spec always gets the same ids and two different specs never collide.
+def uuid_for(key):
+    digest = hashlib.md5(("%s:%s" % (seed, key)).encode()).hexdigest()
+    parts = [digest[0:6], digest[6:10], digest[10:14],
+             digest[14:18], digest[18:22], digest[22:26], digest[26:32]]
+    return "-".join(parts)
+
+# Replaces only the id value after "<name> {", so every other byte (and
+# so every offset and checksum) stays exactly where it was.
+def pin(blob, name, new_id):
+    pattern = rb'(' + re.escape(name).encode() + rb' \{\s*\n[ \t]*id = ")[0-9A-Za-z-]+(")'
+    return re.sub(pattern, lambda m: m.group(1) + new_id.encode() + m.group(2), blob)
+
+def pin_ids(vg):
+    run("vgcfgbackup", "-f", BACKUP, vg)
+    with open(BACKUP, "rb") as f:
+        text = f.read()
+
+    device = re.search(rb'device = "([^"]+)"', text)
+    pe_start = re.search(rb'pe_start = (\d+)', text)
+    # A PV entry sits at the same indentation as an LV entry, so only
+    # look for LV names after "logical_volumes {" -- otherwise a PV's
+    # already-correct id gets overwritten with an LV-keyed one.
+    after_lvs = text.split(b"logical_volumes {", 1)
+    lvs = [m.decode() for m in re.findall(rb'\n\t\t([A-Za-z0-9_.+-]+) \{\n', after_lvs[1])] \
+        if len(after_lvs) > 1 else []
+
+    for name in [vg] + lvs:
+        key = "vg:%s" % name if name == vg else "lv:%s:%s" % (vg, name)
+        text = pin(text, name, uuid_for(key))
+    with open(BACKUP, "wb") as f:
+        f.write(text)
+    run("vgcfgrestore", "--force", "--yes", "-f", BACKUP, vg)
+    os.remove(BACKUP)
+
+    # vgcfgrestore only fixes the live metadata copy. lvm2 never
+    # overwrites metadata in place -- it appends each change after the
+    # last one -- so the original, unpinned copy this command wrote is
+    # still sitting in the PV's metadata area and needs scrubbing too.
+    if device and pe_start:
+        ring_size = int(pe_start.group(1)) * 512
+        with open(device.group(1), "r+b") as f:
+            ring = f.read(ring_size)
+            for name in [vg] + lvs:
+                key = "vg:%s" % name if name == vg else "lv:%s:%s" % (vg, name)
+                ring = pin(ring, name, uuid_for(key))
+            f.seek(0)
+            f.write(ring)
+
+args = sys.argv[1:]
+sub = args[0] if args else None
+
+if not seed or sub not in ("pvcreate", "vgcreate", "lvcreate"):
+    os.execv(REAL, [REAL] + args)
+
+if sub == "pvcreate":
+    dev = args[-1]
+    os.execv(REAL, [REAL] + args + ["--uuid", uuid_for("pv:%s" % dev), "--norestorefile"])
+
+# guestfsd always calls "vgcreate <vgname> <pvdev...>" and
+# "lvcreate --yes -L <size> -n <lvname> <vgname>", so the VG name sits
+# at a different argv position for each.
+vg = args[1] if sub == "vgcreate" else args[-1]
+rc = subprocess.run([REAL] + args).returncode
+if rc == 0:
+    pin_ids(vg)
+sys.exit(rc)
 """
 
 # Only vmlinuz and modules are needed, so skip the initramfs build.
