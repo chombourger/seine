@@ -87,6 +87,143 @@ def render_root_node(files, build):
     lines += _overview_lines(files, build, name)
     return "\n".join(lines) + "\n"
 
+# Image node: partitions/volumes drawn as proportional stacked boxes,
+# not the plain key/value dump the generic node fallback would give.
+# seine's spec has no 'swap'/'ESP' concept, so roles are read off what
+# a partition/volume actually declares (boot/xbootldr flags, 'where',
+# fs type) rather than inventing fields that don't exist. 'root'/'lvm'
+# both share the color a container's frame paints its own header in.
+_ROLE_STYLES = {"boot": "cyan", "root": "green", "lvm": "blue",
+                "data": "blue", "verity": "magenta"}
+_ROLE_ORDER = ("boot", "root", "lvm", "data", "verity")
+
+def _role(entry):
+    flags = entry.get("flags") or []
+    if "boot" in flags or "xbootldr" in flags:
+        return "boot"
+    if entry.get("type") == "verity-hash":
+        return "verity"
+    if entry.get("where") == "/":
+        return "root"
+    # No 'where' at all (only an LVM-PV partition can lack one --
+    # PartitionHandler._parse_part() requires it otherwise): the
+    # container itself, not a mounted leaf.
+    if "where" not in entry:
+        return "lvm"
+    return "data"
+
+# A partition carries its own 'group' AND has no 'where' only when it's
+# the LVM-PV holding a group of volumes -- the one structural signal
+# PartitionHandler's own parsing guarantees (see _role() above).
+def _is_container(entry):
+    return "where" not in entry and entry.get("group") is not None
+
+FLOOR_ROWS = 2  # label + size, the decided two-row box content
+# ponytail: an arbitrary but readable spread of extra rows a sibling
+# group's largest member can earn over the floor; tune if it reads wrong.
+EXTRA_ROWS_BUDGET = 16
+BOX_WIDTH = 45  # comfortably under the pane's own width in practice
+
+def _extra_rows(sizes, budget=EXTRA_ROWS_BUDGET):
+    total = sum(sizes)
+    if total <= 0:
+        return [0] * len(sizes)
+    return [round(budget * size / total) for size in sizes]
+
+# Leaves only: proportional height computed among a sibling group (top-
+# level partitions that aren't LVM-PVs, or one LVM group's own volumes)
+# -- a container's rows are never part of this competition, see
+# _layout() below.
+def _leaf_boxes(entries):
+    boxes = [{"label": e["label"], "type": e.get("type", ""),
+             "size": e.get("size") or 0, "role": _role(e), "children": []}
+            for e in entries]
+    for box, extra in zip(boxes, _extra_rows([b["size"] for b in boxes])):
+        box["rows"] = FLOOR_ROWS + extra
+    return boxes
+
+# A container's height is the sum of its own children stacked (plus
+# its own header row), not a proportional share computed against its
+# sibling leaves -- simpler than computing proportion at every level,
+# and what a container displays is already exactly what it contains.
+def _layout(image_spec):
+    partitions = image_spec.get("partitions") or []
+    volumes = image_spec.get("volumes") or []
+    by_group = {}
+    for volume in volumes:
+        by_group.setdefault(volume.get("group"), []).append(volume)
+
+    leaf_entries = [p for p in partitions if not _is_container(p)]
+    container_entries = [p for p in partitions if _is_container(p)]
+
+    boxes_by_label = {box["label"]: box for box in _leaf_boxes(leaf_entries)}
+    for entry in container_entries:
+        children = _leaf_boxes(by_group.get(entry.get("group"), []))
+        rows = 1 + sum(child["rows"] for child in children) if children else FLOOR_ROWS
+        boxes_by_label[entry["label"]] = {
+            "label": entry["label"], "type": entry.get("type", ""),
+            "size": entry.get("size") or 0, "role": _role(entry),
+            "children": children, "rows": rows,
+        }
+    # On-disk order, not leaves-then-containers.
+    return [boxes_by_label[p["label"]] for p in partitions]
+
+# One (line, role) pair per row -- a nested child's wrapping frame
+# chars ('| ' / ' |') take the CHILD's role, not the parent's: simpler
+# than mixing two styles on one row, and still reads which box a given
+# row belongs to at a glance.
+def _box_lines(box, width):
+    inner = width - 2
+    role = box["role"]
+    size_text = _human_size(box["size"]) if box["size"] else "?"
+    detail = "%s  %s" % (box["type"], size_text) if box["type"] else size_text
+    lines = [
+        ("┌" + "─" * inner + "┐", role),
+        ("│ " + box["label"].ljust(inner - 1) + "│", role),
+        ("│ " + detail.ljust(inner - 1) + "│", role),
+    ]
+    if box["children"]:
+        for child in box["children"]:
+            for child_line, child_role in _box_lines(child, width - 4):
+                lines.append(("│ " + child_line + " │", child_role))
+    else:
+        # A leaf's proportional share over the floor (_extra_rows()) is
+        # blank filler, not more detail -- the box's height alone is
+        # what carries the size comparison, not repeated text.
+        blank = "│" + " " * inner + "│"
+        for _ in range(box["rows"] - FLOOR_ROWS):
+            lines.append((blank, role))
+    lines.append(("└" + "─" * inner + "┘", role))
+    return lines
+
+def _flatten(boxes):
+    for box in boxes:
+        yield box
+        yield from _flatten(box["children"])
+
+def render_image_node(image_spec):
+    from rich.text import Text
+    boxes = _layout(image_spec)
+    text = Text()
+    if not boxes:
+        text.append("no partitions defined\n")
+        return text
+    present = {box["role"] for box in _flatten(boxes)}
+    text.append("legend: ")
+    first = True
+    for role in _ROLE_ORDER:
+        if role not in present:
+            continue
+        if not first:
+            text.append("  ")
+        text.append(role, style=_ROLE_STYLES[role])
+        first = False
+    text.append("\n\n")
+    for box in boxes:
+        for line, role in _box_lines(box, BOX_WIDTH):
+            text.append(line + "\n", style=_ROLE_STYLES.get(role, ""))
+    return text
+
 # Fallback right-pane content for a selected spec-tree node without a
 # dedicated renderer of its own (root/image/logs get one; everything
 # else lands here): the node's own text, plus its immediate children's
