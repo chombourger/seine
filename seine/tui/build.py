@@ -176,8 +176,15 @@ class BuildState:
     def render(self):
         if len(self.order) == 0:
             return "no steps -- '/use SPEC' first\n"
+        # An empty 'packages' barrier is left out here, same as in the
+        # plan: nothing to build, so no row for it. The state machine
+        # above still tracks it -- task_started()/task_finished() take
+        # whatever name the graph ran, shown or not.
+        names = set(self.order)
         lines = []
         for name in self.order:
+            if tasks.is_empty_barrier(name, names):
+                continue
             row = self.rows[name]
             mark = MARKS[row["state"]]
             if row["state"] == "running" and row["started"] is not None:
