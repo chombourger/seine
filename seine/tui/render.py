@@ -262,6 +262,94 @@ def render_node(node):
         return "\n".join(lines) + "\n"
     return "%s\n" % node.data
 
+# Same marks as the Build screen's task pane (BuildState.MARKS) and
+# the Test screen's own list (TestState.render()), so a test reads
+# the same in the overview as where it ran. Passed/failed marks are
+# coloured green/red; pending/running stay unstyled, like the task
+# pane itself (which has no colour at all).
+TEST_MARKS = {"pending": "○", "running": "●", "done": "✔", "failed": "✘"}
+TEST_MARK_STYLES = {"done": "green", "failed": "red"}
+
+def _test_state_for(qualified, rows):
+    row = (rows or {}).get(qualified)
+    if row is None:
+        return "pending"
+    return row.get("state", "pending")
+
+def _tests_under(subpath, test_paths):
+    prefix = tuple(subpath)
+    found = []
+    for qualified, path in (test_paths or {}).items():
+        if tuple(path)[:len(prefix)] == prefix:
+            found.append(qualified)
+    return found
+
+def _aggregate_test_state(qualifieds, rows):
+    states = [_test_state_for(q, rows) for q in qualifieds]
+    if any(s == "failed" for s in states):
+        return "failed"
+    if any(s == "running" for s in states):
+        return "running"
+    if any(s == "pending" for s in states):
+        return "pending"
+    return "done"
+
+# A 'test'-branch node with its children's test status, one mark per
+# child that leads to test(s) -- the overview equivalent of the Test
+# screen's own list. Returns None when 'subpath' holds no test (a
+# scalar field under a case, e.g.), so the caller falls back to
+# render_node(). 'subpath' is the node's path below its group root
+# (e.g. ("test", "[0]", "tests")), 'test_state' the app's TestState.
+def render_test_node(node, subpath, test_state):
+    from rich.text import Text
+    subpath = tuple(subpath)
+    test_paths = getattr(test_state, "test_paths", None) or {}
+    rows = getattr(test_state, "rows", None) or {}
+    qualified_here = _tests_under(subpath, test_paths)
+    if not qualified_here:
+        return None
+    by_name = {}
+    result = getattr(test_state, "result", None)
+    if result is not None:
+        by_name = {t.name: t for t in (result.tests or [])}
+    text = Text()
+    state = _aggregate_test_state(qualified_here, rows)
+    mark = TEST_MARKS[state]
+    style = TEST_MARK_STYLES.get(state, "")
+    if style:
+        text.append(mark + " ", style=style)
+    else:
+        text.append(mark + " ")
+    text.append("%s\n" % node.data)
+    # A single failed test's reason, same as TestState.render() shows
+    # under its own row, so a failure always shows a reason here too.
+    if len(qualified_here) == 1:
+        outcome = by_name.get(qualified_here[0])
+        if outcome is not None and outcome.failed and outcome.message:
+            text.append("    %s\n" % outcome.message)
+    if node.children:
+        text.append("\n")
+        for child in node.children:
+            child_sub = subpath + (child.data,)
+            qualified_child = _tests_under(child_sub, test_paths)
+            if not qualified_child:
+                text.append("  %s\n" % child.data)
+                continue
+            child_state = _aggregate_test_state(qualified_child, rows)
+            child_mark = TEST_MARKS[child_state]
+            child_style = TEST_MARK_STYLES.get(child_state, "")
+            text.append("  ")
+            if child_style:
+                text.append(child_mark + " ", style=child_style)
+            else:
+                text.append(child_mark + " ")
+            text.append("%s\n" % child.data)
+            if len(qualified_child) == 1:
+                outcome = by_name.get(qualified_child[0])
+                if outcome is not None and outcome.failed and outcome.message:
+                    text.append("      %s\n" % outcome.message)
+    return text
+
 # How many runs' links a task-kind bullet shows -- '[latest] [-1] [-2]',
 # not the whole history logindex.KEEP keeps on disk.
 LOGS_SHOWN = 3
