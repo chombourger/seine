@@ -33,7 +33,8 @@ from seine.tui.vendor import VendorScreen, VendorState
 from seine.tui.render import (append_logs_section, render_analyze,
                               render_artifacts, render_cache, render_doctor,
                               render_image_node, render_node, render_overview,
-                              render_packages, render_plan, render_root_node)
+                              render_packages, render_plan, render_root_node,
+                              render_test_node)
 from seine.tui.spectree import SpecTree
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
@@ -208,6 +209,16 @@ class OverviewScreen(BaseScreen):
             text = append_logs_section(
                 render_node(node), build.spec["distribution"]["release"],
                 build.spec["distribution"]["architecture"], (node.data,))
+        elif (self._selected_path is not None and len(self._selected_path) >= 2
+              and self._selected_path[1] == "test"):
+            # Anything under the spec's 'test:' branch lists with the
+            # same marks the Test screen uses (✔/✘/○), green/red for
+            # passed/failed. A scalar field below a case (no test of
+            # its own) falls back to the generic listing.
+            text = render_test_node(
+                node, self._selected_path[1:], self.app.test_state)
+            if text is None:
+                text = render_node(node)
         else:
             text = render_node(node)
         self.query_one("#body", Static).update(text)
