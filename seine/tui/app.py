@@ -582,8 +582,11 @@ class SeineApp(App):
                            "error": self.build_state.error,
                            "message": self.build_state.message})
         self.refresh_indicators()
-        if isinstance(self.screen, BuildScreen):
-            self.screen.update_body()
+        # The build's analyze record and plan baseline now exist, so
+        # whatever is on screen (overview, plan, build) is stale -- not
+        # just the build screen's own task list.
+        if isinstance(self.screen, BaseScreen):
+            self.screen.refresh_data()
         # One-shot: only ai.py's _start_ai_build sets this, and it must
         # not fire again for whatever build runs next.
         if self.build_state.notify_ai:
