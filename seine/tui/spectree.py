@@ -321,7 +321,9 @@ TASK_BRANCHES = {
 # same 'packages' branch.
 PACKAGE_TASK_PREFIXES = ("package:", "prepare:", "deploy:", "fetch:", "fetch-upstream:")
 
-def _branch_for(name):
+# Not '_'-prefixed: also used by render.py to match a logs/index.json
+# task name back to the spec-tree branch it belongs to.
+def branch_for(name):
     branch = TASK_BRANCHES.get(name)
     if branch:
         return branch
@@ -332,7 +334,7 @@ def _branch_for(name):
     # group's own branch.
     if ":" in name:
         prefix, rest = name.split(":", 1)
-        branch = _branch_for(rest)
+        branch = branch_for(rest)
         if branch:
             return ("multiconfig", prefix) + branch
     return None
@@ -348,7 +350,7 @@ ROOTFS_ANSIBLE_KEY = "rootfs:ansible"
 def _priority(key):
     if key in (ROOTFS_ANSIBLE_KEY, "rootfs"):
         return 1
-    if _branch_for(key) == ("packages",):
+    if branch_for(key) == ("packages",):
         return 0
     return 2
 
@@ -376,7 +378,7 @@ def highlight_active(tree, state):
             if path is not None:
                 key, labels = name, list(path)
             else:
-                branch = _branch_for(name)
+                branch = branch_for(name)
                 if branch is None:
                     continue
                 key, labels = name, list(branch)

@@ -210,7 +210,7 @@ class PathResolution(avocado.Test):
         tree.load(context)
         self.assertIsNone(tree.node_for(path))
 
-# Full app, real Textual event loop -- highlight_active()/_branch_for()
+# Full app, real Textual event loop -- highlight_active()/branch_for()
 # only prove they route a namespaced task name to the right subtree when
 # a build is actually running and ticking the tree, same as
 # tests/tui/tui.py's own spectree-highlighting test.

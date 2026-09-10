@@ -80,5 +80,45 @@ class LogIndexRecording(avocado.Test):
                  for i in range(logindex.KEEP + 5 - 1, 4, -1)]
         self.assertEqual([e["dir"] for e in entries], newest)
 
+    # Task log paths land in index.json relative to index.json
+    # itself (logs_root()), never absolute -- an absolute path bakes
+    # in a machine-specific $SEINE_LOG_DIR.
+    def test_task_log_paths_are_stored_relative_to_the_index(self):
+        logs = os.path.join(self.workdir, "abc123", "20260101-000000")
+        logindex.record(
+            ["a.yaml"], "trixie", "amd64", logs,
+            [_task("rootfs", log=os.path.join(logs, "rootfs.log"))], True)
+        [entry] = logindex.entries()
+        self.assertEqual(entry["tasks"][0]["log"],
+                         os.path.join("abc123", "20260101-000000", "rootfs.log"))
+        self.assertFalse(os.path.isabs(entry["tasks"][0]["log"]))
+
     def test_no_index_file_yet_is_an_empty_list(self):
         self.assertEqual(logindex.entries(), [])
+
+    # begin() announces a run that is still going: the entry is there
+    # (ok None) before record() finalizes it, so a running build has
+    # an index.json too -- not only a finished one.
+    def test_begin_is_visible_before_record_finalizes_it(self):
+        logs = os.path.join(self.workdir, "d", "t")
+        started = logindex.begin(["a.yaml"], "trixie", "amd64", logs,
+                                 [_task("packages")])
+        self.assertIsNotNone(started)
+        [entry] = logindex.entries()
+        self.assertIsNone(entry["ok"])
+        self.assertEqual(entry["started"], started)
+        self.assertEqual(entry["tasks"], [_task("packages")])
+
+        logindex.record(["a.yaml"], "trixie", "amd64", logs,
+                        [_task("packages", failed=True)], False, started)
+        [entry] = logindex.entries()
+        self.assertFalse(entry["ok"])
+        self.assertEqual(entry["tasks"], [_task("packages", failed=True)])
+
+    # begin() with no log directory is a no-op like record(), returning
+    # None rather than a handle.
+    def test_begin_with_no_logs_directory_is_a_no_op(self):
+        self.assertIsNone(
+            logindex.begin(["a.yaml"], "trixie", "amd64", None, []))
+        self.assertEqual(logindex.entries(), [])
+        self.assertFalse(os.path.exists(os.path.join(self.workdir, logindex.INDEX_FILE)))

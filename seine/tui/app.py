@@ -15,6 +15,7 @@ import json
 
 from textual import command
 from textual.app import App
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.css.query import NoMatches
 from textual.widgets import RichLog, Static
@@ -29,28 +30,98 @@ from seine.tui.filesystem import FilesystemScreen, FilesystemState
 from seine.tui.history import History
 from seine.tui.issues import IssuesScreen
 from seine.tui.vendor import VendorScreen, VendorState
-from seine.tui.render import (render_analyze, render_artifacts, render_cache,
-                              render_doctor, render_image_node, render_node,
-                              render_overview, render_packages, render_plan,
-                              render_root_node)
+from seine.tui.render import (append_logs_section, render_analyze,
+                              render_artifacts, render_cache, render_doctor,
+                              render_image_node, render_node, render_overview,
+                              render_packages, render_plan, render_root_node)
 from seine.tui.spectree import SpecTree
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
 from seine.tui.testing import TestState
 
+# A read failure shows inline rather than raising, same as
+# FilesystemScreen's own preview_failed() does for a bad file. Split
+# out from LogViewer/_refresh_log_pane() so it's testable on its own,
+# without touching RichLog's internal render state.
+def _read_log(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError as e:
+        return "could not read %s: %s" % (path, e)
+
+# Read-only, scrollable -- same widget class TestScreen/BuildScreen use
+# for '#tail'. Hidden until a log link is clicked (see
+# OverviewScreen._refresh_log_pane()), sharing the tree's own slot
+# rather than the right pane's, per how the feature was asked for.
+class LogViewer(RichLog):
+    def __init__(self, **kwargs):
+        super().__init__(markup=False, wrap=True, max_lines=20000, **kwargs)
+        self.display = False
+
+# Reads the 'log-click' marker render.py's append_logs_section() puts
+# in a span's meta -- a plain value, not Rich's '@click' action-link
+# string, which Textual overlays with its own link style regardless
+# (same reasoning as target_screen.py's TargetStatusStatic, the
+# precedent this mirrors).
+class BodyStatic(Static):
+    def on_click(self, event):
+        path = event.style.meta.get("log-click")
+        if path:
+            self.screen.action_show_log(path)
+
+# How wide the image-node boxes may be: the right pane's own content
+# width, not render.py's BOX_WIDTH default -- the pane only owns a
+# third of the screen, so the default overflows it on a standard
+# 80-column terminal. A scrollbar is reserved when none is shown yet:
+# tall boxes always earn one once they land, which would otherwise
+# shrink the pane after measuring and wrap the box art. Zero (before
+# first layout) falls back to the default.
+def _body_width(screen):
+    from seine.tui.render import BOX_WIDTH
+    body = screen.query_one("#body", Static)
+    pane = screen.query_one("#cmd")
+    width = body.content_size.width
+    if width <= 0:
+        return BOX_WIDTH
+    if not pane.show_vertical_scrollbar:
+        width -= pane.scrollbar_size_vertical or 2
+    return width
+
 class OverviewScreen(BaseScreen):
+    HINT_ADD = [("complete", "logback", "Esc back (viewing a log)")]
+
+    # No-op unless a log is being viewed -- same shape as
+    # FilesystemScreen's own 'escape' -> action_close_preview.
+    BINDINGS = BaseScreen.BINDINGS + [Binding("escape", "close_log", show=False)]
+
+    # LogViewer takes over the tree's own slot rather than the right
+    # pane's: '#body' is still where node content and Logs: links live,
+    # a log's actual text goes on the left where SpecTree normally is.
+    def compose(self):
+        yield Horizontal(
+            SpecTree(id="spectree"),
+            LogViewer(id="logviewer"),
+            StaticPane(BodyStatic(id="body", markup=False), id="cmd"),
+            id="main",
+        )
+        yield from self.footer()
+
     # Not reported from SeineApp.on_mount(): the status bar isn't
     # mounted yet at that point.
     def on_mount(self):
         # Set before super().on_mount(): it calls refresh_data(), which
         # calls update_body() (overridden below) right away -- too soon
-        # to read this attribute if it were set after.
+        # to read these attributes if they were set after.
         #
         # SpecTree.path_for() of whichever node is currently selected,
         # so the right pane can follow it; None shows the whole-context
         # overview, same as every screen before selection started
         # driving this one.
         self._selected_path = None
+        # Absolute path of the log currently shown in '#logviewer', or
+        # None when the tree is showing instead.
+        self._log_path = None
         super().on_mount()
         if self.app._startup_error:
             self.say(self.app._startup_error, error=True)
@@ -61,8 +132,44 @@ class OverviewScreen(BaseScreen):
     # longer matches (an unrelated reload renamed/removed it) just
     # falls back to the overview in update_body() below.
     def on_tree_node_selected(self, event):
-        self._selected_path = self.query_one(SpecTree).path_for(event.node)
+        self._track_selection(event.node)
+
+    # Cursor moves (up/down) re-render the pane too -- requiring Enter
+    # to see a node's content lagged one keystroke behind navigation.
+    def on_tree_node_highlighted(self, event):
+        self._track_selection(event.node)
+
+    def _track_selection(self, node):
+        self._selected_path = self.query_one(SpecTree).path_for(node)
         self.update_body()
+
+    # Swaps the tree for a log's text -- Esc (action_close_log) swaps
+    # back. A read failure shows inline rather than raising, same as
+    # FilesystemScreen's own preview_failed() does for a bad file.
+    # 'path' is absolute (render.py resolves index.json-relative
+    # entries via logindex.resolve() before putting them in the
+    # click meta), but a relative path still resolves against
+    # logs_root() here rather than the process cwd.
+    def action_show_log(self, path):
+        from seine import logindex
+        self._log_path = logindex.resolve(path)
+        self._refresh_log_pane()
+
+    def action_close_log(self):
+        if self._log_path is not None:
+            self._log_path = None
+            self._refresh_log_pane()
+
+    def _refresh_log_pane(self):
+        tree = self.query_one(SpecTree)
+        viewer = self.query_one(LogViewer)
+        showing = self._log_path is not None
+        if showing:
+            viewer.clear()
+            viewer.write(_read_log(self._log_path))
+        tree.display = not showing
+        viewer.display = showing
+        (viewer if showing else tree).focus()
 
     def update_body(self):
         tree = self.query_one(SpecTree)
@@ -85,7 +192,22 @@ class OverviewScreen(BaseScreen):
         elif node.data == "image" and node.parent is not None and node.parent.parent is tree.root:
             index = tree.root.children.index(node.parent)
             build = self.app.context.builds[index]
-            text = render_image_node(build.spec.get("image") or {})
+            text = render_image_node(build.spec.get("image") or {},
+                                     width=_body_width(self))
+            text = append_logs_section(
+                text, build.spec["distribution"]["release"],
+                build.spec["distribution"]["architecture"], ("image",))
+        elif (node.parent is not None and node.parent.parent is tree.root
+              and node.data in ("distribution", "packages", "playbook")):
+            # Task-backed branches without a dedicated renderer of their
+            # own yet: generic fallback content, with whatever logs
+            # exist for the task(s) spectree.branch_for() maps them to
+            # appended below.
+            index = tree.root.children.index(node.parent)
+            build = self.app.context.builds[index]
+            text = append_logs_section(
+                render_node(node), build.spec["distribution"]["release"],
+                build.spec["distribution"]["architecture"], (node.data,))
         else:
             text = render_node(node)
         self.query_one("#body", Static).update(text)
@@ -208,15 +330,18 @@ class SeineApp(App):
     #main, #buildrow { height: 1fr; }
     /* 'round', not Input's default 'tall': 'tall' uses eighth-block
        glyphs some terminal fonts lack, breaking the border. */
-    #spectree, #tail { width: 2fr; height: 100%; }
-    #prompt, #spectree, #tail, #fslist, #previewpane { border: round $foreground 40%; }
-    #prompt:focus, #spectree:focus, #tail:focus, #fslist:focus, #previewpane:focus {
+    #spectree, #tail, #logviewer { width: 2fr; height: 100%; }
+    #prompt, #spectree, #tail, #fslist, #previewpane, #logviewer {
+        border: round $foreground 40%;
+    }
+    #prompt:focus, #spectree:focus, #tail:focus, #fslist:focus,
+    #previewpane:focus, #logviewer:focus {
         border: round $border;
     }
     #cmd, #tasks { width: 1fr; height: 100%; border: round $foreground 40%; }
     #body { padding: 1 2; }
     #tasklist { padding: 1 2; }
-    #tail { padding: 0 1; }
+    #tail, #logviewer { padding: 0 1; }
     /* Vendor screen: own ids, 1fr:1fr both rows (others are 2fr:1fr). */
     #vendormain, #vendorrow { height: 1fr; }
     #vendorspectree, #vendortail, #vendorstatspane, #vendortaskspane {
