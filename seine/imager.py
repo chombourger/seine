@@ -13,8 +13,6 @@ import guestfs
 
 from seine.bootloader        import detect as detect_bootloader
 from seine.imager_appliance import ImagerAppliance
-from seine.imager_kernel    import ImagerKernel
-from seine.imager_extra_tools import ExtraImagerTools
 from seine.packages          import FALLBACK_EPOCH
 from seine.partition        import RO_FSTYPES
 from seine.partition        import VERITY_HASH_TYPE
@@ -755,37 +753,24 @@ class Imager:
         os.chmod(wrapper_path, os.stat(wrapper_path).st_mode | stat.S_IEXEC)
         return wrapper_path
 
-    # Returns the hypervisor path for g.set_hv(), if any. Same-arch builds
-    # use libguestfs's normal supermin auto-build. Cross-arch builds use a
-    # pre-built appliance (supermin can't cross-build) plus a qemu wrapper
-    # for its hardcoded x86 flags.
+    # Every architecture now builds and boots the same custom appliance.
+    # Cross-arch builds additionally need a qemu wrapper for its
+    # hardcoded x86 flags.
     def _prepare_appliance(self, output_dir):
         target_arch = self.source.spec["distribution"]["architecture"]
-        if target_arch == HOST_ARCH:
-            print("Preparing imager kernel...")
-            imagerKernel = ImagerKernel(self.source)
-            imagerKernel.create()
-            vmlinuz, modules, version = imagerKernel.extract(output_dir)
-            os.environ["SUPERMIN_KERNEL"] = vmlinuz
-            os.environ["SUPERMIN_KERNEL_VERSION"] = version
-            os.environ["SUPERMIN_MODULES"] = modules
-            if self.verbose:
-                print("  package: %s" % imagerKernel.package)
-                print("  version: %s" % version)
-            return self._hypervisor(target_arch)
-
-        print("Preparing imager kernel...")
-        imagerKernel = ImagerKernel(self.source)
-        imagerKernel.create()
-
-        print("Preparing cross-arch imager appliance for '%s'..." % target_arch)
-        imagerAppliance = ImagerAppliance(self.source, imagerKernel)
+        print("Preparing imager appliance...")
+        imagerAppliance = ImagerAppliance(self.source)
         imagerAppliance.create()
-        appliance_dir = imagerAppliance.extract(output_dir)
+        appliance_dir, extra_tools_files = imagerAppliance.extract(output_dir)
         os.environ["LIBGUESTFS_PATH"] = appliance_dir
-        os.environ["LIBGUESTFS_BACKEND_SETTINGS"] = "force_tcg"
+        # Used later by _anchor_one_uki()'s objcopy/ukify/sbsign steps.
+        self._extra_tools = imagerAppliance
+        self._extra_tools_files = extra_tools_files
 
         real_hv = self._hypervisor(target_arch)
+        if target_arch == HOST_ARCH:
+            return real_hv
+        os.environ["LIBGUESTFS_BACKEND_SETTINGS"] = "force_tcg"
         return self._write_qemu_wrapper(output_dir, target_arch, real_hv)
 
     # Two separate tasks: the appliance only needs packages (for its own
@@ -799,29 +784,10 @@ class Imager:
         ]
 
     def _prepare(self):
-        # Scratch dir for the unpacked appliance kernel/modules, not kept.
+        # Scratch dir for the unpacked appliance/tools, not kept.
         self._output_dir = tempfile.mkdtemp(dir=ContainerEngine.scratch(),
                                            prefix="imager-")
         self._hypervisor_path = self._prepare_appliance(self._output_dir)
-        self._extra_tools_files = self._prepare_extra_tools(self._output_dir)
-
-    def _prepare_extra_tools(self, output_dir):
-        mounts = self.source.partitionHandler.mounts
-        need_ro = any(m["type"] in RO_FSTYPES for m in mounts)
-        need_fat = any(m["type"] in ("vfat", "msdos") for m in mounts)
-        need_ext = any(m["type"] in ("ext2", "ext3", "ext4") for m in mounts)
-        if not (need_ro or need_fat or need_ext):
-            self._extra_tools = None
-            return []
-        print("Preparing imager tools...")
-        need_verity = any(m.get("verity") for m in mounts)
-        tools = ExtraImagerTools(self.source, need_verity=need_verity,
-                                 need_fat=need_fat, need_ext=need_ext)
-        tools.create()
-        # Kept beyond this method: _build_ro_images()'s UKI step runs
-        # objcopy/ukify/sbsign against this built image (tools.name).
-        self._extra_tools = tools
-        return tools.extract(output_dir)
 
     def _build(self):
         self.create()
@@ -837,7 +803,7 @@ class Imager:
             print("Starting imager appliance...")
             g = guestfs.GuestFS(python_return_dict=True)
             g.add_drive_opts(disk, format="raw", readonly=False)
-            need_ext = self._extra_tools and self._extra_tools.need_ext
+            need_ext = any(m["type"] in ("ext2", "ext3", "ext4") for m in ph.mounts)
             if need_ext:
                 ext_mounts = [m for m in ph.mounts if m["type"] in ("ext2", "ext3", "ext4")]
                 # Room for one mount's captured content plus its rebuilt

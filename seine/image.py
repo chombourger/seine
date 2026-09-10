@@ -22,7 +22,6 @@ from seine.bootstrap      import HostBootstrap
 from seine.bootstrap      import TargetBootstrap
 from seine.imager         import Imager
 from seine.imager_appliance import ImagerAppliance
-from seine.imager_kernel  import ImagerKernel
 from seine.transport_bootstrap import TransportBootstrap
 from seine.sbom           import SBOM
 from seine.sbuild         import BuilderImage
@@ -500,10 +499,7 @@ class Image:
                  self.targetBootstrap.name,
                  BuilderImage(distro, self.options).name]
         try:
-            kernel = ImagerKernel(self)
-            named.append(kernel.name)
-            if distro["architecture"] != utils.HOST_ARCH:
-                named.append(ImagerAppliance(self, kernel).name)
+            named.append(ImagerAppliance(self).name)
         except ValueError:
             # A specification with no imager kernel for its architecture
             # names none; that is the build's complaint to make, not ours.
