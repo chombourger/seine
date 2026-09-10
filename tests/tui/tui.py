@@ -837,6 +837,32 @@ class App(avocado.Test):
                 self.assertIsInstance(app.screen, self.OverviewScreen)
         _run(scenario)
 
+    # Before any selection, Overview's right pane is still the
+    # whole-context overview it always was.
+    def test_overview_pane_before_selection_is_unchanged(self):
+        async def scenario():
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test():
+                body = app.screen.query_one("#body")
+                self.assertIn("would write:", _content(body))
+        _run(scenario)
+
+    # Tab into the spec tree, Down gives the tree a cursor (none exists
+    # until moved once), Enter selects whatever it lands on (the first
+    # group node here) -- the right pane should switch to that node's
+    # own content instead of the overview text.
+    def test_selecting_a_tree_node_drives_the_right_pane(self):
+        async def scenario():
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                await pilot.press("tab")
+                await pilot.press("down")
+                await pilot.press("enter")
+                await pilot.pause()
+                body = app.screen.query_one("#body")
+                self.assertNotIn("would write:", _content(body))
+        _run(scenario)
+
     def test_startup_with_a_bad_spec_shows_the_error_not_a_crash(self):
         async def scenario():
             app = self.SeineApp(files=["/does/not/exist.yaml"])

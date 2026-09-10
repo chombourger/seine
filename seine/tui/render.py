@@ -55,6 +55,17 @@ def render_overview(context):
             parts.append("  would write: %s" % output)
     return "\n".join(parts) + "\n"
 
+# Fallback right-pane content for a selected spec-tree node without a
+# dedicated renderer of its own (root/image/logs get one; everything
+# else lands here): the node's own text, plus its immediate children's
+# labels when it's a branch rather than a scalar leaf.
+def render_node(node):
+    if node.children:
+        lines = [str(node.data), ""]
+        lines += ["  %s" % child.data for child in node.children]
+        return "\n".join(lines) + "\n"
+    return "%s\n" % node.data
+
 # 'Image.plan()' prints straight to stdout, like every other 'seine'
 # command; captured rather than reimplemented.
 def _captured(fn):
