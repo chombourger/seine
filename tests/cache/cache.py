@@ -595,7 +595,6 @@ class EveryImageSaysWhatItIs(avocado.Test):
         from seine.bootstrap import HostBootstrap, TargetBootstrap
         from seine.cache import CARRIED_KINDS
         from seine.imager_appliance import ImagerAppliance
-        from seine.imager_kernel import ImagerKernel
         from seine.sbuild import BuilderImage
         from seine.sources import SourceBootstrap
         from seine.transport_bootstrap import TransportBootstrap
@@ -605,7 +604,6 @@ class EveryImageSaysWhatItIs(avocado.Test):
         for cls, kind in [(HostBootstrap, TOOLING_KIND),
                           (TargetBootstrap, ROOTFS_KIND),
                           (BuilderImage, BUILDER_KIND),
-                          (ImagerKernel, IMAGER_KIND),
                           (ImagerAppliance, IMAGER_KIND),
                           (TransportBootstrap, TRANSPORT_KIND),
                           (SourceBootstrap, SOURCE_KIND)]:
