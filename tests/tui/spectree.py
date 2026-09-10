@@ -84,6 +84,21 @@ def _child(node, label):
             return child
     return None
 
+# Vendor-only (no 'image:'): parses fine on its own, same shape as
+# tests/tui/tui.py's _write_vendor_only_spec, kept self-contained here
+# for the same reason that file gives for not sharing test helpers.
+def _write_release_spec(workdir, name, release):
+    path = os.path.join(workdir, "%s.yaml" % name)
+    with open(path, "w") as f:
+        f.write(
+            "distribution:\n"
+            "    release: %s\n"
+            "    architecture: amd64\n"
+            "    uri: http://example.com/debian\n"
+            "vendor:\n"
+            "    - name: openssl\n" % release)
+    return path
+
 # Descends 'labels' from 'node', asserting each step actually matched --
 # a broken chain fails at the label that went missing, not with an
 # AttributeError three calls later.
@@ -142,6 +157,58 @@ class NestedGroups(avocado.Test):
         tree = self._tree([NATIVE_IMAGE])
         root = tree.root.children[0]
         self.assertIsNone(_child(root, "multiconfig"))
+
+# path_for()/node_for(): how OverviewScreen's right pane keeps a
+# selection across load() rebuilding every node from scratch -- no
+# running App needed, same style as NestedGroups above.
+class PathResolution(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.context import Context
+            from seine.tui.spectree import SpecTree
+        self.Context = Context
+        self.SpecTree = SpecTree
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+
+    def _tree(self, files):
+        context = self.Context()
+        context.use(files)
+        tree = self.SpecTree()
+        tree.load(context)
+        return tree
+
+    def test_path_for_and_node_for_round_trip(self):
+        tree = self._tree([NATIVE_IMAGE])
+        root = tree.root.children[0]
+        distribution = _descend(self, root, "distribution")
+        release_leaf = next(
+            (c for c in distribution.children if c.data.startswith("release:")), None)
+        self.assertIsNotNone(release_leaf, "no 'release:' leaf under distribution")
+        path = tree.path_for(release_leaf)
+        self.assertEqual(tree.node_for(path), release_leaf)
+
+    # A path captured against one load() that no longer matches after a
+    # later one (different spec entirely here, but an unrelated
+    # /side-load rebuilding the same group would do the same) resolves
+    # to None rather than some unrelated node that happens to share a
+    # prefix.
+    def test_stale_path_resolves_to_none_after_reload(self):
+        spec_a = _write_release_spec(self.workdir, "a", "bookworm")
+        spec_b = _write_release_spec(self.workdir, "b", "trixie")
+        tree = self._tree([spec_a])
+        root = tree.root.children[0]
+        distribution = _descend(self, root, "distribution")
+        release_leaf = _child(distribution, "release: bookworm")
+        self.assertIsNotNone(release_leaf)
+        path = tree.path_for(release_leaf)
+        context = self.Context()
+        context.use([spec_b])
+        tree.load(context)
+        self.assertIsNone(tree.node_for(path))
 
 # Full app, real Textual event loop -- highlight_active()/_branch_for()
 # only prove they route a namespaced task name to the right subtree when
