@@ -468,6 +468,13 @@ class Builder:
         # Enforces that tasks() is called once, with the union of every
         # image's packages, not once per image.
         self._tasked = None
+        # (package, architecture, stamp) for every package tasks() found
+        # already current -- set alongside self._tasked, read back by
+        # cached_task_entries() below. Cache-hit packages never get a
+        # Task at all (see tasks()), so this is the only record of them.
+        # Named apart from the _reused() *method* below (a barrier
+        # Task's own run callable) -- same name would shadow it.
+        self._reused_entries = []
         # Which kernels' cross headers this run already made, so two
         # modules against one kernel do not each build it.
         self._crossed = set()
@@ -1423,6 +1430,7 @@ class Builder:
         # build has made the rest of the packages, and one just made is
         # not one that was reused.
         reused = self.current(packages)
+        self._reused_entries = reused
         if len(pending) == 0:
             # Nothing to build, but maybe something to index: a machine
             # that imported a repository has .debs with no index yet.
@@ -1544,6 +1552,22 @@ class Builder:
             entry = Index().hit(PACKAGE, key)
             say(self.options, "package %s reused, made %s"
                               % (key, since(entry.get("made"))))
+
+    # logs/index.json entries for packages this build's own Task graph
+    # never created a 'package:<name>' Task for at all -- tasks() already
+    # knows which packages are current before it builds the graph (see
+    # 'reused'/self._reused_entries above), so a cache-hit package leaves nothing
+    # in 'steps' for a caller to find '.started' on after the fact.
+    #
+    # 'packages': narrow to one image's own request (a multiconfig arch-
+    # cohort's Builder is shared by several groups, only some of which
+    # asked for a given reused package) -- every reused package when None.
+    def cached_task_entries(self, packages=None):
+        names = None if packages is None else {p.name for p in packages}
+        return [{"name": "package:%s" % self.label(package, architecture),
+                 "failed": False, "cached": True, "log": None}
+                for package, architecture, _stamp in self._reused_entries
+                if names is None or package.name in names]
 
     # Cache-index key: release/architecture/name, since one source built
     # for two releases (or architectures) is two different sets of .debs.
