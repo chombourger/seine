@@ -2433,6 +2433,24 @@ class BuildStateBehaviour(avocado.Test):
                            for row in state.rows.values()))
         self.assertIn("○", state.render())
 
+    def test_render_omits_an_empty_packages_barrier(self):
+        # NATIVE_IMAGE asks for no packages: the graph still queues its
+        # 'packages' barrier, but the task pane shows no row for it.
+        state = self.BuildState()
+        state.reset(self.build)
+        self.assertIn("packages", state.order)
+        self.assertNotIn("packages", state.render())
+
+    def test_render_keeps_a_packages_barrier_with_work_behind_it(self):
+        state = self.BuildState()
+        state.reset(self.build)
+        state.order = ["bootstrap-host", "package:busybox", "packages"]
+        state.rows = {
+            name: {"needs": [], "state": "pending",
+                   "started": None, "elapsed": None}
+            for name in state.order}
+        self.assertIn("packages", state.render())
+
     def test_a_step_moves_from_running_to_done(self):
         state = self.BuildState()
         state.reset(self.build)

@@ -9,6 +9,7 @@ from rich.text import Text
 from textual.widgets import Tree
 
 from seine import multiconfig
+from seine import tasks
 from seine.utils import redact as redact_value
 from seine.utils import redactions
 
@@ -318,8 +319,9 @@ TASK_BRANCHES = {
 
 # Every per-package/per-source task name packages.Builder.tasks() gives
 # itself. With --jobs > 1 several can run at once; all light up the
-# same 'packages' branch.
-PACKAGE_TASK_PREFIXES = ("package:", "prepare:", "deploy:", "fetch:", "fetch-upstream:")
+# same 'packages' branch. The prefixes live with the graph (tasks),
+# not here: core must not import the TUI back.
+PACKAGE_TASK_PREFIXES = tasks.PACKAGE_STEPS
 
 # Not '_'-prefixed: also used by render.py to match a logs/index.json
 # task name back to the spec-tree branch it belongs to.

@@ -217,13 +217,41 @@ def interrupt():
     # Not print(): a task's output goes to its own file, not the terminal.
     sys.stderr.write("\n%s\n" % said)
 
-# Prints the run order run() would take, without running anything.
+# Step names packages.Builder.tasks() splits a package build into --
+# matched after any cohort/group namespace, so 'trixie-amd64:package:foo'
+# counts the same as a bare 'package:foo'. Owned here, not by either
+# reader: tui/spectree.py imports this for its own highlighting, and
+# core must not import the TUI back.
+PACKAGE_STEPS = ("package:", "prepare:", "deploy:", "fetch:", "fetch-upstream:")
+
+def _does_package_work(name):
+    return any(":%s" % step in ":%s" % name for step in PACKAGE_STEPS)
+
+# Whether 'name' is a 'packages' barrier ('packages' itself, or one
+# cohort/group namespace out) with no package step behind it: nothing to
+# build, or everything already built. The plan and the TUI task list
+# leave such a barrier out rather than queue an empty-looking task; the
+# graph itself keeps it, so 'rootfs' still has something to wait for.
+def is_empty_barrier(name, names):
+    return (name == "packages" or name.endswith(":packages")) \
+        and not any(_does_package_work(other) for other in names)
+
+# Prints the run order run() would take, without running anything. An
+# empty 'packages' barrier is left out, and dropped from the 'after'
+# lists naming it, so a build with nothing to (re)build shows only the
+# work that remains.
 def describe(tasks):
-    for task in ordered(tasks):
-        if len(task.needs) == 0:
+    tasks = ordered(tasks)
+    names = {t.name for t in tasks}
+    hidden = {t.name for t in tasks if is_empty_barrier(t.name, names)}
+    for task in tasks:
+        if task.name in hidden:
+            continue
+        needs = [need for need in task.needs if need not in hidden]
+        if len(needs) == 0:
             print("  %s" % task.name)
         else:
-            print("  %-24s after %s" % (task.name, ", ".join(task.needs)))
+            print("  %-24s after %s" % (task.name, ", ".join(needs)))
 
 # Capacity of one resource class: 'resources[cls]' if given, else 'jobs'.
 def _capacity(cls, jobs, resources):
