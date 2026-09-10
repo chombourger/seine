@@ -16,7 +16,7 @@ from seine.progress import elapsed
 from seine.tui.base import BaseScreen, StaticPane
 from seine.tui.reporter import TextualReporter
 from seine.tui.render import render_overview
-from seine.tui.spectree import SpecTree, _branch_for, _item_label
+from seine.tui.spectree import SpecTree, branch_for, _item_label
 
 MARKS = {"pending": "○", "running": "●", "done": "✔", "failed": "✘"}
 
@@ -55,7 +55,7 @@ def _log_target(state):
               if row["state"] == "running"}
     if len(running) == 0:
         return state.current
-    packages = [name for name in running if _branch_for(name) == ("packages",)]
+    packages = [name for name in running if branch_for(name) == ("packages",)]
     if packages:
         return min(packages, key=lambda name: state.rows[name]["started"] or 0)
     if "rootfs" in running:

@@ -70,16 +70,18 @@ def render_overview(context):
 # Root/group node: the spec files this group loaded, each marked with
 # its 'git status --porcelain' code (mirrors git's own vocabulary
 # rather than a single invented "changed" marker, so worktree/index/
-# untracked nuance comes for free) and a lock icon for any with a
-# loaded '.lock.yaml' sibling, then the same per-build stats
-# render_overview() shows above, scoped to just this one group.
+# untracked nuance comes for free) and a trailing lock icon for any
+# with a loaded '.lock.yaml' sibling (trailing, so the file names stay
+# left-aligned regardless of the icon's cell width), then the same
+# per-build stats render_overview() shows above, scoped to just this
+# one group.
 def render_root_node(files, build):
     lines = ["spec files:"]
     for path in files:
         status = git_status(path) or "  "
         sibling = lock_sibling(path)
-        lock = "\U0001F512 " if sibling and os.path.isfile(sibling) else ""
-        lines.append("  %s %s%s" % (status, lock, path))
+        lock = " \U0001F512" if sibling and os.path.isfile(sibling) else ""
+        lines.append("  %s %s%s" % (status, path, lock))
     output = build.image._output
     name = (output.rsplit("/", 1)[-1].rsplit(".", 1)[0] if output else
            multiconfig._label(build))
@@ -91,9 +93,10 @@ def render_root_node(files, build):
 # not the plain key/value dump the generic node fallback would give.
 # seine's spec has no 'swap'/'ESP' concept, so roles are read off what
 # a partition/volume actually declares (boot/xbootldr flags, 'where',
-# fs type) rather than inventing fields that don't exist. 'root'/'lvm'
-# both share the color a container's frame paints its own header in.
-_ROLE_STYLES = {"boot": "cyan", "root": "green", "lvm": "blue",
+# fs type) rather than inventing fields that don't exist. A container
+# (an LVM-PV partition, the only entry without a 'where') gets its own
+# color -- purple -- rather than sharing plain blue 'data'.
+_ROLE_STYLES = {"boot": "cyan", "root": "green", "lvm": "purple",
                 "data": "blue", "verity": "magenta"}
 _ROLE_ORDER = ("boot", "root", "lvm", "data", "verity")
 
@@ -119,10 +122,18 @@ def _is_container(entry):
     return "where" not in entry and entry.get("group") is not None
 
 FLOOR_ROWS = 2  # label + size, the decided two-row box content
-# ponytail: an arbitrary but readable spread of extra rows a sibling
-# group's largest member can earn over the floor; tune if it reads wrong.
+# ponytail: an arbitrary but readable spread of extra rows the
+# image's largest leaf can earn over the floor; tune if it reads wrong.
 EXTRA_ROWS_BUDGET = 16
-BOX_WIDTH = 45  # comfortably under the pane's own width in practice
+# Widest a box ever gets -- the whole pane on a wide terminal. The
+# actual width comes from the pane itself (render_image_node()'s
+# 'width'): the right pane only owns a third of the screen, so a fixed
+# 45 overflows it on a standard 80-column terminal.
+BOX_WIDTH = 45
+# Narrowest a box still reads as one: borders plus a few label
+# characters. Only matters on a comically narrow terminal; the pane
+# hands down something wider in practice.
+MIN_BOX_WIDTH = 12
 
 def _extra_rows(sizes, budget=EXTRA_ROWS_BUDGET):
     total = sum(sizes)
@@ -130,10 +141,12 @@ def _extra_rows(sizes, budget=EXTRA_ROWS_BUDGET):
         return [0] * len(sizes)
     return [round(budget * size / total) for size in sizes]
 
-# Leaves only: proportional height computed among a sibling group (top-
-# level partitions that aren't LVM-PVs, or one LVM group's own volumes)
-# -- a container's rows are never part of this competition, see
-# _layout() below.
+# Leaves only, but budgeted across the WHOLE image in one go: top-level
+# partitions and every LVM group's volumes compete for the same extra
+# rows. Per-group budgets made cross-group comparisons lie -- a 128MiB
+# top-level partition sharing a budget with only a 16MiB sibling earned
+# nearly as many rows as a 2GiB volume sharing its own group's budget
+# with a 512MiB sibling, and could even render taller than it.
 def _leaf_boxes(entries):
     boxes = [{"label": e["label"], "type": e.get("type", ""),
              "size": e.get("size") or 0, "role": _role(e), "children": []}
@@ -146,6 +159,9 @@ def _leaf_boxes(entries):
 # its own header row), not a proportional share computed against its
 # sibling leaves -- simpler than computing proportion at every level,
 # and what a container displays is already exactly what it contains.
+# Its children still earn their rows from the image-wide budget above,
+# so a container and a plain partition stay comparable: both bottom
+# out at leaves measured on the same scale.
 def _layout(image_spec):
     partitions = image_spec.get("partitions") or []
     volumes = image_spec.get("volumes") or []
@@ -153,12 +169,15 @@ def _layout(image_spec):
     for volume in volumes:
         by_group.setdefault(volume.get("group"), []).append(volume)
 
-    leaf_entries = [p for p in partitions if not _is_container(p)]
     container_entries = [p for p in partitions if _is_container(p)]
+    leaf_entries = [p for p in partitions if not _is_container(p)]
+    for entry in container_entries:
+        leaf_entries.extend(by_group.get(entry.get("group"), []))
 
     boxes_by_label = {box["label"]: box for box in _leaf_boxes(leaf_entries)}
     for entry in container_entries:
-        children = _leaf_boxes(by_group.get(entry.get("group"), []))
+        children = [boxes_by_label[v["label"]]
+                    for v in by_group.get(entry.get("group"), [])]
         rows = 1 + sum(child["rows"] for child in children) if children else FLOOR_ROWS
         boxes_by_label[entry["label"]] = {
             "label": entry["label"], "type": entry.get("type", ""),
@@ -168,32 +187,37 @@ def _layout(image_spec):
     # On-disk order, not leaves-then-containers.
     return [boxes_by_label[p["label"]] for p in partitions]
 
-# One (line, role) pair per row -- a nested child's wrapping frame
-# chars ('| ' / ' |') take the CHILD's role, not the parent's: simpler
-# than mixing two styles on one row, and still reads which box a given
-# row belongs to at a glance.
+# One row per box line, each row a list of (segment, role) pairs -- a
+# nested child's own frame keeps the CHILD's role, while the outer
+# wrapping frame ('| ' / ' |') keeps the PARENT's: the container's
+# frame stays one consistent color (purple for an LVM group) around
+# inner boxes drawn in their own (green for a root LV, ...). Label/
+# detail are truncated to the box, never widening it: a long label
+# must not push the art past the pane.
 def _box_lines(box, width):
+    width = max(width, 8)  # nesting subtracts per level; never let the border math go negative
     inner = width - 2
+    field = max(inner - 1, 1)
     role = box["role"]
     size_text = _human_size(box["size"]) if box["size"] else "?"
     detail = "%s  %s" % (box["type"], size_text) if box["type"] else size_text
     lines = [
-        ("┌" + "─" * inner + "┐", role),
-        ("│ " + box["label"].ljust(inner - 1) + "│", role),
-        ("│ " + detail.ljust(inner - 1) + "│", role),
+        [("┌" + "─" * inner + "┐", role)],
+        [("│ " + box["label"][:field].ljust(field) + "│", role)],
+        [("│ " + detail[:field].ljust(field) + "│", role)],
     ]
     if box["children"]:
         for child in box["children"]:
-            for child_line, child_role in _box_lines(child, width - 4):
-                lines.append(("│ " + child_line + " │", child_role))
+            for child_row in _box_lines(child, width - 4):
+                lines.append([("│ ", role)] + child_row + [(" │", role)])
     else:
         # A leaf's proportional share over the floor (_extra_rows()) is
         # blank filler, not more detail -- the box's height alone is
         # what carries the size comparison, not repeated text.
         blank = "│" + " " * inner + "│"
         for _ in range(box["rows"] - FLOOR_ROWS):
-            lines.append((blank, role))
-    lines.append(("└" + "─" * inner + "┘", role))
+            lines.append([(blank, role)])
+    lines.append([("└" + "─" * inner + "┘", role)])
     return lines
 
 def _flatten(boxes):
@@ -201,8 +225,9 @@ def _flatten(boxes):
         yield box
         yield from _flatten(box["children"])
 
-def render_image_node(image_spec):
+def render_image_node(image_spec, width=BOX_WIDTH):
     from rich.text import Text
+    width = max(MIN_BOX_WIDTH, min(width, BOX_WIDTH))
     boxes = _layout(image_spec)
     text = Text()
     if not boxes:
@@ -220,8 +245,10 @@ def render_image_node(image_spec):
         first = False
     text.append("\n\n")
     for box in boxes:
-        for line, role in _box_lines(box, BOX_WIDTH):
-            text.append(line + "\n", style=_ROLE_STYLES.get(role, ""))
+        for row in _box_lines(box, width):
+            for segment, role in row:
+                text.append(segment, style=_ROLE_STYLES.get(role, ""))
+            text.append("\n")
     return text
 
 # Fallback right-pane content for a selected spec-tree node without a
@@ -234,6 +261,78 @@ def render_node(node):
         lines += ["  %s" % child.data for child in node.children]
         return "\n".join(lines) + "\n"
     return "%s\n" % node.data
+
+# How many runs' links a task-kind bullet shows -- '[latest] [-1] [-2]',
+# not the whole history logindex.KEEP keeps on disk.
+LOGS_SHOWN = 3
+
+# 'branch' matches spectree.branch_for()'s return shape (a tuple, e.g.
+# ("packages",)) -- one bullet per distinct task name that maps to it,
+# across every logs/index.json entry for this release/arch. Newest
+# entries first, since logindex.entries() already is.
+def _logs_by_task(release, arch, branch):
+    from seine import logindex
+    from seine.tui.spectree import branch_for
+    matches = {}
+    for entry in logindex.entries():
+        if entry["release"] != release or entry["arch"] != arch:
+            continue
+        for t in entry.get("tasks", []):
+            if branch_for(t["name"]) != branch:
+                continue
+            matches.setdefault(t["name"], []).append(t)
+    return matches
+
+# One '@click'-free clickable span per run (see target.py's own
+# 'target-click' precedent for why not Rich's '@click' meta): green/red
+# for ok/failed, a rocket instead of a link for a cache hit (nothing to
+# open -- see logindex.py's 'cached' field), age-labelled ('[latest]',
+# '[-1]', ...) rather than a literal list index, since logindex.entries()
+# is newest-first and a literal '[-1]' would read as *oldest* in Python
+# terms -- the opposite of what's meant here.
+def _logs_section(release, arch, branch):
+    from rich.style import Style
+    from rich.text import Text
+    from seine import logindex
+    matches = _logs_by_task(release, arch, branch)
+    if not matches:
+        return None
+    text = Text()
+    text.append("\nLogs:\n")
+    for name in sorted(matches):
+        text.append("  - %s: " % name)
+        for i, run in enumerate(matches[name][:LOGS_SHOWN]):
+            label = "[latest]" if i == 0 else "[-%d]" % i
+            if run.get("cached"):
+                text.append("\U0001F680", style=Style())
+                text.append(label + " ", style=Style(dim=True))
+                continue
+            color = "red" if run["failed"] else "green"
+            # A planned-but-not-started task (see logindex.begin(): a
+            # running build announces every task upfront) has no log
+            # file yet -- dimmed, no link, rather than a clickable
+            # path that opens on "No such file or directory".
+            path = logindex.resolve(run["log"]) if run.get("log") else None
+            if path is not None and os.path.isfile(path):
+                meta = {"log-click": path}
+                text.append(label + " ", style=Style(color=color, meta=meta))
+            else:
+                text.append(label + " ", style=Style(dim=True))
+        text.append("\n")
+    return text
+
+# Appends a 'Logs:' section to whatever a task-backed node already
+# shows (a plain string from render_node(), or a Text from
+# render_image_node()) -- None (nothing in logs/index.json for this
+# release/arch/branch yet) leaves 'text' untouched.
+def append_logs_section(text, release, arch, branch):
+    from rich.text import Text
+    section = _logs_section(release, arch, branch)
+    if section is None:
+        return text
+    combined = Text(text) if isinstance(text, str) else text.copy()
+    combined.append_text(section)
+    return combined
 
 # 'Image.plan()' prints straight to stdout, like every other 'seine'
 # command; captured rather than reimplemented.

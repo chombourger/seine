@@ -25,6 +25,12 @@ class Context:
         for files in groups:
             build = BuildCmd()
             build.options = dict(build.options, ansible_library=[])
+            # What the CLI (build.py) and multiconfig._load() both set:
+            # Image._logs() keys the log directory off this, and
+            # logindex entries hash their digest off it. Without it a
+            # TUI build logs to a bare mkdtemp() and catalogs under a
+            # digest of no files at all.
+            build.options["files"] = files
             build.load_all(files)
             build.parse()
             builds.append(build)

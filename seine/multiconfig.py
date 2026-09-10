@@ -256,7 +256,7 @@ def merged_tasks(builds):
 # over the same 'group_tasks' (this group's own tasks plus the shared
 # ones it stood on -- same set analyze.record() gets, so the two stay
 # consistent about what counts as "this group's own run").
-def _record_group(build, files, all_tasks, jobs, machine, digest, logs):
+def _record_group(build, files, all_tasks, jobs, machine, digest, logs, started=None):
     own = [t.name for t in all_tasks
           if t.name.startswith("%s:" % _label(build))]
     group_tasks = tasks.ancestors(all_tasks, own)
@@ -271,7 +271,8 @@ def _record_group(build, files, all_tasks, jobs, machine, digest, logs):
                  if builder is not None else [])
         logindex.record(
             files, build.spec["distribution"]["release"],
-            build.spec["distribution"]["architecture"], logs, ran + cached, ok)
+            build.spec["distribution"]["architecture"], logs, ran + cached, ok,
+            started)
     return ok
 
 # Same prune Image.build() does after a single build, done once here
@@ -347,6 +348,22 @@ def run(groups_files, options):
     ok = False
     group_ok = {}
     machine = analyze.watching()
+    # One in-progress entry per group, so index.json exists while the
+    # run is still going -- _record_group() rewrites each with its
+    # outcome. Group membership is structural (ancestors of the group's
+    # own namespaced tasks), so it is known before anything runs.
+    log_started = {}
+    if logs:
+        for files, build in zip(groups_files, builds):
+            own = [t.name for t in all_tasks
+                   if t.name.startswith("%s:" % _label(build))]
+            group_tasks = tasks.ancestors(all_tasks, own)
+            log_started[build] = logindex.begin(
+                files, build.spec["distribution"]["release"],
+                build.spec["distribution"]["architecture"], logs,
+                [{"name": t.name, "failed": False, "cached": False,
+                  "log": os.path.join(logs, "%s.log" % t.name)}
+                 for t in group_tasks])
     with locked(ContainerEngine.storage_lock(), shared=True):
         try:
             with machine, (display if display is not None
@@ -359,7 +376,8 @@ def run(groups_files, options):
                            jobs=jobs, ok=ok, machine=machine)
             for files, build in zip(groups_files, builds):
                 group_ok[build] = _record_group(
-                    build, files, all_tasks, jobs, machine, group_digests[build], logs)
+                    build, files, all_tasks, jobs, machine, group_digests[build],
+                    logs, log_started.get(build))
     _prune()
 
     said = cache_index.summary()

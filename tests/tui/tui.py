@@ -202,9 +202,24 @@ class Rendering(avocado.Test):
 
 def _line_for(text, path):
     for line in text.splitlines():
-        if line.strip().endswith(path):
+        stripped = line.strip()
+        # render_root_node() appends a trailing lock icon after the path
+        # for specs with a loaded '.lock.yaml' sibling.
+        if stripped.endswith("🔒"):
+            stripped = stripped[:-1].strip()
+        if stripped.endswith(path):
             return line
     return None
+
+# The style covering one character of a Rich Text -- spans are appended
+# in order and never overlap, so the first span containing the offset
+# is the one that paints it. Unstyled text (the 'legend: ' prefix)
+# answers "".
+def _style_at(text, offset):
+    for span in text.spans:
+        if span.start <= offset < span.end:
+            return str(span.style)
+    return ""
 
 # render_root_node(): the group node's own file list (git-status marker
 # and lock icon per file) followed by the same stats render_overview()
@@ -372,6 +387,232 @@ class ImageNodeRendering(avocado.Test):
         small_rows = plain.split("small")[1].split("└")[0].count("\n")
         big_rows = plain.split("big")[1].split("└")[0].count("\n")
         self.assertGreater(big_rows, small_rows)
+
+    # Rendered lines from a box's own top border to its bottom border.
+    # Top-level boxes start at column 0; nested ones are wrapped one
+    # level in ('│ ' prefix), so the borders to look for differ.
+    def _box_height(self, lines, label, prefix=""):
+        start = next(i for i, line in enumerate(lines)
+                     if label in line)
+        top = start
+        while not lines[top].startswith(prefix + "┌"):
+            top -= 1
+        end = start
+        while not lines[end].startswith(prefix + "└"):
+            end += 1
+        return end - top + 1
+
+    # One image-wide height budget, not one per sibling group: a 128MiB
+    # top-level partition used to share a budget with only its 16MiB
+    # sibling and render nearly as tall as (even taller than) a 2GiB
+    # volume budgeting against its own group elsewhere.
+    def test_heights_share_one_budget_across_containers(self):
+        image_spec = {
+            "partitions": [
+                {"label": "efi", "type": "vfat", "size": 16 * 1024 * 1024,
+                 "where": "/efi", "flags": ["boot"]},
+                {"label": "boot", "type": "ext2", "size": 128 * 1024 * 1024,
+                 "where": "/boot"},
+                {"label": "system", "size": 2900 * 1024 * 1024,
+                 "group": "vg_sys", "flags": ["lvm"]},
+            ],
+            "volumes": [
+                {"label": "lv_root", "type": "ext4",
+                 "size": 2048 * 1024 * 1024, "where": "/", "group": "vg_sys"},
+                {"label": "lv_data", "type": "ext4",
+                 "size": 512 * 1024 * 1024, "where": "/var",
+                 "group": "vg_sys"},
+            ],
+        }
+        lines = self.render_image_node(image_spec, width=30).plain.splitlines()
+        boot = self._box_height(lines, "│ boot")
+        lv_root = self._box_height(lines, "lv_root", prefix="│ ")
+        lv_data = self._box_height(lines, "lv_data", prefix="│ ")
+        self.assertLess(boot, lv_root)
+        self.assertGreaterEqual(lv_root, 2 * boot)
+        self.assertLess(lv_data, lv_root)
+
+    # The right pane only owns a third of the screen (19 columns on a
+    # standard 80-column terminal once its scrollbar lands) -- box art
+    # must fit the width it is given, never the BOX_WIDTH default.
+    # Only box-art lines (borders/sides) are asserted: the 'legend:'
+    # line is plain prose, which the pane wraps harmlessly.
+    def _box_widths(self, plain):
+        return [len(line) for line in plain.splitlines()
+                if line[:1] in ("┌", "└", "│")]
+
+    def test_boxes_fit_a_narrow_pane(self):
+        image_spec = {
+            "partitions": [
+                {"label": "efi", "type": "vfat", "size": 16 * 1024 * 1024,
+                 "where": "/efi", "flags": ["boot"]},
+                {"label": "root", "type": "ext4", "size": 128 * 1024 * 1024,
+                 "where": "/"},
+            ],
+        }
+        text = self.render_image_node(image_spec, width=19)
+        widths = self._box_widths(text.plain)
+        self.assertTrue(widths)
+        self.assertLessEqual(max(widths), 19)
+
+    def test_nested_boxes_fit_a_narrow_pane(self):
+        image_spec = {
+            "partitions": [
+                {"label": "sys", "type": "ext4", "size": 200 * 1024 * 1024,
+                 "group": "vg", "flags": ["lvm"]},
+            ],
+            "volumes": [
+                {"label": "lv_root", "type": "ext4", "size": 100 * 1024 * 1024,
+                 "where": "/", "group": "vg"},
+                {"label": "lv_var", "type": "ext4", "size": 50 * 1024 * 1024,
+                 "where": "/var", "group": "vg"},
+            ],
+        }
+        text = self.render_image_node(image_spec, width=19)
+        widths = self._box_widths(text.plain)
+        self.assertTrue(widths)
+        self.assertLessEqual(max(widths), 19)
+        self.assertIn("│ ┌", text.plain)
+
+    # Stacked boxes: the outer container's frame stays one consistent
+    # color (purple for the partition holding the LVM group) around
+    # inner boxes drawn in their own -- green for the root LV -- rather
+    # than the outer border taking each nested row's color.
+    def test_lvm_container_frame_is_consistently_purple(self):
+        image_spec = {
+            "partitions": [
+                {"label": "sys", "type": "ext4", "size": 200 * 1024 * 1024,
+                 "group": "vg", "flags": ["lvm"]},
+            ],
+            "volumes": [
+                {"label": "lv_root", "type": "ext4", "size": 100 * 1024 * 1024,
+                 "where": "/", "group": "vg"},
+                {"label": "lv_var", "type": "ext4", "size": 50 * 1024 * 1024,
+                 "where": "/var", "group": "vg"},
+            ],
+        }
+        text = self.render_image_node(image_spec, width=19)
+        styles = {str(span.style) for span in text.spans}
+        self.assertIn("purple", styles)
+        self.assertIn("green", styles)
+        plain = text.plain
+        offset = 0
+        rows = 0
+        for line in plain.splitlines(keepends=True):
+            if line[:1] in ("┌", "└", "│"):
+                rows += 1
+                self.assertEqual(_style_at(text, offset), "purple",
+                                 "outer frame changes color on %r" % line)
+            offset += len(line)
+        self.assertTrue(rows)
+        self.assertEqual(_style_at(text, plain.index("lv_root")), "green")
+
+    # A label longer than the box truncates instead of widening it --
+    # ljust() alone pads short text but never shrinks long text.
+    def test_a_long_label_truncates_instead_of_widening(self):
+        image_spec = {
+            "partitions": [
+                {"label": "a-label-far-longer-than-any-narrow-box",
+                 "type": "ext4", "size": 128 * 1024 * 1024, "where": "/"},
+            ],
+        }
+        text = self.render_image_node(image_spec, width=19)
+        widths = self._box_widths(text.plain)
+        self.assertTrue(widths)
+        self.assertLessEqual(max(widths), 19)
+
+    def test_a_wide_pane_still_gets_full_width_boxes(self):
+        image_spec = {
+            "partitions": [
+                {"label": "root", "type": "ext4", "size": 128 * 1024 * 1024,
+                 "where": "/"},
+            ],
+        }
+        text = self.render_image_node(image_spec, width=200)
+        widths = self._box_widths(text.plain)
+        from seine.tui.render import BOX_WIDTH
+        self.assertEqual(max(widths), BOX_WIDTH)
+
+# append_logs_section()/_logs_section(): the 'Logs:' bullets a task-
+# backed node appends below its own content, sourced from
+# seine/logindex.py's catalog and bucketed by spectree.branch_for().
+class LogsSectionRendering(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.render import append_logs_section
+        self.append_logs_section = append_logs_section
+        os.environ["SEINE_LOG_DIR"] = self.workdir
+
+    def _record(self, tasks, release="trixie", arch="amd64", run="r"):
+        from seine import logindex
+        logindex.record(["a.yaml"], release, arch,
+                        os.path.join(self.workdir, "d", run), tasks, True)
+
+    def test_no_matching_entries_leaves_text_untouched(self):
+        text = self.append_logs_section("hello\n", "trixie", "amd64", ("distribution",))
+        self.assertEqual(text if isinstance(text, str) else text.plain, "hello\n")
+
+    def test_an_ok_run_is_a_green_clickable_link(self):
+        log = os.path.join(self.workdir, "bh.log")
+        open(log, "w").close()
+        self._record([{"name": "bootstrap-host", "failed": False,
+                      "cached": False, "log": log}])
+        text = self.append_logs_section("x\n", "trixie", "amd64", ("distribution",))
+        self.assertIn("bootstrap-host", text.plain)
+        self.assertIn("[latest]", text.plain)
+        [span] = [s for s in text.spans if s.style.meta.get("log-click") == log]
+        self.assertEqual(span.style.color.name, "green")
+
+    def test_a_failed_run_is_red(self):
+        log = os.path.join(self.workdir, "rf.log")
+        open(log, "w").close()
+        self._record([{"name": "rootfs", "failed": True, "cached": False, "log": log}])
+        text = self.append_logs_section("x\n", "trixie", "amd64", ("playbook",))
+        [span] = [s for s in text.spans if s.style.meta.get("log-click") == log]
+        self.assertEqual(span.style.color.name, "red")
+
+    # A running build announces every planned task upfront (see
+    # logindex.begin()), so a not-yet-started task has a cataloged
+    # path but no file on disk -- dimmed with no link, not a
+    # clickable path that opens on "No such file or directory".
+    def test_a_task_with_no_log_file_yet_is_dimmed_not_linked(self):
+        log = os.path.join(self.workdir, "pending.log")
+        self._record([{"name": "rootfs", "failed": False,
+                      "cached": False, "log": log}])
+        text = self.append_logs_section("x\n", "trixie", "amd64", ("playbook",))
+        self.assertIn("[latest]", text.plain)
+        self.assertFalse(any(s.style.meta.get("log-click") for s in text.spans))
+
+    def test_a_cached_run_shows_a_rocket_not_a_link(self):
+        self._record([{"name": "package:busybox-amd64", "failed": False,
+                      "cached": True, "log": None}])
+        text = self.append_logs_section("x\n", "trixie", "amd64", ("packages",))
+        self.assertIn("\U0001F680", text.plain)
+        self.assertFalse(any(s.style.meta.get("log-click") for s in text.spans))
+
+    def test_a_different_release_or_arch_is_excluded(self):
+        self._record([{"name": "bootstrap-host", "failed": False,
+                      "cached": False, "log": "x.log"}],
+                     release="bookworm")
+        text = self.append_logs_section("x\n", "trixie", "amd64", ("distribution",))
+        self.assertEqual(text if isinstance(text, str) else text.plain, "x\n")
+
+    def test_a_task_from_an_unrelated_branch_is_excluded(self):
+        self._record([{"name": "rootfs", "failed": False,
+                      "cached": False, "log": "x.log"}])
+        text = self.append_logs_section("x\n", "trixie", "amd64", ("distribution",))
+        self.assertEqual(text if isinstance(text, str) else text.plain, "x\n")
+
+    def test_only_the_newest_few_runs_are_shown(self):
+        from seine.tui.render import LOGS_SHOWN
+        for i in range(LOGS_SHOWN + 3):
+            self._record([{"name": "bootstrap-host", "failed": False,
+                          "cached": False, "log": "x%d.log" % i}], run=str(i))
+        text = self.append_logs_section("x\n", "trixie", "amd64", ("distribution",))
+        self.assertEqual(text.plain.count("["), LOGS_SHOWN)
 
 # What the last build actually wrote: a stat-based listing of
 # 'ContainerEngine.deploy_root()/<release>/', nothing tracked separately.
@@ -1075,6 +1316,59 @@ class App(avocado.Test):
                 self.assertIn("┌", text)
         _run(scenario)
 
+    # The boxes drawn for the image node must fit the right pane they
+    # are shown in -- at the default 80-column pilot size the pane only
+    # fits 19, far under render.py's BOX_WIDTH default. Box-art lines
+    # only: the 'legend:' line is wrappable prose, not art.
+    def test_selecting_the_image_node_fits_the_right_pane(self):
+        async def scenario():
+            from seine.tui.spectree import SpecTree
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                tree = app.screen.query_one(SpecTree)
+                group = tree.root.children[0]
+                image_node = next(c for c in group.children if c.data == "image")
+                app.screen._selected_path = tree.path_for(image_node)
+                app.screen.update_body()
+                await pilot.pause()
+                body = app.screen.query_one("#body")
+                widths = [len(line) for line in _content(body).plain.splitlines()
+                          if line[:1] in ("┌", "└", "│")]
+                self.assertTrue(widths)
+                self.assertLessEqual(max(widths), body.content_size.width)
+        _run(scenario)
+
+    # action_show_log()/action_close_log(): the left pane swaps between
+    # SpecTree and LogViewer. Widget *display* state is asserted here;
+    # the text LogViewer ends up showing is _read_log()'s job, tested
+    # on its own below without touching RichLog's internal render state
+    # (see test_output_lines_reach_the_tail_pane's own note on this).
+    # BodyStatic.on_click() itself is thin glue reading Text's own meta,
+    # same convention tests/tui/target.py uses for the identical
+    # TargetStatusStatic/'target-click' pattern -- not simulated here either.
+    def test_show_log_swaps_the_left_pane_and_close_log_restores_it(self):
+        async def scenario():
+            from seine.tui.spectree import SpecTree
+            from seine.tui.app import LogViewer
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test():
+                tree = app.screen.query_one(SpecTree)
+                viewer = app.screen.query_one(LogViewer)
+                self.assertTrue(tree.display)
+                self.assertFalse(viewer.display)
+
+                app.screen.action_show_log(os.path.join(self.workdir, "some.log"))
+                self.assertEqual(app.screen._log_path,
+                                 os.path.join(self.workdir, "some.log"))
+                self.assertFalse(tree.display)
+                self.assertTrue(viewer.display)
+
+                app.screen.action_close_log()
+                self.assertIsNone(app.screen._log_path)
+                self.assertTrue(tree.display)
+                self.assertFalse(viewer.display)
+        _run(scenario)
+
     def test_startup_with_a_bad_spec_shows_the_error_not_a_crash(self):
         async def scenario():
             app = self.SeineApp(files=["/does/not/exist.yaml"])
@@ -1546,6 +1840,31 @@ class App(avocado.Test):
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.DoctorScreen)
         _run(scenario)
+
+# _read_log() (seine/tui/app.py): split out of
+# OverviewScreen._refresh_log_pane() so the read-failure fallback is
+# testable on its own, without touching RichLog's internal render state
+# (see App.test_output_lines_reach_the_tail_pane's own note on that).
+class ReadLog(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import _read_log
+        self._read_log = _read_log
+
+    def test_reads_the_files_own_text(self):
+        path = os.path.join(self.workdir, "some.log")
+        with open(path, "w") as f:
+            f.write("line one\nline two\n")
+        self.assertEqual(self._read_log(path), "line one\nline two\n")
+
+    def test_a_missing_file_shows_the_error_not_a_crash(self):
+        path = os.path.join(self.workdir, "missing.log")
+        text = self._read_log(path)
+        self.assertIn("could not read", text)
+        self.assertIn(path, text)
 
 # App._build_task_started()/_build_task_finished() (seine/tui/app.py):
 # following a build onto the vendor screen for its 'vendor' task
