@@ -616,3 +616,58 @@ class ASharedBuilderRejectsBeingTaskedTwice(avocado.Test):
         first = [t.name for t in builder.tasks(packages, object())]
         second = [t.name for t in builder.tasks(packages, object())]
         self.assertEqual(first, second)
+
+# A cache-hit package (its stamp already on disk) never gets a
+# 'package:<name>' Task at all -- tasks.run() never schedules it, so
+# '.started' is never set on anything for it. cached_task_entries() is
+# the only place logs/index.json (seine/logindex.py) can learn it
+# happened, since analyze.py's own 'ran' filter has the same blind spot.
+class CachedTaskEntriesCoverPackagesTasksNeverCreated(ASharedBuilderRejectsBeingTaskedTwice):
+    def test_a_stamped_package_gets_no_task_but_one_cached_entry(self):
+        packages = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages
+        builder = self.builder()
+        [(package, architecture, stamp)] = builder.stamps(packages)
+        os.makedirs(os.path.dirname(stamp), exist_ok=True)
+        open(stamp, "w").close()
+
+        names = [t.name for t in builder.tasks(packages, object())]
+        self.assertNotIn("package:%s" % builder.label(package, architecture), names)
+
+        entries = builder.cached_task_entries()
+        self.assertEqual(entries, [{
+            "name": "package:%s" % builder.label(package, architecture),
+            "failed": False, "cached": True, "log": None,
+        }])
+
+    def test_an_unstamped_package_has_nothing_cached(self):
+        packages = parse("""
+                packages:
+                    - source: apt://busybox
+        """).image.packages
+        builder = self.builder()
+        builder.tasks(packages, object())
+        self.assertEqual(builder.cached_task_entries(), [])
+
+    # 'packages' narrows a cohort-shared Builder's cache-hit list down
+    # to one group's own request -- see multiconfig.py's _record_group().
+    def test_narrowing_by_packages_excludes_unrelated_reused_ones(self):
+        packages = parse("""
+                packages:
+                    - source: apt://busybox
+                    - source: apt://vim
+        """).image.packages
+        builder = self.builder()
+        for package, architecture, stamp in builder.stamps(packages):
+            os.makedirs(os.path.dirname(stamp), exist_ok=True)
+            open(stamp, "w").close()
+        builder.tasks(packages, object())
+
+        busybox = [p for p in packages if p.name == "busybox"]
+        entries = builder.cached_task_entries(busybox)
+        names = {e["name"] for e in entries}
+        self.assertEqual(len(entries), 1)
+        self.assertTrue(any("busybox" in n for n in names))
+        self.assertFalse(any("vim" in n for n in names))

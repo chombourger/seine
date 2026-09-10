@@ -195,6 +195,11 @@ def _cohort_tasks(members, prefix):
     distro = image.spec["distribution"]
     hostBootstrap = HostBootstrap(distro, image.options)
     shared = image.shared_tasks(hostBootstrap=hostBootstrap, requested=requested)
+    # One Builder for the whole cohort (shared_tasks() only set it on
+    # 'image', the first member) -- every member reads the same one back
+    # via its own _record_group(), narrowed to its own packages.
+    for member in members:
+        member.image._builder = image._builder
     host_task, rest = shared[0], shared[1:]
     if prefix is not None:
         rest = tasks.namespaced(rest, prefix)
@@ -258,13 +263,15 @@ def _record_group(build, files, all_tasks, jobs, machine, digest, logs):
     ok = tasks.succeeded(group_tasks)
     analyze.record(group_tasks, digest, jobs=jobs, ok=ok, machine=machine)
     if logs:
+        ran = [{"name": t.name, "failed": t.failed, "cached": False,
+               "log": os.path.join(logs, "%s.log" % t.name)}
+              for t in group_tasks if t.started is not None]
+        builder = build.image._builder
+        cached = (builder.cached_task_entries(build.image.packages)
+                 if builder is not None else [])
         logindex.record(
             files, build.spec["distribution"]["release"],
-            build.spec["distribution"]["architecture"], logs,
-            [{"name": t.name, "failed": t.failed, "cached": False,
-             "log": os.path.join(logs, "%s.log" % t.name)}
-            for t in group_tasks if t.started is not None],
-            ok)
+            build.spec["distribution"]["architecture"], logs, ran + cached, ok)
     return ok
 
 # Same prune Image.build() does after a single build, done once here
