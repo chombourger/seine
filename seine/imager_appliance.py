@@ -30,6 +30,10 @@ ARCH_INFO = {
 # Run as container commands, not extracted like BINARIES below.
 APT_PACKAGES = ["squashfs-tools", "erofs-utils", "binutils", "sbsigntool",
                 "cryptsetup-bin", "mtools", "e2fsprogs"]
+# Needed inside the built appliance itself (LVM_WRAPPER_SCRIPT's
+# interpreter and LD_PRELOAD library). Listed both here, so supermin can
+# resolve them, and in its own hint directory, so it bundles them in.
+EXTRA_APPLIANCE_PACKAGES = ["libfaketime", "python3"]
 BINARIES = [
     "/usr/bin/mksquashfs", "/usr/bin/mkfs.erofs",
     # Rebuilds a verity hash tree, see imager.py's _build_verity().
@@ -74,15 +78,19 @@ class ImagerAppliance(Bootstrap):
             raise NotImplementedError(
                 "building the imager appliance for architecture "
                 "'%s' is not yet supported (unknown multiarch triplet)" % arch)
-        apt_packages = (APT_PACKAGES
+        apt_packages = (APT_PACKAGES + EXTRA_APPLIANCE_PACKAGES
                         + (UKI_APT_PACKAGES if self.distro["release"] != "bookworm" else []))
         return self.build(
             IMAGER_APPLIANCE_SCRIPT.format(
-                self.source.targetBootstrap.name,
-                packages.apt_setup_layer(self.distro),
-                self.package, " ".join(apt_packages),
-                info["host_cpu"], info["triplet"],
-                " ".join(BINARIES)),
+                base=self.source.targetBootstrap.name,
+                apt_setup=packages.apt_setup_layer(self.distro),
+                kernel=self.package,
+                apt_packages=" ".join(apt_packages),
+                extra_packages=" ".join(EXTRA_APPLIANCE_PACKAGES),
+                host_cpu=info["host_cpu"],
+                triplet=info["triplet"],
+                binaries=" ".join(BINARIES),
+                lvm_wrapper=LVM_WRAPPER_SCRIPT),
             base=self.source.targetBootstrap.name,
             options=packages.build_volumes(self.distro))
 
@@ -116,16 +124,56 @@ directly (see seine/imager_appliance.py). Point LIBGUESTFS_PATH at this
 directory to use it in place of libguestfs's own supermin auto-build.
 """
 
+# lvm2 dispatches all three commands through one 'lvm' binary chosen by
+# argv[0]'s basename, so the real binary moves aside and this wrapper
+# takes its name, LD_PRELOADing libfaketime when 'faketime=<epoch>' is set.
+LVM_WRAPPER_SCRIPT = r"""#!/usr/bin/python3
+import os
+import re
+import sys
+import time
+
+REAL = "/usr/sbin/.lvm-real/lvm"
+
+def cmdline(name):
+    with open("/proc/cmdline") as f:
+        m = re.search(r"\b%s=(\S+)" % name, f.read())
+    return m.group(1) if m else None
+
+epoch = cmdline("faketime")
+if epoch:
+    os.environ["TZ"] = "UTC"
+    os.environ["LD_PRELOAD"] = "@LIBFAKETIME@"
+    os.environ["FAKETIME"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(epoch)))
+
+os.execv(REAL, [REAL] + sys.argv[1:])
+"""
+
 # Only vmlinuz and modules are needed, so skip the initramfs build.
+#
+# Split into separate RUN steps: a heredoc can't sit inside a
+# backslash-continued RUN, and the moved-aside real 'lvm' binary must be
+# listed as a supermin hostfile so it isn't dropped from the build.
 IMAGER_APPLIANCE_SCRIPT = """
-FROM {0}
-{1}RUN apt-get update -qqy && \\
+FROM {base}
+{apt_setup}RUN apt-get update -qqy && \\
     INITRD=No apt-get install -qqy --no-install-recommends \\
-        {2} supermin libguestfs0 {3} && \\
-    mkdir -p /appliance /extra-tools && \\
-    supermin --build --verbose --copy-kernel -f ext2 --host-cpu {4} \\
-        /usr/lib/{5}/guestfs/supermin.d -o /appliance && \\
-    for bin in {6}; do \\
+        {kernel} supermin libguestfs0 {apt_packages} && \\
+    mkdir -p /appliance /extra-tools /seine-hints /usr/sbin/.lvm-real && \\
+    mv /usr/sbin/lvm /usr/sbin/.lvm-real/lvm && \\
+    echo /usr/sbin/.lvm-real/lvm >/seine-hints/hostfiles && \\
+    printf '%s\\n' {extra_packages} >/seine-hints/packages
+
+RUN <<'SEINE_LVM_WRAPPER' cat >/usr/sbin/lvm
+{lvm_wrapper}SEINE_LVM_WRAPPER
+
+RUN libfaketime=$(dpkg -L libfaketime | grep -E '/libfaketime\\.so\\.[0-9]+$') && \\
+    sed -i "s#@LIBFAKETIME@#$libfaketime#" /usr/sbin/lvm && \\
+    chmod +x /usr/sbin/lvm
+
+RUN supermin --build --verbose --copy-kernel -f ext2 --host-cpu {host_cpu} \\
+        /usr/lib/{triplet}/guestfs/supermin.d /seine-hints -o /appliance && \\
+    for bin in {binaries}; do \\
         cp --parents "$bin" /extra-tools; \\
         for lib in $(ldd "$bin" 2>/dev/null | grep -oE '/[^ ]+'); do \\
             case "$lib" in \\
