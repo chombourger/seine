@@ -67,6 +67,25 @@ def _run(scenario):
 def _run_value(coroutine):
     return asyncio.run(coroutine)
 
+# Settle-wait for pilot-driven tests: polls 'predicate' once per tick
+# (a message-pump pause plus a short sleep) until it holds, failing
+# loudly on timeout rather than falling through to an assert that then
+# fails somewhere else. The same shape as ai.py's own '_settle_to',
+# duplicated rather than imported -- test files stay self-contained
+# here, none of them import each other. 'tick', when given, runs before
+# each wait (pumping a gated fake build/test the way the gated tests
+# below do).
+async def _settle_to(pilot, predicate, what, ticks=200, interval=0.02,
+                     tick=None):
+    for _ in range(ticks):
+        if predicate():
+            return
+        if tick is not None:
+            tick()
+        await asyncio.sleep(interval)
+        await pilot.pause()
+    raise AssertionError("never settled: %s" % what)
+
 # Every setUp() below needs this: a name bound inside the 'with' is
 # still there after it, unless the import raised -- in which case
 # self.cancel() has already aborted the test before anything after
@@ -1867,15 +1886,13 @@ class App(avocado.Test):
             try:
                 app = self.SeineApp(files=[NATIVE_IMAGE])
                 async with app.run_test() as pilot:
-                    for _ in range(100):
+                    def prompt_live():
                         try:
-                            prompt = app.screen.query_one("#prompt")
+                            return not app.screen.query_one("#prompt").disabled
                         except Exception:
-                            pass
-                        else:
-                            if not prompt.disabled:
-                                break
-                        await pilot.pause()
+                            return False
+                    await _settle_to(pilot, prompt_live,
+                                     "prompt live after startup", ticks=100)
                     prompt = app.screen.query_one("#prompt")
                     self.assertIsInstance(app.screen, self.OverviewScreen)
                     self.assertFalse(prompt.disabled)
@@ -1921,11 +1938,11 @@ class App(avocado.Test):
                 # object synchronously while its widgets still mount.
                 from seine.tui.build import BuildScreen
                 app.show("build")
-                for _ in range(100):
-                    if isinstance(app.screen, BuildScreen) \
-                            and app.screen.is_mounted:
-                        break
-                    await pilot.pause()
+                await _settle_to(
+                    pilot,
+                    lambda: isinstance(app.screen, BuildScreen)
+                    and app.screen.is_mounted,
+                    "build screen mounted", ticks=100)
                 BuildScreen.query_one = missing
                 try:
                     app.screen._redraw()
@@ -2058,15 +2075,13 @@ class SettingsScreenIntegration(avocado.Test):
         # they do (the tests below seed navigations like /cache): wait
         # for it to go live rather than racing them with Enter. The
         # screen is re-queried each time since they may switch it.
-        for _ in range(100):
+        def prompt_live():
             try:
-                prompt = app.screen.query_one("#prompt")
+                return not app.screen.query_one("#prompt").disabled
             except Exception:
-                pass
-            else:
-                if not prompt.disabled:
-                    break
-            await pilot.pause()
+                return False
+        await _settle_to(pilot, prompt_live, "prompt live after startup",
+                         ticks=100)
         prompt = app.screen.query_one("#prompt")
         prompt.value = "/settings"
         await pilot.press("enter")
@@ -2751,10 +2766,9 @@ image:
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.FilesystemScreen)
-                for _ in range(200):
-                    if not app.fs_state.loading:
-                        break
-                    await asyncio.sleep(0.05)
+                await _settle_to(pilot, lambda: not app.fs_state.loading,
+                                 "initial listing loaded", ticks=200,
+                                 interval=0.05)
                 self.assertIsNone(app.fs_state.error)
                 self.assertIn("etc", {e[0] for e in app.fs_state.entries})
 
@@ -2762,10 +2776,9 @@ image:
                 prompt.value = "/cd etc"
                 await pilot.press("enter")
                 await pilot.pause()
-                for _ in range(200):
-                    if not app.fs_state.loading:
-                        break
-                    await asyncio.sleep(0.05)
+                await _settle_to(pilot, lambda: not app.fs_state.loading,
+                                 "/etc listing loaded", ticks=200,
+                                 interval=0.05)
                 self.assertEqual(app.fs_state.path, "/etc")
                 self.assertIn("hostname", {e[0] for e in app.fs_state.entries})
         _run(scenario)
@@ -2816,10 +2829,8 @@ class BuildScreenIntegration(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.BuildScreen)
-                for _ in range(50):
-                    if not app.build_state.running:
-                        break
-                    await asyncio.sleep(0.02)
+                await _settle_to(pilot, lambda: not app.build_state.running,
+                                 "build finished", ticks=50)
                 self.assertTrue(app.build_state.done)
                 self.assertFalse(app.build_state.error)
                 self.assertEqual(app.build_state.message, "build finished")
@@ -2867,10 +2878,8 @@ class BuildScreenIntegration(avocado.Test):
                 prompt.value = "/build"
                 await pilot.press("enter")
                 await pilot.pause()
-                for _ in range(50):
-                    if not app.build_state.running:
-                        break
-                    await asyncio.sleep(0.02)
+                await _settle_to(pilot, lambda: not app.build_state.running,
+                                 "failed build finished", ticks=50)
                 self.assertTrue(app.build_state.done)
                 self.assertTrue(app.build_state.error)
                 self.assertIn("boom", app.build_state.message)
@@ -2899,10 +2908,9 @@ class BuildScreenIntegration(avocado.Test):
                 prompt.value = "/build"
                 await pilot.press("enter")
                 await pilot.pause()
-                for _ in range(200):
-                    if app.build_state.current is not None:
-                        break
-                    await asyncio.sleep(0.01)
+                await _settle_to(pilot,
+                                 lambda: app.build_state.current is not None,
+                                 "build started", ticks=200, interval=0.01)
                 self.assertIsNotNone(app.build_state.current)
                 self.assertTrue(app.build_state.running)
 
@@ -2926,11 +2934,9 @@ class BuildScreenIntegration(avocado.Test):
                                  _content(status))
 
                 # Let every remaining step through, then let it finish.
-                for _ in range(200):
-                    if not app.build_state.running:
-                        break
-                    proceed.set()
-                    await asyncio.sleep(0.01)
+                await _settle_to(pilot, lambda: not app.build_state.running,
+                                 "build finished", ticks=200, interval=0.01,
+                                 tick=proceed.set)
                 self.assertTrue(app.build_state.done)
         _run(scenario)
 
@@ -2963,10 +2969,10 @@ class BuildScreenIntegration(avocado.Test):
                     prompt.value = "/build"
                     await pilot.press("enter")
                     await pilot.pause()
-                    for _ in range(200):
-                        if app.build_state.current is not None:
-                            break
-                        await asyncio.sleep(0.01)
+                    await _settle_to(
+                        pilot,
+                        lambda: app.build_state.current is not None,
+                        "build started", ticks=200, interval=0.01)
                     self.assertTrue(app.build_state.running)
 
                     prompt = app.screen.query_one("#prompt")
@@ -2975,18 +2981,15 @@ class BuildScreenIntegration(avocado.Test):
                     await pilot.pause()
                     self.assertIsInstance(app.screen, self.OverviewScreen)
                     tree = app.screen.query_one(SpecTree)
-                    for _ in range(100):
-                        if tree.active_keys():
-                            break
-                        await asyncio.sleep(0.02)
-                        await pilot.pause()
+                    await _settle_to(pilot, tree.active_keys,
+                                     "spectree highlights the running step",
+                                     ticks=100)
                     self.assertTrue(tree.active_keys())
                 finally:
-                    for _ in range(200):
-                        if not app.build_state.running:
-                            break
-                        proceed.set()
-                        await asyncio.sleep(0.01)
+                    await _settle_to(pilot,
+                                     lambda: not app.build_state.running,
+                                     "build finished", ticks=200,
+                                     interval=0.01, tick=proceed.set)
                 self.assertTrue(app.build_state.done)
         _run(scenario)
 
@@ -3018,10 +3021,9 @@ class BuildScreenIntegration(avocado.Test):
                 prompt.value = "/build"
                 await pilot.press("enter")
                 await pilot.pause()
-                for _ in range(200):
-                    if app.build_state.current is not None:
-                        break
-                    await asyncio.sleep(0.01)
+                await _settle_to(pilot,
+                                 lambda: app.build_state.current is not None,
+                                 "build started", ticks=200, interval=0.01)
                 self.assertIsNotNone(app.build_state.current)
 
                 prompt = app.screen.query_one("#prompt")
@@ -3033,10 +3035,8 @@ class BuildScreenIntegration(avocado.Test):
                 # can see the interrupt and stop for real.
                 proceed.set()
 
-                for _ in range(200):
-                    if not app.build_state.running:
-                        break
-                    await asyncio.sleep(0.02)
+                await _settle_to(pilot, lambda: not app.build_state.running,
+                                 "cancelled build finished", ticks=200)
                 self.assertTrue(app.build_state.done)
                 self.assertTrue(app.build_state.error)
                 self.assertIn("interrupted", app.build_state.message)
@@ -3207,10 +3207,8 @@ class VendorScreenIntegration(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.VendorScreen)
-                for _ in range(50):
-                    if not app.vendor_state.running:
-                        break
-                    await asyncio.sleep(0.02)
+                await _settle_to(pilot, lambda: not app.vendor_state.running,
+                                 "vendor finished", ticks=50)
                 self.assertTrue(app.vendor_state.done)
                 self.assertFalse(app.vendor_state.error)
                 self.assertEqual(app.vendor_state.message,
@@ -3245,10 +3243,8 @@ class VendorScreenIntegration(avocado.Test):
                 prompt.value = "/vendor"
                 await pilot.press("enter")
                 await pilot.pause()
-                for _ in range(50):
-                    if not app.vendor_state.running:
-                        break
-                    await asyncio.sleep(0.02)
+                await _settle_to(pilot, lambda: not app.vendor_state.running,
+                                 "vendor finished", ticks=50)
                 self.assertTrue(seen.get("verbose"))
         _run(scenario)
 
@@ -3398,10 +3394,8 @@ class TestScreenIntegration(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.TestScreen)
-                for _ in range(50):
-                    if not app.test_state.running:
-                        break
-                    await asyncio.sleep(0.02)
+                await _settle_to(pilot, lambda: not app.test_state.running,
+                                 "test finished", ticks=50)
                 self.assertTrue(app.test_state.done)
                 self.assertFalse(app.test_state.error)
                 self.assertEqual(app.test_state.rows["suite.one"]["state"], "done")
@@ -3426,10 +3420,8 @@ class TestScreenIntegration(avocado.Test):
                 prompt.value = "/test"
                 await pilot.press("enter")
                 await pilot.pause()
-                for _ in range(50):
-                    if not app.test_state.running:
-                        break
-                    await asyncio.sleep(0.02)
+                await _settle_to(pilot, lambda: not app.test_state.running,
+                                 "failed test finished", ticks=50)
                 self.assertTrue(app.test_state.error)
                 # update_body() runs on a 1s timer -- called directly
                 # here rather than waiting for it, the same reason
@@ -3477,24 +3469,24 @@ class TestScreenIntegration(avocado.Test):
                     prompt.value = "/test"
                     await pilot.press("enter")
                     await pilot.pause()
-                    for _ in range(100):
-                        if "seine test.boots to a login prompt and identifies as Linux" \
-                                in app.test_state.test_paths and app.test_state.running:
-                            break
-                        await asyncio.sleep(0.02)
-                    for _ in range(100):
-                        tree = app.screen.query_one(SpecTree)
-                        if tree.active_keys():
-                            break
-                        await asyncio.sleep(0.02)
-                        await pilot.pause()
+                    def test_visible():
+                        return "seine test.boots to a login prompt and identifies as Linux" \
+                            in app.test_state.test_paths \
+                            and app.test_state.running
+                    await _settle_to(pilot, test_visible,
+                                     "test visible and running", ticks=100)
+                    def highlighted():
+                        return app.screen.query_one(SpecTree).active_keys()
+                    await _settle_to(pilot, highlighted,
+                                     "spectree highlights the running test",
+                                     ticks=100)
+                    tree = app.screen.query_one(SpecTree)
                     self.assertTrue(tree.active_keys())
                 finally:
                     proceed.set()
-                    for _ in range(100):
-                        if not app.test_state.running:
-                            break
-                        await asyncio.sleep(0.02)
+                    await _settle_to(pilot,
+                                     lambda: not app.test_state.running,
+                                     "test finished", ticks=100)
                 self.assertTrue(app.test_state.done)
         _run(scenario)
 
@@ -3519,10 +3511,8 @@ class TestScreenIntegration(avocado.Test):
                 prompt.value = "/test"
                 await pilot.press("enter")
                 await pilot.pause()
-                for _ in range(50):
-                    if not app.test_state.running:
-                        break
-                    await asyncio.sleep(0.02)
+                await _settle_to(pilot, lambda: not app.test_state.running,
+                                 "test finished", ticks=50)
                 await pilot.pause()
                 self.assertIn("suite.one| [INFO] uname -s", app.test_state.output_lines)
         _run(scenario)
