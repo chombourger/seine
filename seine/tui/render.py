@@ -670,6 +670,37 @@ def render_cache(matching=None):
     return _captured(lambda: CacheCmd().info(list(CACHES.keys()), entries=True,
                                              matching=pattern))
 
+# Why a 'packages:' entry did not come from the cache -- runs the same
+# stamp lookup a real build would (Builder.stamps(), via current()), so
+# the answer is what actually decided the miss, not a guess from the
+# live spec.
+def render_cache_why(context, name, architecture=None):
+    if not context.active:
+        return "no active specification -- '/use SPEC...' picks one\n"
+    for build in context.builds:
+        source_packages = build.image.packages
+        package = next((p for p in source_packages if p.name == name), None)
+        if package is None:
+            continue
+        distro = build.spec["distribution"]
+        builder = packages.Builder(distro, build.options,
+                                   BuilderImage(distro, build.options))
+        current = {(p.name, a) for p, a, _ in builder.current(source_packages)}
+        archs = [architecture] if architecture else builder.architectures(package)
+        lines = []
+        for a in archs:
+            if (package.name, a) in current:
+                lines.append("%s/%s: cached" % (package.name, a))
+                continue
+            reason = builder.miss_reason(package, a)
+            if reason is None:
+                lines.append("%s/%s: not cached" % (package.name, a))
+            else:
+                lines.append("%s/%s: not cached --" % (package.name, a))
+                lines += ["  %s" % r for r in reason]
+        return "\n".join(lines) + "\n"
+    return "'%s' is not in this specification's 'packages:' section\n" % name
+
 def render_doctor(pull=False):
     import re
 

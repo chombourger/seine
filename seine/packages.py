@@ -448,6 +448,14 @@ STAMPS_SPEC = ".stamps-spec"
 SSH_AUTH_SOCK = "/ssh-agent/sock"
 SSH_KNOWN_HOSTS = "/root/.ssh/known_hosts"
 
+# Folds one labelled input into a stamp's digest, and records its own
+# hash in 'recipe' under that label -- so a later miss_reason() can say
+# which label changed, not just that the final digest did.
+def extend_digest(digest, recipe, label, value):
+    raw = value if isinstance(value, bytes) else value.encode()
+    digest.update(raw)
+    recipe.append((label, hashlib.sha256(raw).hexdigest()[:16]))
+
 class Builder:
     # 'redact_patterns' is optional: most callers have no 'redact:'
     # section, and passing '[]' everywhere would be pure noise.
@@ -478,6 +486,14 @@ class Builder:
         # Which kernels' cross headers this run already made, so two
         # modules against one kernel do not each build it.
         self._crossed = set()
+        # Recipe (labelled input hashes) behind each (name, architecture)'s
+        # stamp, from the last time stamp() computed one this run -- read
+        # back by _deploy() to save beside the stamp, and by miss_reason().
+        self._recipes = {}
+        # Why stamps() found a package not cached, by (name, architecture)
+        # -- computed once, when the miss is first noticed, since the old
+        # recipe it compares against may be deleted once the rebuild lands.
+        self._miss_reasons = {}
         # Held while unpacking a chroot or rewriting the repository --
         # both shared across builds running at the same time.
         self._chroots = threading.Lock()
@@ -1089,24 +1105,30 @@ class Builder:
     def stamp(self, package, architecture=None, depends=None):
         architecture = architecture or self.distro["architecture"]
         digest = hashlib.sha256()
-        self._stamp_core(digest, package, architecture)
+        recipe = []
+        self._stamp_core(digest, recipe, package, architecture)
 
         # Patches/kernel fragments count by content: editing one without
         # touching the spec must still trigger a rebuild.
         for path in package.referenced_files():
             with open(path, "rb") as f:
-                digest.update(f.read())
+                extend_digest(digest, recipe, "file:%s" % path, f.read())
 
-        self._stamp_kernel_graft(digest, package)
-        self._stamp_module(digest, package)
-        self._stamp_cross_headers(digest, package)
-        self._stamp_uki(digest, package)
+        self._stamp_kernel_graft(digest, recipe, package)
+        self._stamp_module(digest, recipe, package)
+        self._stamp_cross_headers(digest, recipe, package)
+        self._stamp_uki(digest, recipe, package)
 
         # A package built against another must rebuild when that one
         # changes -- the dependency's digest already carries its own,
         # transitively.
         for name in sorted(depends or {}):
-            digest.update(depends[name].encode())
+            extend_digest(digest, recipe, "depends:%s" % name, depends[name])
+
+        # Kept for miss_reason(): the last recipe computed for this
+        # (name, architecture) -- read back by _deploy() to save beside
+        # the stamp, and by stamps() to explain a miss it just found.
+        self._recipes[(package.name, architecture)] = recipe
 
         # Architecture is in the stamp's name, not just its digest, so
         # the amd64 build never mistakes the arm64 build's stamp for its
@@ -1115,118 +1137,128 @@ class Builder:
                             % (package.name, architecture,
                                digest.hexdigest()[:16]))
 
-    def _stamp_core(self, digest, package, architecture):
-        # A set of fields, not order-sensitive: reordering two lines in
-        # the spec must not itself trigger a rebuild.
-        for part in [str(package.source),
-                     ",".join(package.profiles),
-                     ",".join(package.options),
-                     str(self.cross(package, architecture)),
-                     str(package.source_date_epoch),
-                     package.revision,
-                     str(package.kernel_featureset),
-                     str(package.kernel_flavour),
+    def _stamp_core(self, digest, recipe, package, architecture):
+        # A set of labelled fields, not order-sensitive: reordering two
+        # lines in the spec must not itself trigger a rebuild. The label
+        # is what miss_reason() names when this field is why a stamp
+        # changed.
+        for label, part in [
+                     ("source", str(package.source)),
+                     ("profiles", ",".join(package.profiles)),
+                     ("options", ",".join(package.options)),
+                     ("cross", str(self.cross(package, architecture))),
+                     ("source_date_epoch", str(package.source_date_epoch)),
+                     ("revision", package.revision),
+                     ("kernel_featureset", str(package.kernel_featureset)),
+                     ("kernel_flavour", str(package.kernel_flavour)),
                      # Every base/name pair, so renaming or re-basing one
                      # is a rebuild even if fragment content is unchanged
                      # (content is folded in separately, below).
-                     ",".join(sorted("%s/%s" % (base, name)
+                     ("kernel_derived_flavours",
+                      ",".join(sorted("%s/%s" % (base, name)
                              for base, derived in (package.kernel_derived_flavours or {}).items()
-                             for name in derived)),
+                             for name in derived))),
                      # 'kernel_configs' is written straight into the
                      # fragment rather than read from a file, so it must
                      # be hashed by hand here. Not sorted: order decides
                      # which of two edits to the same symbol wins.
-                     "\n".join("%s:%s" % (name, "\n".join(lines))
-                              for name, lines in package.kernel_configs.items()),
-                     str(package.kernel_abi_suffix),
-                     str(package.kernel_upstream),
-                     str(package.kernel_upstream_sha256),
-                     str(package.sha256),
+                     ("kernel_configs",
+                      "\n".join("%s:%s" % (name, "\n".join(lines))
+                              for name, lines in package.kernel_configs.items())),
+                     ("kernel_abi_suffix", str(package.kernel_abi_suffix)),
+                     ("kernel_upstream", str(package.kernel_upstream)),
+                     ("kernel_upstream_sha256", str(package.kernel_upstream_sha256)),
+                     ("sha256", str(package.sha256)),
                      # Only this release's pin: another release's pin has
                      # no bearing on what this build produces.
-                     str(package.preferences_for(self.distro["release"])),
+                     ("preferences", str(package.preferences_for(self.distro["release"]))),
                      # str(), not join(): 'None' and '[]' must read
                      # differently -- "keeping nothing" vs "keeping all".
-                     str(package.kernel_keep_patches
+                     ("kernel_keep_patches",
+                      str(package.kernel_keep_patches
                          if package.kernel_keep_patches is None
-                         else sorted(package.kernel_keep_patches)),
-                     ",".join(sorted(package.kernel_drop_patches)),
-                     ",".join(sorted(package.kernel_build_files)),
-                     self.distro["source"],
-                     self.distro["release"],
-                     architecture,
+                         else sorted(package.kernel_keep_patches))),
+                     ("kernel_drop_patches", ",".join(sorted(package.kernel_drop_patches))),
+                     ("kernel_build_files", ",".join(sorted(package.kernel_build_files))),
+                     ("distro_source", self.distro["source"]),
+                     ("distro_release", self.distro["release"]),
+                     ("architecture", architecture),
                      # 'apt-pull-mode' flips fetch() between network and
                      # local vendor repo -- a rebuild under one must not
                      # be mistaken for one done under the other.
-                     "\n".join(apt_sources(self.distro, sources=True,
-                                           offline=len(offline_suites(self.distro)) > 0)),
-                     self.chroot_architecture(package, architecture),
+                     ("apt_sources",
+                      "\n".join(apt_sources(self.distro, sources=True,
+                                           offline=len(offline_suites(self.distro)) > 0))),
+                     ("chroot_architecture", self.chroot_architecture(package, architecture)),
                      # Who signed it: the .dsc/.changes carry the
                      # signature inside, so a different key (or none)
                      # means different files, however identical the .debs
                      # look. A cache built by another key is thus
                      # rebuilt, not adopted -- their signature is not
                      # ours to publish.
-                     str(self.signer.fingerprint()
-                         if self.signer is not None else None),
+                     ("signer", str(self.signer.fingerprint()
+                         if self.signer is not None else None)),
                      # Whether this build makes the arch-all binaries,
                      # which depends on what the *other* builds are:
                      # widening 'scope' can move that job elsewhere.
-                     str(architecture == self.indep_architecture(package)),
+                     ("indep_architecture", str(architecture == self.indep_architecture(package))),
                      # Kernels this module is built against, as named --
                      # adding/removing one changes the binaries produced.
                      # For a kernel built by this spec, what actually
                      # matters is its ABI, which is not knowable here;
                      # that is carried instead by the dependency digest
                      # below, since a module is built after its kernels.
-                     ",".join(sorted(package.module_kernels.get(architecture, []))),
+                     ("module_kernels",
+                      ",".join(sorted(package.module_kernels.get(architecture, [])))),
                      # What a moving-target reference (e.g.
                      # 'linux-headers-amd64') actually resolved to -- a
                      # security update can move this without the spec
                      # changing at all.
-                     ",".join("%s=%s" % (reference, headers)
+                     ("metapackages",
+                      ",".join("%s=%s" % (reference, headers)
                               for (a, reference), headers
                               in sorted(self.metapackages.items())
-                              if a == architecture),
-                     str(package.module_build),
-                     str(package.module_target),
-                     ",".join(package.module_build_depends),
-                     ",".join(package.module_runtime_depends),
-                     ",".join(sorted(package.module_modules)),
-                     ",".join("%s=%s" % (name, package.module_make_vars[name])
-                              for name in sorted(package.module_make_vars)),
-                     str(package.upstream_version)]:
-            digest.update(part.encode())
+                              if a == architecture)),
+                     ("module_build", str(package.module_build)),
+                     ("module_target", str(package.module_target)),
+                     ("module_build_depends", ",".join(package.module_build_depends)),
+                     ("module_runtime_depends", ",".join(package.module_runtime_depends)),
+                     ("module_modules", ",".join(sorted(package.module_modules))),
+                     ("module_make_vars",
+                      ",".join("%s=%s" % (name, package.module_make_vars[name])
+                              for name in sorted(package.module_make_vars))),
+                     ("upstream_version", str(package.upstream_version))]:
+            extend_digest(digest, recipe, label, part)
 
-    def _stamp_kernel_graft(self, digest, package):
+    def _stamp_kernel_graft(self, digest, recipe, package):
         # A grafted kernel is built by these rules, so they decide the
         # output as much as a fragment does -- and only for a graft.
         if package.kernel_upstream is not None:
-            digest.update(kernel.kernel_rules().content)
-            digest.update(str(kernel.GRAFT_VERSION).encode())
+            extend_digest(digest, recipe, "kernel_graft_rules", kernel.kernel_rules().content)
+            extend_digest(digest, recipe, "kernel_graft_version", str(kernel.GRAFT_VERSION))
 
-    def _stamp_module(self, digest, package):
+    def _stamp_module(self, digest, recipe, package):
         # A module is built by the packaging seine writes for it -- that
         # decides the output too, so it is hashed by content.
         if package.module:
-            digest.update(module.module_packaging()[1])
+            extend_digest(digest, recipe, "module_packaging", module.module_packaging()[1])
 
-    def _stamp_cross_headers(self, digest, package):
+    def _stamp_cross_headers(self, digest, recipe, package):
         # A cross headers package belongs to one kernel and is made up
         # rather than described by the settings above -- its kernel's
         # release changes whenever that kernel does.
         if module.is_cross_package(package):
-            digest.update(package.cross_kernel.release.encode())
-            digest.update(package.cross_kernel.headers.encode())
-            digest.update(module.cross_packaging()[1])
+            extend_digest(digest, recipe, "cross_kernel_release", package.cross_kernel.release)
+            extend_digest(digest, recipe, "cross_kernel_headers", package.cross_kernel.headers)
+            extend_digest(digest, recipe, "cross_packaging", module.cross_packaging()[1])
 
-    def _stamp_uki(self, digest, package):
+    def _stamp_uki(self, digest, recipe, package):
         # A uki package is built from these settings plus the named
         # 'initrd:' artifact's own bytes -- neither is caught above.
         if package.uki:
-            digest.update(package.uki_tool.encode())
-            digest.update(package.uki_linux_image.encode())
-            digest.update(package.uki_cmdline.encode())
+            extend_digest(digest, recipe, "uki_tool", package.uki_tool)
+            extend_digest(digest, recipe, "uki_linux_image", package.uki_linux_image)
+            extend_digest(digest, recipe, "uki_cmdline", package.uki_cmdline)
             initrd = uki.initrd_path(self.distro, package.uki_initrd)
             # Digests are computed for the whole task graph up front, so
             # an 'after:'-ordered initrd may not be built yet. A missing
@@ -1234,9 +1266,9 @@ class Builder:
             # instead of a false cache hit.
             if os.path.isfile(initrd):
                 with open(initrd, "rb") as f:
-                    digest.update(f.read())
+                    extend_digest(digest, recipe, "uki_initrd", f.read())
             else:
-                digest.update(b"<initrd not yet built>")
+                extend_digest(digest, recipe, "uki_initrd", b"<initrd not yet built>")
 
     # A hashed file's path, written the way the spec wrote it (relative
     # to the file that declared it) rather than the absolute path
@@ -1329,6 +1361,59 @@ class Builder:
         with open(self._excerpt_path(stamp), "w") as f:
             yaml.dump(self.digest_excerpt(package), f, sort_keys=False)
 
+    # Same placement as an excerpt, but the full labelled recipe stamp()
+    # hashed -- kept so a later miss can be explained field by field, not
+    # just the curated subset digest_excerpt() shows.
+    def _recipe_path(self, stamp):
+        return os.path.join(self._stamps_spec(),
+                            "%s.recipe" % os.path.basename(stamp))
+
+    def _record_recipe(self, stamp, recipe):
+        if recipe is None:
+            return
+        with open(self._recipe_path(stamp), "w") as f:
+            for label, digest_hex in recipe:
+                f.write("%s\t%s\n" % (label, digest_hex))
+
+    def _load_recipe(self, stamp):
+        path = self._recipe_path(stamp)
+        if not os.path.isfile(path):
+            return None
+        recipe = []
+        with open(path, "r") as f:
+            for line in f:
+                label, _, digest_hex = line.rstrip("\n").partition("\t")
+                if digest_hex:
+                    recipe.append((label, digest_hex))
+        return recipe
+
+    # Why stamps() below just found no stamp for this (name, architecture)
+    # -- one line per labelled input that changed since the last recipe
+    # recorded for it, read straight off disk (nothing re-derived).
+    def _diff_recipe(self, package, architecture):
+        previous = self._previous(package, architecture)
+        if not previous:
+            return ["no earlier build recorded for this package/architecture"]
+        old = self._load_recipe(max(previous, key=os.path.getmtime))
+        if old is None:
+            return ["the earlier build has no recorded recipe "
+                    "(built before this diagnostic existed)"]
+        old = dict(old)
+        new = dict(self._recipes.get((package.name, architecture), []))
+        lines = ["%s changed" % label for label in new
+                if label in old and old[label] != new[label]]
+        lines += ["%s is new" % label for label in new if label not in old]
+        lines += ["%s no longer applies" % label for label in old if label not in new]
+        return lines or ["the digest differs but no tracked input does -- "
+                         "likely a change to seine itself, not the spec"]
+
+    # miss_reason()'s own store, read back after stamps() below. Kept
+    # apart from _recipes: a hit needs no explanation, a miss needs one
+    # only once, since _forget() may delete what it was compared against.
+    def miss_reason(self, package, architecture=None):
+        architecture = architecture or self.distro["architecture"]
+        return self._miss_reasons.get((package.name, architecture))
+
     # Every package's stamp, in build order, each folding in the stamps
     # of what it is built after -- possible because dependencies are
     # given their digest first. Followed within one architecture only:
@@ -1344,6 +1429,11 @@ class Builder:
                 stamp = self.stamp(package, architecture, depends)
                 digests[(package.name, architecture)] = \
                     os.path.basename(stamp).rsplit("_", 1)[1]
+                # Diagnosed here, not lazily: _forget() deletes the old
+                # recipe this compares against once a rebuild lands it.
+                if not os.path.isfile(stamp):
+                    self._miss_reasons[(package.name, architecture)] = \
+                        self._diff_recipe(package, architecture)
                 stamps.append((package, architecture, stamp))
         return stamps
 
@@ -1390,6 +1480,9 @@ class Builder:
             excerpt = self._excerpt_path(stamp)
             if os.path.isfile(excerpt):
                 os.unlink(excerpt)
+            recipe = self._recipe_path(stamp)
+            if os.path.isfile(recipe):
+                os.unlink(recipe)
 
     # What a build left in its output directory -- entirely its own.
     def _produced(self, output):
@@ -1919,6 +2012,7 @@ class Builder:
                 self._forget(package, architecture, everything)
                 self._record(stamp, sorted(set(produced) | set(sources)))
                 self._record_excerpt(stamp, package)
+                self._record_recipe(stamp, self._recipes.get((package.name, architecture)))
             # Once, at the end: an index made while a build is half
             # moved in describes neither what was there nor what is.
             self.index(cached=replaced == False)

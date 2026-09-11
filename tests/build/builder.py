@@ -2093,3 +2093,60 @@ class ForgettingAStampForgetsItsExcerptToo(DigestExcerpt):
         self.assertFalse(os.path.isfile(stamp))
         self.assertFalse(os.path.isfile(excerpt),
                          "the excerpt outlived the stamp it belongs to")
+
+# extend_digest() feeds one hashlib digest plus one recipe list -- bytes
+# and str must hash the same way, since callers pass both.
+class ExtendDigestHashesBytesAndStrAlike(avocado.Test):
+    def test(self):
+        import hashlib
+
+        from seine.packages import extend_digest
+
+        digest_str, recipe_str = hashlib.sha256(), []
+        extend_digest(digest_str, recipe_str, "label", "value")
+
+        digest_bytes, recipe_bytes = hashlib.sha256(), []
+        extend_digest(digest_bytes, recipe_bytes, "label", b"value")
+
+        self.assertEqual(digest_str.hexdigest(), digest_bytes.hexdigest())
+        self.assertEqual(recipe_str, recipe_bytes)
+
+# miss_reason() names the labelled input that actually moved a stamp's
+# digest, read from the recipe a previous build left beside its stamp --
+# the diagnostic this whole feature exists for.
+class MissReasonExplainsWhatChanged(DigestExcerpt):
+    def test(self):
+        builder = self.builder()
+
+        # Nothing built yet for this package/architecture at all.
+        first = parse("""
+                packages:
+                    - source: apt://cache-why-test
+                      revision: rev1
+        """).image.packages[0]
+        stamp = builder.stamps([first])[0][2]
+        self.assertEqual(
+            builder.miss_reason(first, "amd64"),
+            ["no earlier build recorded for this package/architecture"])
+
+        # A real build happens, recording its stamp and recipe.
+        open(stamp, "w").close()
+        builder._record_recipe(stamp, builder._recipes[(first.name, "amd64")])
+
+        # The spec gains an 'options:' entry -- the digest moves, so
+        # stamps() finds no stamp for it and explains why.
+        second = parse("""
+                packages:
+                    - source: apt://cache-why-test
+                      revision: rev1
+                      options: [foo]
+        """).image.packages[0]
+        builder.stamps([second])
+        self.assertEqual(builder.miss_reason(second, "amd64"), ["options changed"])
+
+        # Forgetting the superseded stamp drops its recipe too, same as
+        # its excerpt -- nothing left to explain a build nobody kept.
+        recipe = builder._recipe_path(stamp)
+        self.assertTrue(os.path.isfile(recipe))
+        builder._forget(first, "amd64", produced=set())
+        self.assertFalse(os.path.isfile(recipe))

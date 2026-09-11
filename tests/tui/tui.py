@@ -1189,10 +1189,12 @@ class AnalyzeCacheDoctorRendering(avocado.Test):
     def setUp(self):
         with _tui_required(self):
             from seine.tui.context import Context
-            from seine.tui.render import render_analyze, render_cache, render_doctor
+            from seine.tui.render import (render_analyze, render_cache,
+                                          render_cache_why, render_doctor)
         self.Context = Context
         self.render_analyze = render_analyze
         self.render_cache = render_cache
+        self.render_cache_why = render_cache_why
         self.render_doctor = render_doctor
         os.environ["SEINE_CACHE_DIR"] = self.workdir
 
@@ -1221,6 +1223,15 @@ class AnalyzeCacheDoctorRendering(avocado.Test):
         text = self.render_cache()
         for kind in ["downloads", "packages", "chroots", "bootstraps"]:
             self.assertIn(kind, text)
+
+    def test_cache_why_no_active_spec_says_so(self):
+        self.assertIn("use", self.render_cache_why(self.Context(), "foo"))
+
+    def test_cache_why_unknown_package_says_so(self):
+        context = self.Context()
+        context.use([NATIVE_IMAGE])
+        text = self.render_cache_why(context, "not-a-real-package")
+        self.assertIn("not in", text)
 
     def test_doctor_lists_every_group(self):
         text = self.render_doctor()
