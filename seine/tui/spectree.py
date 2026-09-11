@@ -6,6 +6,7 @@
 # collapsed Tree. One root per active group, named via multiconfig._label().
 
 from rich.text import Text
+from textual.binding import Binding
 from textual.widgets import Tree
 
 from seine import multiconfig
@@ -127,6 +128,29 @@ CHANGED_MARK = "+ "
 CHANGED_STYLE = "bold cyan1"
 
 class SpecTree(Tree):
+    BINDINGS = Tree.BINDINGS + [
+        Binding("right", "expand_node", "Expand", show=False),
+        Binding("left", "collapse_node", "Collapse", show=False),
+    ]
+
+    def action_expand_node(self):
+        node = self.cursor_node
+        if node is None:
+            return
+        if node.allow_expand and node.is_collapsed:
+            node.expand()
+        elif node.is_expanded and node.children:
+            self.move_cursor(node.children[0])
+
+    def action_collapse_node(self):
+        node = self.cursor_node
+        if node is None:
+            return
+        if node.allow_expand and node.is_expanded:
+            node.collapse()
+        elif node.parent is not None and node.parent is not self.root:
+            self.move_cursor(node.parent)
+
     def __init__(self, **kwargs):
         super().__init__("spec", **kwargs)
         self.show_root = False
