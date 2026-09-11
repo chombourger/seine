@@ -1893,6 +1893,47 @@ class App(avocado.Test):
             self.assertIn("(2/2)", seen[1][2])
         _run(scenario)
 
+    # Worker callbacks (build/vendor finish, target events) can land
+    # mid-transition, when the current screen's widgets aren't composed
+    # yet -- these entry points skip the repaint instead of raising, or
+    # run_test() teardown re-raises the worker's NoMatches as an ERROR.
+    def test_worker_callbacks_tolerate_a_half_mounted_screen(self):
+        async def scenario():
+            from textual.css.query import NoMatches
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                real = type(app.screen).query_one
+                def missing(self, *args, **kwargs):
+                    raise NoMatches("gone mid-transition")
+                type(app.screen).query_one = missing
+                try:
+                    app.refresh_indicators()
+                    app.say("hello")
+                    app.refresh_screens()
+                finally:
+                    type(app.screen).query_one = real
+                # And the real widgets still repaint once composed.
+                app.refresh_indicators()
+                app.say("hello")
+                app.refresh_screens()
+                # Same guard on a screen with its own redraw path. Waits
+                # for mounted, not just swapped in: show() swaps the
+                # object synchronously while its widgets still mount.
+                from seine.tui.build import BuildScreen
+                app.show("build")
+                for _ in range(100):
+                    if isinstance(app.screen, BuildScreen) \
+                            and app.screen.is_mounted:
+                        break
+                    await pilot.pause()
+                BuildScreen.query_one = missing
+                try:
+                    app.screen._redraw()
+                    app.screen.refresh_data()
+                finally:
+                    BuildScreen.query_one = real
+        _run(scenario)
+
 # _read_log() (seine/tui/app.py): split out of
 # OverviewScreen._refresh_log_pane() so the read-failure fallback is
 # testable on its own, without touching RichLog's internal render state

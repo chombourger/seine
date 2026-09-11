@@ -378,18 +378,23 @@ class BaseScreen(Screen):
         self._scrolled_to = spectree.scroll_to_active(tree, wanted, self._scrolled_to)
 
     # Kept on the base class so every subclass gets it for free.
-    # Subclasses override update_body(), not this.
+    # Subclasses override update_body(), not this. NoMatches throughout:
+    # worker callbacks can land mid-transition, when half the widgets
+    # aren't composed yet -- a missed repaint is fine, a crash is not.
     def refresh_data(self):
         try:
-            tree = self.query_one(SpecTree)
+            try:
+                tree = self.query_one(SpecTree)
+            except NoMatches:
+                pass
+            else:
+                tree.load(self.app.context, previous_spec=self.app.context.changed_from)
+            self.query_one(Indicators).refresh_text()
+            self.query_one(VendorIndicator).refresh_text()
+            self.query_one(TargetIndicator).refresh_text()
+            self.update_body()
         except NoMatches:
             pass
-        else:
-            tree.load(self.app.context, previous_spec=self.app.context.changed_from)
-        self.query_one(Indicators).refresh_text()
-        self.query_one(VendorIndicator).refresh_text()
-        self.query_one(TargetIndicator).refresh_text()
-        self.update_body()
 
     # Overridden by each screen: what goes in the body ('#cmd') pane.
     def update_body(self):
