@@ -2048,7 +2048,7 @@ class SettingsScreenIntegration(avocado.Test):
                 editrow.value = "not-a-number"
                 await pilot.press("enter")
                 await pilot.pause()
-                self.assertIn("expects a number", _content(app.screen.query_one("#settingshint")))
+                self.assertIn("expects a number", _content(app.screen.query_one("#modalhint")))
                 self.assertTrue(editrow.display)
                 self.assertIsNone(settings.load()["jobs"])
         _run(scenario)
