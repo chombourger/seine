@@ -3709,5 +3709,155 @@ class CastReplay(avocado.Test):
                 self.assertIn("select a test", _content(status))
         _run(scenario)
 
+# Test history in the overview pane: render_test_node() appends past
+# runs from the test index below the live session marks. Run dirs
+# are built by hand (no robot run needed) -- only files the pane
+# reads exist: output.xml for the log link, interactions.json plus a
+# .cast for the replay link.
+class TestHistory(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    QUALIFIED = "seine test.boots to a login prompt"
+    SHORT = "boots to a login prompt"
+
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui import render
+            from seine.testing import testindex
+        self.render = render
+        self.testindex = testindex
+        os.environ["SEINE_LOG_DIR"] = self.workdir
+        self.addCleanup(os.environ.pop, "SEINE_LOG_DIR", None)
+        _isolate_history(self)
+
+    def _state(self):
+        return types.SimpleNamespace(
+            test_paths={self.QUALIFIED: ["test", "[0] boot", "tests",
+                                         "[0] " + self.SHORT]},
+            rows={}, result=None)
+
+    def _node(self, data, children=()):
+        return types.SimpleNamespace(data=data, children=list(children))
+
+    def _run_dir(self, stamp, status="PASS"):
+        outdir = os.path.join(self.workdir, "tests", stamp)
+        os.makedirs(outdir)
+        with open(os.path.join(outdir, "output.xml"), "w") as f:
+            f.write("<robot/>")
+        cast = "seine_test.boot.cast"
+        with open(os.path.join(outdir, cast), "w") as f:
+            f.write("fake cast")
+        with open(os.path.join(outdir, "interactions.json"), "w") as f:
+            json.dump({"console_cast": "console.cast",
+                       "console_casts": {self.QUALIFIED: cast}}, f)
+        return outdir
+
+    def _record(self, stamp, started, status="PASS"):
+        outdir = self._run_dir(stamp)
+        self.testindex.record(
+            ["a.yaml"], outdir,
+            [{"name": self.QUALIFIED, "status": status, "elapsed": 25.0}],
+            started=started)
+
+    def _metas(self, text):
+        found = []
+        for span in text.spans:
+            meta = getattr(span.style, "meta", None)
+            if meta:
+                found.append(meta)
+        return found
+
+    def test_leaf_shows_last_run_and_log_and_replay_links(self):
+        import datetime
+        import time
+        started = datetime.datetime(2026, 9, 11, 7, 53).timestamp()
+        self._record("20260911-000000", started)
+        node = self._node("[0] " + self.SHORT)
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests", "[0] " + self.SHORT),
+            self._state())
+        plain = text.plain
+        self.assertIn("Last run:", plain)
+        self.assertIn(time.strftime("%b %d %H:%M", time.localtime(started)), plain)
+        self.assertIn("PASS (25s)", plain)
+        self.assertIn("All runs:", plain)
+        self.assertIn("[log]", plain)
+        self.assertIn("[replay]", plain)
+        metas = self._metas(text)
+        self.assertTrue(any(m.get("log-click", "").endswith("output.xml")
+                            for m in metas))
+        self.assertTrue(any(m.get("cast-play", "").endswith(".cast")
+                            for m in metas))
+
+    def test_never_run_says_so(self):
+        node = self._node("[0] " + self.SHORT)
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests", "[0] " + self.SHORT),
+            self._state())
+        self.assertIn("never run from here yet", text.plain)
+
+    def test_branch_child_carries_a_dimmed_last_suffix(self):
+        import datetime
+        import time
+        started = datetime.datetime(2026, 9, 11, 7, 53).timestamp()
+        self._record("20260911-000000", started)
+        other = "seine test.second case"
+        outdir = os.path.join(self.workdir, "tests", "20260911-000000")
+        self.testindex.record(
+            ["a.yaml"], outdir,
+            [{"name": other, "status": "PASS", "elapsed": 5.0}],
+            started=started)
+        import types as _types
+        state = _types.SimpleNamespace(
+            test_paths={self.QUALIFIED: ["test", "[0] boot", "tests",
+                                         "[0] " + self.SHORT],
+                        other: ["test", "[0] boot", "tests",
+                                "[0] second case"]},
+            rows={}, result=None)
+        node = self._node("tests", children=[
+            self._node("[0] " + self.SHORT),
+            self._node("[0] second case")])
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests"), state)
+        plain = text.plain
+        self.assertIn("[0] " + self.SHORT, plain)
+        self.assertIn("last \u2714 %s"
+                      % time.strftime("%b %d %H:%M", time.localtime(started)),
+                      plain)
+        # A branch lists one line per child, not a full block each.
+        self.assertNotIn("All runs:", plain)
+
+    def test_failed_run_marks_red(self):
+        import datetime
+        started = datetime.datetime(2026, 9, 11, 7, 53).timestamp()
+        self._record("20260911-000000", started, status="FAIL")
+        node = self._node("[0] " + self.SHORT)
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests", "[0] " + self.SHORT),
+            self._state())
+        self.assertIn("FAIL", text.plain)
+        self.assertIn("\u2718", text.plain)
+
+    def test_body_click_on_replay_starts_replay(self):
+        from seine.tui.app import SeineApp
+        header = {"version": 2, "width": 80, "height": 40, "timestamp": 0,
+                  "env": {"TERM": "xterm-256color"}}
+        path = os.path.join(self.workdir, "t.cast")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(header) + "\n"
+                    + json.dumps([0.1, "o", "hi\r\n"]) + "\n")
+
+        async def scenario():
+            app = SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                body = app.screen.query_one("#body")
+                event = types.SimpleNamespace(
+                    style=types.SimpleNamespace(meta={"cast-play": path}))
+                body.on_click(event)
+                await pilot.pause()
+                self.assertEqual(app.screen._cast_path, path)
+        _run(scenario)
+
 if __name__ == "__main__":
     avocado.main()
