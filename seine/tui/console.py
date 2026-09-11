@@ -284,18 +284,31 @@ def _pyte_style(char):
 # firmware's content ever needs, purely as scroll-drift margin, so
 # rows beyond what the BIOS actually draws are never meant to be seen.
 # Pass however many rows fit the available space, rendered from the top.
-def render_console(screen, max_lines=None):
+# tail: end at the last row holding output rather than the
+# screen bottom -- a replay pane is shorter than the 40-row screen,
+# and the newest output is what must stay visible. A short session
+# (fewer rows used than the screen holds) still starts at the top
+# instead of showing a wall of leading blank rows.
+def render_console(screen, max_lines=None, tail=False):
     from rich.text import Text
     # no_wrap/overflow="crop": pyte already wrapped this at exactly
     # screen.columns. Rewrapping here would scramble the fixed
     # 80-column grid BIOS/serial-console output assumes.
     text = Text(no_wrap=True, overflow="crop")
     lines = screen.lines if max_lines is None else min(max_lines, screen.lines)
-    for y in range(lines):
+    first = 0
+    if tail and max_lines is not None:
+        last = 0
+        for y in range(screen.lines):
+            if any(char.data not in ("", " ")
+                    for char in screen.buffer[y].values()):
+                last = y
+        first = max(0, last + 1 - lines)
+    for y in range(first, first + lines):
         row = screen.buffer[y]
         for x in range(screen.columns):
             char = row[x]
             text.append(char.data, style=_pyte_style(char))
-        if y < lines - 1:
+        if y < first + lines - 1:
             text.append("\n")
     return text
