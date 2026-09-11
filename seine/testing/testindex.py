@@ -200,13 +200,34 @@ def _elapsed(status):
         return None
 
 
+# Cheap once, but render_test_node() (seine/tui/render.py) calls
+# scan() on every repaint, including several times a second while a
+# run is live (see app.py's _test_changed() wiring) -- caching it
+# briefly turns that back into one real walk per burst instead of one
+# per repaint. Keyed by logs_root() too, not just time, so isolated
+# tests (each its own SEINE_LOG_DIR) never share a cached result.
+_SCAN_CACHE_TTL = 2.0
+_scan_cache = {"root": None, "at": 0.0, "result": []}
+
+def scan():
+    root = os.path.join(ContainerEngine.logs_root(), "tests")
+    now = time.time()
+    if (_scan_cache["root"] == root
+            and now - _scan_cache["at"] < _SCAN_CACHE_TTL):
+        return _scan_cache["result"]
+    result = _scan_uncached(root)
+    _scan_cache["root"] = root
+    _scan_cache["at"] = now
+    _scan_cache["result"] = result
+    return result
+
 # Every run directory on disk holding an output.xml, newest first --
 # used by rebuild() below, and directly by callers that want old runs
 # without waiting for a rebuild.
-def scan():
+def _scan_uncached(root):
     import glob
     import xml.etree.ElementTree as ET
-    pattern = os.path.join(ContainerEngine.logs_root(), "tests", "*", "output.xml")
+    pattern = os.path.join(root, "*", "output.xml")
     found = []
     for path in sorted(glob.glob(pattern)):
         try:

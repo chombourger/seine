@@ -182,6 +182,39 @@ class TestIndexRecording(avocado.Test):
         ]["status"], "FAIL")
         self.assertFalse(entry["ok"])
 
+    # render_test_node() (seine/tui/render.py) calls scan() on every
+    # repaint, including several times a second while a run is live --
+    # a second call right after the first must not re-walk the tests/
+    # directory (or re-parse XML) within the cache's TTL.
+    def test_scan_is_cached_within_its_ttl(self):
+        outdir = os.path.join(self.workdir, "tests", "20260911-000000")
+        os.makedirs(outdir)
+        _write(outdir, "output.xml", MINIMAL_XML)
+        first = testindex.scan()
+
+        second_dir = os.path.join(self.workdir, "tests", "20260911-000001")
+        os.makedirs(second_dir)
+        _write(second_dir, "output.xml", MINIMAL_XML)
+        # A fresh run dir landed, but the cache doesn't know that yet --
+        # still returns what the first call saw, not a re-walked result.
+        self.assertEqual(testindex.scan(), first)
+
+    # A different SEINE_LOG_DIR (a separate test, or a real rescan
+    # elsewhere) must never read another root's cached result back --
+    # cache lookups key on logs_root() too, not just elapsed time.
+    def test_scan_cache_does_not_leak_across_log_dirs(self):
+        outdir = os.path.join(self.workdir, "tests", "20260911-000000")
+        os.makedirs(outdir)
+        _write(outdir, "output.xml", MINIMAL_XML)
+        testindex.scan()
+
+        other_root = os.path.join(self.workdir, "elsewhere")
+        os.environ["SEINE_LOG_DIR"] = other_root
+        try:
+            self.assertEqual(testindex.scan(), [])
+        finally:
+            os.environ["SEINE_LOG_DIR"] = self.workdir
+
 
 class RunSpecHook(avocado.Test):
     """
