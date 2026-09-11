@@ -1841,6 +1841,58 @@ class App(avocado.Test):
                 self.assertIsInstance(app.screen, self.DoctorScreen)
         _run(scenario)
 
+    # The prompt stays shut with a progress line while startup commands
+    # run, so a command typed in the first tick can't slip in front of
+    # them. Probed via dispatch itself, which is synchronous, so what
+    # it records is exactly what each command ran under. Invalid
+    # commands on purpose: a navigating one (/plan, /cache, ...) would
+    # switch screens mid-loop and leave an unmounted screen behind for
+    # the next dispatch to find.
+    def test_prompt_is_shut_while_startup_commands_run(self):
+        async def scenario():
+            from seine import settings
+            from seine.tui import commands
+            from seine.tui.base import DEFAULT_PLACEHOLDER
+            current = settings.load()
+            current["startup_commands"] = ["/bogus", "/bogus2"]
+            settings.save(current)
+            seen = []
+            real = commands.dispatch
+            def probe(app, line):
+                prompt = app.screen.query_one("#prompt")
+                seen.append((line, prompt.disabled, prompt.placeholder,
+                             "startup" in prompt.classes))
+                return real(app, line)
+            commands.dispatch = probe
+            try:
+                app = self.SeineApp(files=[NATIVE_IMAGE])
+                async with app.run_test() as pilot:
+                    for _ in range(100):
+                        try:
+                            prompt = app.screen.query_one("#prompt")
+                        except Exception:
+                            pass
+                        else:
+                            if not prompt.disabled:
+                                break
+                        await pilot.pause()
+                    prompt = app.screen.query_one("#prompt")
+                    self.assertIsInstance(app.screen, self.OverviewScreen)
+                    self.assertFalse(prompt.disabled)
+                    self.assertEqual(prompt.placeholder, DEFAULT_PLACEHOLDER)
+                    self.assertNotIn("startup", prompt.classes)
+            finally:
+                commands.dispatch = real
+            self.assertEqual([line for line, _, _, _ in seen],
+                             ["/bogus", "/bogus2"])
+            for line, disabled, placeholder, startup in seen:
+                self.assertTrue(disabled, line)
+                self.assertIn("Running startup command", placeholder, line)
+                self.assertTrue(startup, line)
+            self.assertIn("(1/2)", seen[0][2])
+            self.assertIn("(2/2)", seen[1][2])
+        _run(scenario)
+
 # _read_log() (seine/tui/app.py): split out of
 # OverviewScreen._refresh_log_pane() so the read-failure fallback is
 # testable on its own, without touching RichLog's internal render state
@@ -1961,6 +2013,19 @@ class SettingsScreenIntegration(avocado.Test):
         os.environ["XDG_CONFIG_HOME"] = self.workdir
 
     async def _open(self, pilot, app):
+        # Startup commands run deferred and hold the prompt shut while
+        # they do (the tests below seed navigations like /cache): wait
+        # for it to go live rather than racing them with Enter. The
+        # screen is re-queried each time since they may switch it.
+        for _ in range(100):
+            try:
+                prompt = app.screen.query_one("#prompt")
+            except Exception:
+                pass
+            else:
+                if not prompt.disabled:
+                    break
+            await pilot.pause()
         prompt = app.screen.query_one("#prompt")
         prompt.value = "/settings"
         await pilot.press("enter")

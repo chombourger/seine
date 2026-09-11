@@ -366,6 +366,10 @@ class SeineApp(App):
     #previewpane:focus, #logviewer:focus {
         border: round $border;
     }
+    /* While startup commands run the prompt is shut (see
+       _run_startup_commands() below) with a progress line in place
+       of the default placeholder, italic so it reads as status. */
+    #prompt.startup > .input--placeholder { text-style: italic; }
     #cmd, #tasks { width: 1fr; height: 100%; border: round $foreground 40%; }
     #body { padding: 1 2; }
     #tasklist { padding: 1 2; }
@@ -575,6 +579,12 @@ class SeineApp(App):
         # An unset/hand-edited theme is silently skipped, not an error.
         if current["theme"] in commands.THEMES:
             self.theme = commands.THEMES[current["theme"]]
+        # Input stays shut until deferred startup commands have run, so
+        # a command typed in the first tick can't slip in front of them
+        # (or land on a screen they then switch away from). Only engaged
+        # when there is anything to wait for -- the common empty case
+        # behaves exactly as before.
+        self._running_startup = len(current["startup_commands"]) > 0
         if self._no_spec_given:
             self.push_screen(DoctorScreen())
         else:
@@ -584,11 +594,42 @@ class SeineApp(App):
         self.call_after_refresh(self._run_startup_commands, current["startup_commands"])
 
     def _run_startup_commands(self, lines):
-        for line in lines:
-            try:
-                commands.dispatch(self, line)
-            except commands.CommandError as e:
-                self.say(str(e), error=True)
+        # Nothing seeded: leave the freshly mounted screen exactly as
+        # its own on_mount() left it -- in particular, don't steal focus
+        # back to the prompt a tick later while it is being used.
+        if not lines:
+            self._running_startup = False
+            return
+        total = len(lines)
+        try:
+            for index, line in enumerate(lines, 1):
+                self._startup_progress(index, total)
+                try:
+                    commands.dispatch(self, line)
+                except commands.CommandError as e:
+                    self.say(str(e), error=True)
+        finally:
+            self._running_startup = False
+            self._startup_progress(None, total)
+
+    # Progress in the prompt's own placeholder ("Running startup
+    # command (1/4)..."), cleared back to the default afterwards. Best
+    # effort: a startup command may leave a modal (no prompt) on top.
+    def _startup_progress(self, index, total):
+        from seine.tui.base import DEFAULT_PLACEHOLDER
+        try:
+            prompt = self.screen.query_one(Prompt)
+        except NoMatches:
+            return
+        if index is None:
+            prompt.disabled = False
+            prompt.placeholder = DEFAULT_PLACEHOLDER
+            prompt.remove_class("startup")
+            prompt.focus()
+        else:
+            prompt.disabled = True
+            prompt.placeholder = "Running startup command (%d/%d)..." % (index, total)
+            prompt.add_class("startup")
 
     def say(self, text, error=False, warning=False):
         if isinstance(self.screen, BaseScreen):
