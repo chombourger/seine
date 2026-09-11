@@ -16,7 +16,7 @@ import json
 from textual import command
 from textual.app import App
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import RichLog, Static
 
@@ -103,7 +103,7 @@ class BodyStatic(Static):
 def _body_width(screen):
     from seine.tui.render import BOX_WIDTH
     body = screen.query_one("#body", Static)
-    pane = screen.query_one("#cmd")
+    pane = screen.query_one("#bodypane")
     width = body.content_size.width
     if width <= 0:
         return BOX_WIDTH
@@ -119,14 +119,20 @@ class OverviewScreen(BaseScreen):
     BINDINGS = BaseScreen.BINDINGS + [Binding("escape", "close_log", show=False)]
 
     # The replay pane takes over the tree's own slot, the same one
-    # LogViewer already shares: '#body' (node content, Logs: links)
-    # stays put on the right throughout.
+    # LogViewer already shares. The right side is a vertical split:
+    # the timeline (or node content) up top, the playing row's call
+    # arguments below -- the arguments pane only shows while a replay
+    # with a timeline runs, leaving the full height otherwise.
     def compose(self):
         yield Horizontal(
             SpecTree(id="spectree"),
             LogViewer(id="logviewer"),
             CastPane(Static(id="cast", markup=False), id="castpane"),
-            StaticPane(BodyStatic(id="body", markup=False), id="cmd"),
+            Vertical(
+                StaticPane(BodyStatic(id="body", markup=False), id="bodypane"),
+                StaticPane(Static(id="args", markup=False), id="argspane"),
+                id="cmd",
+            ),
             id="main",
         )
         yield from self.footer()
@@ -155,6 +161,10 @@ class OverviewScreen(BaseScreen):
         # first refresh, so row -1 "nothing playing yet" still
         # paints over whatever the pane held).
         self._timeline_index = None
+        # The arguments split only exists while a replay with a
+        # timeline runs; hidden otherwise, leaving #bodypane the
+        # full height.
+        self.query_one("#argspane").display = False
         super().on_mount()
         if self.app._startup_error:
             self.say(self.app._startup_error, error=True)
@@ -252,6 +262,7 @@ class OverviewScreen(BaseScreen):
         self._cast_path = player.path
         self._cast_timer = self.set_interval(TICK, self._tick_cast)
         self._timeline_index = None
+        self.query_one("#argspane").display = bool(player.timeline)
         self._refresh_left_pane()
         self._refresh_timeline()
         self.say("replaying %s -- space pauses, left/right set speed, Esc stops"
@@ -267,6 +278,7 @@ class OverviewScreen(BaseScreen):
             self._cast_path = None
             self._player = None
             self._timeline_index = None
+            self.query_one("#argspane").display = False
             self._refresh_left_pane()
             # The right pane showed the replay timeline -- put back
             # whatever the selection held before (same recompute a
@@ -306,13 +318,24 @@ class OverviewScreen(BaseScreen):
             self._timeline_index = index
             self._refresh_timeline()
 
-    # The replaying test's keyword timeline goes in the right pane
-    # while a replay runs -- nothing when the run predates
-    # interactions.json, leaving the pane exactly as it was.
+    # The replaying test's keyword timeline goes up top with its
+    # playing row's call arguments below, while a replay runs --
+    # nothing when the run predates interactions.json, leaving the
+    # pane exactly as it was.
     def _refresh_timeline(self):
         if self._player is None or not self._player.timeline:
             return
         self.query_one("#body", Static).update(self._player.render_timeline())
+        self.query_one("#args", Static).update(self._player.render_args())
+        # Follow the playing row while running; paused, the viewport
+        # stays where the user left it for inspection.
+        if not self._player.paused:
+            current = self._player.current_index()
+            if current >= 0:
+                pane = self.query_one("#bodypane")
+                visible = max(1, pane.size.height - 2)
+                pane.scroll_to(y=max(0, current + 2 - visible),
+                               animate=False)
 
     def _redraw_cast(self):
         pane = self.query_one(CastPane)
@@ -530,6 +553,12 @@ class SeineApp(App):
     #prompt.startup > .input--placeholder { text-style: italic; }
     #cmd, #tasks { width: 1fr; height: 100%; border: round $foreground 40%; }
     #body { padding: 1 2; }
+    /* Timeline up top, playing row's arguments below, 2:1 -- the
+       arguments pane only shows while a replay with a timeline
+       runs, leaving the full height otherwise. */
+    #bodypane { height: 2fr; }
+    #argspane { height: 1fr; border-top: solid $foreground 40%; }
+    #args { padding: 1 2; }
     #tasklist { padding: 1 2; }
     #tail, #logviewer { padding: 0 1; }
     /* Vendor screen: own ids, 1fr:1fr both rows (others are 2fr:1fr). */

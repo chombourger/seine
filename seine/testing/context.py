@@ -113,6 +113,12 @@ class RunContext:
         entry = self._entry_stack.pop()
         if entry is not None:
             entry["status"] = result.status
+            # data.args is empty for named-argument calls (seine's
+            # own shorthand spells nearly everything that way);
+            # result.args holds what actually ran, resolved.
+            resolved = getattr(result, "args", None)
+            if resolved:
+                entry["args"] = [str(a) for a in resolved]
 
     def call_from_thread(self, fn, *args, **kwargs):
         return fn(*args, **kwargs)

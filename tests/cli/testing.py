@@ -387,6 +387,11 @@ test:
         self.assertEqual(data["console_log"], None)  # no console ever connected
         names = [e["keyword"] for e in data["interactions"]]
         self.assertIn("Get Spec Value", names)
+        # Resolved call arguments, not data.args (empty for
+        # named-argument calls) -- what makes the args pane possible.
+        entry = next(e for e in data["interactions"]
+                     if e["keyword"] == "Get Spec Value")
+        self.assertIn("path=distribution.architecture", entry["args"])
 
 class TestCommandLine(avocado.Test):
     def setUp(self):
@@ -486,10 +491,11 @@ class RunContext(avocado.Test):
             self.args = args
 
     class _FakeKeywordResult:
-        def __init__(self, libname, kwname, status="PASS"):
+        def __init__(self, libname, kwname, status="PASS", args=()):
             self.libname = libname
             self.kwname = kwname
             self.status = status
+            self.args = args
 
     def test_an_interesting_keyword_is_recorded(self):
         with self.ctx.RunContext(outdir=self.workdir) as context:
@@ -503,6 +509,19 @@ class RunContext(avocado.Test):
         self.assertEqual(entry["keyword"], "Power Cycle")
         self.assertEqual(entry["args"], ["x"])
         self.assertEqual(entry["status"], "PASS")
+
+    # data.args is empty for named-argument calls -- the entry keeps
+    # result.args (what actually ran) instead of an empty list.
+    def test_a_named_argument_call_records_the_resolved_args(self):
+        with self.ctx.RunContext(outdir=self.workdir) as context:
+            data = self._FakeKeywordData(args=())
+            result = self._FakeKeywordResult(
+                "seine.testing.library.target.TargetLibrary", "Console Wait",
+                args=("pattern=login:", "timeout=120 seconds"))
+            context.start_keyword(data, result)
+            context.end_keyword(data, result)
+        self.assertEqual(context.interactions[0]["args"],
+                         ["pattern=login:", "timeout=120 seconds"])
 
     def test_an_uninteresting_keyword_is_not_recorded(self):
         with self.ctx.RunContext(outdir=self.workdir) as context:

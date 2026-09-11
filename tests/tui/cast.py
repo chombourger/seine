@@ -150,8 +150,9 @@ class CastPlayer(avocado.Test):
                        "interactions": list(entries)}, f)
         return outdir
 
-    def _entry(self, test, keyword, at, status="PASS", artifact=None):
-        entry = {"test": test, "keyword": keyword, "args": [],
+    def _entry(self, test, keyword, at, status="PASS", artifact=None,
+               args=None):
+        entry = {"test": test, "keyword": keyword, "args": args or [],
                  "timestamp": 1000 + at, "status": status}
         if artifact is not None:
             entry["artifact_kind"], entry["artifact_path"] = artifact
@@ -222,6 +223,44 @@ class CastPlayer(avocado.Test):
         self.assertIn("\u25b6 Power Cycle", shown)
         self.assertIn("\u2718", shown)
         self.assertIn("[screen]", shown)
+
+    def test_current_is_none_before_the_first_row(self):
+        outdir = self._write_run(
+            casts={"x.alpha": "x.alpha.cast"},
+            entries=[self._entry("x.alpha", "Power Cycle", 1.0)])
+        player = self.Player()
+        player.load(os.path.join(outdir, "x.alpha.cast"))
+        self.assertIsNone(player.current())
+        self.assertEqual(player.render_args().plain, "")
+        player.tick(1.0)
+        self.assertEqual(player.current()["keyword"], "Power Cycle")
+
+    def test_render_args_shows_the_playing_rows_call(self):
+        outdir = self._write_run(
+            casts={"x.alpha": "x.alpha.cast"},
+            entries=[self._entry("x.alpha", "Console Wait", 1.0,
+                                 args=["pattern=login:",
+                                       "timeout=120 seconds"])])
+        player = self.Player()
+        player.load(os.path.join(outdir, "x.alpha.cast"))
+        player.tick(1.0)
+        shown = player.render_args().plain
+        self.assertIn("Console Wait", shown.splitlines()[0])
+        self.assertIn("pattern=login:", shown)
+        self.assertIn("timeout=120 seconds", shown)
+
+    # Runs recorded before argument capture kept args: [] -- a
+    # dimmed note rather than a blank that reads as broken.
+    def test_render_args_without_recorded_arguments_says_so(self):
+        outdir = self._write_run(
+            casts={"x.alpha": "x.alpha.cast"},
+            entries=[self._entry("x.alpha", "Power Cycle", 1.0)])
+        player = self.Player()
+        player.load(os.path.join(outdir, "x.alpha.cast"))
+        player.tick(1.0)
+        shown = player.render_args().plain
+        self.assertIn("Power Cycle", shown)
+        self.assertIn("(no recorded arguments)", shown)
 
 
 if __name__ == "__main__":
