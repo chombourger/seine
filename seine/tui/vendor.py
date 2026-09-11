@@ -18,6 +18,7 @@ from seine.progress import elapsed
 from seine.tui.base import BaseScreen, StaticPane
 from seine.tui.build import MARKS, Tail
 from seine.tui.reporter import TextualReporter
+from seine.tui.sanitize import sanitize
 from seine.tui.spectree import SpecTree
 
 # What the Vendor screen renders, kept apart from the widgets the same
@@ -282,4 +283,4 @@ class VendorScreen(BaseScreen):
         self._tail.switch(path)
         text = self._tail.read_new()
         if text:
-            self.query_one("#vendortail", RichLog).write(text)
+            self.query_one("#vendortail", RichLog).write(sanitize(text))

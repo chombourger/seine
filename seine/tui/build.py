@@ -17,6 +17,7 @@ from seine.progress import elapsed
 from seine.tui.base import BaseScreen, StaticPane
 from seine.tui.reporter import TextualReporter
 from seine.tui.render import render_overview
+from seine.tui.sanitize import sanitize
 from seine.tui.spectree import SpecTree, branch_for, _item_label
 
 MARKS = {"pending": "○", "running": "●", "done": "✔", "failed": "✘"}
@@ -340,7 +341,7 @@ class BuildScreen(BaseScreen):
         self._tail.switch(path)
         text = self._tail.read_new()
         if text:
-            self.query_one("#tail", RichLog).write(text)
+            self.query_one("#tail", RichLog).write(sanitize(text))
             self._scan_ansible(state, text)
 
     # Scrapes 'PLAY [name] ***'/'TASK [name] ***' out of the rootfs log
