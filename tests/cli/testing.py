@@ -757,6 +757,78 @@ test:
             self.assertEqual(len(lines), 1)
             self.assertEqual(_json.loads(lines[0])["version"], 2)
 
+class ConsoleDrain(avocado.Test):
+    def setUp(self):
+        with _test_extra_required(self):
+            from seine.testing import context as ctx
+            from seine.tui import target as _target
+            self.ctx = ctx
+            self.target = _target
+
+    def _adapter(self, ctx):
+        adapter = self.target.ConsoleAdapter(ctx)
+        ctx._target_console = adapter
+        return adapter
+
+    # Nothing ever arrived: teardown pays nothing, not even one
+    # poll sleep.
+    def test_idle_disconnect_returns_immediately(self):
+        import time as _time
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            self._adapter(ctx)
+            start = _time.time()
+            self.target.disconnect(ctx)
+            self.assertLess(_time.time() - start, self.target._DRAIN_QUIET)
+
+    # Bytes just landed: disconnect waits for the stream to go
+    # quiet rather than stopping it mid-burst and cutting the
+    # recording's tail.
+    def test_recent_bytes_make_disconnect_wait_for_quiet(self):
+        import time as _time
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            adapter = self._adapter(ctx)
+            adapter.print(b"prompt# ")
+            start = _time.time()
+            self.target.disconnect(ctx)
+            took = _time.time() - start
+            self.assertGreaterEqual(took, self.target._DRAIN_QUIET - 0.1)
+            self.assertLess(took, self.target._DRAIN_CAP + 0.5)
+
+    # A target that keeps talking: the wait is bounded by the cap,
+    # not held open by a never-quiet stream.
+    def test_an_endless_burst_still_disconnects_at_the_cap(self):
+        import threading as _threading
+        import time as _time
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            adapter = self._adapter(ctx)
+            stop = _threading.Event()
+
+            def burst():
+                while not stop.is_set():
+                    adapter.print(b"tick ")
+                    _time.sleep(0.05)
+
+            thread = _threading.Thread(target=burst)
+            thread.start()
+            try:
+                start = _time.time()
+                self.target.disconnect(ctx)
+                took = _time.time() - start
+            finally:
+                stop.set()
+                thread.join()
+            self.assertGreaterEqual(took, self.target._DRAIN_CAP - 0.2)
+            self.assertLess(took, self.target._DRAIN_CAP + 1.0)
+
+    # A byte landing after close() (the stream stops
+    # asynchronously) is dropped, not thrown into mtda's thread.
+    def test_print_after_close_is_dropped_not_thrown(self):
+        with self.ctx.RunContext(outdir=self.workdir) as ctx:
+            adapter = self._adapter(ctx)
+            adapter.print(b"before\r\n")
+            adapter.close()
+            adapter.print(b"late\r\n")
+
 class ConsoleCastCLI(avocado.Test):
     def setUp(self):
         with _test_extra_required(self):

@@ -511,10 +511,16 @@ def _target(app, argv):
     elif verb == "disconnect":
         if rest:
             raise CommandError("/target disconnect takes no arguments")
-        target.disconnect(app)
-        app.say("target: disconnected")
-        if hasattr(app.screen, "_redraw_status"):
-            app.screen._redraw_status()
+        # Worker, not a direct call: disconnect() now drains the console
+        # (up to 1.5s, see target.py's _drain_console()) before tearing
+        # down, and dispatch() runs on the UI thread -- a direct call
+        # would freeze the whole TUI for that wait.
+        def _disconnect():
+            target.disconnect(app)
+            app.call_from_thread(app.say, "target: disconnected")
+            if hasattr(app.screen, "_redraw_status"):
+                app.call_from_thread(app.screen._redraw_status)
+        app.run_worker(_disconnect, thread=True, exclusive=True, group="target")
     elif verb == "status":
         _target_status(app)
     elif verb in ("on", "off", "toggle"):

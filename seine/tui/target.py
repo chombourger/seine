@@ -140,6 +140,26 @@ def connect(app, host=None):
     disconnect(app)
     return _connect(app, host)
 
+# Waits for the console stream to go quiet before disconnect()
+# stops it: stopping mid-burst cuts each recording's tail (the test
+# library reads the agent directly, so it already has what it needs
+# while our tap is still catching up). Bounded, and free when idle --
+# a teardown with nothing recent in flight skips the loop entirely.
+_DRAIN_QUIET = 0.3
+_DRAIN_CAP = 1.5
+
+def _drain_console(app):
+    adapter = getattr(app, "_target_console", None)
+    if adapter is None:
+        return
+    last = getattr(adapter, "_last_byte_at", None)
+    if last is None:
+        return
+    deadline = time.time() + _DRAIN_CAP
+    while time.time() - last < _DRAIN_QUIET and time.time() < deadline:
+        time.sleep(0.05)
+        last = getattr(adapter, "_last_byte_at", None) or last
+
 # '/target disconnect', and the first step of connect() above. '.stop()'
 # is the real teardown on mtda.client.Client, not '.close()'. Errors
 # from an already-dead channel aren't this call's problem to report.
@@ -150,6 +170,7 @@ def connect(app, host=None):
 # open, that's exactly what keeps grpc-core's thread pool from ever
 # reporting idle; see _wire_launch_guard() above.
 def disconnect(app):
+    _drain_console(app)
     client = getattr(app, "_target_client", None)
     if client is not None:
         try:
