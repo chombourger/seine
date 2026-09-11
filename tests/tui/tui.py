@@ -4213,6 +4213,141 @@ class CastReplay(avocado.Test):
                 self.assertIn("select a test", _content(status))
         _run(scenario)
 
+# _aggregate_test_state()'s priority (failed > running > pending >
+# done) and _tests_under()'s path-prefix match -- the pure logic
+# render_test_node() below builds its live marks from.
+class AggregateTestStatePriority(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.render import _aggregate_test_state, _tests_under
+        self._aggregate_test_state = _aggregate_test_state
+        self._tests_under = _tests_under
+
+    def test_no_history_at_all_is_pending(self):
+        self.assertEqual(self._aggregate_test_state(["a"], {}), "pending")
+
+    def test_a_single_failed_test_wins_over_everything(self):
+        rows = {"a": {"state": "done"}, "b": {"state": "failed"},
+               "c": {"state": "running"}}
+        self.assertEqual(self._aggregate_test_state(["a", "b", "c"], rows), "failed")
+
+    def test_running_wins_over_pending_and_done(self):
+        rows = {"a": {"state": "done"}, "b": {"state": "running"}}
+        self.assertEqual(self._aggregate_test_state(["a", "b"], rows), "running")
+
+    def test_pending_wins_over_done(self):
+        rows = {"a": {"state": "done"}}
+        self.assertEqual(self._aggregate_test_state(["a", "b"], rows), "pending")
+
+    def test_every_test_done_is_done(self):
+        rows = {"a": {"state": "done"}, "b": {"state": "done"}}
+        self.assertEqual(self._aggregate_test_state(["a", "b"], rows), "done")
+
+    def test_tests_under_matches_by_path_prefix(self):
+        paths = {"a": ["test", "[0]", "tests", "[0]"],
+                "b": ["test", "[0]", "tests", "[1]"],
+                "c": ["test", "[1]", "tests", "[0]"]}
+        self.assertEqual(sorted(self._tests_under(("test", "[0]"), paths)),
+                         ["a", "b"])
+        self.assertEqual(self._tests_under(("test", "[0]", "tests", "[0]"), paths),
+                         ["a"])
+
+# render_test_node()'s live marks, before any run history exists --
+# TestHistory below covers the same function's past-run extension.
+class TestNodeLiveMarks(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    QUALIFIED = "seine test.boots to a login prompt"
+
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui import render
+            from seine.testing.runner import SuiteResult, TestOutcome
+        self.render = render
+        self.SuiteResult = SuiteResult
+        self.TestOutcome = TestOutcome
+        # No run history is recorded from here -- entries()/scan() (both
+        # called unconditionally by render_test_node()) must see an empty,
+        # real SEINE_LOG_DIR rather than whatever the environment has.
+        os.environ["SEINE_LOG_DIR"] = self.workdir
+        self.addCleanup(os.environ.pop, "SEINE_LOG_DIR", None)
+
+    def _node(self, data, children=()):
+        return types.SimpleNamespace(data=data, children=list(children))
+
+    def _state(self, rows=None, result=None):
+        return types.SimpleNamespace(
+            test_paths={self.QUALIFIED: ["test", "[0] boot", "tests",
+                                         "[0] login"]},
+            rows=rows or {}, result=result)
+
+    def test_a_test_never_started_is_pending(self):
+        node = self._node("[0] login")
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests", "[0] login"), self._state())
+        self.assertTrue(text.plain.startswith("○ "))
+        self.assertFalse(any(span.style for span in text.spans))
+
+    def test_a_running_test_gets_the_running_mark(self):
+        node = self._node("[0] login")
+        rows = {self.QUALIFIED: {"state": "running"}}
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests", "[0] login"), self._state(rows))
+        self.assertTrue(text.plain.startswith("● "))
+
+    def test_a_passed_test_is_green(self):
+        node = self._node("[0] login")
+        rows = {self.QUALIFIED: {"state": "done"}}
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests", "[0] login"), self._state(rows))
+        self.assertTrue(text.plain.startswith("✔ "))
+        [span] = [s for s in text.spans if s.start == 0]
+        self.assertEqual(str(span.style), "green")
+
+    def test_a_failed_test_is_red_with_its_message(self):
+        node = self._node("[0] login")
+        rows = {self.QUALIFIED: {"state": "failed"}}
+        result = self.SuiteResult(
+            [self.TestOutcome(self.QUALIFIED, "seine test", "FAIL",
+                              "'x' != 'y'", [], 0.5)],
+            "/tmp/out/output.xml")
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests", "[0] login"),
+            self._state(rows, result))
+        plain = text.plain
+        self.assertTrue(plain.startswith("✘ "))
+        self.assertIn("'x' != 'y'", plain)
+        [span] = [s for s in text.spans if s.start == 0]
+        self.assertEqual(str(span.style), "red")
+
+    def test_a_branch_aggregates_its_children_marks(self):
+        other = "seine test.second case"
+        node = self._node("tests", children=[
+            self._node("[0] login"), self._node("[0] second case")])
+        state = types.SimpleNamespace(
+            test_paths={self.QUALIFIED: ["test", "[0] boot", "tests", "[0] login"],
+                       other: ["test", "[0] boot", "tests", "[0] second case"]},
+            rows={self.QUALIFIED: {"state": "done"},
+                 other: {"state": "failed"}},
+            result=None)
+        text = self.render.render_test_node(node, ("test", "[0] boot", "tests"), state)
+        plain = text.plain
+        self.assertIn("✔ [0] login", plain)
+        self.assertIn("✘ [0] second case", plain)
+
+    # A scalar field below a case (no test of its own) has nothing under
+    # it in test_paths -- the caller falls back to render_node().
+    def test_a_scalar_field_under_a_case_has_no_test_of_its_own(self):
+        node = self._node("timeout: 30")
+        text = self.render.render_test_node(
+            node, ("test", "[0] boot", "tests", "[0] login", "timeout"),
+            self._state())
+        self.assertIsNone(text)
+
 # Test history in the overview pane: render_test_node() appends past
 # runs from the test index below the live session marks. Run dirs
 # are built by hand (no robot run needed) -- only files the pane
