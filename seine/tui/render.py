@@ -670,22 +670,41 @@ def render_cache(matching=None):
     return _captured(lambda: CacheCmd().info(list(CACHES.keys()), entries=True,
                                              matching=pattern))
 
-# Why a 'packages:' entry did not come from the cache -- runs the same
-# stamp lookup a real build would (Builder.stamps(), via current()), so
-# the answer is what actually decided the miss, not a guess from the
-# live spec.
+# A package can live several 'multiconfig:' groups deep (e.g. the 'uki'
+# group's own 'packages:', not the top-level image's) -- Image.tasks()
+# walks 'subbuilds' the same way to build the real task graph, so a
+# lookup that stops at 'image.packages' alone would miss anything not
+# declared in the outermost group.
+def _find_package(image, name):
+    for package in image.packages:
+        if package.name == name:
+            return image, package
+    for sub in image.subbuilds.values():
+        found = _find_package(sub.image, name)
+        if found is not None:
+            return found
+    return None
+
+# Why a 'packages:' entry did not come from the cache. Prefers the
+# Builder a real build already made (Image._builder, set by
+# shared_tasks()) over a fresh one: only that instance still has
+# miss_reason() from when it ran stamps() -- a fresh Builder asking now
+# just sees today's stamp already on disk, since _forget() has since
+# deleted the recipe it would need to explain an earlier miss.
 def render_cache_why(context, name, architecture=None):
     if not context.active:
         return "no active specification -- '/use SPEC...' picks one\n"
     for build in context.builds:
-        source_packages = build.image.packages
-        package = next((p for p in source_packages if p.name == name), None)
-        if package is None:
+        found = _find_package(build.image, name)
+        if found is None:
             continue
-        distro = build.spec["distribution"]
-        builder = packages.Builder(distro, build.options,
-                                   BuilderImage(distro, build.options))
-        current = {(p.name, a) for p, a, _ in builder.current(source_packages)}
+        image, package = found
+        distro = image.spec["distribution"]
+        builder = image._builder
+        if builder is None:
+            builder = packages.Builder(distro, image.options,
+                                       BuilderImage(distro, image.options))
+        current = {(p.name, a) for p, a, _ in builder.current(image.packages)}
         archs = [architecture] if architecture else builder.architectures(package)
         lines = []
         for a in archs:
