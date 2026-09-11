@@ -3049,6 +3049,47 @@ class BuildStateBehaviour(avocado.Test):
         self.assertEqual(state.render(), "no steps -- '/use SPEC' first\n")
         self.assertFalse(state.running)
 
+    # A cached package gets no Task, so reset() must add its row
+    # itself, marked as a rocket.
+    def test_reset_shows_a_cache_hit_package_as_a_rocket_not_pending(self):
+        from seine import packages, tasks
+        rebuilt_spec = {"name": "rebuilt", "version": "1"}
+        cached_spec = {"name": "cached-pkg", "version": "1"}
+        rebuilt = packages.Package(rebuilt_spec, 0)
+        cached = packages.Package(cached_spec, 1)
+
+        class FakeImage:
+            def __init__(self):
+                self.packages = [rebuilt, cached]
+            def tasks(self):
+                # 'cached' gets no Task, like a real cache hit.
+                return [
+                    tasks.Task("packages-prepare", lambda **kw: None),
+                    tasks.Task("package:rebuilt", lambda **kw: None,
+                              needs=["packages-prepare"]),
+                    tasks.Task("packages", lambda **kw: None,
+                              needs=["package:rebuilt"]),
+                ]
+
+        class FakeBuild:
+            def __init__(self):
+                self.spec = {"distribution": {"architecture": "amd64"},
+                            "packages": [rebuilt_spec, cached_spec]}
+                self.options = {}
+                self.image = FakeImage()
+
+        state = self.BuildState()
+        state.reset(FakeBuild())
+        self.assertEqual(state.rows["package:rebuilt"]["state"], "pending")
+        self.assertEqual(state.rows["package:cached-pkg"]["state"], "cached")
+        self.assertIn("package:cached-pkg", state.order)
+        # Inserted ahead of the barrier it feeds, not tacked on the end.
+        self.assertLess(state.order.index("package:cached-pkg"),
+                        state.order.index("packages"))
+        rendered = state.render()
+        self.assertIn("\U0001F680 package:cached-pkg", rendered)
+        self.assertNotIn("○ package:cached-pkg", rendered)
+
 # 'resolve()'/'render()' are plain Python -- no guestfs, no App -- kept
 # apart from the real appliance the same way 'BuildState' is kept apart
 # from a real build.

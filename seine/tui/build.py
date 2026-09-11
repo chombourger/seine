@@ -20,7 +20,8 @@ from seine.tui.render import render_overview
 from seine.tui.sanitize import sanitize
 from seine.tui.spectree import SpecTree, branch_for, _item_label
 
-MARKS = {"pending": "○", "running": "●", "done": "✔", "failed": "✘"}
+MARKS = {"pending": "○", "running": "●", "done": "✔", "failed": "✘",
+         "cached": "\U0001F680"}
 
 # Maps each package:/prepare:/deploy: task name to its 'packages: [i]'
 # spec tree node, computed once at build start. fetch:/fetch-upstream:
@@ -123,6 +124,16 @@ class BuildState:
         self.play = None
         self.ansible_task = None
         self.package_paths = _package_paths(build)
+        # A cached package gets no Task at all, so add its row here
+        # instead of dropping it from the list.
+        cached_names = [name for name in self.package_paths
+                        if name.startswith("package:") and name not in self.rows]
+        for name in cached_names:
+            self.rows[name] = {"needs": [], "state": "cached",
+                               "started": None, "elapsed": None}
+        insert_at = (self.order.index("packages")
+                    if "packages" in self.order else len(self.order))
+        self.order[insert_at:insert_at] = cached_names
 
     # Reporter sink: called on the UI thread (TextualReporter has already
     # crossed back from the worker thread).
