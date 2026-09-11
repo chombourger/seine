@@ -69,6 +69,11 @@ class PathCompletions(OptionList):
         self._matches = []
         self.clear_options()
 
+# The prompt's placeholder when nothing special is going on --
+# app.py swaps in a progress line while startup commands run, then
+# restores this.
+DEFAULT_PLACEHOLDER = "/command (/help lists them, ! for shell, @ for a path)"
+
 class Prompt(Input):
     BINDINGS = Input.BINDINGS + [
         Binding("up", "history_prev", "history", show=False),
@@ -77,7 +82,7 @@ class Prompt(Input):
 
     def __init__(self, history, completions, scopes, **kwargs):
         super().__init__(
-            placeholder="/command (/help lists them, ! for shell, @ for a path)",
+            placeholder=DEFAULT_PLACEHOLDER,
             suggester=CommandSuggester(),
             # Input's default selects the whole value on focus; wrong
             # for a prompt regaining focus mid-edit, like a shell prompt.
@@ -347,7 +352,14 @@ class BaseScreen(Screen):
 
     def on_mount(self):
         self.refresh_data()
-        self.query_one(Prompt).focus()
+        prompt = self.query_one(Prompt)
+        # A screen mounted by a startup command itself (/cache pushes
+        # CacheScreen mid-startup): its prompt starts shut like the
+        # first screen's, instead of taking focus with live input.
+        if getattr(self.app, "_running_startup", False):
+            prompt.disabled = True
+        else:
+            prompt.focus()
         # Ticks on every screen so a running build stays highlighted
         # wherever the spec tree currently is (BuildScreen has its own
         # faster tick for #tail/#tasklist).
