@@ -496,8 +496,10 @@ class SeineApp(App):
         border: round $border;
     }
     /* Black like the target screen's own console pane, so a replay
-       frame reads as a console rather than another text pane. */
-    #castpane { background: black; border-subtitle-align: right; border-subtitle-color: $warning; }
+       frame reads as a console rather than another text pane.
+       Horizontal scroll (not a wrap) when the left slot is narrower
+       than the 80-column grid -- wrapping would scramble it. */
+    #castpane { background: black; border-subtitle-align: right; border-subtitle-color: $warning; overflow-x: auto; }
     #cast { width: 80; height: auto; max-height: 40; }
     /* While startup commands run the prompt is shut (see
        _run_startup_commands() below) with a progress line in place

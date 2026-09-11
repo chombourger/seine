@@ -121,7 +121,9 @@ class CastPlayer:
         self.paused = False
 
     def render(self, max_lines=None):
-        return self._render_console(self.screen, max_lines)
+        # Tail-aligned: the pane is shorter than the 40-row screen,
+        # and replay must show the newest output, not the top rows.
+        return self._render_console(self.screen, max_lines, tail=True)
 
     # Border subtitle, same role as the target screen's uptime one.
     def status(self):

@@ -3643,12 +3643,15 @@ class CastReplay(avocado.Test):
     def _cast(self):
         header = {"version": 2, "width": 80, "height": 40, "timestamp": 0,
                   "env": {"TERM": "xterm-256color"}}
-        # Two events far apart: the first settles the test quickly,
-        # the second keeps the cast still playing when space pauses
-        # it (space on a finished cast restarts instead).
-        lines = [json.dumps(header),
-                 json.dumps([0.1, "o", "hello from the past\r\n"]),
-                 json.dumps([30.0, "o", "much later\r\n"])]
+        # Twenty numbered lines, then one far-future event: the pane
+        # only fits ~14 rows, so the first lines must scroll out of
+        # the rendered tail, while the last event keeps the cast
+        # still playing when space pauses it (space on a finished
+        # cast restarts instead).
+        lines = [json.dumps(header)]
+        lines += [json.dumps([0.1 + i * 0.1, "o", "line-%02d\r\n" % i])
+                  for i in range(20)]
+        lines += [json.dumps([30.0, "o", "much later\r\n"])]
         path = os.path.join(self.workdir, "t.cast")
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -3664,13 +3667,19 @@ class CastReplay(avocado.Test):
                 await pilot.press("enter")
                 await _settle_to(
                     pilot,
-                    lambda: "hello from the past" in str(_content(
+                    lambda: "line-19" in str(_content(
                         app.screen.query_one("#cast", Static))),
-                    "cast frame shows the recorded line")
+                    "cast frame shows the latest line")
                 tree = app.screen.query_one(self.Spectree)
                 cast = app.screen.query_one(self.CastPane)
                 self.assertFalse(tree.display)
                 self.assertTrue(cast.display)
+                # Tail-aligned: the short pane shows the newest rows,
+                # not stale top ones -- the first lines scrolled out
+                # of the rendered frame, the last ones are visible.
+                shown = str(_content(app.screen.query_one("#cast", Static)))
+                self.assertIn("line-19", shown)
+                self.assertNotIn("line-00", shown)
                 # Space pauses in place: the frame stays, the border
                 # says paused.
                 await pilot.press("space")
