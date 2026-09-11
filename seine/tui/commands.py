@@ -6,6 +6,7 @@
 
 import getopt
 import inspect
+import os
 import shlex
 from typing import NamedTuple
 
@@ -593,6 +594,99 @@ def _quit(app, argv):
     """leave the TUI"""
     app.exit()
 
+# Latest recording of one qualified test that actually kept a cast
+# file, or a CommandError saying why there is nothing to play.
+def _latest_cast(qualified):
+    from seine.testing import testindex
+    runs = testindex.runs_for(qualified)
+    if not runs:
+        raise CommandError(
+            "no recorded run for '%s' yet -- '/test' it once first"
+            % qualified.rsplit(".", 1)[-1])
+    for entry in runs:
+        path = testindex.cast_for(entry, qualified)
+        if path is not None:
+            return path
+    raise CommandError(
+        "the recorded runs of '%s' kept no console recording"
+        % qualified.rsplit(".", 1)[-1])
+
+# Qualified test name(s) under the overview's selected node -- the
+# same _tests_under() match render_test_node() reads, with the same
+# no-run-yet fallback deriving paths from the spec itself (see
+# OverviewScreen.update_body()).
+def _selected_tests(app):
+    from seine.tui.app import OverviewScreen
+    from seine.tui.render import _tests_under
+    screen = app.screen
+    if not isinstance(screen, OverviewScreen) or \
+            getattr(screen, "_selected_path", None) is None:
+        raise CommandError(
+            "select a test under the spec's 'test:' branch first "
+            "(or pass a .cast path)")
+    path = screen._selected_path
+    if len(path) < 2 or path[1] != "test":
+        raise CommandError(
+            "select a test under the spec's 'test:' branch first "
+            "(or pass a .cast path)")
+    subpath = tuple(path[1:])
+    test_paths = getattr(app.test_state, "test_paths", None) or {}
+    qualified = _tests_under(subpath, test_paths)
+    if not qualified and not test_paths:
+        from seine.tui.spectree import SpecTree
+        from seine.tui.spectree import test_paths as _spec_test_paths
+        try:
+            tree = screen.query_one(SpecTree)
+            index = next(i for i, c in enumerate(tree.root.children)
+                         if c.data == path[0])
+        except (StopIteration, Exception):
+            index = 0
+        builds = app.context.builds
+        if 0 <= index < len(builds):
+            qualified = _tests_under(
+                subpath, _spec_test_paths(builds[index].spec))
+    return qualified
+
+def _replay(app, argv):
+    """replay a test's recorded console in the overview pane
+
+    Plays a run's asciinema recording back in the overview's left
+    pane, through the same terminal emulation the live console uses.
+    Space pauses and resumes, left/right slow down and speed up, Esc
+    stops and restores the spec tree. Given a .cast path, plays that
+    file; with no argument, replays the selected test node's latest
+    recorded run -- select a single test under the spec's 'test:'
+    branch first.
+    """
+    if len(argv) > 1:
+        raise CommandError("/replay takes at most one .cast path")
+    if argv:
+        if not os.path.isfile(argv[0]):
+            raise CommandError("no such recording: %s" % argv[0])
+        path = os.path.abspath(argv[0])
+    else:
+        qualified = _selected_tests(app)
+        if not qualified:
+            raise CommandError(
+                "nothing under this node ever ran -- select a test first "
+                "(or pass a .cast path)")
+        if len(qualified) > 1:
+            raise CommandError(
+                "select a single test -- this node holds %d "
+                "(or pass a .cast path)" % len(qualified))
+        path = _latest_cast(qualified[0])
+    # Lazy: app imports this registry, so the screen class only
+    # resolves at call time (same reason _test() imports start_test
+    # inside its own body).
+    from seine.tui.app import OverviewScreen
+    if isinstance(app.screen, OverviewScreen):
+        app.screen.action_replay_cast(path)
+    else:
+        # Constructed fresh by show() below; on_mount() picks the
+        # stashed path up and starts playing.
+        app._pending_replay = path
+        app.show("overview")
+
 def _help(app, argv):
     """keyboard shortcuts and every command"""
     # Imported here: seine.tui.help reads commands.REGISTRY, same
@@ -625,6 +719,7 @@ REGISTRY = {
                 *_doc(_target)),
         Command("test",      _test,      "[--tags=TAG,...] [SPEC...]",
                 *_doc(_test)),
+        Command("replay",    _replay,    "[CAST-PATH]",              *_doc(_replay)),
         Command("analyze",  _analyze,  "[SPEC...]",                *_doc(_analyze)),
         Command("cache",    _cache,    "",                         *_doc(_cache)),
         Command("doctor",   _doctor,   "",                         *_doc(_doctor)),

@@ -3623,5 +3623,91 @@ class MarkdownRethemeRaceIsSwallowed(avocado.Test):
             App._handle_exception = real
         self.assertEqual(called, [error])
 
+# In-pane screencast replay: '/replay PATH' swaps the spec tree for
+# the recording, Esc swaps it back. The recording is synthetic (no
+# test run needed), so this pins the wiring, not the index lookup.
+class CastReplay(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.app import CastPane, OverviewScreen, SeineApp
+            from seine.tui.spectree import SpecTree
+        self.CastPane = CastPane
+        self.OverviewScreen = OverviewScreen
+        self.SeineApp = SeineApp
+        self.Spectree = SpecTree
+        _isolate_history(self)
+
+    def _cast(self):
+        header = {"version": 2, "width": 80, "height": 40, "timestamp": 0,
+                  "env": {"TERM": "xterm-256color"}}
+        # Two events far apart: the first settles the test quickly,
+        # the second keeps the cast still playing when space pauses
+        # it (space on a finished cast restarts instead).
+        lines = [json.dumps(header),
+                 json.dumps([0.1, "o", "hello from the past\r\n"]),
+                 json.dumps([30.0, "o", "much later\r\n"])]
+        path = os.path.join(self.workdir, "t.cast")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return path
+
+    def test_replay_swaps_the_tree_for_the_cast_and_esc_restores_it(self):
+        async def scenario():
+            from textual.widgets import Static
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/replay " + self._cast()
+                await pilot.press("enter")
+                await _settle_to(
+                    pilot,
+                    lambda: "hello from the past" in str(_content(
+                        app.screen.query_one("#cast", Static))),
+                    "cast frame shows the recorded line")
+                tree = app.screen.query_one(self.Spectree)
+                cast = app.screen.query_one(self.CastPane)
+                self.assertFalse(tree.display)
+                self.assertTrue(cast.display)
+                # Space pauses in place: the frame stays, the border
+                # says paused.
+                await pilot.press("space")
+                await pilot.pause()
+                self.assertTrue(app.screen._player.paused)
+                self.assertIn("II", cast.border_subtitle)
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertTrue(tree.display)
+                self.assertFalse(cast.display)
+        _run(scenario)
+
+    def test_replay_of_a_missing_file_is_a_status_error(self):
+        async def scenario():
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/replay /nonexistent/t.cast"
+                await pilot.press("enter")
+                await pilot.pause()
+                status = app.screen.query_one("#status")
+                self.assertIn("no such recording", _content(status))
+                tree = app.screen.query_one(self.Spectree)
+                self.assertTrue(tree.display)
+        _run(scenario)
+
+    def test_replay_with_no_selection_and_no_path_says_what_to_do(self):
+        async def scenario():
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/replay"
+                await pilot.press("enter")
+                await pilot.pause()
+                status = app.screen.query_one("#status")
+                self.assertIn("select a test", _content(status))
+        _run(scenario)
+
 if __name__ == "__main__":
     avocado.main()

@@ -60,6 +60,23 @@ class LogViewer(RichLog):
         super().__init__(markup=False, wrap=True, max_lines=20000, **kwargs)
         self.display = False
 
+# Replay pane: a focusable Static showing one CastPlayer frame, in
+# the same left slot SpecTree/LogViewer share -- only one of the
+# three shows at a time. Keys are consumed locally (ConsolePane's own
+# precedent on the target screen), never reaching the hidden tree:
+# space pauses, left/right walk the speed steps, Esc stops.
+class CastPane(StaticPane):
+    can_focus = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.display = False
+
+    def on_key(self, event):
+        if self.screen._cast_key(event.key):
+            event.stop()
+            event.prevent_default()
+
 # Reads the 'log-click' marker render.py's append_logs_section() puts
 # in a span's meta -- a plain value, not Rich's '@click' action-link
 # string, which Textual overlays with its own link style regardless
@@ -90,19 +107,20 @@ def _body_width(screen):
     return width
 
 class OverviewScreen(BaseScreen):
-    HINT_ADD = [("complete", "logback", "Esc back (viewing a log)")]
+    HINT_ADD = [("complete", "logback", "Esc back (viewing a log/replay)")]
 
-    # No-op unless a log is being viewed -- same shape as
+    # No-op unless a log or replay is being viewed -- same shape as
     # FilesystemScreen's own 'escape' -> action_close_preview.
     BINDINGS = BaseScreen.BINDINGS + [Binding("escape", "close_log", show=False)]
 
-    # LogViewer takes over the tree's own slot rather than the right
-    # pane's: '#body' is still where node content and Logs: links live,
-    # a log's actual text goes on the left where SpecTree normally is.
+    # The replay pane takes over the tree's own slot, the same one
+    # LogViewer already shares: '#body' (node content, Logs: links)
+    # stays put on the right throughout.
     def compose(self):
         yield Horizontal(
             SpecTree(id="spectree"),
             LogViewer(id="logviewer"),
+            CastPane(Static(id="cast", markup=False), id="castpane"),
             StaticPane(BodyStatic(id="body", markup=False), id="cmd"),
             id="main",
         )
@@ -123,9 +141,25 @@ class OverviewScreen(BaseScreen):
         # Absolute path of the log currently shown in '#logviewer', or
         # None when the tree is showing instead.
         self._log_path = None
+        # Absolute path of the screencast playing in '#cast', or None
+        # when nothing is replaying; the player owns the clock.
+        self._cast_path = None
+        self._player = None
+        self._cast_timer = None
         super().on_mount()
         if self.app._startup_error:
             self.say(self.app._startup_error, error=True)
+        # '/replay' from another screen lands here with the cast to
+        # play stashed on the app (see commands._replay()).
+        pending = getattr(self.app, "_pending_replay", None)
+        if pending is not None:
+            self.app._pending_replay = None
+            self.action_replay_cast(pending)
+
+    def on_unmount(self):
+        timer = getattr(self, "_cast_timer", None)
+        if timer is not None:
+            timer.stop()
 
     # Re-resolved by path rather than kept as a raw node reference:
     # SpecTree.load() rebuilds every node from scratch on each
@@ -153,24 +187,114 @@ class OverviewScreen(BaseScreen):
     # logs_root() here rather than the process cwd.
     def action_show_log(self, path):
         from seine import logindex
+        self.action_close_cast()
         self._log_path = logindex.resolve(path)
-        self._refresh_log_pane()
+        self._refresh_left_pane()
 
+    # Esc closes whichever of the two is showing -- a replay in
+    # progress first, since it owns the focused pane.
     def action_close_log(self):
-        if self._log_path is not None:
+        if self._cast_path is not None:
+            self.action_close_cast()
+        elif self._log_path is not None:
             self._log_path = None
-            self._refresh_log_pane()
+            self._refresh_left_pane()
 
-    def _refresh_log_pane(self):
+    def _refresh_left_pane(self):
         tree = self.query_one(SpecTree)
         viewer = self.query_one(LogViewer)
-        showing = self._log_path is not None
-        if showing:
+        cast = self.query_one(CastPane)
+        showing_log = self._log_path is not None and self._cast_path is None
+        showing_cast = self._cast_path is not None
+        if showing_log:
             viewer.clear()
             viewer.write(_read_log(self._log_path))
-        tree.display = not showing
-        viewer.display = showing
-        (viewer if showing else tree).focus()
+        tree.display = not (showing_log or showing_cast)
+        viewer.display = showing_log
+        cast.display = showing_cast
+        if showing_cast:
+            self._redraw_cast()
+            cast.focus()
+        else:
+            (viewer if showing_log else tree).focus()
+
+    # Backwards-compatible name: the only caller outside this screen
+    # is tests pinning the log-swap behaviour.
+    def _refresh_log_pane(self):
+        self._refresh_left_pane()
+
+    # Starts replaying a .cast in the tree's slot -- Esc
+    # (action_close_log) stops it and restores the tree. A read or
+    # parse failure shows on the status line rather than raising.
+    def action_replay_cast(self, path):
+        from seine.tui.cast import CastPlayer, TICK, Unavailable
+        player = CastPlayer()
+        try:
+            player.load(os.path.abspath(path))
+        except Unavailable as e:
+            self.say(str(e), error=True)
+            return
+        except (OSError, ValueError) as e:
+            self.say("replay: %s" % e, error=True)
+            return
+        self.action_close_cast()
+        self._log_path = None
+        self._player = player
+        self._cast_path = player.path
+        self._cast_timer = self.set_interval(TICK, self._tick_cast)
+        self._refresh_left_pane()
+        self.say("replaying %s -- space pauses, left/right set speed, Esc stops"
+                 % os.path.basename(path))
+        self.set_timer(2.5, lambda: self.say(""))
+
+    def action_close_cast(self):
+        timer = getattr(self, "_cast_timer", None)
+        if timer is not None:
+            timer.stop()
+            self._cast_timer = None
+        if self._cast_path is not None or self._player is not None:
+            self._cast_path = None
+            self._player = None
+            self._refresh_left_pane()
+
+    # CastPane's key handler: True when the key drove the replay (so
+    # the pane stops it there), False for anything else. No-op when
+    # nothing is replaying -- the tree's own keys apply instead.
+    def _cast_key(self, key):
+        if self._cast_path is None or self._player is None:
+            return False
+        if key == "space":
+            self._player.toggle_pause()
+        elif key == "left":
+            self._player.slower()
+        elif key == "right":
+            self._player.faster()
+        elif key == "escape":
+            self.action_close_cast()
+            return True
+        else:
+            return False
+        self._redraw_cast()
+        return True
+
+    def _tick_cast(self):
+        if self._player is None:
+            return
+        from seine.tui.cast import TICK
+        if self._player.tick(TICK):
+            self._redraw_cast()
+        else:
+            self._update_cast_border()
+
+    def _redraw_cast(self):
+        pane = self.query_one(CastPane)
+        available = max(1, pane.size.height - 2)
+        self.query_one("#cast", Static).update(
+            self._player.render(max_lines=available))
+        self._update_cast_border()
+
+    def _update_cast_border(self):
+        self.query_one(CastPane).border_subtitle = self._player.status()
 
     def update_body(self):
         tree = self.query_one(SpecTree)
@@ -358,14 +482,18 @@ class SeineApp(App):
     #main, #buildrow { height: 1fr; }
     /* 'round', not Input's default 'tall': 'tall' uses eighth-block
        glyphs some terminal fonts lack, breaking the border. */
-    #spectree, #tail, #logviewer { width: 2fr; height: 100%; }
-    #prompt, #spectree, #tail, #fslist, #previewpane, #logviewer {
+    #spectree, #tail, #logviewer, #castpane { width: 2fr; height: 100%; }
+    #prompt, #spectree, #tail, #fslist, #previewpane, #logviewer, #castpane {
         border: round $foreground 40%;
     }
     #prompt:focus, #spectree:focus, #tail:focus, #fslist:focus,
-    #previewpane:focus, #logviewer:focus {
+    #previewpane:focus, #logviewer:focus, #castpane:focus {
         border: round $border;
     }
+    /* Black like the target screen's own console pane, so a replay
+       frame reads as a console rather than another text pane. */
+    #castpane { background: black; border-subtitle-align: right; border-subtitle-color: $warning; }
+    #cast { width: 80; height: auto; max-height: 40; }
     /* While startup commands run the prompt is shut (see
        _run_startup_commands() below) with a progress line in place
        of the default placeholder, italic so it reads as status. */
