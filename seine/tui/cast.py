@@ -28,6 +28,13 @@ class CastPlayer:
         self.screen = None
         self._stream = None
         self._cursor = 0
+        # The replayed test's keyword timeline, from the run's
+        # interactions.json next to the cast: (seconds since the
+        # cast's own start, keyword, status, artifact marker or None).
+        # Empty when the run predates interactions.json -- replay
+        # then works exactly as before, with no timeline.
+        self.test_name = None
+        self.timeline = []
 
     @property
     def speed(self):
@@ -79,6 +86,93 @@ class CastPlayer:
         self._cursor = 0
         self.paused = False
         self._render_console = render_console
+        self._load_timeline(path)
+
+    # The run's interactions.json lives next to the cast and holds
+    # wall-clock timestamps, while cast events count from the cast's
+    # own start -- aligned through the header's own timestamp. Kept
+    # to the replayed test (reverse-mapped through 'console_casts');
+    # the run-global console.cast has no single test, so it keeps
+    # every entry. Anything unreadable or missing leaves an empty
+    # timeline rather than failing the replay.
+    def _load_timeline(self, path):
+        import json
+        import os
+        self.test_name = None
+        self.timeline = []
+        outdir = os.path.dirname(os.path.abspath(path))
+        try:
+            with open(os.path.join(outdir, "interactions.json"),
+                      encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                header = json.loads(f.readline() or "{}")
+            started = float(header.get("timestamp"))
+        except (OSError, ValueError, TypeError):
+            return
+        mine = None
+        for name, basename in (data.get("console_casts") or {}).items():
+            if basename == os.path.basename(path):
+                mine = name
+                break
+        rows = []
+        for entry in data.get("interactions") or []:
+            if mine is not None and entry.get("test") != mine:
+                continue
+            try:
+                at = float(entry.get("timestamp", 0)) - started
+            except (TypeError, ValueError):
+                continue
+            artifact = None
+            if entry.get("artifact_kind"):
+                artifact = "[%s]" % entry["artifact_kind"]
+            rows.append({"at": max(0.0, at),
+                         "test": entry.get("test"),
+                         "keyword": entry.get("keyword") or "?",
+                         "status": entry.get("status"),
+                         "artifact": artifact})
+        rows.sort(key=lambda row: row["at"])
+        self.test_name = mine
+        self.timeline = rows
+
+    # Index of the entry playing at the clock, or -1 before the
+    # first one. The pane repaints its timeline only when this
+    # changes, not on every tick.
+    def current_index(self):
+        index = -1
+        for i, row in enumerate(self.timeline):
+            if row["at"] <= self.clock:
+                index = i
+            else:
+                break
+        return index
+
+    # The timeline for the right pane: one row per keyword with its
+    # offset into the replay and its outcome mark, the row playing
+    # now flagged. Same green ✔ / red ✘ as the Test screen, so a
+    # failure reads the same here as where it ran.
+    def render_timeline(self):
+        from rich.text import Text
+        text = Text()
+        if not self.timeline:
+            return text
+        if self.test_name is not None:
+            text.append("%s\n" % self.test_name.rsplit(".", 1)[-1])
+        current = self.current_index()
+        for i, row in enumerate(self.timeline):
+            failed = row["status"] not in (None, "PASS")
+            mark, style = (("✘", "red") if failed else ("✔", "green"))
+            text.append("▶ " if i == current else "  ")
+            text.append("%-18s +%ds " % (row["keyword"][:18], row["at"]))
+            text.append(mark, style=style)
+            if row["artifact"] is not None:
+                from rich.style import Style
+                text.append(" %s" % row["artifact"], style=Style(dim=True))
+            text.append("\n")
+        return text
 
     # Advances the clock by dt seconds of wall time (times the current
     # speed) and feeds whatever events came due. Returns True when the

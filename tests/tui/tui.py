@@ -3692,6 +3692,55 @@ class CastReplay(avocado.Test):
                 self.assertFalse(cast.display)
         _run(scenario)
 
+    # The run's interactions.json beside the cast drives the right
+    # pane while replaying: one row per keyword, flagged as the
+    # clock passes it. Esc restores whatever the pane held before.
+    def test_replay_shows_the_timeline_and_esc_restores_the_pane(self):
+        import time as _time
+        now = int(_time.time())
+        header = {"version": 2, "width": 80, "height": 40,
+                  "timestamp": now, "env": {"TERM": "xterm-256color"}}
+        path = os.path.join(self.workdir, "t2.cast")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(header) + "\n"
+                    + json.dumps([0.1, "o", "hi\r\n"]) + "\n"
+                    + json.dumps([0.2, "o", "bye\r\n"]) + "\n")
+        with open(os.path.join(self.workdir, "interactions.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"console_cast": "console.cast",
+                       "console_casts": {"x.t": "t2.cast"},
+                       "interactions": [
+                           {"test": "x.t", "keyword": "Power Cycle",
+                            "args": [], "timestamp": now + 0.05,
+                            "status": "PASS"},
+                           {"test": "x.t", "keyword": "Console Run",
+                            "args": [], "timestamp": now + 0.15,
+                            "status": "PASS"}]}, f)
+
+        async def scenario():
+            from textual.widgets import Static
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                before = str(_content(app.screen.query_one("#body", Static)))
+                self.assertIn("would write:", before)
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/replay " + path
+                await pilot.press("enter")
+                await _settle_to(
+                    pilot,
+                    lambda: "Console Run" in str(_content(
+                        app.screen.query_one("#body", Static))),
+                    "right pane shows the replay timeline")
+                during = str(_content(app.screen.query_one("#body", Static)))
+                self.assertIn("Power Cycle", during)
+                self.assertIn("\u25b6", during)
+                await pilot.press("escape")
+                await pilot.pause()
+                after = str(_content(app.screen.query_one("#body", Static)))
+                self.assertIn("would write:", after)
+                self.assertNotIn("Power Cycle", after)
+        _run(scenario)
+
     def test_replay_of_a_missing_file_is_a_status_error(self):
         async def scenario():
             app = self.SeineApp(files=[NATIVE_IMAGE])
