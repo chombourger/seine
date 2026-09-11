@@ -1,3 +1,52 @@
+seine (0.3-1) unstable; urgency=medium
+
+  * Make snapshot-pinned rootfs builds byte-reproducible: fixed
+    container hostname, mmdebstrap timestamps taken from the spec
+    mtime, dropped apt/ldconfig caches, truncated apt/dpkg logs,
+    update-initramfs under SOURCE_DATE_EPOCH, and an empty
+    /etc/machine-id. Install ca-certificates before switching the
+    host bootstrap, sbuild chroot or target rootfs to the pinned
+    https feed.
+  * Make disk image builds byte-reproducible: derive GPT and
+    filesystem UUIDs from the spec digest, rebuild FAT/ext
+    partitions with pinned serials, seeds and timestamps, and
+    normalize fstab and grub hints. Pin LVM UUIDs (explicit
+    --uuid, vgcfgbackup/vgcfgrestore with metadata scrub) under a
+    frozen faketime clock.
+  * Add resource-aware task concurrency to the scheduler: each task
+    declares a cost against a resource class, configurable with
+    '--resource CLASS=N', '/set resources' and the TUI Settings
+    screen, with ageing of ready tasks so large jobs cannot starve.
+  * Write logs/index.json after each run, flagging cache-hit tasks,
+    and index test runs under logs/tests/index.json, so the TUI
+    knows which logs belong to the open build.
+  * Drive the TUI's right pane from the spec-tree selection, show
+    loaded spec files with git status and lock marks on the root
+    node, render disk layout as proportional boxes, and show
+    relevant per-task log links on task-backed nodes.
+  * Show test status in the overview pane with live refresh, list
+    past runs with log and replay links, and replay a test's
+    console recording in place (/replay, space to pause, left/right
+    for speed, Esc to stop) with its keyword timeline and call
+    arguments beside it.
+  * Show package defects from UDD beside CVE findings on the
+    /issues screen, as a per-source matrix with in-place entry
+    lists.
+  * Polish TUI behaviour: expand/collapse the spec tree with arrow
+    keys, label bare list items with their only child's key, copy
+    selected text to clipboard on mouse release, hide the empty
+    packages barrier, remember the plan baseline after a build,
+    refresh any screen when a build or test run progresses, hold
+    the prompt shut while startup commands run, clip live progress
+    lines to the terminal width, strip escape sequences from log
+    panes, and drain the console stream before disconnecting so
+    recordings keep their tail.
+  * Rebuild pc-uki-image's kernel slim, sharing one config-fragment
+    trim between the initrd and UKI groups, and drop the
+    efibootguard variant from the minimal-uki example.
+
+ -- Cedric Hombourger <chombourger@gmail.com>  Fri, 11 Sep 2026 14:39:19 +0200
+
 seine (0.2-1) unstable; urgency=medium
 
   * Add a 'seine podman' command, a dumb passthrough to podman pointed at
