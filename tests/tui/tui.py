@@ -3714,7 +3714,8 @@ class CastReplay(avocado.Test):
                             "args": [], "timestamp": now + 0.05,
                             "status": "PASS"},
                            {"test": "x.t", "keyword": "Console Run",
-                            "args": [], "timestamp": now + 0.15,
+                            "args": ["command=uname -s"],
+                            "timestamp": now + 0.15,
                             "status": "PASS"}]}, f)
 
         async def scenario():
@@ -3728,17 +3729,65 @@ class CastReplay(avocado.Test):
                 await pilot.press("enter")
                 await _settle_to(
                     pilot,
-                    lambda: "Console Run" in str(_content(
-                        app.screen.query_one("#body", Static))),
-                    "right pane shows the replay timeline")
+                    lambda: "command=uname -s" in str(_content(
+                        app.screen.query_one("#args", Static))),
+                    "arguments pane follows the playing row")
                 during = str(_content(app.screen.query_one("#body", Static)))
                 self.assertIn("Power Cycle", during)
                 self.assertIn("\u25b6", during)
+                # The lower split shows the playing row's call.
+                args = app.screen.query_one("#args", Static)
+                self.assertTrue(app.screen.query_one("#argspane").display)
+                self.assertIn("Console Run", str(_content(args)))
+                self.assertIn("command=uname -s", str(_content(args)))
                 await pilot.press("escape")
                 await pilot.pause()
                 after = str(_content(app.screen.query_one("#body", Static)))
                 self.assertIn("would write:", after)
                 self.assertNotIn("Power Cycle", after)
+                # The split collapses with the replay: full height
+                # back, arguments pane hidden.
+                self.assertFalse(app.screen.query_one("#argspane").display)
+        _run(scenario)
+
+    # A timeline taller than the pane follows the playing row:
+    # fifteen keywords at 0.05s spacing, the pane fits about ten.
+    def test_replay_autoscrolls_the_timeline_to_the_playing_row(self):
+        import time as _time
+        now = int(_time.time())
+        header = {"version": 2, "width": 80, "height": 40,
+                  "timestamp": now, "env": {"TERM": "xterm-256color"}}
+        path = os.path.join(self.workdir, "t3.cast")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(header) + "\n"
+                    + json.dumps([0.1, "o", "hi\r\n"]) + "\n"
+                    + json.dumps([1.0, "o", "bye\r\n"]) + "\n")
+        with open(os.path.join(self.workdir, "interactions.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"console_cast": "console.cast",
+                       "console_casts": {"x.t": "t3.cast"},
+                       "interactions": [
+                           {"test": "x.t", "keyword": "Keyword-%02d" % i,
+                            "args": [], "timestamp": now + 0.05 * (i + 1),
+                            "status": "PASS"}
+                           for i in range(15)]}, f)
+
+        async def scenario():
+            from textual.widgets import Static
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                prompt = app.screen.query_one("#prompt")
+                prompt.value = "/replay " + path
+                await pilot.press("enter")
+                await _settle_to(
+                    pilot,
+                    lambda: "Keyword-14" in str(_content(
+                        app.screen.query_one("#body", Static))),
+                    "timeline reaches its last row")
+                pane = app.screen.query_one("#bodypane")
+                await _settle_to(
+                    pilot, lambda: pane.scroll_y > 0,
+                    "timeline follows the playing row")
         _run(scenario)
 
     def test_replay_of_a_missing_file_is_a_status_error(self):
