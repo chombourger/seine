@@ -405,11 +405,14 @@ class BaseScreen(Screen):
         # clear can't wipe a newer message (e.g. an error landing right
         # after a copy). on_mouse_up() sets the token after its own
         # say(), so its timer still matches until the next say().
+        from seine.tui.sanitize import sanitize
         self._copy_notice_token = getattr(self, "_copy_notice_token", 0) + 1
         status = self.query_one("#status", Static)
         status.set_class(error, "error")
         status.set_class(warning, "warning")
-        status.update(text)
+        # The status line is a Static, not a terminal: escape sequences
+        # (e.g. from a test failure message) would escape their widget.
+        status.update(sanitize(text))
 
     # Drag-selecting any text copies it to the clipboard on mouse
     # release, with a transient reminder in the status line (the

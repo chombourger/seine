@@ -384,6 +384,7 @@ def _test_history_block(qualified, recorded, scanned):
 # (e.g. ("test", "[0]", "tests")), 'test_state' the app's TestState.
 def render_test_node(node, subpath, test_state):
     from rich.text import Text
+    from seine.tui.sanitize import sanitize
     subpath = tuple(subpath)
     test_paths = getattr(test_state, "test_paths", None) or {}
     rows = getattr(test_state, "rows", None) or {}
@@ -411,7 +412,7 @@ def render_test_node(node, subpath, test_state):
     if len(qualified_here) == 1:
         outcome = by_name.get(qualified_here[0])
         if outcome is not None and outcome.failed and outcome.message:
-            text.append("    %s\n" % outcome.message)
+            text.append("    %s\n" % sanitize(outcome.message))
     if node.children:
         text.append("\n")
         for child in node.children:
@@ -441,7 +442,7 @@ def render_test_node(node, subpath, test_state):
             if len(qualified_child) == 1:
                 outcome = by_name.get(qualified_child[0])
                 if outcome is not None and outcome.failed and outcome.message:
-                    text.append("      %s\n" % outcome.message)
+                    text.append("      %s\n" % sanitize(outcome.message))
     # One test exactly: the full history below its live mark. A
     # branch over several tests already carries each child's own
     # 'last' line above -- a block per test would bury the listing.

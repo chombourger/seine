@@ -36,6 +36,7 @@ from seine.tui.render import (append_logs_section, render_analyze,
                               render_packages, render_plan, render_root_node,
                               render_test_node)
 from seine.tui.spectree import SpecTree
+from seine.tui.sanitize import sanitize
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
 from seine.tui.testing import TestState
@@ -493,7 +494,9 @@ class TestScreen(BaseScreen):
             tail.clear()
         new_lines = state.output_lines[self._output_offset:]
         if new_lines:
-            tail.write("\n".join(new_lines))
+            # output_lines is already sanitized at the source; sanitize
+            # again here so any other writer can't escape the pane.
+            tail.write(sanitize("\n".join(new_lines)))
             self._output_offset = len(state.output_lines)
 
 SCREENS = {"overview": OverviewScreen, "plan": PlanScreen, "build": BuildScreen,
