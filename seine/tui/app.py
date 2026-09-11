@@ -151,6 +151,10 @@ class OverviewScreen(BaseScreen):
         self._cast_path = None
         self._player = None
         self._cast_timer = None
+        # Timeline row the right pane last showed (-2 before the
+        # first refresh, so row -1 "nothing playing yet" still
+        # paints over whatever the pane held).
+        self._timeline_index = None
         super().on_mount()
         if self.app._startup_error:
             self.say(self.app._startup_error, error=True)
@@ -247,7 +251,9 @@ class OverviewScreen(BaseScreen):
         self._player = player
         self._cast_path = player.path
         self._cast_timer = self.set_interval(TICK, self._tick_cast)
+        self._timeline_index = None
         self._refresh_left_pane()
+        self._refresh_timeline()
         self.say("replaying %s -- space pauses, left/right set speed, Esc stops"
                  % os.path.basename(path))
         self.set_timer(2.5, lambda: self.say(""))
@@ -260,7 +266,12 @@ class OverviewScreen(BaseScreen):
         if self._cast_path is not None or self._player is not None:
             self._cast_path = None
             self._player = None
+            self._timeline_index = None
             self._refresh_left_pane()
+            # The right pane showed the replay timeline -- put back
+            # whatever the selection held before (same recompute a
+            # refresh would do, so Esc is exactly "undo").
+            self.update_body()
 
     # CastPane's key handler: True when the key drove the replay (so
     # the pane stops it there), False for anything else. No-op when
@@ -290,6 +301,18 @@ class OverviewScreen(BaseScreen):
             self._redraw_cast()
         else:
             self._update_cast_border()
+        index = self._player.current_index()
+        if index != self._timeline_index:
+            self._timeline_index = index
+            self._refresh_timeline()
+
+    # The replaying test's keyword timeline goes in the right pane
+    # while a replay runs -- nothing when the run predates
+    # interactions.json, leaving the pane exactly as it was.
+    def _refresh_timeline(self):
+        if self._player is None or not self._player.timeline:
+            return
+        self.query_one("#body", Static).update(self._player.render_timeline())
 
     def _redraw_cast(self):
         pane = self.query_one(CastPane)
