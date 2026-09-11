@@ -283,7 +283,7 @@ COMMANDS = {
     "gist":  (GistCmd, "list, show, or remove reusable spec fragments"),
     "source": (SourceCmd, "list, remove, or pull a package's source"),
     "analyze": (AnalyzeCmd, "say where the time went in a build that ran"),
-    "issues": (IssuesCmd, "scan an SBOM for known CVEs"),
+    "issues": (IssuesCmd, "scan an SBOM for known CVEs (and defects with --defects)"),
     "validate": (ValidateCmd, "check a specification loads and parses, without using it"),
     "inspect": (InspectCmd, "browse a finished image, read-only"),
     "doctor": (DoctorCmd, "say whether this machine has what a build needs"),

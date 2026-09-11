@@ -759,9 +759,12 @@ class IssuesRendering(avocado.Test):
     def setUp(self):
         with _tui_required(self):
             from seine.tui.context import Context
-            from seine.tui.render import render_issues_stats, render_issues_table
+            from seine.tui.render import (issues_matrix_data,
+                                          render_issues_detail,
+                                          render_issues_stats)
         self.Context = Context
-        self.render_issues_table = render_issues_table
+        self.issues_matrix_data = issues_matrix_data
+        self.render_issues_detail = render_issues_detail
         self.render_issues_stats = render_issues_stats
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["SEINE_DEPLOY_DIR"] = os.path.join(self.workdir, "deploy")
@@ -772,25 +775,54 @@ class IssuesRendering(avocado.Test):
         current["sbom2cve_program"] = _fake_scanner(self.workdir, findings)
         settings.save(current)
 
-    def _write_sbom(self, context):
+    def _sbom_path(self, context):
         output = context.builds[0].image._output
-        path = output[:-len(".img")] + "-sbom.spdx.json" \
-              if output.endswith(".img") else output + "-sbom.spdx.json"
+        return output[:-len(".img")] + "-sbom.spdx.json" \
+               if output.endswith(".img") else output + "-sbom.spdx.json"
+
+    def _write_sbom(self, context):
+        path = self._sbom_path(context)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write("{}")
+        return path
+
+    # Defect sidecar written straight, the same way tests/security/bugs.py's
+    # own Caching does via scan() -- but offline, without touching UDD.
+    def _write_bugs(self, sbom_path, bugs):
+        import time
+        from seine import bugs as bugs_module
+        with open(bugs_module.cache_path(sbom_path), "w") as f:
+            json.dump({"fetched_at": time.time(), "bugs": bugs}, f)
+
+    # ((columns, rows, bugs_cached), error) straight from the data
+    # provider; error cases assert on the message instead.
+    def _data(self, context, **kwargs):
+        result, error = self.issues_matrix_data(context, **kwargs)
+        self.assertIsNone(error)
+        return result
+
+    # One source's row as {column key: cell text}.
+    def _row(self, columns, rows, source):
+        keys = [key for _, _, key in columns]
+        for name, cells in rows:
+            if name == source:
+                return dict(zip(keys, cells))
+        self.fail("no row for '%s'" % source)
 
     def test_no_active_spec_says_so(self):
-        self.assertIn("use", self.render_issues_table(self.Context()))
+        _, error = self.issues_matrix_data(self.Context())
+        self.assertIn("use", error)
         self.assertIn("use", self.render_issues_stats(self.Context()))
 
     def test_no_sbom_says_so(self):
         context = self.Context()
         context.use([BUSYBOX_REBUILD])
-        self.assertIn("no SBOM for this build", self.render_issues_table(context))
+        _, error = self.issues_matrix_data(context)
+        self.assertIn("no SBOM for this build", error)
         self.assertIn("no SBOM for this build", self.render_issues_stats(context))
 
-    def test_findings_are_listed_with_package_urgency_and_status(self):
+    def test_a_finding_is_a_count_on_its_sources_row(self):
         context = self.Context()
         context.use([BUSYBOX_REBUILD])
         self._write_sbom(context)
@@ -798,20 +830,22 @@ class IssuesRendering(avocado.Test):
             {"package": "busybox@1.36", "vulnerability":
                 {"id": "CVE-2024-0001", "status": "open", "urgency": "high"}},
         ])
-        text = self.render_issues_table(context)
-        self.assertIn("CVE-2024-0001", text)
-        self.assertIn("busybox", text)
-        self.assertIn("high", text)
-        self.assertIn("open", text)
+        columns, rows, _ = self._data(context)
+        self.assertIn(("H", 5, "security:high"), columns)
+        row = self._row(columns, rows, "busybox")
+        self.assertEqual(row["security:high"].strip(), "1")
+        # A zero count is blank space, not a "0".
+        self.assertEqual(row["security:low"], "")
 
-    def test_no_findings_says_so(self):
+    def test_no_findings_or_bugs_is_no_rows(self):
         context = self.Context()
         context.use([BUSYBOX_REBUILD])
         self._write_sbom(context)
         self._configure_scanner([])
-        self.assertIn("no known CVEs found", self.render_issues_table(context))
+        _, rows, _ = self._data(context)
+        self.assertEqual(rows, [])
 
-    def test_filter_and_min_urgency_narrow_the_table(self):
+    def test_filter_and_min_urgency_narrow_the_rows(self):
         context = self.Context()
         context.use([BUSYBOX_REBUILD])
         self._write_sbom(context)
@@ -821,13 +855,126 @@ class IssuesRendering(avocado.Test):
             {"package": "vim@9.0", "vulnerability":
                 {"id": "CVE-2", "status": "open", "urgency": "low"}},
         ])
-        text = self.render_issues_table(context, package="busybox")
-        self.assertIn("CVE-1", text)
-        self.assertNotIn("CVE-2", text)
+        _, rows, _ = self._data(context, package="busybox")
+        self.assertEqual([name for name, _ in rows], ["busybox"])
 
-        text = self.render_issues_table(context, min_urgency="high")
-        self.assertIn("CVE-1", text)
-        self.assertNotIn("CVE-2", text)
+        columns, rows, _ = self._data(context, min_urgency="high")
+        self.assertEqual(self._row(columns, rows, "busybox")["security:high"].strip(), "1")
+        self.assertNotIn("vim", [name for name, _ in rows])
+
+    def test_defects_sit_alongside_cves(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        sbom_path = self._write_sbom(context)
+        self._configure_scanner([])
+        self._write_bugs(sbom_path, [
+            {"id": 111, "source": "busybox", "package": "busybox",
+             "severity": "important", "title": "busybox breaks",
+             "status": "pending", "last_modified": "2026-01-01"},
+            {"id": 112, "source": "busybox", "package": "busybox",
+             "severity": "normal", "title": "busybox nit",
+             "status": "pending", "last_modified": "2026-01-01"},
+        ])
+        columns, rows, _ = self._data(context)
+        row = self._row(columns, rows, "busybox")
+        # 'important' shows (at the default cut); 'normal' is blank.
+        self.assertEqual(row["defects:important"].strip(), "1")
+        self.assertEqual(row["defects:normal"] if "defects:normal" in row else "", "")
+
+    def test_count_columns_are_fixed_width(self):
+        from seine.tui.render import COUNT_WIDTH
+        self.assertEqual(COUNT_WIDTH, 4)
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([
+            {"package": "busybox@1.36", "vulnerability":
+                {"id": "CVE-2024-0001", "status": "open", "urgency": "high"}},
+        ])
+        columns, rows, _ = self._data(context)
+        source_column = [c for c in columns if c[2] == "source"]
+        self.assertEqual(source_column, [("SOURCE", len("busybox"), "source")])
+        for label, width, key in columns:
+            if key != "source":
+                self.assertEqual(width, COUNT_WIDTH + 1)
+
+    def test_no_defect_cache_is_reported(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([
+            {"package": "busybox@1.36", "vulnerability":
+                {"id": "CVE-1", "status": "open", "urgency": "high"}},
+        ])
+        columns, rows, bugs_cached = self._data(context)
+        self.assertFalse(bugs_cached)
+        self.assertEqual([name for name, _ in rows], ["busybox"])
+
+    def test_min_severity_narrows_defect_counts(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        sbom_path = self._write_sbom(context)
+        self._configure_scanner([])
+        self._write_bugs(sbom_path, [
+            {"id": 111, "source": "busybox", "package": "busybox",
+             "severity": "grave", "title": "busybox breaks badly",
+             "status": "pending", "last_modified": "2026-01-01"},
+            {"id": 112, "source": "busybox", "package": "busybox",
+             "severity": "important", "title": "busybox breaks",
+             "status": "pending", "last_modified": "2026-01-01"},
+        ])
+        columns, rows, _ = self._data(context, min_severity="grave")
+        row = self._row(columns, rows, "busybox")
+        self.assertEqual(row["defects:grave"].strip(), "1")
+        self.assertEqual(row["defects:important"], "")
+
+    def test_a_bad_pattern_is_an_error_not_a_crash(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([])
+        _, error = self.issues_matrix_data(context, package="(unclosed")
+        self.assertIn("not a usable pattern", error)
+
+    def test_detail_lists_the_cells_cves(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([
+            {"package": "busybox@1.36", "vulnerability":
+                {"id": "CVE-2024-0001", "status": "open", "urgency": "high",
+                 "tracker": "https://example.com/tracker/CVE-2024-0001"}},
+            {"package": "vim@9.0", "vulnerability":
+                {"id": "CVE-2", "status": "open", "urgency": "low"}},
+        ])
+        text = self.render_issues_detail(context, "busybox", "security", "high")
+        self.assertIn("CVE-2024-0001", text)
+        self.assertIn("1.36", text)
+        self.assertIn("Esc goes back", text)
+        # Trailing space: "CVE-2" alone is a substring of "CVE-2024-0001".
+        self.assertNotIn("CVE-2 ", text)
+
+    def test_detail_lists_the_cells_bugs(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        sbom_path = self._write_sbom(context)
+        self._configure_scanner([])
+        self._write_bugs(sbom_path, [
+            {"id": 111, "source": "busybox", "package": "busybox",
+             "severity": "important", "title": "busybox breaks",
+             "status": "pending", "last_modified": "2026-01-01"},
+        ])
+        text = self.render_issues_detail(context, "busybox", "defects", "important")
+        self.assertIn("#111", text)
+        self.assertIn("busybox breaks", text)
+
+    def test_detail_of_an_empty_cell_says_so(self):
+        context = self.Context()
+        context.use([BUSYBOX_REBUILD])
+        self._write_sbom(context)
+        self._configure_scanner([])
+        text = self.render_issues_detail(context, "busybox", "security", "high")
+        self.assertIn("no security/high entries", text)
 
     def test_stats_show_totals_and_top_packages(self):
         context = self.Context()
@@ -844,6 +991,193 @@ class IssuesRendering(avocado.Test):
         self.assertIn("2 unique CVEs", text)
         self.assertIn("1 packages affected", text)
         self.assertIn("busybox", text)
+
+    # The matrix is a DataTable: its header stays put while rows scroll
+    # beneath it, the source column stays put while counts scroll beside
+    # it, and anything wider than the pane scrolls horizontally instead
+    # of wrapping.
+    def test_the_table_pins_header_and_source_and_scrolls(self):
+        async def scenario():
+            from textual.widgets import DataTable
+            app = self.SeineApp(files=[BUSYBOX_REBUILD])
+            output = app.context.builds[0].image._output
+            sbom_path = output[:-len(".img")] + "-sbom.spdx.json" \
+                if output.endswith(".img") else output + "-sbom.spdx.json"
+            os.makedirs(os.path.dirname(sbom_path), exist_ok=True)
+            with open(sbom_path, "w") as f:
+                f.write("{}")
+            self._configure_scanner([
+                {"package": "a-rather-long-source-package-name@1.36",
+                 "vulnerability": {"id": "CVE-2024-0001", "status": "open",
+                                   "urgency": "high"}},
+            ])
+            async with app.run_test() as pilot:
+                app.show("issues")
+                await pilot.pause()
+                table = app.screen.query_one("#issuestable", DataTable)
+                self.assertTrue(table.show_header)
+                self.assertEqual(table.fixed_columns, 1)
+                self.assertTrue(table.show_horizontal_scrollbar)
+                # Headers keep the table's own background -- bold text
+                # (and the header's underline rule) tell them apart, not
+                # a contrasting fill.
+                surface = table.styles.background
+                self.assertEqual(
+                    table.get_component_styles("datatable--header").background, surface)
+                self.assertEqual(
+                    table.get_component_styles("datatable--fixed").background, surface)
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+        self.SeineApp = SeineApp
+        _isolate_history(self)
+        _run(scenario)
+
+    # A '/issues --rescan' never blocks the TUI: the matrix renders from
+    # whatever is cached, a progress modal opens over it, and the fresh
+    # scan refreshes the matrix underneath when it lands -- popping the
+    # modal with it. '_rescan_once' is stubbed with a gated stand-in so
+    # the modal is observable mid-flight without touching the network
+    # or a container.
+    def _gate_rescan_once(self):
+        import threading
+        from seine.tui import issues as issues_module
+        gate = threading.Event()
+        calls = []
+
+        def stub(sbom_path, distro, report):
+            calls.append((sbom_path, distro))
+            report("scanning CVEs against the security tracker…")
+            gate.wait(10)
+            report("fetching defects from UDD…")
+
+        saved = issues_module._rescan_once
+        issues_module._rescan_once = stub
+        self.addCleanup(setattr, issues_module, "_rescan_once", saved)
+        return gate, calls
+
+    def _rescan_app(self):
+        app = self.SeineApp(files=[BUSYBOX_REBUILD])
+        output = app.context.builds[0].image._output
+        sbom_path = output[:-len(".img")] + "-sbom.spdx.json" \
+            if output.endswith(".img") else output + "-sbom.spdx.json"
+        os.makedirs(os.path.dirname(sbom_path), exist_ok=True)
+        with open(sbom_path, "w") as f:
+            f.write("{}")
+        self._configure_scanner([
+            {"package": "busybox@1.36", "vulnerability":
+                {"id": "CVE-2024-0001", "status": "open", "urgency": "high"}},
+        ])
+        return app, sbom_path
+
+    def test_rescan_shows_progress_then_refreshes_and_closes(self):
+        from textual.widgets import DataTable, Static
+
+        async def scenario():
+            from seine.tui.issues import RescanModal
+            gate, calls = self._gate_rescan_once()
+            app, sbom_path = self._rescan_app()
+            async with app.run_test() as pilot:
+                app.issues_rescan = True
+                app.show("issues")
+                await _settle_to(pilot, lambda: isinstance(app.screen, RescanModal),
+                                 "the progress modal")
+                modal = app.screen
+                self.assertIn("scanning CVEs",
+                              _content(modal.query_one("#rescanstatus", Static)))
+                gate.set()
+                await _settle_to(
+                    pilot, lambda: not isinstance(app.screen, RescanModal)
+                    and not app.screen._rescanning, "the modal closing")
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0], sbom_path)
+                table = app.screen.query_one("#issuestable", DataTable)
+                self.assertEqual(table.row_count, 1)
+                self.assertIn("rescan complete",
+                              _content(app.screen.query_one("#status", Static)))
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+        self.SeineApp = SeineApp
+        _isolate_history(self)
+        _run(scenario)
+
+    # Esc dismisses the progress modal early; the scan keeps going and
+    # the matrix still refreshes when it lands.
+    def test_esc_dismisses_progress_but_the_rescan_still_lands(self):
+        from textual.widgets import DataTable, Static
+
+        async def scenario():
+            from seine.tui.issues import IssuesScreen, RescanModal
+            gate, calls = self._gate_rescan_once()
+            app, _ = self._rescan_app()
+            async with app.run_test() as pilot:
+                app.issues_rescan = True
+                app.show("issues")
+                await _settle_to(pilot, lambda: isinstance(app.screen, RescanModal),
+                                 "the progress modal")
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, IssuesScreen)
+                gate.set()
+                await _settle_to(
+                    pilot, lambda: not app.screen._rescanning, "the scan landing")
+                self.assertEqual(len(calls), 1)
+                table = app.screen.query_one("#issuestable", DataTable)
+                self.assertEqual(table.row_count, 1)
+                self.assertIn("rescan complete",
+                              _content(app.screen.query_one("#status", Static)))
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+        self.SeineApp = SeineApp
+        _isolate_history(self)
+        _run(scenario)
+
+    # Enter on a count (and clicking it -- the same CellSelected either
+    # way) swaps the matrix for that cell's entries; Esc swaps back.
+    def test_enter_on_a_count_shows_its_detail_and_esc_goes_back(self):
+        async def scenario():
+            from textual.coordinate import Coordinate
+            from textual.widgets import DataTable, Static
+            from seine.tui.base import StaticPane
+            app = self.SeineApp(files=[BUSYBOX_REBUILD])
+            output = app.context.builds[0].image._output
+            sbom_path = output[:-len(".img")] + "-sbom.spdx.json" \
+                if output.endswith(".img") else output + "-sbom.spdx.json"
+            os.makedirs(os.path.dirname(sbom_path), exist_ok=True)
+            with open(sbom_path, "w") as f:
+                f.write("{}")
+            self._configure_scanner([
+                {"package": "busybox@1.36", "vulnerability":
+                    {"id": "CVE-2024-0001", "status": "open", "urgency": "high"}},
+            ])
+            async with app.run_test() as pilot:
+                app.show("issues")
+                await pilot.pause()
+                table = app.screen.query_one("#issuestable", DataTable)
+                self.assertIsNone(app.screen._detail)
+                self.assertEqual(table.get_cell_at(Coordinate(0, 1)).strip(), "1")
+
+                table.focus()
+                await pilot.press("right", "enter")
+                await pilot.pause()
+                self.assertEqual(app.screen._detail, ("busybox", "security", "high"))
+                self.assertTrue(app.screen.query_one("#issuedetail-pane", StaticPane).display)
+                self.assertFalse(table.display)
+                self.assertIn("CVE-2024-0001",
+                              _content(app.screen.query_one("#issuedetail", Static)))
+
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertIsNone(app.screen._detail)
+                self.assertTrue(table.display)
+                self.assertFalse(
+                    app.screen.query_one("#issuedetail-pane", StaticPane).display)
+        # Needs SeineApp (a real TUI app), the way every pilot-driven
+        # test below gets one -- not the Context-only rendering above.
+        with _tui_required(self):
+            from seine.tui.app import SeineApp
+        self.SeineApp = SeineApp
+        _isolate_history(self)
+        _run(scenario)
 
 # 'analyze'/'cache'/'doctor' are all renderers over an engine function
 # that already prints ('analyze.blame()', 'CacheCmd.info()',
@@ -1617,28 +1951,54 @@ class App(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.IssuesScreen)
-                self.assertIn("CVE-2024-0001", _content(app.screen.query_one("#issuestable")))
+                # The matrix now holds the counts; the CVE itself is one
+                # selection (one Enter/click) deeper.
+                from textual.coordinate import Coordinate
+                from textual.widgets import DataTable, Static
+                table = app.screen.query_one("#issuestable", DataTable)
+                self.assertEqual(table.get_cell_at(Coordinate(0, 0)), "busybox")
+                self.assertEqual(table.get_cell_at(Coordinate(0, 1)).strip(), "1")
                 self.assertIn("1 findings", _content(app.screen.query_one("#issuesstats")))
+                app.screen.action_show_detail("busybox", "security", "high")
+                await pilot.pause()
+                self.assertIn("CVE-2024-0001",
+                              _content(app.screen.query_one("#issuedetail", Static)))
         _run(scenario)
 
     # The table is the reason to be on this screen -- it must end up
-    # the widest pane, with the spec tree narrowed well below its usual
-    # 2fr (app.py's own global rule, right for a screen with one plain-
-    # text body pane, wrong once a second pane joins it here).
+    # the widest pane. (There is no spec tree here at all: the matrix
+    # keeps the room the tree would take.)
     def test_issues_table_is_the_widest_pane(self):
         async def scenario():
             app = self.SeineApp(files=[BUSYBOX_REBUILD])
+            output = app.context.builds[0].image._output
+            sbom_path = output[:-len(".img")] + "-sbom.spdx.json" \
+                if output.endswith(".img") else output + "-sbom.spdx.json"
+            os.makedirs(os.path.dirname(sbom_path), exist_ok=True)
+            with open(sbom_path, "w") as f:
+                f.write("{}")
+            from seine import settings
+            current = settings.load()
+            current["sbom2cve_program"] = _fake_scanner(self.workdir, [
+                {"package": "busybox@1.36", "vulnerability":
+                    {"id": "CVE-2024-0001", "status": "open", "urgency": "high"}}])
+            settings.save(current)
             async with app.run_test(size=(150, 40)) as pilot:
                 prompt = app.screen.query_one("#prompt")
                 prompt.value = "/issues"
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, self.IssuesScreen)
-                spectree = app.screen.query_one("#spectree").size.width
+                self.assertEqual(len(app.screen.query("#spectree")), 0)
                 table = app.screen.query_one("#issuestable-pane").size.width
                 stats = app.screen.query_one("#issuesstats-pane").size.width
                 self.assertGreater(table, stats)
-                self.assertGreater(stats, spectree)
+                # The stats pane shrink-wraps its longest line -- minimum
+                # width, nothing wrapped -- instead of a fixed share.
+                from textual.widgets import Static
+                text = _content(app.screen.query_one("#issuesstats", Static))
+                longest = max(len(line) for line in text.splitlines())
+                self.assertEqual(stats, longest)
         _run(scenario)
 
     def test_issues_bad_option_is_refused(self):

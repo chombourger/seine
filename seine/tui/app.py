@@ -626,6 +626,7 @@ class SeineApp(App):
         # IssuesScreen.update_body() reads these back.
         self.issues_filter = None
         self.issues_min_urgency = None
+        self.issues_min_severity = None
         self.issues_rescan = False
         self._startup_error = None
         # No spec at all, not a bad one -- a spec given but failed to
