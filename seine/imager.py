@@ -1018,7 +1018,7 @@ class Imager:
         if root_m is not None and source is None:
             bootloader = detect_bootloader(g, DEVICE)
             if bootloader:
-                print("Installing grub...")
+                print("Installing boot loader and entries...")
                 bootloader.install(g, "/efi")
                 bootloader.add_entry(g)
                 self._normalize_grub_lvmid(g)
@@ -1042,7 +1042,7 @@ class Imager:
             if source == boot_owner:
                 bootloader = detect_bootloader(g, DEVICE)
                 if bootloader:
-                    print("Installing grub...")
+                    print("Installing boot loader and entries...")
                     bootloader.install(g, "/efi", boot_directory="/efi")
                     ordered = [e for e in boot_entries if e["label"] == boot_owner] + \
                         [e for e in boot_entries if e["label"] != boot_owner]
