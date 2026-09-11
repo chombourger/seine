@@ -3726,6 +3726,43 @@ class TestStateRendering(avocado.Test):
         self.assertIn("'x' != 'y'", text)
         self.assertIn("output under /tmp/out", text)
 
+# TestState.on_started/on_changed: SeineApp._test_started()/_test_changed()
+# (seine/tui/app.py) hang off these to refresh the overview's test marks
+# as a run progresses -- this is the model side alone, no App needed.
+class TestStateChangeCallbacks(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.testing import TestState
+        self.TestState = TestState
+
+    def test_reset_fires_on_started(self):
+        state = self.TestState()
+        calls = []
+        state.on_started = lambda: calls.append("started")
+        state.reset(["spec.yaml"])
+        self.assertEqual(calls, ["started"])
+
+    def test_task_started_and_finished_each_fire_on_changed(self):
+        state = self.TestState()
+        calls = []
+        state.on_changed = lambda: calls.append("changed")
+        state.reset(["spec.yaml"])
+        state.task_started("suite.a")
+        state.task_finished("suite.a", failed=False)
+        self.assertEqual(calls, ["changed", "changed"])
+
+    # Neither callback is set by TestState.__init__() itself -- only
+    # SeineApp.__init__() wires them up -- so every site that fires one
+    # must tolerate it being None.
+    def test_callbacks_are_optional(self):
+        state = self.TestState()
+        state.reset(["spec.yaml"])
+        state.task_started("suite.a")
+        state.task_finished("suite.a", failed=False)
+
 # seine.testing.runner.run_spec() is patched out below the same way
 # Image.build is above BuildScreenIntegration -- this isn't about
 # proving Robot Framework runs correctly (tests/cli/testing.py's own
