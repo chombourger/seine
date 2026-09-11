@@ -631,9 +631,15 @@ class SeineApp(App):
             prompt.placeholder = "Running startup command (%d/%d)..." % (index, total)
             prompt.add_class("startup")
 
+    # NoMatches below: worker callbacks (build/vendor finish, target
+    # events) can land mid-transition, when the current screen's widgets
+    # aren't composed yet -- a missed repaint is fine, a crash is not.
     def say(self, text, error=False, warning=False):
         if isinstance(self.screen, BaseScreen):
-            self.screen.say(text, error=error, warning=warning)
+            try:
+                self.screen.say(text, error=error, warning=warning)
+            except NoMatches:
+                pass
 
     def refresh_screens(self):
         if isinstance(self.screen, BaseScreen):
@@ -644,9 +650,12 @@ class SeineApp(App):
     # current too, not just Indicators.
     def refresh_indicators(self):
         if isinstance(self.screen, BaseScreen):
-            self.screen.query_one(Indicators).refresh_text()
-            self.screen.query_one(VendorIndicator).refresh_text()
-            self.screen.query_one(TargetIndicator).refresh_text()
+            try:
+                self.screen.query_one(Indicators).refresh_text()
+                self.screen.query_one(VendorIndicator).refresh_text()
+                self.screen.query_one(TargetIndicator).refresh_text()
+            except NoMatches:
+                pass
 
     def _build_finished(self):
         self._socket_send({"type": "build_finished",
