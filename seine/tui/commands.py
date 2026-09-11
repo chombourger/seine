@@ -330,32 +330,42 @@ def _issues(app, argv):
     Scans the active build's own SBOM (every TUI '/build' writes one; a
     plain 'seine build --sbom' also does) against Debian's own security
     tracker, or a configured 'sbom2cve_program' ('/set sbom2cve_program').
-    '--filter=PKG' narrows to a package (a regex, case-insensitive);
-    '--min-urgency=LEVEL' drops anything less severe than LEVEL (high,
+    Shows one row per source package -- CVE counts by urgency, defect
+    counts (from UDD's bug search) by severity -- with every count
+    clickable for its own entries (Esc goes back to the matrix).
+    '--filter=PKG' narrows rows to a package (a regex, case-insensitive);
+    '--min-urgency=LEVEL' drops CVEs less severe than LEVEL (high,
     medium, low, unimportant, end-of-life, not-yet-assigned -- the
-    default: everything); '--rescan' ignores a cached scan and runs a
-    fresh one.
+    default: everything); '--min-severity=LEVEL' drops defects less
+    severe than LEVEL (critical, grave, serious, important, normal,
+    minor, wishlist -- the default: important); '--rescan' ignores both
+    caches and fetches fresh (defects included), in the background
+    under a progress popup that closes itself when the scan lands.
     """
     try:
-        opts, args = getopt.getopt(argv, "", ["filter=", "min-urgency=", "rescan"])
+        opts, args = getopt.getopt(argv, "", ["filter=", "min-urgency=",
+                                              "min-severity=", "rescan"])
     except getopt.GetoptError as e:
         raise CommandError(str(e))
     if args:
         raise CommandError("/issues takes no positional arguments -- "
-                           "'--filter=PKG'/'--min-urgency=LEVEL'/'--rescan' only")
+                           "'--filter=PKG'/'--min-urgency=LEVEL'/'--min-severity=LEVEL'/'--rescan' only")
     if not app.context.active:
         raise CommandError("no active specification -- '/use SPEC' first")
-    package = min_urgency = None
+    package = min_urgency = min_severity = None
     rescan = False
     for o, a in opts:
         if o == "--filter":
             package = a
         elif o == "--min-urgency":
             min_urgency = a
+        elif o == "--min-severity":
+            min_severity = a
         elif o == "--rescan":
             rescan = True
     app.issues_filter = package
     app.issues_min_urgency = min_urgency
+    app.issues_min_severity = min_severity
     app.issues_rescan = rescan
     app.show("issues")
 
@@ -731,7 +741,7 @@ REGISTRY = {
         Command("doctor",   _doctor,   "",                         *_doc(_doctor)),
         Command("chat",     _chat,     "",                         *_doc(_chat)),
         Command("diff",     _diff,     "OLD.spdx.json NEW.spdx.json", *_doc(_diff)),
-        Command("issues",   _issues,   "[--filter=PKG] [--min-urgency=LEVEL] [--rescan]",
+        Command("issues",   _issues,   "[--filter=PKG] [--min-urgency=LEVEL] [--min-severity=LEVEL] [--rescan]",
                 *_doc(_issues)),
         Command("settings", _settings, "",                         *_doc(_settings)),
         Command("set",      _set,      "KEY VALUE",                *_doc(_set)),
@@ -746,7 +756,7 @@ REGISTRY["q"] = REGISTRY["quit"]
 OPTIONS = {
     "plan":  BuildCmd.LONG_OPTIONS,
     "build": ["jobs="],
-    "issues": ["filter=", "min-urgency=", "rescan"],
+    "issues": ["filter=", "min-urgency=", "min-severity=", "rescan"],
 }
 
 # One line, split the way a shell would, so a quoted path with a space

@@ -729,32 +729,132 @@ def _issues_sbom_path(build):
     path = sbom.output_path(build.image._output)
     if os.path.isfile(path):
         return path, None
-    return None, ("no SBOM for this build yet -- every TUI '/build' writes "
-                  "one, or run 'seine build --sbom' first\n")
+    return None, ("no SBOM for this build yet\n"
+                  "run '/build' (or 'seine build --sbom') first\n")
 
-def render_issues_table(context, package=None, min_urgency=None, rescan=False):
+# One row per source package: CVE counts by urgency, defect counts by
+# severity. A nonzero count selects into that cell's own entries (see
+# IssuesScreen); a zero is blank space, so the eye reads the nonzero
+# counts. Returns ((columns, rows), None) -- columns as (label, width,
+# key) with key "source" or "kind:bucket", rows as (source, [cell, ...])
+# -- or (None, message) when there is nothing to tabulate.
+SEC_LETTERS = (("high", "H"), ("medium", "M"), ("low", "L"),
+               ("unimportant", "U"), ("end-of-life", "E"),
+               ("not-yet-assigned", "N"))
+BUG_LETTERS = (("critical", "C"), ("grave", "G"), ("serious", "S"),
+               ("important", "I"))
+
+# Counts print COUNT_WIDTH wide, space-padded on the left; the table
+# column is one wider, for breathing room.
+COUNT_WIDTH = 4
+
+def _issues_rows(context, package=None, min_urgency=None, min_severity=None,
+                rescan=False):
+    # (sources, {(source, kind, bucket): [entries]}, bugs_cached) --
+    # ValueError (a bad pattern/level) and scan failures propagate as
+    # (None, message) instead, so both panes below never disagree.
+    import re
+    from seine import bugs as bugs_module
     build, error = _issues_build(context)
     if error:
-        return error
+        return None, error
     path, error = _issues_sbom_path(build)
     if error:
-        return error
+        return None, error
     release = build.spec["distribution"]["release"]
     try:
+        regex = re.compile(package, re.IGNORECASE) if package else None
+    except re.error as e:
+        return None, "'%s' is not a usable pattern: %s\n" % (package, e)
+    try:
         findings = secscan.scan(path, distro=release, rescan=rescan)
-        findings = secscan.filter_findings(findings, package=package, min_urgency=min_urgency)
+        findings = secscan.filter_findings(findings, min_urgency=min_urgency)
     except ValueError as e:
-        return "%s\n" % e
+        return None, "%s\n" % e
     except (OSError, subprocess.CalledProcessError) as e:
-        return "scan failed: %s\n" % e
-    if not findings:
-        return "no known CVEs found\n"
-    width = max(len(f.package) for f in findings)
-    lines = ["%-16s %-*s %-18s %s" % (f.cve, width, f.package, f.urgency, f.status)
-             for f in findings]
+        return None, "scan failed: %s\n" % e
+    # Defects come from the cache only, never a fetch: rendering must
+    # stay instant and offline-safe. Only an explicit '/issues --rescan'
+    # (which already blocks on the CVE scan above) refreshes both.
+    if rescan:
+        try:
+            bugs = bugs_module.scan(path, distro=release, rescan=True)
+        except (OSError, ValueError) as e:
+            return None, "defects fetch failed: %s\n" % e
+        bugs_cached = True
+    else:
+        bugs = bugs_module.read_cache(path)
+        bugs_cached = bugs is not None
+        bugs = bugs or []
+    try:
+        bugs = bugs_module.filter_bugs(bugs, min_severity=min_severity or
+                                       bugs_module.DEFAULT_MIN_SEVERITY)
+    except ValueError as e:
+        return None, "%s\n" % e
+    if regex is not None:
+        findings = [f for f in findings if regex.search(f.package)]
+        bugs = [b for b in bugs if regex.search(b.source)]
+    cells = {}
+    for f in findings:
+        cells.setdefault((f.package, "security", f.urgency), []).append(f)
+    for b in bugs:
+        cells.setdefault((b.source, "defects", b.severity), []).append(b)
+    sources = sorted({f.package for f in findings} | {b.source for b in bugs})
+    return (sources, cells, bugs_cached), None
+
+def issues_matrix_data(context, package=None, min_urgency=None,
+                       min_severity=None, rescan=False):
+    result, error = _issues_rows(context, package=package,
+                                 min_urgency=min_urgency,
+                                 min_severity=min_severity, rescan=rescan)
+    if error:
+        return None, error
+    sources, cells, bugs_cached = result
+    columns = [("SOURCE", max([len(s) for s in sources] + [len("SOURCE")]), "source")]
+    columns += [(letter, COUNT_WIDTH + 1, "security:" + bucket)
+                for bucket, letter in SEC_LETTERS]
+    columns += [(letter, COUNT_WIDTH + 1, "defects:" + bucket)
+                for bucket, letter in BUG_LETTERS]
+    rows = []
+    for source in sources:
+        row = [source]
+        for bucket, _ in SEC_LETTERS:
+            entries = cells.get((source, "security", bucket), [])
+            row.append("%*d" % (COUNT_WIDTH, len(entries)) if entries else "")
+        for bucket, _ in BUG_LETTERS:
+            entries = cells.get((source, "defects", bucket), [])
+            row.append("%*d" % (COUNT_WIDTH, len(entries)) if entries else "")
+        rows.append((source, row))
+    return (columns, rows, bugs_cached), None
+
+# One clicked cell's own entries, replacing the matrix in the same pane
+# until Esc. 'kind' is 'security' or 'defects', 'bucket' one of the
+# letters' levels above.
+def render_issues_detail(context, source, kind, bucket, package=None,
+                         min_urgency=None, min_severity=None):
+    result, error = _issues_rows(context, package=package,
+                                 min_urgency=min_urgency,
+                                 min_severity=min_severity)
+    if error:
+        return error
+    _, cells, _ = result
+    entries = cells.get((source, kind, bucket), [])
+    if not entries:
+        return "no %s/%s entries for '%s' (Esc goes back)\n" % (kind, bucket, source)
+    lines = ["%s -- %s/%s (%d, Esc goes back)" % (source, kind, bucket, len(entries)), ""]
+    if kind == "security":
+        width = max(len(e.cve) for e in entries)
+        for e in entries:
+            lines.append("%-*s %-12s %-18s %s" % (width, e.cve, e.version,
+                                                 e.urgency, e.status))
+            if e.tracker:
+                lines.append("  %s" % e.tracker)
+    else:
+        for e in entries:
+            lines.append("#%-9d [%-9s/%s] %s" % (e.id, e.severity, e.status, e.title))
     return "\n".join(lines) + "\n"
 
-# Reads whatever render_issues_table() left cached rather than
+# Reads whatever render_issues_matrix() left cached rather than
 # scanning again; called after it in IssuesScreen.update_body(), so a
 # '/issues --rescan' has already refreshed the cache by the time this runs.
 def render_issues_stats(context):
@@ -781,6 +881,22 @@ def render_issues_stats(context):
     lines += ["", "TOP PACKAGES"]
     for pkg, count in data["by_package"].most_common(10):
         lines.append(" %-17s %4d" % (pkg, count))
+    lines += ["", "DEFECTS (UDD, severity >= important)"]
+    # Cache only, never a fetch: rendering must stay instant and
+    # offline-safe. 'seine issues --defects' populates what this reads.
+    from seine import bugs as bugs_module
+    cached = bugs_module.read_cache(path)
+    if cached is None:
+        lines.append(" no defect data -- '/issues --rescan'")
+    else:
+        shown = bugs_module.filter_bugs(cached)
+        defects = bugs_module.stats(shown)
+        lines.append(" %d bug(s) across %d source package(s)"
+                     % (defects["total"], defects["sources"]))
+        for level in bugs_module.SEVERITY_ORDER:
+            count = defects["by_severity"].get(level, 0)
+            if count:
+                lines.append(" %-17s %4d" % (level, count))
     return "\n".join(lines) + "\n"
 
 # Shared by render_vendor()/render_vendor_why(): a build's 'vendor:'
