@@ -232,5 +232,53 @@ test:
         self.assertEqual(entry["tests"][0]["status"], "FAIL")
 
 
+class CastFor(avocado.Test):
+    """
+    :avocado: tags=reporting
+    """
+    def setUp(self):
+        os.environ["SEINE_LOG_DIR"] = self.workdir
+
+    def _run_dir(self, name="20260911-000000", casts=None, global_cast=True):
+        import json
+        outdir = os.path.join(self.workdir, "tests", name)
+        os.makedirs(outdir)
+        mapping = {}
+        for qualified, basename in (casts or {}).items():
+            _write(outdir, basename, "fake cast")
+            mapping[qualified] = basename
+        if global_cast:
+            _write(outdir, "console.cast", "fake global cast")
+        with open(os.path.join(outdir, "interactions.json"), "w") as f:
+            json.dump({"console_cast": "console.cast" if global_cast else None,
+                       "console_casts": mapping}, f)
+        return {"digest": "x", "started": 1.0, "dir": os.path.join("tests", name),
+                "ok": True, "tests": []}
+
+    def test_prefers_the_tests_own_cast(self):
+        entry = self._run_dir(casts={"seine test.boot": "seine_test.boot.cast"})
+        self.assertTrue(testindex.cast_for(entry, "seine test.boot").endswith(
+            os.path.join("20260911-000000", "seine_test.boot.cast")))
+
+    def test_falls_back_to_the_global_cast(self):
+        entry = self._run_dir()
+        self.assertTrue(testindex.cast_for(entry, "seine test.boot").endswith(
+            os.path.join("20260911-000000", "console.cast")))
+
+    def test_short_name_survives_a_suite_rename(self):
+        entry = self._run_dir(casts={"seine test.boot": "seine_test.boot.cast"})
+        self.assertTrue(testindex.cast_for(entry, "other suite.boot").endswith(
+            "seine_test.boot.cast"))
+
+    def test_no_recording_at_all_is_none(self):
+        entry = self._run_dir(global_cast=False)
+        self.assertIsNone(testindex.cast_for(entry, "seine test.boot"))
+
+    def test_a_missing_run_dir_is_none(self):
+        entry = {"digest": "x", "started": 1.0, "dir": os.path.join("tests", "gone"),
+                 "ok": True, "tests": []}
+        self.assertIsNone(testindex.cast_for(entry, "seine test.boot"))
+
+
 if __name__ == "__main__":
     avocado.main()
