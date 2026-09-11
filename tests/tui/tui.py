@@ -97,6 +97,15 @@ def _tui_required(test):
     except ImportError as e:
         test.cancel("the 'tui' extra (textual) is not installed: %s" % e)
 
+# Per-test prompt history: History is cwd-relative by default (shared
+# by the whole run), so one test's submitted lines would otherwise
+# leak into the next test's recall. Every class below that builds a
+# real SeineApp calls this from setUp(); the cleanup pops the variable
+# again so classes without it keep the default.
+def _isolate_history(test):
+    os.environ["SEINE_HISTORY_FILE"] = os.path.join(test.workdir, "history.json")
+    test.addCleanup(os.environ.pop, "SEINE_HISTORY_FILE", None)
+
 # Commands: the registry the prompt, Tab completion and the command
 # palette all read.
 class CommandRegistry(avocado.Test):
@@ -1261,6 +1270,7 @@ class App(avocado.Test):
         # below persist real settings, which must not leak into an
         # earlier-defined test that runs after them.
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        _isolate_history(self)
 
     def test_startup_with_a_spec_lands_on_overview(self):
         async def scenario():
@@ -1995,6 +2005,7 @@ class BuildFollowsVendorScreen(avocado.Test):
         self.SeineApp = SeineApp
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        _isolate_history(self)
 
     def test_a_vendor_task_starting_switches_to_the_vendor_screen(self):
         async def scenario():
@@ -2069,6 +2080,7 @@ class SettingsScreenIntegration(avocado.Test):
         # Per test, not just per file -- every test here reads/writes
         # real settings, which must not leak between them.
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        _isolate_history(self)
 
     async def _open(self, pilot, app):
         # Startup commands run deferred and hold the prompt shut while
@@ -2722,6 +2734,7 @@ class FilesystemScreenIntegration(avocado.Test):
 
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["SEINE_BUILD_DIR"] = os.path.join(self.workdir, "build")
+        _isolate_history(self)
         self.spec = os.path.join(self.workdir, "spec.yaml")
         with open(self.spec, "w") as f:
             f.write("""
@@ -2808,6 +2821,7 @@ class BuildScreenIntegration(avocado.Test):
         # isolated the same way every other class here already is.
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        _isolate_history(self)
 
     def test_build_command_runs_to_completion(self):
         import time as clock
@@ -3190,6 +3204,7 @@ class VendorScreenIntegration(avocado.Test):
         os.environ["XDG_CONFIG_HOME"] = self.workdir
         self.fragment = os.path.join(self.workdir, "vendor-only.yaml")
         _write_vendor_only_spec(self.fragment)
+        _isolate_history(self)
 
     def test_vendor_command_runs_to_completion(self):
         def fast_run(cmd_self, distro, entries, exclude, wanted, refresh,
@@ -3376,6 +3391,7 @@ class TestScreenIntegration(avocado.Test):
         self.addCleanup(setattr, runner, "run_spec", self.real_run_spec)
         os.environ["SEINE_CACHE_DIR"] = self.workdir
         os.environ["XDG_CONFIG_HOME"] = self.workdir
+        _isolate_history(self)
 
     def test_test_command_runs_to_completion(self):
         def fast_run_spec(files, spec=None, tags=None, outdir=None,
@@ -3576,6 +3592,7 @@ class MarkdownRethemeRaceIsSwallowed(avocado.Test):
         with _tui_required(self):
             from seine.tui.app import SeineApp
         self.SeineApp = SeineApp
+        _isolate_history(self)
 
     def test_the_known_race_does_not_reach_apps_own_handler(self):
         from textual.app import App
