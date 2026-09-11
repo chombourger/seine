@@ -294,6 +294,88 @@ def _aggregate_test_state(qualifieds, rows):
         return "pending"
     return "done"
 
+# Index statuses use Robot's own words (PASS/FAIL/SKIP), not the
+# session marks above -- mapped here so a past run reads with the
+# same green ✔ / red ✘ as a live one.
+_INDEX_MARKS = {"PASS": ("✔", "green"), "FAIL": ("✘", "red"),
+                "SKIP": ("○", "")}
+
+def _run_time(started):
+    if not started:
+        return "?"
+    return time.strftime("%b %d %H:%M", time.localtime(started))
+
+# Newest-first index entries covering one qualified test: the index
+# first, with scan() backfilling pre-index run dirs the index never
+# recorded. 'recorded'/'scanned' are loaded once per pane render and
+# shared by every row in it, so a branch listing N tests parses the
+# run dirs once, not N times.
+def _history_for(qualified, recorded, scanned):
+    from seine.testing import testindex
+    runs = list(testindex.runs_for(qualified, recorded))
+    known = {entry.get("dir") for entry in recorded}
+    runs += [entry for entry in scanned
+             if entry.get("dir") not in known
+             and testindex.status_of(entry, qualified) is not None]
+    runs.sort(key=lambda entry: entry.get("started") or 0, reverse=True)
+    return runs
+
+# One branch child's trailing 'last ✔ Sep 11' -- the newest run
+# covering it, or None when it never ran. Only for children leading
+# to exactly one test; an aggregate over several has no single run.
+def _last_run_suffix(qualified, recorded, scanned):
+    from seine.testing import testindex
+    runs = _history_for(qualified, recorded, scanned)
+    if not runs:
+        return None
+    row = testindex.status_of(runs[0], qualified) or {}
+    mark, _ = _INDEX_MARKS.get(row.get("status"), ("?", ""))
+    return "last %s %s" % (mark, _run_time(runs[0].get("started")))
+
+# Full per-test history under a single-test node: the last run plus
+# the LOGS_SHOWN most recent runs, each with log and replay links --
+# the same clickable-span shape _logs_section() uses above.
+def _test_history_block(qualified, recorded, scanned):
+    from rich.style import Style
+    from rich.text import Text
+    from seine.testing import testindex
+    runs = _history_for(qualified, recorded, scanned)[:LOGS_SHOWN]
+    text = Text()
+    if not runs:
+        text.append("\nnever run from here yet -- '/test' it once first\n")
+        return text
+    row = testindex.status_of(runs[0], qualified) or {}
+    mark, style = _INDEX_MARKS.get(row.get("status"), ("?", ""))
+    text.append("\nLast run: %s " % _run_time(runs[0].get("started")))
+    if style:
+        text.append(mark + " ", style=style)
+    else:
+        text.append(mark + " ")
+    text.append("%s" % (row.get("status") or "?"))
+    if row.get("elapsed"):
+        text.append(" (%s)" % elapsed(row["elapsed"]))
+    text.append("\nAll runs:\n")
+    for entry in runs:
+        row = testindex.status_of(entry, qualified) or {}
+        mark, style = _INDEX_MARKS.get(row.get("status"), ("?", ""))
+        text.append("  - %s " % _run_time(entry.get("started")))
+        if style:
+            text.append(mark + " ", style=style)
+        else:
+            text.append(mark + " ")
+        log = os.path.join(testindex.resolve(entry.get("dir")), "output.xml")
+        if os.path.isfile(log):
+            text.append("[log] ", style=Style(meta={"log-click": log}))
+        else:
+            text.append("[log] ", style=Style(dim=True))
+        cast = testindex.cast_for(entry, qualified)
+        if cast is not None:
+            text.append("[replay]", style=Style(meta={"cast-play": cast}))
+        else:
+            text.append("[replay]", style=Style(dim=True))
+        text.append("\n")
+    return text
+
 # A 'test'-branch node with its children's test status, one mark per
 # child that leads to test(s) -- the overview equivalent of the Test
 # screen's own list. Returns None when 'subpath' holds no test (a
@@ -312,6 +394,9 @@ def render_test_node(node, subpath, test_state):
     result = getattr(test_state, "result", None)
     if result is not None:
         by_name = {t.name: t for t in (result.tests or [])}
+    from seine.testing import testindex
+    recorded = testindex.entries()
+    scanned = testindex.scan()
     text = Text()
     state = _aggregate_test_state(qualified_here, rows)
     mark = TEST_MARKS[state]
@@ -343,11 +428,26 @@ def render_test_node(node, subpath, test_state):
                 text.append(child_mark + " ", style=child_style)
             else:
                 text.append(child_mark + " ")
-            text.append("%s\n" % child.data)
+            text.append("%s" % child.data)
+            # Past runs read dimmed after the live mark, so the two
+            # never compete: colour means this session, grey the past.
+            if len(qualified_child) == 1:
+                suffix = _last_run_suffix(qualified_child[0],
+                                          recorded, scanned)
+                if suffix is not None:
+                    from rich.style import Style
+                    text.append("  %s" % suffix, style=Style(dim=True))
+            text.append("\n")
             if len(qualified_child) == 1:
                 outcome = by_name.get(qualified_child[0])
                 if outcome is not None and outcome.failed and outcome.message:
                     text.append("      %s\n" % outcome.message)
+    # One test exactly: the full history below its live mark. A
+    # branch over several tests already carries each child's own
+    # 'last' line above -- a block per test would bury the listing.
+    if len(qualified_here) == 1:
+        text.append_text(_test_history_block(qualified_here[0],
+                                             recorded, scanned))
     return text
 
 # How many runs' links a task-kind bullet shows -- '[latest] [-1] [-2]',

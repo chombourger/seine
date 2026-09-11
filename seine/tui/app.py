@@ -77,7 +77,8 @@ class CastPane(StaticPane):
             event.stop()
             event.prevent_default()
 
-# Reads the 'log-click' marker render.py's append_logs_section() puts
+# Reads the 'log-click'/'cast-play' markers render.py puts in a
+# span's meta -- a plain value, not Rich's '@click' action-link
 # in a span's meta -- a plain value, not Rich's '@click' action-link
 # string, which Textual overlays with its own link style regardless
 # (same reasoning as target_screen.py's TargetStatusStatic, the
@@ -87,6 +88,10 @@ class BodyStatic(Static):
         path = event.style.meta.get("log-click")
         if path:
             self.screen.action_show_log(path)
+            return
+        cast = event.style.meta.get("cast-play")
+        if cast:
+            self.screen.action_replay_cast(cast)
 
 # How wide the image-node boxes may be: the right pane's own content
 # width, not render.py's BOX_WIDTH default -- the pane only owns a
