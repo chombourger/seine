@@ -226,8 +226,9 @@ class AnsibleContainerRunner:
     # (only one ever is: dracut Conflicts: initramfs-tools). dracut's
     # output name is spelled out to match what imager.py expects.
     def _finalize(self):
-        # mkinitramfs picks zstd -T0 (multithreaded, non-reproducible
-        # frame layout) unless SOURCE_DATE_EPOCH is set.
+        # mkinitramfs needs SOURCE_DATE_EPOCH for reproducible zstd.
+        # dracut also needs '--reproducible', or its own generated
+        # files keep the real build time and never hash the same twice.
         self._exec(["sh", "-c",
             "export SOURCE_DATE_EPOCH=%d; " % self.epoch +
             "for k in /boot/vmlinuz-*; do "
@@ -236,7 +237,7 @@ class AnsibleContainerRunner:
             "if command -v update-initramfs >/dev/null 2>&1; then "
             "update-initramfs -c -k \"$v\"; "
             "elif command -v dracut >/dev/null 2>&1; then "
-            "dracut --force \"/boot/initrd.img-$v\" \"$v\"; "
+            "dracut --reproducible --force \"/boot/initrd.img-$v\" \"$v\"; "
             "fi; "
             "done"])
         self._exec(["sh", "-c",
