@@ -840,7 +840,7 @@ class Imager:
             print("Starting imager appliance...")
             g = guestfs.GuestFS(python_return_dict=True)
             g.add_drive_opts(disk, format="raw", readonly=False)
-            need_ext = any(m["type"] in ("ext2", "ext3", "ext4") for m in ph.mounts)
+            need_ext = any(m["type"] in EXT_FSTYPES for m in ph.mounts)
             if need_ext:
                 ext_mounts = [m for m in ph.mounts if m["type"] in EXT_FSTYPES]
                 # Room for one mount's captured content plus its rebuilt
