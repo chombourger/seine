@@ -217,13 +217,36 @@ def interrupt():
     # Not print(): a task's output goes to its own file, not the terminal.
     sys.stderr.write("\n%s\n" % said)
 
+# Step names for a package build, matched after any cohort/group
+# namespace. Owned here, not in tui/spectree.py, since core must not
+# import the TUI back.
+PACKAGE_STEPS = ("package:", "prepare:", "deploy:", "fetch:", "fetch-upstream:")
+
+def _does_package_work(name):
+    return any(":%s" % step in ":%s" % name for step in PACKAGE_STEPS)
+
+# True if 'name' is a 'packages' barrier with no package step behind
+# it. Such a barrier is left out of the plan/task list, though the
+# graph keeps it so 'rootfs' still has something to wait for.
+def is_empty_barrier(name, names):
+    return (name == "packages" or name.endswith(":packages")) \
+        and not any(_does_package_work(other) for other in names)
+
 # Prints the run order run() would take, without running anything.
+# An empty 'packages' barrier, and any mention of it in an 'after'
+# list, is left out.
 def describe(tasks):
-    for task in ordered(tasks):
-        if len(task.needs) == 0:
+    tasks = ordered(tasks)
+    names = {t.name for t in tasks}
+    hidden = {t.name for t in tasks if is_empty_barrier(t.name, names)}
+    for task in tasks:
+        if task.name in hidden:
+            continue
+        needs = [need for need in task.needs if need not in hidden]
+        if len(needs) == 0:
             print("  %s" % task.name)
         else:
-            print("  %-24s after %s" % (task.name, ", ".join(task.needs)))
+            print("  %-24s after %s" % (task.name, ", ".join(needs)))
 
 def _capacity(cls, jobs, resources):
     return jobs if resources is None else resources.get(cls, jobs)

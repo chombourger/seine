@@ -879,6 +879,33 @@ class ABuildWithoutPackagesStillHasTheBarrier(avocado.Test):
         self.assertEqual(tasks["packages"].needs, ["bootstrap-host"])
         self.assertNotIn("packages-prepare", tasks)
 
+class DescribeOmitsAnEmptyPackagesBarrier(avocado.Test):
+    def described(self, spec):
+        import contextlib
+        import io
+        build = BuildCmd()
+        build.loads(spec)
+        build.parse()
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            from seine.tasks import describe
+            describe(build.image.tasks())
+        return said.getvalue()
+
+    def test_a_build_with_nothing_to_build_shows_no_packages_step(self):
+        said = self.described(SPEC)
+        self.assertNotIn("packages", said)
+        # ... nor dangling in another step's own 'after' list.
+        self.assertIn("rootfs", said)
+        rootfs = [line for line in said.splitlines() if "rootfs" in line][0]
+        self.assertNotIn("packages", rootfs)
+
+    def test_a_build_with_packages_to_build_still_shows_it(self):
+        said = self.described(PACKAGES)
+        for step in ["packages-prepare", "package:seine-test-library",
+                     "deploy:seine-test-library", "packages"]:
+            self.assertIn(step, said)
+
 class FetchingIsItsOwnStep(avocado.Test):
     def test(self):
         build = BuildCmd()
