@@ -189,7 +189,8 @@ class Image:
         distro = self.spec["distribution"]
         runner = AnsibleContainerRunner(
             self._from, distro, self.options, verbose=self._verbose,
-            vendor_digest=vendor.offline_dockerfile_digest(self.spec, distro))
+            vendor_digest=vendor.offline_dockerfile_digest(self.spec, distro),
+            epoch=self._epoch())
         self._cid = runner.run(self.spec["playbook"])
 
     # 'check=True' only catches podman failing, not an export that exits
@@ -209,6 +210,12 @@ class Image:
             "the exported root file-system holds no '/etc' (%s): the "
             "container it came from was empty or the export was cut short"
             % tarball)
+
+    # A content hash of the resolved spec, for anything (e.g. the
+    # imager's own GPT/filesystem UUIDs) that should change only when
+    # the spec itself does, not on every rebuild.
+    def spec_digest(self):
+        return analyze.spec_digest(self.spec)
 
     # A fixed time to reuse instead of 'now': the newest spec file given
     # on the command line, so editing the spec still moves it.
