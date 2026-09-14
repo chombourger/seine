@@ -865,6 +865,12 @@ class Imager:
                     "built %s image for '%s' is %d bytes, larger than its "
                     "%d-byte partition/volume" % (m["type"], m["label"], built, cap))
 
+            # The old ext4 staging filesystem's superblock and journal
+            # still sit past 'built', with real timestamps. Pad first so
+            # the copy below overwrites the whole partition/volume.
+            if built < cap:
+                g.truncate_size(scratch, cap)
+
             g.copy_file_to_device(scratch, dest, destoffset=offset)
             g.rm(scratch)
 
