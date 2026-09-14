@@ -343,6 +343,7 @@ The goal is narrower:
 * `docs/kernels.md` — kernel configuration and grafting
 * `docs/building.md` — builds, caching, cross-compilation and reproducibility
 * `docs/environment.md` — environment variables and build directories
+* `docs/vault-openbao.md` — running a vault to sign build output remotely
 * `docs/testing.md` — target testing
 * `docs/tui.md` — interactive interface
 
