@@ -1113,7 +1113,74 @@ class DefaultsHoldPackagesOnly(avocado.Test):
                     playbook:
                         - name: nothing
             """)
-            self.fail("parsing succeeded for a 'defaults' section that is not packages!")
+            self.fail("parsing succeeded for a 'defaults' section that is "
+                     "neither packages nor vault!")
+        except ValueError:
+            pass
+
+# 'defaults: vault:' is fixed dev-only material so independent
+# dev-vault instances agree instead of each generating their own --
+# read back by Image._vault_defaults().
+class DefaultsVaultReachesTheBuiltImage(avocado.Test):
+    def test(self):
+        build = BuildCmd()
+        build.loads("""
+                defaults:
+                    vault:
+                        some-key:
+                            key_pem: "-- key --"
+                            cert_pem: "-- cert --"
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.parse()
+        self.assertEqual(build.image._vault_defaults(),
+                         {"some-key": {"key_pem": "-- key --",
+                                      "cert_pem": "-- cert --"}})
+
+    def test_a_second_file_merges_by_name_last_wins(self):
+        build = BuildCmd()
+        build.loads("""
+                defaults:
+                    vault:
+                        one: {key_pem: "1a", cert_pem: "1a"}
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        build.loads("""
+                defaults:
+                    vault:
+                        one: {key_pem: "1b", cert_pem: "1b"}
+                        two: {key_pem: "2", cert_pem: "2"}
+        """)
+        build.parse()
+        self.assertEqual(build.image._vault_defaults(), {
+            "one": {"key_pem": "1b", "cert_pem": "1b"},
+            "two": {"key_pem": "2", "cert_pem": "2"},
+        })
+
+    def test_not_a_mapping_is_refused(self):
+        build = BuildCmd()
+        build.loads("""
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        try:
+            build.loads("""
+                defaults:
+                    vault:
+                        - not a mapping
+            """)
+            self.fail("a non-mapping 'defaults: vault' was accepted")
         except ValueError:
             pass
 

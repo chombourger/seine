@@ -160,12 +160,16 @@ def reap_stale():
 class DevVault(VaultProvider):
     IMAGE = "docker.io/openbao/openbao:2.6.2"
 
-    def __init__(self):
+    # 'defaults' is a spec's 'defaults: vault:' -- fixed dev-only
+    # material, by name/ref, a miss seeds with instead of DEV_DEFAULTS
+    # or a fresh key, so independent dev instances agree.
+    def __init__(self, defaults=None):
         self._pid = os.getpid()
         self._name = "seine-vault-%d-%s" % (self._pid, secrets.token_hex(4))
         self._token = secrets.token_hex(16)
         self._port = None
         self._inner = None
+        self._defaults = defaults or {}
         self._transit_keys = set()
         self._pgp_keys = {}
         self._sbsign_keys = set()
@@ -180,15 +184,19 @@ class DevVault(VaultProvider):
         except VaultNotFound:
             return self._seed(ref)
 
-    # A miss stores the tabled throwaway and warns loudly; an unknown
-    # ref stays a miss, so typos fail closed in dev too.
+    # A miss stores the spec's own default, falling back to the tabled
+    # throwaway, and warns loudly; an unknown ref stays a miss, so a
+    # typo fails closed in dev too.
     def _seed(self, ref):
-        try:
-            value = DEV_DEFAULTS[ref]
-        except KeyError:
-            raise VaultNotFound(
-                "dev vault has no '%s' and no throwaway default for it" % ref
-            ) from None
+        if ref in self._defaults:
+            value = self._defaults[ref]
+        else:
+            try:
+                value = DEV_DEFAULTS[ref]
+            except KeyError:
+                raise VaultNotFound(
+                    "dev vault has no '%s' and no throwaway default for it" % ref
+                ) from None
         sys.stderr.write(
             "warning: dev vault has no '%s'; seeding throwaway default "
             "(local development only, never production)\n" % ref)
@@ -418,18 +426,36 @@ class DevVault(VaultProvider):
     def _ensure_sbsign_key(self, name):
         if name in self._sbsign_keys:
             return
+        self._seed_crypto_key("seine-sbsign", name)
+        self._sbsign_keys.add(name)
+
+    # Shared by every x509-backed plugin (sbsign, kmod): a miss imports
+    # the spec's 'defaults: vault: <name>' instead of generating fresh,
+    # so independent dev instances agree instead of each randomising.
+    def _seed_crypto_key(self, plugin, name):
         quoted = urllib.parse.quote(name, safe="")
         try:
             self._inner._request(
-                "GET", "/v1/seine-sbsign/keys/%s/cert" % quoted, None,
+                "GET", "/v1/%s/keys/%s/cert" % (plugin, quoted), None,
                 self._token)
+            return
         except VaultNotFound:
+            pass
+        default = self._defaults.get(name)
+        if default is not None:
             sys.stderr.write(
-                "warning: dev vault has no sbsign key '%s'; generating a "
-                "throwaway (local development only, never production)\n" % name)
-            self._inner._request("POST", "/v1/seine-sbsign/keys/%s" % quoted,
-                                 {"generate": {}}, self._token)
-        self._sbsign_keys.add(name)
+                "warning: dev vault has no '%s' key '%s'; importing the "
+                "spec's default (local development only, never "
+                "production)\n" % (plugin, name))
+            body = {"import": default}
+        else:
+            sys.stderr.write(
+                "warning: dev vault has no '%s' key '%s'; generating a "
+                "throwaway (local development only, never production)\n"
+                % (plugin, name))
+            body = {"generate": {}}
+        self._inner._request("POST", "/v1/%s/keys/%s" % (plugin, quoted),
+                             body, self._token)
 
     # Kernel module signing through the plugin. Missing keys are
     # minted on first use like sbsign keys; no timestamp exists to
@@ -452,17 +478,7 @@ class DevVault(VaultProvider):
     def _ensure_kmod_key(self, name):
         if name in self._kmod_keys:
             return
-        quoted = urllib.parse.quote(name, safe="")
-        try:
-            self._inner._request(
-                "GET", "/v1/seine-kmod/keys/%s/cert" % quoted, None,
-                self._token)
-        except VaultNotFound:
-            sys.stderr.write(
-                "warning: dev vault has no kmod key '%s'; generating a "
-                "throwaway (local development only, never production)\n" % name)
-            self._inner._request("POST", "/v1/seine-kmod/keys/%s" % quoted,
-                                 {"generate": {}}, self._token)
+        self._seed_crypto_key("seine-kmod", name)
         self._kmod_keys.add(name)
 
     # SIGTERM never runs atexit handlers; chained so whatever was there

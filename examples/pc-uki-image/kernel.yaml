@@ -5,6 +5,99 @@
 # Only in 'initrd': 'uki' comes after it and reuses the same .deb,
 # so kernel and initrd modules keep the same ABI.
 
+# Fixed dev-only throwaway key/cert, so two independent local builds
+# sign with the same key instead of each generating their own -- the
+# images would otherwise never be byte-identical. A remote vault
+# ignores this and fails closed on a miss instead.
+defaults:
+    vault:
+        pc-uki-kernel-modules:
+            key_pem: |
+                -----BEGIN PRIVATE KEY-----
+                MIIJQQIBADANBgkqhkiG9w0BAQEFAASCCSswggknAgEAAoICAQDAamKOItxf9WAJ
+                86ELCQE506bKZm+GWq+/AhSAbNMe3XzI5i0D6fMx99/bVYHrnmXIP8X2AQmMYyQ9
+                FAJOCXzsnlAIWyxrWFLfji783ZphN9lFbmmUvrbMsoHUZ/SJZXmNbPjQHa5KG9Vi
+                W/jnku+/LoF4/2B2QGHTVuYZUunYq/po0IAXm4Q8sGZYt8y+Boq3Qyr3npGFVqsX
+                sXNz+I1O+GQzoqWr/P7eSSpc+LSEuZ8QsT1u5hqqwXDnZ7GiPrVungCV1QrOMVeL
+                bUnTaoz7J8XM8EAKOtGb3JH5QH8h7JbmIFJRbpfJfiJpUZRdS5LsguykD9ZBM2zR
+                gwBrKVpL4CITXMatBf0rDJsOsJhFY//PvqBWa8wGiT4yAxq3y5bvjeH8fxOrhP/R
+                xO6m0l6n+n6xwPoFw4RECwqPt+CjUjYtola/PBwmWTn7pl1Kcaos7yhChXM+70St
+                hJCAiO7Z/iMf6KL1pZqt5lxk2QFcaBvCXmht4semxhioPZ1Bb7AO8XmF7p7U+zc1
+                Ey01BfnUscD75gKx+7JF4i9zj5Cfw6jwY3ArHW87v03OUfGJ0u/Or72pFXKn0EJ4
+                UK2kqR08pjPlydSJgezWmBNzKn7fOdz2XdT0/DYdsBdevwAf63Fp6/S6kx4YRkly
+                nqiLcTErhP6DvH6xLhIYcu+50tHcfwIDAQABAoICABg2KsGU3GMMtrF54QVI9EkI
+                +19ThWwEBEJGKjtAtk4Xc6i54ecwrIPYm2f3efoie883SxsZ5VAvd3NiDaoxInGJ
+                uCtdAZleS0tLElmKLu9Vvjaw3oMzfkACpDiMfiY9yQ5FLIfPfEth9jdCuG63PAiz
+                +uG1TLeEgWq88AY2uysi9Mb0mXGfBYQ3dCFsu0wb+Z92ybTP1KLRFYVNNGhe2bUa
+                p00iBbO/CXkB/t0lBF4BF2Vb0A2g0bEz1xefIih2uJC7O/qejJYGemwWa+g465V8
+                2zRe9Mf0v8RbfFi/R2AG67P4VDNf9aSKhRz4gXE93bZ6APnh7kVVCbfRQp+5W92h
+                aTSEGkST2JtEI5aHMXqNYna10Mdw8kOAIc3A2/SVPT3gj8VKa2gU1g9iNe/hvL3w
+                /y2DAW9LP4QimVvMBJypUNEwCgGGue5AHvOFx4oDk2UUVuuKX2yZgWPXezReOHyH
+                F3FvLgn7+sWQzIfM5i/eWBYDZBrHzk/8iPWZEgsTaoTNsZqAIxiEsCpnr1/S7beC
+                XFFJnRFEbwUYgPe2qIQ/xa734RbYPvg8+l/ZhOg5ZKdDEN/SX7q1Klqo/PqNRem7
+                vY6GLXTZ/LvSY1Q4XkQyf3NAkpas6g+BU95ApdEoK3cnYIFebD63of6wiz2BWBlW
+                ykWenn7szSk1ic2H3MGJAoIBAQDmU9WFzObYI8F8Ia/yVcFiSKwE/hqaqfRy3c0p
+                km9w5Y0AHjAckX8dij2rqzvHMaTRE9bUVgyOcxmeJJAjrWpV5BoUmq5YZwMMJcB9
+                rA4mCsbinABTPiIZ/BO0+ijVbq2NSv+hTMjZ2ltA40oPTVNsyD/xy6wpQr6OWrS5
+                51zsWsedT4Y6D/LyRtuVOfKY5vbaD5LJPBEVTq4Bonoeu21pZ0XhPsRP9cvOi5TP
+                e4UmvUCocRye05AI9P9Qwi85pI7Z3gBnvgEg6/lLktn6aut4uE3kqkqXyuB6qst1
+                W+otcDiDdAzQ27ReCS+w67E/cAyH9QS+kuDU3FjmaFmOfDB5AoIBAQDV3MWtKrVl
+                hSA3bjBy2uKJzznxjxJl3xyNY0TesdISlZjysrap+t7VoNCz4YUJgtuHAoCVCZm6
+                N+lexhq68faxzSnk1ivn1nLBWJmSDU0mADPwBNnFti095oIZAO9dy05+OZIce2Ag
+                Lnqsu/gdUbpFIiuYrMUUhS1rGugi2bpPiL3se1OjrtpXxJ84Y38zJTMd11NaYtvG
+                HEUdUPnjEM2TlJNhFVTRbDKdnusE/ae4G0B5oL34UcrHSQH/2nYQYubV9yyW8Kyf
+                uVyatjEL3buSto3+FZBYwTdsLFgKa1QuRQNQRK36dcNKxsNG1auIjHczr4jt3jsg
+                +NcyqFeR02a3AoIBADypxeooroAs4q/7+2hbN8TYGR5zgrRLoQuD6Z5SaDGW9A0c
+                5lUP6Sfxmg6V2fe71ooOrJ1eUI5QOGYTgTc0XHZkzo2ws8yqzP2tD8bJwyw32Gwk
+                5F0IV1j6sIIRBSI5tVIqd6uXGqtuPGyZsI7ZMejL0TOxDhYL8z5xG3p/OlUyD7Ma
+                F+NBAh7XlMv36DJnWorSYTnJLUKsZ14c2gcwHEAPqDMMIg5hUZ2D29zNzqMGY3o5
+                2Gzokd4aEQjHLEMFWW5+byLjw05VeGJ0Oh8ffAdem31ncKAMGhWU2GN/ouz2ypus
+                vBdiVl4SE1KIsTVhIJvKZ8Z9zuOhaXS99SB3CxkCggEAbJPWxLEvQWiST7Ig5N8e
+                LqtIFsz1oUTiISJqH8oWBptu+KElPi2BHuKzsu/ndEm8nNH3aDNkmfezAwv/HDSm
+                c+TexTC7P8xPnLwX09/u8EEgHVbJHaj9VTUHjhw8atlCc7FU7iLxTcVrQPF56aDJ
+                ujm7+pqUwHNQ+NTDUJZMEf8xtbNzZmHqtq67y4wwU04qopbk2bnhLLbDnDu1csPg
+                K3I+VQbYdi7Bj+bUGUeS9FTZqiai7ETSd9UoL7bBRFaCLdV9DPEKI1mfm2iuhADC
+                L52Bf6OBEp6ePcxRspCFP6yIHyOPVN6fFQLOt9LZcM0n49TV5zZxvK65yx1OwFmd
+                BwKCAQA4t1BKgWq0EGPGFN0d934XSRadGS6kka/KLM/x7iu+lemQFY4I063KX/9u
+                O/Xpl/vUuTtGE95SQRD6vPU6K3ZA6jTOBe0vsd3TyU19SP3tT2mlclL+QinPyosC
+                wfNmdDe+/X8GpLgJQ7KrOQWnYTcd7JCTBDfy8Sl9F5ZViegsnsCWX5laT8IRH+uB
+                zt1ElJMRQWxjrDg67nSFp6uQHLIcSzIKTqZnjNQW95NHFWYmwj8kD9AipMyiZaeJ
+                k698ILDNoPNy28z1P3LkjuKa4Tvjq6M7gVo17OA9XxoQ+u2awTkSRBeC1atpG5QK
+                an2KUqAHa294k9VZfswkBVmV4H16
+                -----END PRIVATE KEY-----
+            cert_pem: |
+                -----BEGIN CERTIFICATE-----
+                MIIFWjCCA0KgAwIBAgIUJGi2cCpDX8LAJoOgQ1ApAwPqai8wDQYJKoZIhvcNAQEL
+                BQAwMTEvMC0GA1UEAwwmc2VpbmUgcGMtdWtpLWltYWdlIGRldiBrZXkgKHRocm93
+                YXdheSkwIBcNMjYwOTEzMTg0MzE2WhgPMjEyNjA4MjAxODQzMTZaMDExLzAtBgNV
+                BAMMJnNlaW5lIHBjLXVraS1pbWFnZSBkZXYga2V5ICh0aHJvd2F3YXkpMIICIjAN
+                BgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAwGpijiLcX/VgCfOhCwkBOdOmymZv
+                hlqvvwIUgGzTHt18yOYtA+nzMfff21WB655lyD/F9gEJjGMkPRQCTgl87J5QCFss
+                a1hS344u/N2aYTfZRW5plL62zLKB1Gf0iWV5jWz40B2uShvVYlv455Lvvy6BeP9g
+                dkBh01bmGVLp2Kv6aNCAF5uEPLBmWLfMvgaKt0Mq956RhVarF7Fzc/iNTvhkM6Kl
+                q/z+3kkqXPi0hLmfELE9buYaqsFw52exoj61bp4AldUKzjFXi21J02qM+yfFzPBA
+                CjrRm9yR+UB/IeyW5iBSUW6XyX4iaVGUXUuS7ILspA/WQTNs0YMAaylaS+AiE1zG
+                rQX9KwybDrCYRWP/z76gVmvMBok+MgMat8uW743h/H8Tq4T/0cTuptJep/p+scD6
+                BcOERAsKj7fgo1I2LaJWvzwcJlk5+6ZdSnGqLO8oQoVzPu9ErYSQgIju2f4jH+ii
+                9aWareZcZNkBXGgbwl5obeLHpsYYqD2dQW+wDvF5he6e1Ps3NRMtNQX51LHA++YC
+                sfuyReIvc4+Qn8Oo8GNwKx1vO79NzlHxidLvzq+9qRVyp9BCeFCtpKkdPKYz5cnU
+                iYHs1pgTcyp+3znc9l3U9Pw2HbAXXr8AH+txaev0upMeGEZJcp6oi3ExK4T+g7x+
+                sS4SGHLvudLR3H8CAwEAAaNoMGYwHQYDVR0OBBYEFGvSKwwEvLRE2zsDsIr6lNl4
+                qq82MB8GA1UdIwQYMBaAFGvSKwwEvLRE2zsDsIr6lNl4qq82MA8GA1UdEwEB/wQF
+                MAMBAf8wEwYDVR0lBAwwCgYIKwYBBQUHAwMwDQYJKoZIhvcNAQELBQADggIBAFM4
+                0cxYcmTTY9BRFse/vTk83FHjou3RFyfKTkPZB1UrLXpqJGuoWXnDdSvGy7k/xDrn
+                EmWf87dPNFdWM0RjdoK/R8L1UfVeRnQwWrhEjWycwcYl75Cb6QtiQ27dlmW2775w
+                emfMDrDgjktDikAT97KpdGrTovnFuiAp2tpOX6RMlqTElcuo9t2hUYhJ7BMAyfOp
+                IZ9N6vtfc09au8OGBTBW7a6aRVaEAADYFY72DP7gf6Nugu4vaYn6Cf7gEfl6WZqf
+                I9iGUMi/40ZIqKmZSAZKl9v4tOA9dVUUq6V74GQ/ePP2S7qGSrnmKYRXZhplM6QY
+                yQV8fgAJsH0Hd3AGRbRTl6Qv26CoB1DBr1HpvZGbd6gITGupgdOVjDYTbTltQzjq
+                rpTfkk+fQ88wkNdUeqk6QO6WIm2iJ/O5gyvCTAwyVrHeAlL/s1qpdSt3CEUkrssw
+                ZFBdbhzlur3ivwBUVtmGxmW19osxE973War5SHf7dGaQreMlJAoeiAgtRkripV8s
+                aEg1IKfiSSQUIuj/n4xBouBV/PGKYjHYLE8DxRs/MXINQJqKK+xIjX++8rj8jq8Q
+                zSt/JxztyxLuWnwdzvnlZbSihogR4qGNb7Xkb3nmBX1Q5r6F5Sy5wggOQ/Q2sE8i
+                JyjkSNaNJaSp+eaa67iz+aL6/ll+raKC6o7zT9BD
+                -----END CERTIFICATE-----
+
 packages:
     - source: apt://linux
       extends:

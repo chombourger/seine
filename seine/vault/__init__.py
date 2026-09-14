@@ -15,12 +15,14 @@ _SEEN = []
 
 
 # Remote when configured, else a lazy per-process dev instance that
-# starts empty on first use and is removed on exit.
-def for_build():
+# starts empty on first use and is removed on exit. 'defaults' is a
+# spec's 'defaults: vault:' -- fixed dev-only material a miss seeds
+# with; a remote vault ignores it and always fails closed on a miss.
+def for_build(defaults=None):
     if os.environ.get("SEINE_VAULT_ADDR") or os.environ.get("VAULT_ADDR"):
         return OpenBaoProvider()
     from seine.vault.dev import DevVault
-    return DevVault()
+    return DevVault(defaults=defaults)
 
 
 def record_secret(value):
