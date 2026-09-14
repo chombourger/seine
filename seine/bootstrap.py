@@ -194,13 +194,17 @@ class TargetBootstrap(Bootstrap):
     # Split out from create() so a test can read what this would bootstrap
     # from without a podman to build it.
     def dockerfile(self):
+        # Deferred: seine.packages imports seine.bootstrap indirectly, so
+        # importing this at module load time would be circular.
+        from seine.packages import FALLBACK_EPOCH
         return TARGET_BOOTSTRAP_SCRIPT.format(
             self.hostBootstrap.name,
             self.distro["architecture"],
             self.distro["release"],
             " ".join("'%s'" % source for source in
                      apt_sources(self.distro, entries=[base_feed(self.distro)])),
-            "mmdebstrap-{}".format(self.distro["release"]))
+            "mmdebstrap-{}".format(self.distro["release"]),
+            FALLBACK_EPOCH)
 
     def defaultName(self):
         return os.path.join(
@@ -264,12 +268,14 @@ FROM base AS clean-base
 RUN {7}
 """
 
-# Include ca-certificates so this rootfs can already trust
-# an https feed (a snapshot pin).
+# Include ca-certificates so this rootfs can already trust an https
+# feed (a snapshot pin). The marker+find below resets timestamps that
+# dpkg triggers (ldconfig, etc.) stamp with the real build time.
 TARGET_BOOTSTRAP_SCRIPT = """
 FROM {0} AS bootstrap
 RUN --mount=type=cache,target=/var/cache/mmdebstrap,id={4},sharing=locked \
     export container=lxc;                                            \
+    touch /.bootstrap-marker &&                                      \
     mkdir -p rootfs &&                                               \
     mmdebstrap --mode=root --variant=minbase                         \
         --include=zstd,ca-certificates                               \
@@ -283,7 +289,10 @@ RUN --mount=type=cache,target=/var/cache/mmdebstrap,id={4},sharing=locked \
     echo 'APT::Install-Recommends "false";'                          \
         >rootfs/etc/apt/apt.conf.d/00-no-recommends &&               \
     echo 'APT::Install-Suggests "false";'                            \
-        >rootfs/etc/apt/apt.conf.d/00-no-suggests
+        >rootfs/etc/apt/apt.conf.d/00-no-suggests &&                 \
+    find rootfs -newer /.bootstrap-marker                            \
+        -exec touch -h -d @{5} {{}} + ;                              \
+    rm -f /.bootstrap-marker
 FROM scratch AS base
 COPY --from=bootstrap rootfs/ /
 RUN  apt-get clean -qqy
