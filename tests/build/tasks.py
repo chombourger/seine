@@ -465,6 +465,153 @@ class WeightedMultiResourceAdmission(avocado.Test):
         self.assertEqual(max(net_peak), 2)
         self.assertTrue(any(cross_class_overlap))
 
+# A fake clock these tests tick by hand instead of sleeping. Safe to call
+# from inside a task, since the scheduler only reads it between passes.
+def fake_clock():
+    import threading
+    lock = threading.Lock()
+    state = {"now": 0.0}
+    def read():
+        with lock:
+            return state["now"]
+    def tick(by):
+        with lock:
+            state["now"] += by
+    return read, tick
+
+class AgeIsWholeIntervalsWaited(avocado.Test):
+    def test(self):
+        from seine.tasks import AGING_INTERVAL, _age
+
+        self.assertEqual(_age(0, 0), 0)
+        self.assertEqual(_age(AGING_INTERVAL - 1, 0), 0)
+        self.assertEqual(_age(AGING_INTERVAL, 0), 1)
+        self.assertEqual(_age(AGING_INTERVAL * 3 + 5, 0), 3)
+
+class AgingPrefersALongWaitingTaskOverFreshArrivals(avocado.Test):
+    def test(self):
+        from seine.tasks import AGING_INTERVAL, Task, run
+
+        read_clock, tick = fake_clock()
+        step = AGING_INTERVAL // 3 + 1
+
+        order = []
+        def make_small(name):
+            def one():
+                order.append(name)
+                tick(step)
+            return one
+
+        small1 = Task("small1", make_small("small1"), resource="cpu", cost=1)
+        small2 = Task("small2", make_small("small2"), resource="cpu", cost=1,
+                       needs=["small1"])
+        small3 = Task("small3", make_small("small3"), resource="cpu", cost=1,
+                       needs=["small2"])
+        small4 = Task("small4", make_small("small4"), resource="cpu", cost=1,
+                       needs=["small3"])
+        big = Task("big", lambda: order.append("big"), resource="cpu", cost=7)
+
+        # capacity 7: "big" alone fills the class, so it only starts once
+        # none of the "cpu" smalls are running.
+        run([small1, small2, small3, small4, big],
+            jobs=1, resources={"cpu": 7}, clock=read_clock)
+
+        # "big" runs before small4, i.e. before the chain runs out.
+        self.assertIn("big", order)
+        self.assertLess(order.index("big"), order.index("small4"))
+
+class AgingNeverAdmitsATaskAlongsideOthersItWouldNotFitWith(avocado.Test):
+    def test(self):
+        import threading
+        from seine.tasks import AGING_INTERVAL, Task, run
+
+        read_clock, tick = fake_clock()
+        lock = threading.Lock()
+        concurrent_cost = 0
+        big_ran_alone = None
+        big_ran = False
+
+        def make_small(name):
+            def one():
+                nonlocal concurrent_cost
+                with lock:
+                    concurrent_cost += 1
+                # Big jump, so "big" is already older than any fresh small.
+                tick(AGING_INTERVAL * 2)
+                with lock:
+                    concurrent_cost -= 1
+            return one
+
+        def big_body():
+            nonlocal concurrent_cost, big_ran_alone, big_ran
+            with lock:
+                concurrent_cost += 9
+                big_ran_alone = concurrent_cost == 9
+                big_ran = True
+            with lock:
+                concurrent_cost -= 9
+
+        small1 = Task("small1", make_small("small1"), resource="cpu", cost=1)
+        small2 = Task("small2", make_small("small2"), resource="cpu", cost=1,
+                       needs=["small1"])
+        # cost 9 > capacity 8: never fits beside anything, aged or not.
+        big = Task("big", big_body, resource="cpu", cost=9)
+
+        run([small1, small2, big], jobs=1, resources={"cpu": 8}, clock=read_clock)
+
+        self.assertTrue(big_ran)
+        self.assertTrue(big_ran_alone)
+
+class AgingOnOneResourceClassDoesNotDelayAnother(avocado.Test):
+    def test(self):
+        import threading
+        from seine.tasks import AGING_INTERVAL, Task, run
+
+        read_clock, tick = fake_clock()
+        # "net" must start with the very first "cpu" task, not later.
+        started = threading.Barrier(2, timeout=30)
+        def small1_body():
+            started.wait()
+            tick(AGING_INTERVAL // 3 + 1)
+        small1 = Task("small1", small1_body, resource="cpu", cost=1)
+        small2 = Task("small2", lambda: tick(AGING_INTERVAL // 3 + 1),
+                       resource="cpu", cost=1, needs=["small1"])
+        small3 = Task("small3", lambda: tick(AGING_INTERVAL // 3 + 1),
+                       resource="cpu", cost=1, needs=["small2"])
+        big = Task("big", lambda: None, resource="cpu", cost=7)
+        net_task = Task("net", started.wait, resource="net", cost=1)
+
+        run([small1, small2, small3, big, net_task],
+            jobs=1, resources={"cpu": 7, "net": 1}, clock=read_clock)
+
+# Both tasks tie on age (no real time passes), so only declaration
+# order can decide. Repeated a few times to catch a flaky tie-break.
+class EqualAgeKeepsDeclarationOrder(avocado.Test):
+    def test(self):
+        from seine.tasks import Task, run
+
+        for _ in range(5):
+            order = []
+            def make(name):
+                def one():
+                    order.append(name)
+                return one
+            tasks = [Task("first", make("first"), cost=1),
+                     Task("second", make("second"), cost=1)]
+            run(tasks, jobs=1)
+            self.assertEqual(order, ["first", "second"])
+
+# ready_since lives in a dict inside _parallel(), never on the Task
+# itself, so it can't reach a package's identity or cache stamp.
+class AgingAddsNoStateToATask(avocado.Test):
+    def test(self):
+        from seine.tasks import Task, run
+
+        t = task("plain")
+        before = set(vars(t).keys())
+        run([t], jobs=1)
+        self.assertEqual(set(vars(t).keys()), before)
+
 class DependenciesStillWaitWhenRunningInParallel(avocado.Test):
     def test(self):
         from seine.tasks import run
