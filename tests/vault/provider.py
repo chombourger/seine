@@ -39,11 +39,13 @@ def reply_with(payload):
 class RemoteReads(avocado.Test):
     def setUp(self):
         vault.clear_secrets()
-        self.addCleanup(vault.clear_secrets)
         self.env = mock.patch.dict(os.environ, {"SEINE_VAULT_ADDR": "https://vault:8200",
                                                  "SEINE_VAULT_TOKEN": "tok"})
         self.env.start()
-        self.addCleanup(self.env.stop)
+
+    def tearDown(self):
+        vault.clear_secrets()
+        self.env.stop()
 
     def test_a_kv_field_reads(self):
         with reply_with({"data": {"data": {"hash": "secret-value"}}}):
@@ -97,8 +99,11 @@ class TransitMapping(avocado.Test):
         self.env = mock.patch.dict(os.environ, {"SEINE_VAULT_ADDR": "https://vault:8200",
                                                  "SEINE_VAULT_TOKEN": "tok"})
         self.env.start()
-        self.addCleanup(self.env.stop)
         self.calls = []
+
+    def tearDown(self):
+        vault.clear_secrets()
+        self.env.stop()
 
     def serving(self, payloads):
         def fake(request, *args, **kwargs):

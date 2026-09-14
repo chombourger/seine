@@ -78,24 +78,30 @@ class ContainerSetup(avocado.Test):
     def setUp(self):
         if shutil.which("podman") is None:
             self.cancel("podman is needed to start a dev vault")
+        vault.clear_secrets()
         build = storage(self)
-        env = mock.patch.dict(os.environ, {"SEINE_BUILD_DIR": build,
-                                            "SEINE_VAULT_ADDR": "",
-                                            "VAULT_ADDR": ""})
-        env.start()
-        self.addCleanup(env.stop)
-        self.addCleanup(vault.clear_secrets)
+        self._env = mock.patch.dict(os.environ, {"SEINE_BUILD_DIR": build,
+                                                  "SEINE_VAULT_ADDR": "",
+                                                  "VAULT_ADDR": ""})
+        self._env.start()
         self._devs = []
-        self.addCleanup(self._close_all)
+        self._containers = []
+
+    # Explicit teardown: avocado never runs addCleanup cleanups, so
+    # everything external to the process is removed here instead.
+    def tearDown(self):
+        for dev in getattr(self, "_devs", []):
+            dev.close()
+        for name in getattr(self, "_containers", []):
+            forget(name)
+        vault.clear_secrets()
+        if getattr(self, "_env", None) is not None:
+            self._env.stop()
 
     def started(self):
         dev = DevVault()
         self._devs.append(dev)
         return dev
-
-    def _close_all(self):
-        for dev in self._devs:
-            dev.close()
 
 
 class EphemeralLifecycle(ContainerSetup):
@@ -142,7 +148,7 @@ class StaleReaping(ContainerSetup):
             "--label", "seine.vault.owner=%s" % owner,
             "--label", "seine.vault.created=%s" % created,
             DevVault.IMAGE, "sleep", "300"])
-        self.addCleanup(forget, name)
+        self._containers.append(name)
         return name
 
     def test_dead_owner_reaped_live_kept(self):
