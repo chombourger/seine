@@ -16,7 +16,8 @@ class UkiDiskImageIsByteIdenticalAcrossTwoBuilds(ReproducibleDiskImage, avocado.
     """
     :avocado: tags=full,container
     """
-    timeout = 3600
+    # 2 full builds, each rebuilding the kernel + signing its modules.
+    timeout = 5400
     FILENAME = "pc-uki.img"
     RELEASE = "trixie"
 
