@@ -1,4 +1,13 @@
+# Custom vault image: upstream OpenBao plus our signing plugins. Podman
+# builds it; dev instances and tests run it. Plugin sources compile in
+# the golang stage so building the image never needs Go on the host.
+FROM docker.io/library/golang:1.26.6 AS pgp-build
+ENV GOTOOLCHAIN=local
+WORKDIR /src
+COPY seine-pgp/go.mod seine-pgp/go.sum ./
+RUN go mod download
+COPY seine-pgp/ ./
+RUN go build -o /out/seine-pgp.so . && chmod 755 /out/seine-pgp.so
+
 FROM docker.io/openbao/openbao:2.6.2
-# Our plugins (PGP, sbsign, kmod) are copied in here once built; until
-# then this is upstream as-is and dev runs the pinned image directly.
-# COPY plugins/seine-pgp.so plugins/seine-sbsign.so plugins/seine-kmod.so /vault/plugins
+COPY --from=pgp-build /out/seine-pgp.so /vault/plugins/seine-pgp.so
