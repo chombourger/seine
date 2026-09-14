@@ -30,6 +30,7 @@ execute_after_dh_auto_install-arch:
 
 execute_after_dh_auto_build-arch:
 	HOSTARCH=$(DEB_HOST_ARCH) debian/build-oci.py debian/build-oci
+	HOSTARCH=$(DEB_HOST_ARCH) debian/build-vault-image.py debian/build-vault-image
 
 override_dh_python3:
 	dh_python3 --skip-private

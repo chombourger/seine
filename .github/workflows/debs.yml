@@ -38,7 +38,9 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          apt-get install -y --no-install-recommends devscripts equivs podman
+          # nftables: netavark needs 'nft' for the bridge network a real
+          # 'podman build' (go mod download) sets up.
+          apt-get install -y --no-install-recommends devscripts equivs podman nftables
           mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 
       - name: Build ${{ matrix.arch }} packages

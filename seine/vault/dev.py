@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 
 from seine.container import ContainerEngine
+from seine.oci_bundle import import_bundled
 from seine.vault.base import VaultError, VaultNotFound, VaultProvider
 from seine.vault.openbao import OpenBaoProvider
 
@@ -79,21 +80,33 @@ def _remove(name):
         pass
 
 
-# Builds the custom image unless committed sources already match what
-# it was built from; shared by dev instances and the contract tests
-# so both run the same artifact.
+# Builds the custom image (upstream plus our plugins) unless the
+# sources already match, checking first for one bundled by the
+# seine-vault-openbao package. Shared by dev instances and tests.
 def ensure_image():
+    root = os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))
+    dockerfile = os.path.join(root, "vault-image", "Dockerfile")
+    if not os.path.isfile(dockerfile):
+        # Installed package, no source checkout to build or hash from:
+        # trust whatever the bundled tarball imported.
+        import_bundled()
+        ContainerEngine.check_output(["image", "inspect", CUSTOM_IMAGE])
+        return
     try:
         if _image_label() == _sources_digest():
             return
     except (OSError, subprocess.CalledProcessError):
         pass
-    root = os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))))
+    import_bundled()
+    try:
+        if _image_label() == _sources_digest():
+            return
+    except (OSError, subprocess.CalledProcessError):
+        pass
     ContainerEngine.run([
         "build", "--label", "%s=%s" % (SOURCES_LABEL, _sources_digest()),
-        "-t", CUSTOM_IMAGE, "-f",
-        os.path.join(root, "vault-image", "Dockerfile"), root], check=True)
+        "-t", CUSTOM_IMAGE, "-f", dockerfile, root], check=True)
 
 
 def _image_label():
