@@ -343,8 +343,9 @@ A default is parsed whether or not anything uses it: a misspelt setting
 in an architecture file is reported by the file that holds it rather than
 waiting for the one image that rebuilds a kernel.
 
-`defaults` holds package entries only. Playbooks and tests already merge
-by name (see [`playbook`](#playbook)/[`test`](#test)), and the other
+`defaults` holds package entries, `vault` seeds for the dev vault, and
+a `sign-key` fallback for repository signing. Playbooks and tests already
+merge by name (see [`playbook`](#playbook)/[`test`](#test)), and the other
 sections are merged by key.
 
 ### packages
@@ -607,7 +608,14 @@ The key is named however gpg will take it -- a short id, a long one, a
 fingerprint, an email address -- and `SEINE_SIGN_KEY` says the same
 thing. It is not a specification setting on purpose: which key a machine
 signs with belongs to that machine and the person at it, so a
-specification naming one would not build for anybody else.
+specification naming one would not build for anybody else. A spec may
+still suggest one under `defaults: sign-key` -- weakest after
+`--sign-key` and `SEINE_SIGN_KEY`, so the machine always wins.
+
+A `vault:` key signs inside the vault instead, through the `seine-pgp`
+plugin -- the private half never leaves it. A spec can seed a fixed
+dev-only key under `defaults: vault:`, so local builds sign alike; a
+remote vault fails closed on a missing key instead.
 
 Three things are signed. The `.dsc` and the `.changes` carry their
 signature inside them, so it travels with them into the repository and on
@@ -635,7 +643,9 @@ moment ago.
 The keyring stays in the image. The sources.list entry and the pin do
 not: the repository they name is on the machine that did the building.
 What is left is a trust anchor, so an image later pointed at an update
-server signed by the same key can verify it.
+server signed by the same key can verify it. What apt checks is said
+once at the end of a successful build -- a signed repository names its
+key, an unsigned one says `trusted=yes`.
 
 Who signed a package is part of what says whether it needs building
 again. The `.dsc` and the `.changes` are different files when they are

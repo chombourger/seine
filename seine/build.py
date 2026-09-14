@@ -668,6 +668,10 @@ class BuildCmd(Cmd):
     # spec agree instead of each generating their own (vault/dev.py).
     # Merged by name, later files overriding same-named entries.
     #
+    # 'defaults: sign-key' names the repository signing key when neither
+    # --sign-key nor SEINE_SIGN_KEY does -- weakest of the three, so the
+    # machine always wins over the spec. A later file overrides.
+    #
     # direction: most-specific file wins (docs/merging.md).
     def _merge_defaults(self, spec):
         if "defaults" not in spec:
@@ -676,9 +680,9 @@ class BuildCmd(Cmd):
         if type(defaults) != type({}):
             raise ValueError("'defaults' shall be a dictionary!")
         for setting in defaults:
-            if setting not in ("packages", "vault"):
+            if setting not in ("packages", "vault", "sign-key"):
                 raise ValueError(
-                    "'defaults' holds package entries or 'vault', not '%s'"
+                    "'defaults' holds package entries, 'vault' or 'sign-key', not '%s'"
                     % setting)
 
         merged = self.spec.setdefault("defaults", {}).setdefault("packages", [])
@@ -695,6 +699,12 @@ class BuildCmd(Cmd):
             if type(vault) != type({}):
                 raise ValueError("'defaults: vault' shall be a dictionary")
             self.spec["defaults"].setdefault("vault", {}).update(vault)
+
+        sign_key = defaults.get("sign-key")
+        if sign_key is not None:
+            if type(sign_key) != type(""):
+                raise ValueError("'defaults: sign-key' shall be a key name")
+            self.spec["defaults"]["sign-key"] = sign_key
 
     # As _merge_package(), with the two files the other way round: what the
     # later one says replaces what the earlier one did.

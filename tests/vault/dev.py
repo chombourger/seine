@@ -363,6 +363,24 @@ class PgpKeyMint(avocado.Test):
         self.assertEqual([call for call in calls if call[0] == "POST"], [])
         self.assertEqual(dev._pgp_keys["repo"], 0)
 
+    # A spec's 'defaults: vault: repo:' is imported instead of
+    # generated, so independent dev instances sign with the same key.
+    def test_specs_own_default_is_imported_not_generated(self):
+        dev, calls = self.minted()
+        dev._defaults = {"repo": {"private_key": "-- private --"}}
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(dev.pgp_clearsign("repo", b"data", self.EPOCH), b"signed")
+        self.assertIn("importing", said.getvalue())
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0][1].endswith("/v1/seine-pgp/keys/repo"))
+        self.assertEqual(posts[0][2], {"import": {"private_key": "-- private --"}})
+        # Fixed throwaways predate the epoch, so it signs at the epoch,
+        # not at key birth like a freshly minted key would.
+        self.assertEqual(dev._pgp_keys["repo"], 0)
+        dev._inner.pgp_clearsign.assert_called_once_with("repo", b"data", self.EPOCH)
+
 
 class SbsignKeyMint(avocado.Test):
     EPOCH = 1767225600

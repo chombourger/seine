@@ -29,6 +29,18 @@ from seine.sbuild         import BuilderImage
 from seine.tasks          import Task
 from seine.container import ContainerEngine
 
+# Says what apt checks, as (release, fingerprint, origin) entries --
+# fingerprint None when unsigned. Shared by Image.build() and
+# multiconfig.run(), so every build says it once, last, on success.
+def print_trust_recap(entries):
+    for release, fingerprint, origin in entries:
+        if fingerprint is None:
+            print("repository trust: %s is unsigned, read with "
+                  "trusted=yes" % release)
+        else:
+            print("repository trust: %s is signed by '%s' (%s), "
+                  "checked with signed-by" % (release, fingerprint, origin))
+
 class Image:
     def __init__(self, partitionHandler, options=None):
         self.partitionHandler = partitionHandler
@@ -327,6 +339,31 @@ class Image:
     def _vault_defaults(self):
         return (self.spec.get("defaults") or {}).get("vault") or {}
 
+    # The spec's own fallback signing key, weakest after --sign-key and
+    # SEINE_SIGN_KEY -- see signing.signer().
+    def _sign_key_default(self):
+        return (self.spec.get("defaults") or {}).get("sign-key")
+
+    # What apt checks for the repositories built here: (release,
+    # fingerprint, origin), fingerprint None when unsigned. Every
+    # Builder answers for its own release; duplicates collapse.
+    def _trust_entries(self):
+        entries = []
+        images = [self] + [build.image for build in
+                           (self.subbuilds or {}).values()
+                           if getattr(build, "image", None) is not None]
+        for image in images:
+            builder = getattr(image, "_builder", None)
+            entry = builder.trust_entry() if builder is not None else None
+            if entry is not None and entry not in entries:
+                entries.append(entry)
+        return entries
+
+    # Said once at the very end of a successful build -- so an unsigned
+    # repository stays a visible choice too.
+    def _recap_trust(self):
+        print_trust_recap(self._trust_entries())
+
     # Resolves/fetches/indexes 'vendor:' before 'packages:' needs it.
     # Skipped when there's nothing to do, or a vendor repo already
     # exists for this release. Narrowed to this build's own release
@@ -376,7 +413,8 @@ class Image:
         vendor_task = self._vendor_task(distro)
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options),
-            redactions(self.spec), vault_defaults=self._vault_defaults())
+            redactions(self.spec), vault_defaults=self._vault_defaults(),
+            sign_key_default=self._sign_key_default())
         self._builder = builder
         # 'bootstrap-host' waits on 'vendor' only when there is one:
         # its apt-get would otherwise look for a repo not built yet.
@@ -544,7 +582,8 @@ class Image:
 
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options),
-            redactions(self.spec), vault_defaults=self._vault_defaults())
+            redactions(self.spec), vault_defaults=self._vault_defaults(),
+            sign_key_default=self._sign_key_default())
         current = builder.current(self.packages)
         if len(current) > 0:
             print("\nalready built, and not built again:")
@@ -658,6 +697,7 @@ class Image:
             said = cache_index.summary()
             if said is not None:
                 print(said)
+            self._recap_trust()
         except:
             if self._image is not None:
                 os.unlink(self._image)

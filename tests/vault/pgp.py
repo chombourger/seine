@@ -38,8 +38,10 @@ class GpgChecks:
 
     def _gpg_home(self, public_armor):
         home = self._remember(tempfile.mkdtemp(prefix="seine-pgp-verify-"))
+        if isinstance(public_armor, str):
+            public_armor = public_armor.encode()
         subprocess.run(["gpg", "--batch", "--yes", "--homedir", home,
-                        "--import"], input=public_armor.encode(),
+                        "--import"], input=public_armor,
                        capture_output=True, check=True)
         return home
 
@@ -267,12 +269,18 @@ class VaultSigning(avocado.Test, GpgChecks):
         signer.sign_release(release)
         keyring = os.path.join(where, signer.keyring())
         signer.export(keyring)
-        home = self._gpg_home(open(keyring).read())
+        home = self._gpg_home(open(keyring, "rb").read())
         self._gpg_is_happy(home, "--verify",
                             os.path.join(where, "Release.gpg"), release)
         self._gpgv_is_happy(home, os.path.join(where, "Release.gpg"), release)
         self._gpg_is_happy(home, "--verify", os.path.join(where, "InRelease"))
         self._gpgv_is_happy(home, os.path.join(where, "InRelease"))
+        # The exported keyring as apt reads it: gpgv straight at the
+        # file, no conversion -- armor fails here the way apt did.
+        raw = subprocess.run(
+            ["gpgv", "--keyring", keyring, os.path.join(where, "InRelease")],
+            capture_output=True, text=True)
+        self.assertEqual(raw.returncode, 0, raw.stderr)
         return where
 
     def test_release_signs_end_to_end(self):
@@ -317,7 +325,7 @@ class VaultSigning(avocado.Test, GpgChecks):
         signer.clearsign(changes)
         keyring = os.path.join(where, "parity.gpg")
         signer.export(keyring)
-        home = self._gpg_home(open(keyring).read())
+        home = self._gpg_home(open(keyring, "rb").read())
         self._gpg_is_happy(home, "--verify", changes)
 
 
@@ -328,7 +336,37 @@ class SignerSelection(avocado.Test):
             signer = signing.signer({"sign_key": "vault:repo"})
             self.assertIsInstance(signer, VaultSigner)
             self.assertEqual(signer.name, "repo")
-            built.assert_called_once_with()
+            built.assert_called_once_with(None)
+
+    def test_spec_defaults_reach_the_vault(self):
+        provider = mock.Mock()
+        defaults = {"repo": {"private_key": "-- private --"}}
+        with mock.patch.object(vault, "for_build", return_value=provider) as built:
+            signer = signing.signer({"sign_key": "vault:repo"}, defaults)
+            self.assertIsInstance(signer, VaultSigner)
+            built.assert_called_once_with(defaults)
+
+    # The machine wins over the spec: option, then environment, then
+    # the spec's own default, then nothing.
+    def test_the_machine_wins_over_the_spec(self):
+        provider = mock.Mock()
+        with mock.patch.object(vault, "for_build", return_value=provider):
+            self.assertEqual(
+                signing.signer({"sign_key": "vault:opt"}, {}, "vault:default").name,
+                "opt")
+        with mock.patch.dict(os.environ, {"SEINE_SIGN_KEY": "vault:env"}):
+            with mock.patch.object(vault, "for_build", return_value=provider):
+                self.assertEqual(
+                    signing.signer({}, {}, "vault:default").name, "env")
+                self.assertEqual(
+                    signing.signer({"sign_key": "vault:opt"}, {}, "vault:default").name,
+                    "opt")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(vault, "for_build", return_value=provider):
+                self.assertEqual(
+                    signing.signer({}, {}, "vault:default").name, "default")
+                self.assertIsNone(signing.signer({}, {}, None))
+                self.assertIsNone(signing.signer({}, {}, ""))
 
     def test_plain_keys_stay_on_host_gpg(self):
         with mock.patch.object(vault, "for_build") as built:
@@ -341,6 +379,29 @@ class SignerSelection(avocado.Test):
             VaultSigner(mock.Mock(), "no/slashes", 0)
         with self.assertRaises(ValueError):
             VaultSigner(mock.Mock(), "", 0)
+
+    # apt reads the exported keyring with gpgv, which takes binary
+    # like host gpg's --export -- armor fails the way apt did.
+    def test_export_dearmors_the_vault_answer(self):
+        import base64
+        packets = b"\x99\x04\x00packet-bytes"
+        armor = ("-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
+                 "Version: test\n\n%s\n=AAAA\n"
+                 "-----END PGP PUBLIC KEY BLOCK-----\n"
+                 % base64.b64encode(packets).decode())
+        provider = mock.Mock()
+        provider.pgp_public_key.return_value = armor
+        path = os.path.join(self.workdir, "repo.gpg")
+        VaultSigner(provider, "repo", 0).export(path)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), packets)
+
+    def test_export_refuses_garbage(self):
+        provider = mock.Mock()
+        provider.pgp_public_key.return_value = "not a key"
+        with self.assertRaises(ValueError):
+            VaultSigner(provider, "repo", 0).export(
+                os.path.join(self.workdir, "repo.gpg"))
 
 
 if __name__ == "__main__":

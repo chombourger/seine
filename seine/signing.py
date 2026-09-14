@@ -1,11 +1,32 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
+import binascii
 import os
 import re
 import subprocess
 
 from seine.vault.base import VaultError
+
+# ASCII armor to packets: apt reads the exported keyring with gpgv,
+# which takes binary like host gpg's --export, while the vault answers
+# armored.
+def _dearmor(text):
+    lines = (text or "").splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith("-----BEGIN "))
+        end = next(i for i, line in enumerate(lines)
+                   if line.startswith("-----END "))
+    except StopIteration:
+        raise ValueError("not an armored key")
+    body = "".join(line for line in lines[start + 1:end]
+                   if line and ":" not in line and not line.startswith("="))
+    try:
+        return base64.b64decode(body, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError("not an armored key: %s" % e) from e
 
 # Signs build output using the host's gpg and agent, never inside a
 # container. The builder container is too privileged to trust with the
@@ -89,15 +110,17 @@ class Signer:
             said = (e.stderr or b"").decode(errors="replace").strip()
             raise ValueError("%s\n%s" % (complaint, said))
 
-# Builds the signer for this build, or None. Key comes from options or
-# SEINE_SIGN_KEY, not the spec, since who signs is per-machine. A key
-# starting with 'vault:' names a vault PGP key instead of a gpg one.
-def signer(options):
-    key = options.get("sign_key") or os.environ.get("SEINE_SIGN_KEY")
+# Builds the signer for this build, or None. Key comes from options,
+# then SEINE_SIGN_KEY, then the spec's own default (weakest -- the
+# spec only suggests, the machine always wins). 'vault:' names a
+# vault PGP key instead of a gpg one.
+def signer(options, vault_defaults=None, sign_key_default=None):
+    key = options.get("sign_key") or os.environ.get("SEINE_SIGN_KEY") \
+        or sign_key_default
     if key is None or len(key) == 0:
         return None
     if key.startswith("vault:"):
-        return vault_signer(options, key[len("vault:"):])
+        return vault_signer(options, key[len("vault:"):], vault_defaults)
     return Signer(key)
 
 # Signer for the vendor repository, kept separate from signer() so
@@ -143,8 +166,13 @@ class VaultSigner:
         except VaultError as e:
             raise ValueError(
                 "cannot export the public key for '%s': %s" % (self.name, e)) from e
-        with open(path, "w") as f:
-            f.write(public)
+        try:
+            packets = _dearmor(public)
+        except ValueError as e:
+            raise ValueError(
+                "cannot export the public key for '%s': %s" % (self.name, e)) from e
+        with open(path, "wb") as f:
+            f.write(packets)
 
     def clearsign(self, path):
         signed = "%s.seine-signing" % path
@@ -180,9 +208,9 @@ class VaultSigner:
             f.write(combined)
 
 
-def vault_signer(options, name):
+def vault_signer(options, name, vault_defaults=None):
     from seine import vault as _vault
-    return VaultSigner(_vault.for_build(), name, _epoch(options))
+    return VaultSigner(_vault.for_build(vault_defaults), name, _epoch(options))
 
 
 # Newest spec file mtime, like Image._epoch: editing the spec still
