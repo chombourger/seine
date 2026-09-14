@@ -471,7 +471,7 @@ class Builder:
         self.builderImage = builderImage
         self.distro = distro
         self.options = options
-        self._redact_patterns = redact_patterns or []
+        self._redact_patterns = redact_patterns or ([], [])
         # The ABI each rebuilt kernel gave itself, by package name --
         # what a module built against it must be named for.
         self.abinames = {}

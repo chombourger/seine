@@ -101,10 +101,29 @@ which is printed as:
     user: name=root password=<redacted:45db4289>
 ```
 
-Each entry is a regular expression, and every string in the specification is
-matched against all of them. What matches is replaced, not the value holding
-it, so a pattern can name the secret inside a larger string -- the password
-of an ansible task whose other arguments are worth reading.
+Each entry is either a regular expression (a plain string, as above) or a
+path (a mapping with one `path` key), naming a location instead of a
+pattern:
+
+```
+redact:
+    - path: mail.smtp_password
+
+mail:
+    smtp_password: hunter2
+    smtp_host: mail.example.com
+```
+
+A pattern is matched against every string in the specification, and what
+matches is replaced, not the value holding it, so it can name the secret
+inside a larger string -- the password of an ansible task whose other
+arguments are worth reading. A path instead names a dotted location
+(`a.b.c` reaching `spec["a"]["b"]["c"]`) and takes out everything under it
+whole -- every value below that point, whatever the shape, keys left alone.
+Reach for a path when the secret is a whole field rather than a fragment of
+one -- `mail.smtp_password` above hides the password but leaves
+`smtp_host` next to it readable. Either way it prints the same way, as
+above.
 
 The digest is of the value that was taken out. A plan compares one
 specification against another, and both are printed this way, so a constant
@@ -116,6 +135,11 @@ is, so the fragment holding a secret is the fragment that declares it, and
 declaring it there covers every image built from that fragment. It only
 governs what is printed: the build itself still sees the value, and so does
 the target.
+
+`defaults: vault:` (fixed dev-only key/secret material, see below) is
+redacted under its own path whether or not a spec's `redact:` section asks
+for it -- a spec need not remember to protect what it already marked as a
+secret by putting it there.
 
 ### distribution
 
