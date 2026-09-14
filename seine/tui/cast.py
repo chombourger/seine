@@ -123,6 +123,7 @@ class CastPlayer:
                          "test": entry.get("test"),
                          "keyword": entry.get("keyword") or "?",
                          "status": entry.get("status"),
+                         "args": list(entry.get("args") or []),
                          "artifact": artifact})
         rows.sort(key=lambda row: row["at"])
         self.test_name = mine
@@ -139,6 +140,14 @@ class CastPlayer:
             else:
                 break
         return index
+
+    # The entry playing now, or None before the first one -- what
+    # the arguments pane shows.
+    def current(self):
+        index = self.current_index()
+        if 0 <= index < len(self.timeline):
+            return self.timeline[index]
+        return None
 
     # Same green check / red cross marks as the Test screen, so a
     # failure reads the same here as where it ran.
@@ -160,6 +169,23 @@ class CastPlayer:
                 from rich.style import Style
                 text.append(" %s" % row["artifact"], style=Style(dim=True))
             text.append("\n")
+        return text
+
+    # Dimmed note (not a blank) when the run predates argument
+    # capture, so it doesn't read as broken.
+    def render_args(self):
+        from rich.style import Style
+        from rich.text import Text
+        text = Text()
+        row = self.current()
+        if row is None:
+            return text
+        text.append("%s\n" % row["keyword"])
+        args = row.get("args") or []
+        if not args:
+            text.append("(no recorded arguments)", style=Style(dim=True))
+        for arg in args:
+            text.append("  %s\n" % arg)
         return text
 
     # Advances the clock by dt seconds of wall time (times the current
