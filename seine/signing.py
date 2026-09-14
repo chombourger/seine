@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import re
 import subprocess
+
+from seine.vault.base import VaultError
 
 # Signs build output using the host's gpg and agent, never inside a
 # container. The builder container is too privileged to trust with the
@@ -87,11 +90,14 @@ class Signer:
             raise ValueError("%s\n%s" % (complaint, said))
 
 # Builds the signer for this build, or None. Key comes from options or
-# SEINE_SIGN_KEY, not the spec, since who signs is per-machine.
+# SEINE_SIGN_KEY, not the spec, since who signs is per-machine. A key
+# starting with 'vault:' names a vault PGP key instead of a gpg one.
 def signer(options):
     key = options.get("sign_key") or os.environ.get("SEINE_SIGN_KEY")
     if key is None or len(key) == 0:
         return None
+    if key.startswith("vault:"):
+        return vault_signer(options, key[len("vault:"):])
     return Signer(key)
 
 # Signer for the vendor repository, kept separate from signer() so
@@ -100,4 +106,91 @@ def vendor_signer(options):
     key = options.get("vendor_sign_key") or os.environ.get("SEINE_VENDOR_SIGN_KEY")
     if key is None or len(key) == 0:
         return None
+    if key.startswith("vault:"):
+        return vault_signer(options, key[len("vault:"):])
     return Signer(key)
+
+
+# Same shape as Signer, but the private key never leaves the vault:
+# bytes go up, armor comes back. Timestamps are pinned to the build
+# epoch rather than now, so rebuilds stay byte-identical.
+class VaultSigner:
+    def __init__(self, provider, name, epoch):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name or ""):
+            raise ValueError("vault pgp key shall name a key, got '%s'" % name)
+        self.provider = provider
+        self.name = name
+        self.epoch = epoch
+        self._fingerprint = None
+
+    def fingerprint(self):
+        if self._fingerprint is not None:
+            return self._fingerprint
+        try:
+            self._fingerprint = self.provider.pgp_fingerprint(self.name)
+        except VaultError as e:
+            raise ValueError("no vault pgp key '%s': %s" % (self.name, e)) from e
+        return self._fingerprint
+
+    # Named after the vault key rather than a key id: there is no gpg
+    # keyring here to take an id from.
+    def keyring(self):
+        return "%s.gpg" % self.name
+
+    def export(self, path):
+        try:
+            public = self.provider.pgp_public_key(self.name)
+        except VaultError as e:
+            raise ValueError(
+                "cannot export the public key for '%s': %s" % (self.name, e)) from e
+        with open(path, "w") as f:
+            f.write(public)
+
+    def clearsign(self, path):
+        signed = "%s.seine-signing" % path
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            try:
+                result = self.provider.pgp_clearsign(self.name, data, self.epoch)
+            except VaultError as e:
+                raise ValueError(
+                    "cannot sign '%s': %s" % (os.path.basename(path), e)) from e
+            with open(signed, "wb") as f:
+                f.write(result)
+            os.replace(signed, path)
+        except:
+            if os.path.isfile(signed):
+                os.unlink(signed)
+            raise
+
+    def sign_release(self, release):
+        where = os.path.dirname(release)
+        with open(release, "rb") as f:
+            data = f.read()
+        try:
+            detached = self.provider.pgp_detach_sign(self.name, data, self.epoch)
+            combined = self.provider.pgp_clearsign(self.name, data, self.epoch)
+        except VaultError as e:
+            raise ValueError(
+                "cannot sign the repository index: %s" % e) from e
+        with open(os.path.join(where, "Release.gpg"), "wb") as f:
+            f.write(detached)
+        with open(os.path.join(where, "InRelease"), "wb") as f:
+            f.write(combined)
+
+
+def vault_signer(options, name):
+    from seine import vault as _vault
+    return VaultSigner(_vault.for_build(), name, _epoch(options))
+
+
+# Newest spec file mtime, like Image._epoch: editing the spec still
+# moves the signatures. Falls back the same way without files.
+def _epoch(options):
+    files = (options or {}).get("files") or []
+    mtimes = [os.path.getmtime(f) for f in files if os.path.isfile(f)]
+    if mtimes:
+        return int(max(mtimes))
+    from seine import packages
+    return packages.FALLBACK_EPOCH

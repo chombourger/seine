@@ -12,36 +12,75 @@ import time
 import urllib.error
 import urllib.request
 
+from unittest import mock
+
 path_to_self = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
+from seine import signing
+from seine import vault
 from seine.container import ContainerEngine
+from seine.signing import Signer, VaultSigner
+from seine.vault.dev import CUSTOM_IMAGE, DevVault, ensure_image
 
-IMAGE = "localhost/seine-vault"
 TOKEN = "pgp-contract-token"
-
-_BUILT = False
-
-
-# The image under test, built once per test process from the committed
-# sources (Dockerfile compiles the plugin, so no Go is needed here).
-def image():
-    global _BUILT
-    if _BUILT:
-        return
-    ContainerEngine.run([
-        "build", "-t", IMAGE, "-f",
-        os.path.join(path_to_sources, "vault-image", "Dockerfile"),
-        path_to_sources], check=True)
-    _BUILT = True
 
 
 def forget(name):
     ContainerEngine.run(["container", "rm", "-f", name], check=False)
 
 
-class PgpContract(avocado.Test):
+class GpgChecks:
+    def _remember(self, home):
+        self._tmpdirs.append(home)
+        return home
+
+    def _gpg_home(self, public_armor):
+        home = self._remember(tempfile.mkdtemp(prefix="seine-pgp-verify-"))
+        subprocess.run(["gpg", "--batch", "--yes", "--homedir", home,
+                        "--import"], input=public_armor.encode(),
+                       capture_output=True, check=True)
+        return home
+
+    def _keyring(self, home):
+        exported = subprocess.run(
+            ["gpg", "--batch", "--yes", "--homedir", home, "--export"],
+            capture_output=True, check=True)
+        ringpath = os.path.join(home, "ring.gpg")
+        with open(ringpath, "wb") as f:
+            f.write(exported.stdout)
+        return ringpath
+
+    def _gpg_is_happy(self, home, *args):
+        verified = subprocess.run(
+            ["gpg", "--batch", "--yes", "--homedir", home] + list(args),
+            capture_output=True, text=True)
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    # What apt itself will check: gpgv over a signed-by keyring, exit
+    # zero, not just a Good line buried in a failure.
+    def _gpgv_is_happy(self, home, *args):
+        verified = subprocess.run(
+            ["gpgv", "--keyring", self._keyring(home)] + list(args),
+            capture_output=True, text=True)
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def _gpg_keygen(self):
+        home = self._remember(tempfile.mkdtemp(prefix="seine-pgp-gen-"))
+        params = ("Key-Type: RSA\nKey-Length: 3072\n"
+                  "Name-Real: import me\nName-Email: import@example.invalid\n"
+                  "Expire-Date: 0\n%no-protection\n%commit\n")
+        subprocess.run(["gpg", "--batch", "--yes", "--pinentry-mode",
+                        "loopback", "--homedir", home, "--gen-key"],
+                       input=params.encode(), capture_output=True, check=True)
+        exported = subprocess.run(
+            ["gpg", "--batch", "--yes", "--homedir", home, "--armor",
+             "--export-secret-keys", "import me"],
+            capture_output=True, check=True)
+        return exported.stdout.decode()
+
+class PgpContract(avocado.Test, GpgChecks):
     """
     :avocado: tags=container
     """
@@ -52,7 +91,7 @@ class PgpContract(avocado.Test):
             self.cancel("podman is needed to boot the vault image")
         if shutil.which("gpg") is None or shutil.which("gpgv") is None:
             self.cancel("gpg is needed to verify plugin signatures")
-        image()
+        ensure_image()
         self.cname = None
         self._tmpdirs = []
         self.cname = "seine-pgp-test-%s" % os.urandom(4).hex()
@@ -61,10 +100,10 @@ class PgpContract(avocado.Test):
             "-p", "127.0.0.1::8200",
             "-e", 'BAO_LOCAL_CONFIG={"plugin_directory":"/vault/plugins"}',
             "-e", "BAO_DEV_ROOT_TOKEN_ID=" + TOKEN,
-            IMAGE, "server", "-dev", "-dev-listen-address=0.0.0.0:8200"])
+            CUSTOM_IMAGE, "server", "-dev", "-dev-listen-address=0.0.0.0:8200"])
         self.addr = self._wait_ready()
         sha = ContainerEngine.check_output(
-            ["run", "--rm", IMAGE, "sha256sum",
+            ["run", "--rm", CUSTOM_IMAGE, "sha256sum",
              "/vault/plugins/seine-pgp.so"]).decode().split()[0]
         self._api("PUT", "/v1/sys/plugins/catalog/secret/seine-pgp",
                   {"sha_256": sha, "command": "seine-pgp.so"})
@@ -111,52 +150,9 @@ class PgpContract(avocado.Test):
         name = "signed_data" if mode == "clearsign" else "signature"
         return base64.b64decode(payload[name])
 
-    def _gpg_home(self, public_armor):
-        home = tempfile.mkdtemp(prefix="seine-pgp-verify-")
-        self._tmpdirs.append(home)
-        subprocess.run(["gpg", "--batch", "--yes", "--homedir", home,
-                        "--import"], input=public_armor.encode(),
-                       capture_output=True, check=True)
-        return home
 
-    def _keyring(self, home):
-        exported = subprocess.run(
-            ["gpg", "--batch", "--yes", "--homedir", home, "--export"],
-            capture_output=True, check=True)
-        ringpath = os.path.join(home, "ring.gpg")
-        with open(ringpath, "wb") as f:
-            f.write(exported.stdout)
-        return ringpath
-
-    def _gpg_is_happy(self, home, *args):
-        verified = subprocess.run(
-            ["gpg", "--batch", "--yes", "--homedir", home] + list(args),
-            capture_output=True, text=True)
-        self.assertEqual(verified.returncode, 0, verified.stderr)
-
-    # What apt itself will check: gpgv over a signed-by keyring, exit
-    # zero, not just a Good line buried in a failure.
-    def _gpgv_is_happy(self, home, *args):
-        verified = subprocess.run(
-            ["gpgv", "--keyring", self._keyring(home)] + list(args),
-            capture_output=True, text=True)
-        self.assertEqual(verified.returncode, 0, verified.stderr)
-
-    def _gpg_keygen(self):
-        home = tempfile.mkdtemp(prefix="seine-pgp-gen-")
-        self._tmpdirs.append(home)
-        params = ("Key-Type: RSA\nKey-Length: 3072\n"
-                  "Name-Real: import me\nName-Email: import@example.invalid\n"
-                  "Expire-Date: 0\n%no-protection\n%commit\n")
-        subprocess.run(["gpg", "--batch", "--yes", "--pinentry-mode",
-                        "loopback", "--homedir", home, "--gen-key"],
-                       input=params.encode(), capture_output=True, check=True)
-        exported = subprocess.run(
-            ["gpg", "--batch", "--yes", "--homedir", home, "--armor",
-             "--export-secret-keys", "import me"],
-            capture_output=True, check=True)
-        return exported.stdout.decode()
-
+# Host-gpg checks shared by the contract and the signing tests: temp
+# homes are tracked per test for teardown.
     def test_unknown_key_is_404(self):
         for path in ("keys/nope/clearsign", "keys/nope/detach-sign"):
             with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -171,8 +167,10 @@ class PgpContract(avocado.Test):
     def test_generate_sign_and_verify(self):
         created = self._api("POST", "/v1/seine-pgp/keys/repo", {"generate": {}})["data"]
         self.assertIn("fingerprint", created)
-        home = self._gpg_home(self._api(
-            "GET", "/v1/seine-pgp/keys/repo/public")["data"]["public_key"])
+        public = self._api(
+            "GET", "/v1/seine-pgp/keys/repo/public")["data"]
+        self.assertEqual(public["fingerprint"], created["fingerprint"])
+        home = self._gpg_home(public["public_key"])
         data = b"Release: bookworm main\nDate: Thu, 01 Jan 2026 00:00:00 UTC\n"
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         signed = self._sign("repo", "clearsign", data, stamp)
@@ -232,6 +230,117 @@ class PgpContract(avocado.Test):
                       {"data_base64": "aGk=",
                        "timestamp": "2020-01-01T00:00:00Z"})
         self.assertEqual(caught.exception.code, 400)
+
+
+class VaultSigning(avocado.Test, GpgChecks):
+    """
+    :avocado: tags=container
+    """
+    timeout = 900
+
+    def setUp(self):
+        if shutil.which("podman") is None:
+            self.cancel("podman is needed to start a dev vault")
+        if shutil.which("gpg") is None or shutil.which("gpgv") is None:
+            self.cancel("gpg is needed to verify vault signatures")
+        self._tmpdirs = []
+        self._env = mock.patch.dict(os.environ, {"SEINE_VAULT_ADDR": "",
+                                                  "VAULT_ADDR": ""})
+        self._env.start()
+        self._devs = []
+
+    def tearDown(self):
+        for dev in getattr(self, "_devs", []):
+            dev.close()
+        for path in getattr(self, "_tmpdirs", []):
+            shutil.rmtree(path, ignore_errors=True)
+        vault.clear_secrets()
+        if getattr(self, "_env", None) is not None:
+            self._env.stop()
+
+    def signed_release(self, dev, key, epoch):
+        signer = VaultSigner(dev, key, epoch)
+        where = self._remember(tempfile.mkdtemp(prefix="seine-pgp-repo-"))
+        release = os.path.join(where, "Release")
+        with open(release, "wb") as f:
+            f.write(b"Suite: bookworm\nDate: Thu, 01 Jan 2026 00:00:00 UTC\n")
+        signer.sign_release(release)
+        keyring = os.path.join(where, signer.keyring())
+        signer.export(keyring)
+        home = self._gpg_home(open(keyring).read())
+        self._gpg_is_happy(home, "--verify",
+                            os.path.join(where, "Release.gpg"), release)
+        self._gpgv_is_happy(home, os.path.join(where, "Release.gpg"), release)
+        self._gpg_is_happy(home, "--verify", os.path.join(where, "InRelease"))
+        self._gpgv_is_happy(home, os.path.join(where, "InRelease"))
+        return where
+
+    def test_release_signs_end_to_end(self):
+        dev = DevVault()
+        self._devs.append(dev)
+        epoch = int(time.time()) + 7200
+        where = self.signed_release(dev, "parity", epoch)
+        self.assertTrue(os.path.isfile(os.path.join(where, "parity.gpg")))
+
+    def test_same_epoch_signs_identically(self):
+        dev = DevVault()
+        self._devs.append(dev)
+        epoch = int(time.time()) + 7200
+        first = self.signed_release(dev, "parity", epoch)
+        second = self.signed_release(dev, "parity", epoch)
+        for name in ("Release.gpg", "InRelease"):
+            with open(os.path.join(first, name), "rb") as f:
+                before = f.read()
+            with open(os.path.join(second, name), "rb") as f:
+                self.assertEqual(f.read(), before)
+
+    def test_epoch_is_respected(self):
+        dev = DevVault()
+        self._devs.append(dev)
+        epoch = int(time.time()) + 7200
+        first = self.signed_release(dev, "parity", epoch)
+        second = self.signed_release(dev, "parity", epoch + 3600)
+        with open(os.path.join(first, "InRelease"), "rb") as f:
+            before = f.read()
+        with open(os.path.join(second, "InRelease"), "rb") as f:
+            self.assertNotEqual(f.read(), before)
+
+    def test_clearsign_roundtrip(self):
+        dev = DevVault()
+        self._devs.append(dev)
+        epoch = int(time.time()) + 7200
+        signer = VaultSigner(dev, "parity", epoch)
+        where = self._remember(tempfile.mkdtemp(prefix="seine-pgp-changes-"))
+        changes = os.path.join(where, "pkg_1.2_amd64.changes")
+        with open(changes, "wb") as f:
+            f.write(b"Format: 1.8\nDate: Thu, 01 Jan 2026 00:00:00 UTC\n")
+        signer.clearsign(changes)
+        keyring = os.path.join(where, "parity.gpg")
+        signer.export(keyring)
+        home = self._gpg_home(open(keyring).read())
+        self._gpg_is_happy(home, "--verify", changes)
+
+
+class SignerSelection(avocado.Test):
+    def test_vault_prefix_selects_the_vault(self):
+        provider = mock.Mock()
+        with mock.patch.object(vault, "for_build", return_value=provider) as built:
+            signer = signing.signer({"sign_key": "vault:repo"})
+            self.assertIsInstance(signer, VaultSigner)
+            self.assertEqual(signer.name, "repo")
+            built.assert_called_once_with()
+
+    def test_plain_keys_stay_on_host_gpg(self):
+        with mock.patch.object(vault, "for_build") as built:
+            self.assertIsInstance(signing.signer({"sign_key": "someone"}), Signer)
+            self.assertIsNone(signing.signer({}))
+            built.assert_not_called()
+
+    def test_bad_vault_names_are_refused(self):
+        with self.assertRaises(ValueError):
+            VaultSigner(mock.Mock(), "no/slashes", 0)
+        with self.assertRaises(ValueError):
+            VaultSigner(mock.Mock(), "", 0)
 
 
 if __name__ == "__main__":

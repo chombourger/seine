@@ -2,6 +2,7 @@
 # SPDX-License-Identifier Apache-2.0
 
 import atexit
+import hashlib
 import json
 import os
 import secrets
@@ -20,6 +21,13 @@ from seine.vault.openbao import OpenBaoProvider
 LABEL = "seine.vault"
 OWNER_LABEL = "seine.vault.owner"
 CREATED_LABEL = "seine.vault.created"
+
+# The dev server runs the custom image (upstream plus our plugins),
+# built from the checkout on first use and cached in podman storage.
+CUSTOM_IMAGE = "localhost/seine-vault"
+
+# Image label recording the sources a build used, so edits rebuild.
+SOURCES_LABEL = "seine.vault.sources"
 
 # Backstop for pid reuse: an owner that looks alive cannot be trusted
 # forever, so anything older than this is reaped whatever it claims.
@@ -71,6 +79,54 @@ def _remove(name):
         pass
 
 
+# Builds the custom image unless committed sources already match what
+# it was built from; shared by dev instances and the contract tests
+# so both run the same artifact.
+def ensure_image():
+    try:
+        if _image_label() == _sources_digest():
+            return
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    root = os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))
+    ContainerEngine.run([
+        "build", "--label", "%s=%s" % (SOURCES_LABEL, _sources_digest()),
+        "-t", CUSTOM_IMAGE, "-f",
+        os.path.join(root, "vault-image", "Dockerfile"), root], check=True)
+
+
+def _image_label():
+    return ContainerEngine.check_output(
+        ["image", "inspect", "-f", "{{index .Labels \"%s\"}}" % SOURCES_LABEL,
+         CUSTOM_IMAGE]).decode().strip()
+
+
+# What the image was built from: plugin sources plus the Dockerfile
+# itself, so editing any of them rebuilds it on next use.
+def _sources_digest():
+    root = os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))
+    digest = hashlib.sha256()
+    paths = [os.path.join("vault-image", "Dockerfile")]
+    plugindir = os.path.join(root, "seine-pgp")
+    paths += [os.path.join("seine-pgp", name)
+              for name in sorted(os.listdir(plugindir))
+              if name.endswith(".go") or name in ("go.mod", "go.sum")]
+    for path in paths:
+        with open(os.path.join(root, path), "rb") as f:
+            digest.update(f.read())
+    return digest.hexdigest()[:16]
+
+
+def _check_pgp_args(data, timestamp):
+    if not isinstance(data, bytes):
+        raise VaultError("pgp signing expects bytes, got %s"
+                         % type(data).__name__)
+    if not isinstance(timestamp, int) or timestamp < 0:
+        raise VaultError("pgp signing expects a unix epoch timestamp")
+
+
 # Drops instances whose owner is gone (kills and crashes) or which are
 # older than STALE_AFTER. Returns what was removed, for the tests.
 def reap_stale():
@@ -108,6 +164,7 @@ class DevVault(VaultProvider):
         self._port = None
         self._inner = None
         self._transit_keys = set()
+        self._pgp_keys = {}
         self._lock = threading.Lock()
         self._closed = False
 
@@ -186,6 +243,65 @@ class DevVault(VaultProvider):
                                  {"type": key_type}, self._token)
         self._transit_keys.add(name)
 
+    # Repository signing through the plugin. Missing keys are minted on
+    # first use like transit keys; reads stay fail-closed.
+    def pgp_fingerprint(self, name):
+        self._ensure_started()
+        with self._lock:
+            self._ensure_pgp_key(name)
+            return self._inner.pgp_fingerprint(name)
+
+    def pgp_public_key(self, name):
+        self._ensure_started()
+        with self._lock:
+            self._ensure_pgp_key(name)
+            return self._inner.pgp_public_key(name)
+
+    def pgp_clearsign(self, name, data, timestamp):
+        self._ensure_started()
+        _check_pgp_args(data, timestamp)
+        with self._lock:
+            return self._inner.pgp_clearsign(
+                name, data, self._effective_timestamp(name, timestamp))
+
+    def pgp_detach_sign(self, name, data, timestamp):
+        self._ensure_started()
+        _check_pgp_args(data, timestamp)
+        with self._lock:
+            return self._inner.pgp_detach_sign(
+                name, data, self._effective_timestamp(name, timestamp))
+
+    def _ensure_pgp_key(self, name):
+        birth = self._pgp_keys.get(name)
+        if birth is not None:
+            return birth
+        quoted = urllib.parse.quote(name, safe="")
+        try:
+            self._inner._request(
+                "GET", "/v1/seine-pgp/keys/%s/public" % quoted, None,
+                self._token)
+            birth = 0
+        except VaultNotFound:
+            sys.stderr.write(
+                "warning: dev vault has no pgp key '%s'; generating a "
+                "throwaway (local development only, never production)\n" % name)
+            self._inner._request("POST", "/v1/seine-pgp/keys/%s" % quoted,
+                                 {"generate": {}}, self._token)
+            birth = int(time.time())
+        self._pgp_keys[name] = birth
+        return birth
+
+    # A freshly minted dev key postdates old build epochs, which the
+    # plugin refuses to sign at; clamp to key birth instead. Remote
+    # never clamps: prod keys predate any build.
+    def _effective_timestamp(self, name, timestamp):
+        effective = max(timestamp, self._ensure_pgp_key(name))
+        if effective != timestamp:
+            sys.stderr.write(
+                "warning: dev pgp key '%s' is newer than the build epoch; "
+                "signing at key creation instead\n" % name)
+        return effective
+
     def running(self):
         try:
             ContainerEngine.check_output(["container", "exists", self._name])
@@ -206,15 +322,18 @@ class DevVault(VaultProvider):
                 return
             reap_stale()
             try:
+                ensure_image()
                 ContainerEngine.check_output([
                     "run", "-d", "--name", self._name,
                     "--label", "%s=ephemeral" % LABEL,
                     "--label", "%s=%d" % (OWNER_LABEL, self._pid),
                     "--label", "%s=%d" % (CREATED_LABEL, int(time.time())),
-                    "-p", "127.0.0.1::8200", self.IMAGE,
+                    "-p", "127.0.0.1::8200",
+                    "-e", 'BAO_LOCAL_CONFIG={"plugin_directory":"/vault/plugins"}',
+                    "-e", "BAO_DEV_ROOT_TOKEN_ID=" + self._token,
+                    CUSTOM_IMAGE,
                     "server", "-dev",
                     "-dev-listen-address=0.0.0.0:8200",
-                    "-dev-root-token-id=" + self._token,
                     "-dev-no-store-token"])
                 out = ContainerEngine.check_output(
                     ["port", self._name, "8200"]).decode()
@@ -255,6 +374,15 @@ class DevVault(VaultProvider):
         if "transit/" not in mounts:
             self._inner._request("POST", "/v1/sys/mounts/transit",
                                  {"type": "transit"}, self._token)
+        if "seine-pgp/" not in mounts:
+            digest = ContainerEngine.check_output(
+                ["run", "--rm", CUSTOM_IMAGE, "sha256sum",
+                 "/vault/plugins/seine-pgp.so"]).decode().split()[0]
+            self._inner._request(
+                "PUT", "/v1/sys/plugins/catalog/secret/seine-pgp",
+                {"sha_256": digest, "command": "seine-pgp.so"}, self._token)
+            self._inner._request("POST", "/v1/sys/mounts/seine-pgp",
+                                 {"type": "seine-pgp"}, self._token)
 
     # SIGTERM never runs atexit handlers; chained so whatever was there
     # (tasks.py's own SIGINT handling, ...) still gets its turn.
