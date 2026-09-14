@@ -9,10 +9,9 @@ import re
 import tomllib
 
 
-# Marks the source as unsigned, which a grafted kernel cannot be (Secure
-# Boot lockdown comes from patches we don't keep). Set in debian/config
-# rather than a kconfig symbol, since that's where gencontrol.py reads it
-# when generating debian/control.
+# Marks the source as unsigned: a grafted or vault-signed kernel
+# skips Debian's own Secure Boot signing. Set in debian/config so
+# buildcheck.py's checks short-circuit without an env var to filter.
 def _disable_signed(package, sourcedir, architecture):
     defines = os.path.join(sourcedir, "debian", "config", architecture,
                            "defines.toml")

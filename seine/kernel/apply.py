@@ -10,7 +10,7 @@ import re
 
 from seine.utils import WORKDIR
 
-from . import SIGNING_KEY_PATH
+from . import TRUSTED_CERT_PATH
 from .config import _write_configs
 from .flavour import (_add_derived_flavours, _disable_signed,
                       _restrict_flavour, _set_abi_suffix)
@@ -29,8 +29,9 @@ def extend(builder, package, sourcedir, architectures):
             raise ValueError("package '%s': no such kernel configuration "
                              "fragment: %s" % (package.source, fragment))
 
-    if package.kernel_signing_key_package is not None:
-        _apply_signing_key(package, sourcedir)
+    if package.kernel_signing_key is not None:
+        cert_pem = builder._vault().kmod_cert(package.kernel_signing_key)
+        _apply_trusted_cert(package, sourcedir, cert_pem)
 
     for architecture in architectures:
         config = os.path.join(sourcedir, "debian", "config", architecture,
@@ -58,7 +59,10 @@ def extend(builder, package, sourcedir, architectures):
             _add_derived_flavours(package, sourcedir, architecture)
         elif package.kernel_flavour is not None:
             _restrict_flavour(package, sourcedir, architecture)
-        if package.kernel_upstream is not None:
+        # Same reason as a graft: skips Debian's own Secure Boot checks
+        # (CONFIG_SYSTEM_TRUSTED_KEYS etc.) since a vault key stands in
+        # instead; sbuild filters unknown env vars before the chroot.
+        if package.kernel_upstream is not None or package.kernel_signing_key is not None:
             _disable_signed(package, sourcedir, architecture)
 
     if package.kernel_abi_suffix is not None:
@@ -91,37 +95,42 @@ def extend(builder, package, sourcedir, architectures):
         for architecture in architectures:
             _check_flavour(package, sourcedir, architecture)
 
-# Points Debian's module-signing at a fixed key instead of a fresh one
-# each build, and Build-Depends on the key package. Verified against
-# Debian's exact text so a packaging change raises, not silently no-ops.
-def _apply_signing_key(package, sourcedir):
-    template = os.path.join(sourcedir, "debian", "templates",
-                            "source.control.in")
-    anchor = "Build-Depends:\n debhelper-compat (= 13),\n"
-    with open(template, "r") as f:
-        contents = f.read()
-    if anchor not in contents:
-        raise ValueError(
-            "package '%s': %s has no '%s' to add "
-            "'signing-key-package' to as a Build-Depends -- Debian's "
-            "kernel packaging changed shape" % (package.source, template, anchor))
-    contents = contents.replace(
-        anchor, "Build-Depends:\n %s,\n debhelper-compat (= 13),\n"
-                % package.kernel_signing_key_package, 1)
-    with open(template, "w") as f:
-        f.write(contents)
+# Points CONFIG_MODULE_SIG_KEY at the vault's certificate instead of
+# Debian's auto-generated, unreproducible one. The same cert becomes
+# the kernel's trusted key, so kmod_sign.py's post-build signing
+# verifies without a separate CONFIG_SYSTEM_TRUSTED_KEYS. cmd_sign=
+# disables kbuild's own signing pass, which has no private key here.
+def _apply_trusted_cert(package, sourcedir, cert_pem):
+    cert_path = os.path.join(sourcedir, TRUSTED_CERT_PATH)
+    with open(cert_path, "w") as f:
+        f.write(cert_pem)
 
     rules_real = os.path.join(sourcedir, "debian", "rules.real")
-    anchor = 'MODULE_SIG_KEY=\\"output/signing_key.pem\\"'
     with open(rules_real, "r") as f:
         contents = f.read()
+
+    anchor = '-o MODULE_SIG_KEY=\\"output/signing_key.pem\\"'
     if anchor not in contents:
         raise ValueError(
-            "package '%s': %s has no '%s' to redirect at a fixed key -- "
-            "Debian's kernel packaging changed shape"
+            "package '%s': %s has no '%s' to redirect at the vault's "
+            "certificate -- Debian's kernel packaging changed shape"
             % (package.source, rules_real, anchor))
     contents = contents.replace(
-        anchor, 'MODULE_SIG_KEY=\\"%s\\"' % SIGNING_KEY_PATH, 1)
+        anchor, '-o MODULE_SIG_KEY=\\"$(CURDIR)/%s\\"' % TRUSTED_CERT_PATH, 1)
+
+    anchor = ("\t+$(MAKE_CLEAN) -C $(DIR) modules_install \\\n"
+             "\t\tDEPMOD='$(CURDIR)/debian/bin/no-depmod' \\\n"
+             "\t\tINSTALL_MOD_PATH='$(CURDIR)/$(OUTPUT_DIR)' \\\n"
+             "\t\tINSTALL_MOD_STRIP=1\n")
+    if anchor not in contents:
+        raise ValueError(
+            "package '%s': %s has no real modules_install pass to add "
+            "'cmd_sign=' to -- Debian's kernel packaging changed shape"
+            % (package.source, rules_real))
+    contents = contents.replace(
+        anchor, anchor.replace("modules_install \\\n",
+                               "modules_install \\\n\t\tcmd_sign= \\\n", 1), 1)
+
     with open(rules_real, "w") as f:
         f.write(contents)
 

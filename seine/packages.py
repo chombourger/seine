@@ -18,6 +18,7 @@ from datetime import timezone
 from email.utils import format_datetime
 
 from seine        import kernel
+from seine        import kmod_sign
 from seine.kernel import uki
 from seine        import module
 from seine        import signing
@@ -523,6 +524,9 @@ class Builder:
         self.signer = signing.signer(options)
         if self.signer is not None:
             self.signer.fingerprint()
+        # Lazy: most builds sign nothing through the vault, and it starts
+        # an ephemeral container (dev.DevVault) on first real use.
+        self._vault_provider = None
 
     # Cores for one package build: --parallel, or cores divided by how
     # many builds run at once.
@@ -538,6 +542,30 @@ class Builder:
         if type(parallel) == type(""):
             parallel = int(parallel.split("=")[1])
         return max(1, parallel)
+
+    # One provider per Builder, not per call: an ephemeral dev instance
+    # is a container, and for_build() starts a fresh one on every call.
+    def _vault(self):
+        if self._vault_provider is None:
+            from seine import vault as _vault
+            self._vault_provider = _vault.for_build()
+        return self._vault_provider
+
+    # Re-signs every module this build produced and fixes up .changes
+    # to match before _deploy() clearsigns it. Most builds pass no key
+    # and do nothing here.
+    def _sign_modules(self, output, key):
+        changed = []
+        for name in sorted(os.listdir(output)):
+            if not name.endswith(".deb"):
+                continue
+            path = os.path.join(output, name)
+            if kmod_sign.has_modules(path) and kmod_sign.resign(path, self._vault(), key):
+                changed.append(name)
+        if len(changed) > 0:
+            for name in os.listdir(output):
+                if name.endswith(".changes"):
+                    kmod_sign.patch_changes(os.path.join(output, name), output, changed)
 
     def fetch(self, package, workdir):
         volumes = [(workdir, WORKDIR)]
@@ -1216,6 +1244,11 @@ class Builder:
                      # ours to publish.
                      ("signer", str(self.signer.fingerprint()
                          if self.signer is not None else None)),
+                     # Same reasoning as 'signer': a different (or no)
+                     # vault key changes module signatures in the .debs,
+                     # so a cache from another key is rebuilt, not adopted.
+                     ("module_signing_key", str(package.kernel_signing_key
+                         or package.module_signing_key)),
                      # Whether this build makes the arch-all binaries,
                      # which depends on what the *other* builds are:
                      # widening 'scope' can move that job elsewhere.
@@ -2059,6 +2092,10 @@ class Builder:
         try:
             print("rebuilding '%s' for %s" % (package.source, architecture))
             self.build(package, workdir, dsc, epoch, architecture, output)
+
+            key = package.kernel_signing_key or package.module_signing_key
+            if key is not None:
+                self._sign_modules(output, key)
 
             # Handed to the step that publishes it, since a dependent
             # package needs this one's .deb in the repository to build

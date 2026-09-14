@@ -32,7 +32,7 @@ from seine.utils  import HOST_ARCH
 
 
 SETTINGS = ["build", "build-depends", "make-vars", "modules",
-            "runtime-depends", "target"]
+            "runtime-depends", "signing-key", "target"]
 
 # '<architecture>-kernels', e.g. 'amd64-kernels', 'arm64-kernels'. Matched
 # rather than listed since architectures are not a fixed set.
@@ -231,6 +231,16 @@ def parse(package, extends):
                     "writes them" % setting)
     package.module_make_vars = _parse_make_vars(package, settings)
     package.module_kernels = _parse_module_kernels(package, settings)
+    # Names the vault key this module's .ko files are signed with,
+    # post-build (seine/kmod_sign.py); independent of any kernel this
+    # module builds against.
+    package.module_signing_key = settings.get("signing-key")
+    if package.module_signing_key is not None:
+        if (type(package.module_signing_key) != type("")
+                or not package.module_signing_key.startswith("vault:")):
+            raise package._error(
+                "'extends: module: signing-key' shall be 'vault:<name>'")
+        package.module_signing_key = package.module_signing_key[len("vault:"):]
 
 # Extra make variables, e.g. NVIDIA's SYSSRC. Taken as written.
 def _parse_make_vars(package, settings):
