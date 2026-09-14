@@ -36,7 +36,13 @@ def _cleaned(spec):
     return spec
 
 def spec_digest(spec):
-    return _digest(json.dumps(_cleaned(spec), sort_keys=True, default=repr))
+    cleaned = _cleaned(spec)
+    try:
+        from seine import vault as _vault
+        cleaned = _vault.redacted_for_digest(cleaned)
+    except ImportError:
+        pass
+    return _digest(json.dumps(cleaned, sort_keys=True, default=repr))
 
 # Keyed separately from spec_digest: a resumed build can run a
 # different set of steps than the run it resumed.
