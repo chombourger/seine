@@ -424,12 +424,13 @@ without fetching it, and it names every source at fault in one go rather
 than one per attempt. seine's own image tests build this way, so an
 example that loses its hash fails them.
 
-`apt://` and `git://` need no hash and take none: an apt source is
-checked against the archive's signed index, and a git revision is the
-hash of what it names. Both answer for themselves, more strongly than a
-hash written down beside the URL would.
+`apt://`, `git://` and `file://` need no hash and take none: an apt source
+is checked against the archive's signed index, a git revision is the hash
+of what it names, and a `file://` tree is already checked into this repo,
+reviewed the way any other change to it is. Each answers for itself, more
+strongly than a hash written down beside the URL would.
 
-Three kinds of `source` are understood:
+Four kinds of `source` are understood:
 
  * `apt://<package>[=<version>]` takes the distribution's own source
    package, at the version specified or the current one.
@@ -441,6 +442,10 @@ Three kinds of `source` are understood:
    remote is reached over https unless
    `protocol` says otherwise, and `rev` is required: a branch name moves,
    and a build that cannot be repeated is not worth calling reproducible.
+ * `file://<path>` takes an already-unpacked tree with its own `debian/`
+   directory, `path` given relative to the YAML file listing it -- for a
+   package with no upstream at all, authored and committed alongside the
+   specification that builds it (e.g. `examples/common/kernel-signing/`).
 
 #### Fetching over ssh
 

@@ -340,6 +340,15 @@ class BuildCmd(Cmd):
                         os.path.normpath(os.path.join(dirname, f))
                         if type(f) == type("") else f for f in fragments]
 
+        # 'source: file://' names a directory the same way 'patches' names
+        # a file -- relative to this spec, not a plain list so FILE_LISTS
+        # does not already reach it.
+        source = package.get("source")
+        if type(source) == type("") and source.startswith("file://"):
+            path = source[len("file://"):]
+            package["source"] = "file://" + os.path.normpath(
+                os.path.join(dirname, path))
+
     # direction: most-specific file wins (docs/merging.md).
     def _merge_distro(self, spec):
         if "distribution" in spec:

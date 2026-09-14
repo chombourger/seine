@@ -700,6 +700,49 @@ class TwoPackagesSharingASourceFetchItOnce(avocado.Test):
         self.assertNotIn(key, builder._shared_fetches)
         self.assertFalse(os.path.isdir(canonical), "%s was left behind" % canonical)
 
+# A 'file://' package needs no container at all -- fetch() copies the
+# tree straight from disk, symlinks and all, the same way _copy_into()
+# is proven to elsewhere in this file.
+class LocalFileFetch(avocado.Test):
+    def builder(self):
+        from seine.packages import Builder
+        distro = {"source": "debian", "release": "trixie",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        return Builder(distro, {"keep": False}, FakeFetch())
+
+    def test_copies_the_tree_without_touching_the_container(self):
+        source = os.path.join(self.workdir, "kernel-signing")
+        os.makedirs(os.path.join(source, "debian"))
+        with open(os.path.join(source, "debian", "changelog"), "w") as f:
+            f.write("kernel-signing (1) unstable; urgency=medium\n")
+
+        package = parse("""
+                packages:
+                    - source: file://%s
+        """ % source).image.packages[0]
+
+        builder = self.builder()
+        workdir = os.path.join(self.workdir, "fetched")
+        os.makedirs(workdir)
+        sourcedir = builder.fetch(package, workdir)
+
+        self.assertEqual(sourcedir, os.path.join(workdir, "kernel-signing"))
+        self.assertTrue(os.path.isfile(
+            os.path.join(sourcedir, "debian", "changelog")))
+
+    def test_a_missing_directory_is_refused(self):
+        package = parse("""
+                packages:
+                    - source: file://%s/does-not-exist
+        """ % self.workdir).image.packages[0]
+
+        builder = self.builder()
+        try:
+            builder.fetch(package, os.path.join(self.workdir, "fetched"))
+            self.fail("fetching a missing file:// directory was accepted")
+        except ValueError as e:
+            self.assertIn("no such directory", str(e))
+
 # _upstream_key() is the graft-tree counterpart of _fetch_key() above,
 # sharing the same fetch/prepare split already proven there -- what is
 # its own is only the key, so that is what this checks.
