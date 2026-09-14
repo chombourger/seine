@@ -1,0 +1,8 @@
+# The vault image build context is the whole checkout, which holds
+# gigabytes of build output: ship only the plugin sources instead.
+*
+!seine-pgp/
+!seine-pgp/go.mod
+!seine-pgp/go.sum
+!seine-pgp/*.go
+!vault-image/Dockerfile

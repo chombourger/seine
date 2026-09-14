@@ -303,8 +303,8 @@ class VaultSelection(avocado.Test):
 class ImagePin(avocado.Test):
     def test_dockerfile_matches_dev_image(self):
         with open(os.path.join(path_to_sources, "vault-image", "Dockerfile")) as f:
-            from_line = next(line for line in f if line.startswith("FROM "))
-        self.assertEqual(from_line.split()[1], DevVault.IMAGE)
+            shipped = [line for line in f if line.startswith("FROM ")]
+        self.assertEqual(shipped[-1].split()[1], DevVault.IMAGE)
 
 
 if __name__ == "__main__":
