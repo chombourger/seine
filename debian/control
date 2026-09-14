@@ -57,3 +57,13 @@ Description: prebuilt debian:trixie base image
  the only image any of seine's own container builds ever pull rather
  than build locally.
  Install alongside seine-oci-bookworm for both releases.
+
+Package: seine-vault-openbao
+Architecture: amd64 arm64
+Depends: seine (= ${binary:Version}),
+         ${misc:Depends}
+Description: prebuilt vault image (openbao plus seine's signing plugins)
+ The custom OpenBao image (upstream plus seine's seine-pgp,
+ seine-sbsign and seine-kmod signing plugins) for this package's own
+ architecture, imported into podman on first use instead of building
+ the plugins from source.
