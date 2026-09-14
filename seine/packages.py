@@ -467,6 +467,10 @@ class Builder:
         # Enforces that tasks() is called once, with the union of every
         # image's packages, not once per image.
         self._tasked = None
+        # (package, architecture, stamp) for every package tasks() found
+        # already current, read back by cached_task_entries() below --
+        # cache-hit packages never get a Task, so this is their only record.
+        self._reused_entries = []
         # Which kernels' cross headers this run already made, so two
         # modules against one kernel do not each build it.
         self._crossed = set()
@@ -1422,6 +1426,7 @@ class Builder:
         # build has made the rest of the packages, and one just made is
         # not one that was reused.
         reused = self.current(packages)
+        self._reused_entries = reused
         if len(pending) == 0:
             # Nothing to build, but maybe something to index: a machine
             # that imported a repository has .debs with no index yet.
@@ -1543,6 +1548,16 @@ class Builder:
             entry = Index().hit(PACKAGE, key)
             say(self.options, "package %s reused, made %s"
                               % (key, since(entry.get("made"))))
+
+    # logs/index.json entries for cache-hit packages, which never got a
+    # 'package:<name>' Task to find '.started' on. 'packages' narrows to
+    # one image's own request, for a multiconfig cohort's shared Builder.
+    def cached_task_entries(self, packages=None):
+        names = None if packages is None else {p.name for p in packages}
+        return [{"name": "package:%s" % self.label(package, architecture),
+                 "failed": False, "cached": True, "log": None}
+                for package, architecture, _stamp in self._reused_entries
+                if names is None or package.name in names]
 
     # Cache-index key: release/architecture/name, since one source built
     # for two releases (or architectures) is two different sets of .debs.
