@@ -2,10 +2,69 @@
 # SPDX-License-Identifier Apache-2.0
 
 # A real-PC-sized disk chaining initrd -> UKI -> rootfs in one 'seine
-# build' call (multiconfig: after:, docs/building.md). Signed with a
-# throwaway test key ('keys/'); Secure Boot still needs to be off.
+# build' call (multiconfig: after:, docs/building.md). Secure Boot
+# still needs to be off; the UKI is signed through a vault key.
 #   seine build examples/pc-uki-image/main.yaml
 #   dd if=build/deploy/trixie/pc-uki.img of=/dev/sdX bs=4M status=progress conv=fsync
+
+# Fixed dev-only throwaway key/cert (same pair this example used to
+# mount straight off disk), so two independent local builds sign the
+# UKI with the same key instead of each dev vault minting its own --
+# the disk would otherwise never be byte-identical. A remote vault
+# ignores this and fails closed on a miss instead.
+defaults:
+    vault:
+        pc-uki-secureboot:
+            key_pem: |
+                -----BEGIN PRIVATE KEY-----
+                MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDJEQi4ydkoVcal
+                1IGbfnHbtw/Wd8/2p1yoniMD8ugnh8Bnj+9nueASzDtn8sK6Q0NNqnWUl9gGyyMJ
+                qh2Gi8arJ1JR+xh6hzH683bXq8x7E7hhB471fpUPU/RwgwPh7PBQOTRjWPBM6+7I
+                QvaHOiQPVc0HH0y485F+uAc4Ot2cHSnLpIfhVtBY67SaWliEkhxZuzBuJQZEWlAq
+                23XYmrkEFpAFfuZWylAOoviPx5gfs0fSznUJAix7nCs++3Rln2N14I2qdZqghqIn
+                +1BJJeQ8MCnt28/SVODhNQz+avcmedX0uUtVFR96uFkVBWnQDLqZ174SzrfDWhS/
+                rfgw6tvVAgMBAAECggEAMeEZ6s2YI5tz1jurk2mA0WLOeQPsAWJvaB0izp353aSd
+                pJNebrr7zW4A5r6gdBivn5rD5ILuwnCuVn1vKauPM3Jjx5ak8fCMA5dWShaCeZ3g
+                xaFcY6ZtUAohv6+gzPE8hIpMZsDvjAWTjPaftdhEjdFZNYUcQV2bIHaCw/5Gb62T
+                wq9j42iWcxoLzoZXj0opD8iP7njnv+dL3BuiT/0WOiNDTSuceTH4hVTxeuCsNjpA
+                r14V8dMVWxPzZRd6TNWs5rihrBvwmGd3Iwg/wzTrADnYS1i6RoFGc47mBHRbPkaB
+                /AZKRHpwygA93edqSvuhBgO0w3/mJg4BUS/ME/9fgQKBgQDsKdZvE8OzNyFIVauv
+                2V+xUZwVQ7fbNx1YnoYGRQACIOy9scJrU8ZoxMi5vC+fSpmjIqQ/r9+8D+niOVVC
+                NadYIpHS09jp8vIkBAyTCxdb7JVclLPLw/RXtf/XfjooQJ/KU+S1gVIBUeM8OjFo
+                tmAPt7iH+pgRpwXCn2P+TX6KcQKBgQDZ9IRVSXUanhUju5gsD1i1AfyIPQZv6ZKR
+                BNzATAg1l7dTJ6IATjYrYrVS489JYBFgw/YZgrAiqfens+G50b6jXQvFcIU/tcxu
+                Gl5d1GPHTw5WutxIeCKLTBB+61I55ftMDYmA119kwg6mqY3eO29yVDTlrRENgBAO
+                Pd/DuZwxpQKBgBJ4u0L44sezujC0MreQYwG1hmXLZCgLSYpS69y1rOh9tsanjrNi
+                XBR5v9F3PKpS5W1zGjG5CeDlxb9iCJ8jHzGvkoRQ+Zhi3jme73TY2zzfZldVcjKv
+                4v6xR4+NWfMoCteCdFMWCFn+E630R0UPbrgMAKzyFs7ap4KvgNy1Jv6hAoGAUk6p
+                jr+fzn52Qzk7nR/qguiOIjDRdn/BTqyEZMYRr5NssqVb4zul7zpmeTf4dqAlz+IQ
+                1M9qjpybHqSqkI6prG2d3WDBoS6ZVdb1Xf+v8ntjUdNdDqz3dp0x+YwKUD0OakkO
+                bS5oIte5yqxrG8pcKtOr6jQyJWQALDCniPVWC9UCgYEAwHq+l3Se1azygLyaT9xU
+                eloHUP+RyC24ZBFNzypV2DRBUaUfDKNwBxJ6mXtySZBf2Kj+aiLhIDMjw2Qx4KtZ
+                GhyPQ1VsGxo1Yo6W3F/aG8v3tHrzLQRM7Xk3mJyGmPLhk+mLXJznBa0oiNxFj0YC
+                TBb+C1CzQ4mbSFpaPgbs9dk=
+                -----END PRIVATE KEY-----
+            cert_pem: |
+                -----BEGIN CERTIFICATE-----
+                MIIDQzCCAiugAwIBAgIUJ8gzL61JRSn7wL/YGshif88+veUwDQYJKoZIhvcNAQEL
+                BQAwMTEvMC0GA1UEAwwmc2VpbmUgcGMtdWtpLWltYWdlIFRFU1Qga2V5IChJTlNF
+                Q1VSRSkwHhcNMjYwOTA1MTIyNDQ2WhcNNDYwODMxMTIyNDQ2WjAxMS8wLQYDVQQD
+                DCZzZWluZSBwYy11a2ktaW1hZ2UgVEVTVCBrZXkgKElOU0VDVVJFKTCCASIwDQYJ
+                KoZIhvcNAQEBBQADggEPADCCAQoCggEBAMkRCLjJ2ShVxqXUgZt+cdu3D9Z3z/an
+                XKieIwPy6CeHwGeP72e54BLMO2fywrpDQ02qdZSX2AbLIwmqHYaLxqsnUlH7GHqH
+                MfrzdterzHsTuGEHjvV+lQ9T9HCDA+Hs8FA5NGNY8Ezr7shC9oc6JA9VzQcfTLjz
+                kX64Bzg63ZwdKcukh+FW0FjrtJpaWISSHFm7MG4lBkRaUCrbddiauQQWkAV+5lbK
+                UA6i+I/HmB+zR9LOdQkCLHucKz77dGWfY3Xgjap1mqCGoif7UEkl5DwwKe3bz9JU
+                4OE1DP5q9yZ51fS5S1UVH3q4WRUFadAMupnXvhLOt8NaFL+t+DDq29UCAwEAAaNT
+                MFEwHQYDVR0OBBYEFIYG6nedIdfP2hN9q4l8MoEOhnQvMB8GA1UdIwQYMBaAFIYG
+                6nedIdfP2hN9q4l8MoEOhnQvMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEL
+                BQADggEBAJAMprEdy2WSuZsSp2S6GEgsMYIK0jSIFulalAw53Rb8X0/VuBEt720e
+                NfrNnO6Z74p2vJ4GR7WkmckzVMIiLKrP7hLHI2csjgHKF+0+ltnQ8YolB0eNQpgp
+                aE8ZA4YBWD04UZ1IYYm6xQJDDsagXD5TN+qI9j2xBDwUbrscCGlF//3eUKqc428h
+                ozXujVHQg0zjSgXWx4UzZfs42v6aiVav3UWszP82sjJFS3XGyf4eth2ZzwOF3yXk
+                gPanArzwUhyNlSnTnnU793SpAsmCIZwgeeCiwpkUp78jZc5Lazyv06ZzV1aMRWdD
+                Uxe+MAlhJkjOsFMnYvITtb8Tx9sdQVs=
+                -----END CERTIFICATE-----
 
 distribution:
     release: trixie
@@ -33,8 +92,7 @@ image:
     filename: pc-uki.img
     table: gpt
     secure-boot:
-        private-key: examples/pc-uki-image/keys/db.key
-        public-cert: examples/pc-uki-image/keys/db.crt
+        private-key: vault:pc-uki-secureboot
     partitions:
         - label: esp
           type: vfat
