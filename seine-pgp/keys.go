@@ -209,7 +209,8 @@ func handlePublic(ctx context.Context, req *logical.Request, data *framework.Fie
 	}
 	return &logical.Response{
 		Data: map[string]interface{}{
-			"public_key": public,
+			"fingerprint": fingerprint(entity),
+			"public_key":  public,
 		},
 	}, nil
 }

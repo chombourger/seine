@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -125,6 +126,38 @@ class OpenBaoProvider(VaultProvider):
             "POST", "/v1/transit/verify/%s" % urllib.parse.quote(key, safe=""),
             {"input": _b64(data), "signature": signature}, token=self._token)
         return bool(_field(reply, "data", "valid"))
+
+    # Apt signing through the seine-pgp plugin. Unknown keys fail
+    # closed; only explicit generate/import calls create keys.
+    def pgp_fingerprint(self, name):
+        reply = self._request(
+            "GET", "/v1/seine-pgp/keys/%s/public" % urllib.parse.quote(name, safe=""),
+            None, token=self._token)
+        return _field(reply, "data", "fingerprint")
+
+    def pgp_public_key(self, name):
+        reply = self._request(
+            "GET", "/v1/seine-pgp/keys/%s/public" % urllib.parse.quote(name, safe=""),
+            None, token=self._token)
+        return _field(reply, "data", "public_key")
+
+    def pgp_clearsign(self, name, data, timestamp):
+        return self._pgp_sign(name, "clearsign", data, timestamp)
+
+    def pgp_detach_sign(self, name, data, timestamp):
+        return self._pgp_sign(name, "detach-sign", data, timestamp)
+
+    def _pgp_sign(self, name, mode, data, timestamp):
+        if not isinstance(timestamp, int) or timestamp < 0:
+            raise VaultError("pgp signing expects a unix epoch timestamp")
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
+        reply = self._request(
+            "POST", "/v1/seine-pgp/keys/%s/%s"
+            % (urllib.parse.quote(name, safe=""), mode),
+            {"data_base64": _b64(data), "timestamp": stamp},
+            token=self._token)
+        key = "signed_data" if mode == "clearsign" else "signature"
+        return _b64decode(_field(reply, "data", key))
 
     def _request(self, method, url_path, body, token):
         request = urllib.request.Request(

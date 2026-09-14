@@ -291,6 +291,67 @@ class TransitConsumer(ContainerSetup):
         self.assertFalse(dev.verify("seine-test-signer", b"other-bytes", signature))
 
 
+class PgpKeyMint(avocado.Test):
+    EPOCH = 1767225600
+
+    def minted(self, present=False):
+        dev = DevVault()
+        inner = mock.Mock()
+        calls = []
+
+        def fake(method, path, body, token):
+            calls.append((method, path, body))
+            if method == "GET":
+                if present:
+                    return {"data": {"fingerprint": "AB", "public_key": "armor"}}
+                raise VaultNotFound("no key")
+            return {"data": {"fingerprint": "AB", "public_key": "armor"}}
+
+        inner._request.side_effect = fake
+        inner.pgp_clearsign.return_value = b"signed"
+        dev._inner = inner
+        return dev, calls
+
+    def test_missing_key_generated_once_and_warned(self):
+        dev, calls = self.minted()
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            first = dev.pgp_clearsign("repo", b"data", self.EPOCH)
+            second = dev.pgp_clearsign("repo", b"data", self.EPOCH)
+        self.assertEqual(first, b"signed")
+        self.assertEqual(second, b"signed")
+        self.assertIn("warning", said.getvalue())
+        self.assertIn("repo", said.getvalue())
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0][1].endswith("/v1/seine-pgp/keys/repo"))
+        self.assertEqual(posts[0][2], {"generate": {}})
+        # The epoch predates the minted key, so both signs went out at
+        # key birth instead.
+        birth = dev._pgp_keys["repo"]
+        self.assertGreater(birth, self.EPOCH)
+        for call in dev._inner.pgp_clearsign.call_args_list:
+            self.assertEqual(call[0][2], birth)
+
+    def test_current_timestamp_passes_through_unwarned(self):
+        dev, calls = self.minted()
+        future = int(time.time()) + 3600
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            dev.pgp_clearsign("repo", b"data", future)
+        dev._inner.pgp_clearsign.assert_called_once_with("repo", b"data", future)
+        self.assertNotIn("newer than the build epoch", said.getvalue())
+
+    def test_existing_key_neither_regenerated_nor_warned(self):
+        dev, calls = self.minted(present=True)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            dev.pgp_clearsign("repo", b"data", self.EPOCH)
+        self.assertEqual(said.getvalue(), "")
+        self.assertEqual([call for call in calls if call[0] == "POST"], [])
+        self.assertEqual(dev._pgp_keys["repo"], 0)
+
+
 class VaultSelection(avocado.Test):
     def test_remote_when_configured(self):
         env = {"SEINE_VAULT_ADDR": "https://vault:8200", "VAULT_ADDR": "",

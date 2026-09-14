@@ -30,3 +30,18 @@ class VaultProvider:
     # True on a match, False on a mismatch -- never raises for one.
     def verify(self, key, data, signature):
         raise NotImplementedError
+
+    # Apt repository signing through the seine-pgp plugin: named keys
+    # via explicit generate/import, bytes in and armor back, public
+    # halves out. Timestamps are unix epochs, pinned by the caller.
+    def pgp_fingerprint(self, name):
+        raise NotImplementedError
+
+    def pgp_public_key(self, name):
+        raise NotImplementedError
+
+    def pgp_clearsign(self, name, data, timestamp):
+        raise NotImplementedError
+
+    def pgp_detach_sign(self, name, data, timestamp):
+        raise NotImplementedError

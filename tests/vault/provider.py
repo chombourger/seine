@@ -166,6 +166,81 @@ class TransitMapping(avocado.Test):
         self.assertEqual(self.calls, [])
 
 
+class PgpMapping(avocado.Test):
+    EPOCH = 1767225600
+
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, {"SEINE_VAULT_ADDR": "https://vault:8200",
+                                                 "SEINE_VAULT_TOKEN": "tok"})
+        self.env.start()
+        self.calls = []
+
+    def tearDown(self):
+        vault.clear_secrets()
+        self.env.stop()
+
+    def serving(self, payloads):
+        def fake(request, *args, **kwargs):
+            self.calls.append((request.get_method(), request.full_url,
+                               json.loads((request.data or b"{}").decode() or "{}")))
+            for suffix, payload in payloads.items():
+                if request.full_url.endswith(suffix):
+                    if isinstance(payload, Exception):
+                        raise payload
+                    return FakeReply(payload)
+            raise AssertionError("unexpected vault call %s" % request.full_url)
+
+        return mock.patch("urllib.request.urlopen", side_effect=fake)
+
+    def test_clearsign_pins_the_timestamp(self):
+        routes = {"/v1/seine-pgp/keys/repo/clearsign":
+                  {"data": {"signed_data": base64.b64encode(b"signed").decode()}}}
+        with self.serving(routes):
+            self.assertEqual(OpenBaoProvider().pgp_clearsign(
+                "repo", b"data", self.EPOCH), b"signed")
+        self.assertEqual(self.calls,
+                         [("POST", "https://vault:8200/v1/seine-pgp/keys/repo/clearsign",
+                           {"data_base64": base64.b64encode(b"data").decode(),
+                            "timestamp": "2026-01-01T00:00:00Z"})])
+
+    def test_detach_sign(self):
+        routes = {"/v1/seine-pgp/keys/repo/detach-sign":
+                  {"data": {"signature": base64.b64encode(b"sig").decode()}}}
+        with self.serving(routes):
+            self.assertEqual(OpenBaoProvider().pgp_detach_sign(
+                "repo", b"data", self.EPOCH), b"sig")
+
+    def test_public_and_fingerprint(self):
+        routes = {"/v1/seine-pgp/keys/repo/public":
+                  {"data": {"fingerprint": "ABCD", "public_key": "armor"}}}
+        with self.serving(routes):
+            provider = OpenBaoProvider()
+            self.assertEqual(provider.pgp_fingerprint("repo"), "ABCD")
+            self.assertEqual(provider.pgp_public_key("repo"), "armor")
+
+    def test_unknown_key_fails_closed_without_creating(self):
+        missing = urllib.error.HTTPError("https://vault:8200/v1/seine-pgp/keys/x/public",
+                                         404, "missing", None, io.BytesIO(b"{}"))
+        with self.serving({"/v1/seine-pgp/keys/x/public": missing,
+                           "/v1/seine-pgp/keys/x/clearsign": missing}):
+            provider = OpenBaoProvider()
+            with self.assertRaises(VaultNotFound):
+                provider.pgp_public_key("x")
+            with self.assertRaises(VaultNotFound):
+                provider.pgp_clearsign("x", b"data", self.EPOCH)
+        self.assertEqual([body for _, _, body in self.calls
+                          if "generate" in body], [])
+
+    def test_bad_arguments_are_refused(self):
+        with self.serving({}):
+            provider = OpenBaoProvider()
+            with self.assertRaises(VaultError):
+                provider.pgp_clearsign("repo", "data", self.EPOCH)
+            with self.assertRaises(VaultError):
+                provider.pgp_clearsign("repo", b"data", "yesterday")
+        self.assertEqual(self.calls, [])
+
+
 class RemoteAuth(avocado.Test):
     def test_userpass_logs_in_once(self):
         env = {"SEINE_VAULT_ADDR": "https://vault:8200",
