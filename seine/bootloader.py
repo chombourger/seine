@@ -76,6 +76,12 @@ class SystemdBootBootloader(Bootloader):
 
     def install(self, g, esp_mount, **opts):
         g.sh("bootctl install --esp-path=%s --boot-path=/boot" % esp_mount)
+        # A real random seed, freshly generated every build -- every
+        # device flashed from this same image would share it. Drop it;
+        # systemd-boot makes its own the first time it actually boots.
+        seed = "%s/loader/random-seed" % esp_mount
+        if g.is_file(seed):
+            g.rm(seed)
 
     def add_entry(self, g, **opts):
         pass
