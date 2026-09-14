@@ -130,6 +130,99 @@ class CastPlayer(avocado.Test):
         self.assertIn("line-19", shown)
         self.assertNotIn("line-00", shown)
 
+    # A run directory: the cast plus the interactions.json beside
+    # it, timestamps rebased through the header's own timestamp.
+    def _write_run(self, name="run", casts=None, entries=(), header_ts=1000):
+        import time as _time
+        outdir = os.path.join(self.workdir, name)
+        os.makedirs(outdir, exist_ok=True)
+        header = {"version": 2, "width": 80, "height": 40,
+                  "timestamp": header_ts, "env": {"TERM": "xterm-256color"}}
+        for basename in (casts or {}).values():
+            with open(os.path.join(outdir, basename), "w",
+                      encoding="utf-8") as f:
+                f.write(json.dumps(header) + "\n"
+                        + json.dumps([0.1, "o", "x\r\n"]) + "\n")
+        with open(os.path.join(outdir, "interactions.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"console_cast": "console.cast",
+                       "console_casts": casts or {},
+                       "interactions": list(entries)}, f)
+        return outdir
+
+    def _entry(self, test, keyword, at, status="PASS", artifact=None):
+        entry = {"test": test, "keyword": keyword, "args": [],
+                 "timestamp": 1000 + at, "status": status}
+        if artifact is not None:
+            entry["artifact_kind"], entry["artifact_path"] = artifact
+        return entry
+
+    def test_timeline_keeps_only_the_replayed_test(self):
+        outdir = self._write_run(
+            casts={"x.alpha": "x.alpha.cast"},
+            entries=[self._entry("x.alpha", "Power Cycle", 0.0),
+                     self._entry("x.beta", "Power Cycle", 0.0),
+                     self._entry("x.alpha", "Console Run", 5.0)])
+        player = self.Player()
+        player.load(os.path.join(outdir, "x.alpha.cast"))
+        self.assertEqual(player.test_name, "x.alpha")
+        self.assertEqual([r["keyword"] for r in player.timeline],
+                         ["Power Cycle", "Console Run"])
+        self.assertEqual([r["at"] for r in player.timeline], [0.0, 5.0])
+
+    def test_global_cast_keeps_every_test(self):
+        outdir = self._write_run(
+            casts={},
+            entries=[self._entry("x.alpha", "Power Cycle", 0.0),
+                     self._entry("x.beta", "Power Cycle", 1.0)])
+        with open(os.path.join(outdir, "console.cast"), "w",
+                  encoding="utf-8") as f:
+            f.write(json.dumps({"version": 2, "width": 80, "height": 40,
+                                "timestamp": 1000,
+                                "env": {"TERM": "xterm-256color"}}) + "\n")
+        player = self.Player()
+        player.load(os.path.join(outdir, "console.cast"))
+        self.assertIsNone(player.test_name)
+        self.assertEqual(len(player.timeline), 2)
+
+    def test_missing_interactions_leaves_an_empty_timeline(self):
+        path = _write_cast(os.path.join(self.workdir, "t.cast"),
+                           [(0.1, "o", "x\r\n")])
+        player = self.Player()
+        player.load(path)
+        self.assertEqual(player.timeline, [])
+        self.assertEqual(player.render_timeline().plain, "")
+
+    def test_current_index_follows_the_clock(self):
+        outdir = self._write_run(
+            casts={"x.alpha": "x.alpha.cast"},
+            entries=[self._entry("x.alpha", "Power Cycle", 1.0),
+                     self._entry("x.alpha", "Console Run", 5.0,
+                                 status="FAIL")])
+        player = self.Player()
+        player.load(os.path.join(outdir, "x.alpha.cast"))
+        self.assertEqual(player.current_index(), -1)
+        player.tick(1.0)
+        self.assertEqual(player.current_index(), 0)
+        player.tick(5.0)
+        self.assertEqual(player.current_index(), 1)
+
+    def test_render_timeline_flags_the_current_row(self):
+        outdir = self._write_run(
+            casts={"x.alpha": "x.alpha.cast"},
+            entries=[self._entry("x.alpha", "Power Cycle", 1.0),
+                     self._entry("x.alpha", "Console Run", 5.0,
+                                 status="FAIL",
+                                 artifact=("screen", "boot-1.txt"))])
+        player = self.Player()
+        player.load(os.path.join(outdir, "x.alpha.cast"))
+        player.tick(1.0)
+        shown = player.render_timeline().plain
+        self.assertIn("alpha", shown.splitlines()[0])
+        self.assertIn("\u25b6 Power Cycle", shown)
+        self.assertIn("\u2718", shown)
+        self.assertIn("[screen]", shown)
+
 
 if __name__ == "__main__":
     avocado.main()
