@@ -31,21 +31,37 @@ FROM {0}
 CMD /bin/true
 """
 
-# systemd-ukify/systemd-boot-efi/binutils/sbsigntool run as container
-# commands in this image, not copied out like BINARIES below.
-APT_PACKAGES = ["squashfs-tools", "erofs-utils",
-                "systemd-ukify", "systemd-boot-efi", "binutils", "sbsigntool"]
+# squashfs-tools/erofs-utils/binutils/sbsigntool run as container
+# commands in this image too, not copied out like BINARIES below.
+APT_PACKAGES = ["squashfs-tools", "erofs-utils", "binutils", "sbsigntool"]
 BINARIES = ["/usr/bin/mksquashfs", "/usr/bin/mkfs.erofs"]
+
+# UKI needs systemd 257 (ukify split into its own package there); not
+# available for bookworm at all, only from trixie on.
+UKI_APT_PACKAGES = ["systemd-ukify", "systemd-boot-efi"]
 
 VERITY_APT_PACKAGES = ["cryptsetup-bin"]
 VERITY_BINARIES = ["/usr/sbin/veritysetup"]
 
+# mtools rebuilds a FAT partition deterministically (serial and
+# timestamps fixed) -- see imager.py's _normalize_fat_tree().
+FAT_APT_PACKAGES = ["mtools"]
+FAT_BINARIES = ["/usr/bin/mformat", "/usr/bin/mcopy", "/usr/bin/mmd"]
+
+# mke2fs -d rebuilds an ext2/3/4 partition deterministically from a
+# captured directory tree -- see imager.py's _normalize_ext_mount().
+# debugfs then fixes up 'lost+found', which mke2fs stamps itself.
+EXT_APT_PACKAGES = ["e2fsprogs"]
+EXT_BINARIES = ["/usr/sbin/mke2fs", "/usr/sbin/debugfs"]
+
 class ExtraImagerTools(Bootstrap):
     kind = IMAGER_KIND
 
-    def __init__(self, source, need_verity=False):
+    def __init__(self, source, need_verity=False, need_fat=False, need_ext=False):
         self.source = source
         self.need_verity = need_verity
+        self.need_fat = need_fat
+        self.need_ext = need_ext
         distro = source.spec["distribution"]
         super().__init__(distro, source.options)
 
@@ -54,8 +70,14 @@ class ExtraImagerTools(Bootstrap):
                             self.distro["release"], self.distro["architecture"])
 
     def create(self):
-        apt_packages = APT_PACKAGES + (VERITY_APT_PACKAGES if self.need_verity else [])
-        binaries = BINARIES + (VERITY_BINARIES if self.need_verity else [])
+        apt_packages = (APT_PACKAGES
+                        + (UKI_APT_PACKAGES if self.distro["release"] != "bookworm" else [])
+                        + (VERITY_APT_PACKAGES if self.need_verity else [])
+                        + (FAT_APT_PACKAGES if self.need_fat else [])
+                        + (EXT_APT_PACKAGES if self.need_ext else []))
+        binaries = (BINARIES + (VERITY_BINARIES if self.need_verity else [])
+                   + (FAT_BINARIES if self.need_fat else [])
+                   + (EXT_BINARIES if self.need_ext else []))
         return self.build(
             EXTRA_IMAGER_TOOLS_SCRIPT.format(
                 self.source.targetBootstrap.name,
