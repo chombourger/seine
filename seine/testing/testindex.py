@@ -148,6 +148,33 @@ def status_of(entry, name):
     return None
 
 
+# Path to the screencast replaying 'qualified' in the run 'entry'
+# covers, or None. Prefers the test's own cast, falling back to
+# the run-global console.cast.
+def cast_for(entry, qualified):
+    outdir = resolve(entry.get("dir"))
+    if not outdir or not os.path.isdir(outdir):
+        return None
+    casts = {}
+    try:
+        import json
+        with open(os.path.join(outdir, "interactions.json")) as f:
+            data = json.load(f)
+        casts = data.get("console_casts") or {}
+    except (OSError, ValueError):
+        casts = {}
+    short = qualified.rsplit(".", 1)[-1]
+    for name, basename in casts.items():
+        if name == qualified or (name or "").rsplit(".", 1)[-1] == short:
+            path = os.path.join(outdir, basename)
+            if os.path.isfile(path):
+                return path
+    path = os.path.join(outdir, "console.cast")
+    if os.path.isfile(path):
+        return path
+    return None
+
+
 def _elapsed(status):
     try:
         return float(status.get("elapsed") or 0)
