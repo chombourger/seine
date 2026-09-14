@@ -1,0 +1,20 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# Slim rebuild of linux-image-amd64 in place (see docs/kernels.md).
+# Only in 'initrd': 'uki' comes after it and reuses the same .deb,
+# so kernel and initrd modules keep the same ABI.
+
+packages:
+    - source: apt://linux
+      extends:
+          kernel:
+              fragments:
+                  - ../configs/slim-common.fragment
+                  - ../configs/slim-amd64.fragment
+      profiles:
+          - pkg.linux.nokerneldbginfo
+          - pkg.linux.mintools
+          - pkg.linux.nosource
+          - nodoc
+          - noudeb

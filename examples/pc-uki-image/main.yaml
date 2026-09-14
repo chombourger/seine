@@ -14,6 +14,7 @@ distribution:
 multiconfig:
     initrd:
         - examples/minimal-initrd/main.yaml
+        - examples/pc-uki-image/kernel.yaml
     uki:
         files:
             - examples/minimal-uki/main.yaml
