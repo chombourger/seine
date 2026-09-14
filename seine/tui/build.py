@@ -9,6 +9,7 @@ import re
 import time
 
 from textual.containers import Horizontal
+from textual.css.query import NoMatches
 from textual.widgets import RichLog, Static
 
 from seine import tasks
@@ -312,10 +313,14 @@ class BuildScreen(BaseScreen):
         self._redraw()
 
     # Not '_render': that's Widget._render(), an internal Textual hook;
-    # shadowing it silently broke rendering.
+    # shadowing it silently broke rendering. NoMatches (worker/tick
+    # landing mid-transition) is swallowed the same way.
     def _redraw(self):
-        state = self.app.build_state
-        self.query_one("#tasklist", Static).update(state.render())
+        try:
+            state = self.app.build_state
+            self.query_one("#tasklist", Static).update(state.render())
+        except NoMatches:
+            return
         if state.message:
             self.say(state.message, error=state.error)
 
