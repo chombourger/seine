@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 from seine.container import ContainerEngine
@@ -106,6 +107,7 @@ class DevVault(VaultProvider):
         self._token = secrets.token_hex(16)
         self._port = None
         self._inner = None
+        self._transit_keys = set()
         self._lock = threading.Lock()
         self._closed = False
 
@@ -141,6 +143,48 @@ class DevVault(VaultProvider):
         self._inner._request(
             "PUT", "/v1/%s" % path, {"data": current}, self._token)
         return value
+
+    # Generic crypto, the first consumer that needs no plugin. Missing
+    # keys are minted on first use (and said so loudly); the types fit
+    # the operation, since an encryption key cannot sign.
+    def encrypt(self, key, plaintext):
+        self._ensure_started()
+        with self._lock:
+            self._ensure_transit_key(key, "aes256-gcm96")
+            return self._inner.encrypt(key, plaintext)
+
+    def decrypt(self, key, ciphertext):
+        self._ensure_started()
+        with self._lock:
+            self._ensure_transit_key(key, "aes256-gcm96")
+            return self._inner.decrypt(key, ciphertext)
+
+    def sign(self, key, data):
+        self._ensure_started()
+        with self._lock:
+            self._ensure_transit_key(key, "rsa-2048")
+            return self._inner.sign(key, data)
+
+    def verify(self, key, data, signature):
+        self._ensure_started()
+        with self._lock:
+            self._ensure_transit_key(key, "rsa-2048")
+            return self._inner.verify(key, data, signature)
+
+    def _ensure_transit_key(self, name, key_type):
+        if name in self._transit_keys:
+            return
+        quoted = urllib.parse.quote(name, safe="")
+        try:
+            self._inner._request(
+                "GET", "/v1/transit/keys/%s" % quoted, None, self._token)
+        except VaultNotFound:
+            sys.stderr.write(
+                "warning: dev vault has no transit key '%s'; generating %s "
+                "(local development only, never production)\n" % (name, key_type))
+            self._inner._request("POST", "/v1/transit/keys/%s" % quoted,
+                                 {"type": key_type}, self._token)
+        self._transit_keys.add(name)
 
     def running(self):
         try:
