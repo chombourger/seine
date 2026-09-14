@@ -22,6 +22,10 @@ class ReproducibleDiskImage:
     # not depend on what bookworm's feeds currently serve.
     SNAPSHOT = "20260801T000000Z"
 
+    # A subclass pinned to a different release (e.g. trixie, for UKI
+    # packages bookworm doesn't have) overrides this.
+    RELEASE = "bookworm"
+
     # The byte offset of the first difference, read in chunks rather
     # than all at once -- these images are large enough that a plain
     # 'a == b' would hold two full copies in memory for no reason.
@@ -63,7 +67,7 @@ class ReproducibleDiskImage:
     # A subclass names its own image via self.FILENAME.
     def image(self, space):
         found = glob.glob(os.path.join(
-            space["SEINE_BUILD_DIR"], "deploy", "bookworm", self.FILENAME))
+            space["SEINE_BUILD_DIR"], "deploy", self.RELEASE, self.FILENAME))
         self.assertEqual(len(found), 1, "no disk image in %s" % space["SEINE_BUILD_DIR"])
         return found[0]
 
