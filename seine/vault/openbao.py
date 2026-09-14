@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -51,6 +52,8 @@ class OpenBaoProvider(VaultProvider):
         if not self.addr:
             raise VaultError("no vault configured: set SEINE_VAULT_ADDR")
         self.namespace = namespace or os.environ.get("SEINE_VAULT_NAMESPACE")
+        cert = os.environ.get("SEINE_VAULT_CERT")
+        self._ssl_context = ssl.create_default_context(cafile=cert) if cert else None
         self._token = token or _env("SEINE_VAULT_TOKEN", "VAULT_TOKEN")
         auth = auth or os.environ.get("SEINE_VAULT_AUTH") or "token"
         if auth != "token":
@@ -208,7 +211,7 @@ class OpenBaoProvider(VaultProvider):
         if self.namespace:
             request.add_header("X-Vault-Namespace", self.namespace)
         try:
-            with urllib.request.urlopen(request) as reply:
+            with urllib.request.urlopen(request, context=self._ssl_context) as reply:
                 return json.loads(reply.read().decode() or "{}")
         except urllib.error.HTTPError as e:
             if e.code == 404:

@@ -93,6 +93,20 @@ class RemoteReads(avocado.Test):
             with self.assertRaises(VaultError):
                 OpenBaoProvider()
 
+    def test_vault_cert_verifies_the_connection(self):
+        cafile = "/etc/seine/vault-ca.pem"
+        with mock.patch.dict(os.environ, {"SEINE_VAULT_CERT": cafile}):
+            with mock.patch("ssl.create_default_context") as create_context:
+                provider = OpenBaoProvider()
+                with reply_with({"data": {"data": {"hash": "v"}}}) as urlopen:
+                    provider.kv_read("kv/data/accounts/root#hash")
+        create_context.assert_called_once_with(cafile=cafile)
+        self.assertEqual(urlopen.call_args.kwargs["context"],
+                         create_context.return_value)
+
+    def test_no_vault_cert_leaves_default_verification(self):
+        self.assertIsNone(OpenBaoProvider()._ssl_context)
+
 
 class TransitMapping(avocado.Test):
     def setUp(self):

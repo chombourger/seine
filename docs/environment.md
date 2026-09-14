@@ -83,5 +83,6 @@ downloads directories.
 | `SEINE_GISTS_DIR` | Where `seine gist` and the AI chat's `gist-*` tools keep reusable spec fragments, overriding the `XDG_DATA_HOME`-based default -- not under `SEINE_BUILD_DIR`, since a gist is meant to outlive any one project. See [Gists](building.md#gists) |
 | `SEINE_KEEP_DEAD_CONTAINERS` | Keeps a failed step's container instead of removing it, for reading back what podman recorded about the commands run inside. See [Keeping a failed build's containers](building.md#keeping-a-failed-builds-containers) |
 | `SEINE_SIGN_KEY` | Same as `--sign-key`: sign the rebuilt packages and their repository with this gpg key, or `vault:<name>` to sign inside the vault |
+| `SEINE_VAULT_CERT` | CA certificate (PEM) to verify `SEINE_VAULT_ADDR` against, for a vault behind a private or self-signed TLS certificate |
 | `NO_COLOR` | Same as `--no-color`: print a `--dry-run` plan without colour |
 | `SSH_AUTH_SOCK` | Forwarded into the builder container so a `git+ssh://` package source can be fetched with your own agent |
