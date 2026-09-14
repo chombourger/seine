@@ -71,6 +71,19 @@ class RemoteReads(avocado.Test):
             with self.assertRaises(VaultError):
                 OpenBaoProvider().kv_read("kv/data/accounts/root#hash")
 
+    def test_a_miss_never_writes(self):
+        calls = []
+
+        def fake(request, *args, **kwargs):
+            calls.append((request.get_method(), request.full_url))
+            raise urllib.error.HTTPError(request.full_url, 404, "missing",
+                                         None, io.BytesIO(b"{}"))
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            with self.assertRaises(VaultNotFound):
+                OpenBaoProvider().kv_read("kv/data/x#hash")
+        self.assertEqual([method for method, _ in calls], ["GET"])
+
     def test_no_address_fails_closed(self):
         with mock.patch.dict(os.environ, {"SEINE_VAULT_ADDR": "",
                                            "VAULT_ADDR": ""}):
