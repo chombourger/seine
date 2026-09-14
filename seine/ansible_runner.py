@@ -142,6 +142,10 @@ class AnsibleContainerRunner:
         self.cid = ContainerEngine.check_output(
             self.container_command(transport.name)).strip()
         try:
+            # Marks 'now' so _finalize() can reset anything apt/dpkg
+            # triggers touch with the real build time (e.g. ldconfig's
+            # cache dirs) back to a fixed epoch.
+            self._exec(["touch", "/.ansible-marker"])
             if packages.has_packages(self.distro):
                 self._exec(["sh", "-c", packages.apt_configuration(
                     packages.REPOSITORY,
@@ -275,3 +279,10 @@ class AnsibleContainerRunner:
         # grows with every package any build ever downloaded for this
         # release, not just what this spec installed.
         self._exec(["sh", "-c", "rm -rf %s/*" % ARCHIVES])
+        # dpkg triggers (ldconfig, etc.) stamp scaffolding dirs with the
+        # real build time on package installs -- reset everything
+        # touched since the marker in run(), truncated files included.
+        self._exec(["sh", "-c",
+                    "find / -xdev -newer /.ansible-marker "
+                    "-exec touch -h -d @%d {} +; "
+                    "rm -f /.ansible-marker" % self.epoch])
