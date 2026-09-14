@@ -416,7 +416,10 @@ image:
         pc, _rpi4, _rpi5 = self.specs()
         result = self.seine(["plan", "--tasks-only", pc])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("  packages", result.stdout)
+        # This group asks for no packages, so no 'packages' barrier is
+        # shown either -- but the names stay bare, unprefixed by 'pc:'.
+        self.assertNotIn("packages", result.stdout)
+        self.assertIn("  rootfs", result.stdout)
         self.assertNotIn("pc:", result.stdout)
 
 # Against a real archive and a real sbuild: two groups sharing an

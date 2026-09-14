@@ -89,8 +89,7 @@ already built, and not built again:
 steps:
   bootstrap-host
   bootstrap-target         after bootstrap-host
-  packages                 after bootstrap-host
-  rootfs                   after bootstrap-target, packages
+  rootfs                   after bootstrap-target
   ...
 ```
 
