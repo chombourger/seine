@@ -36,7 +36,8 @@ command (see [Help](#help) below). A few other things work from any screen:
 Every screen has (at least) two focusable panes -- the prompt, and the spec
 tree beside it -- cycled with `Tab`, each getting the same highlighted
 border while focused. A screen with something worth navigating gets a third:
-the Build cockpit's own log tail, or the Filesystem browser's own listing.
+the Build cockpit's own log tail, the Filesystem browser's own listing,
+or the Issues matrix (arrows move, `Enter` opens a count's details).
 `Esc` backs out one level at a time: a file preview to the listing it came
 from, a command's own detail page to the list, Help itself to whatever
 screen was open before it.
@@ -61,7 +62,12 @@ every argument each one takes):
    the real command line, read for whatever `/use` last set.
  * **Issues** -- known CVEs against the active build's own SBOM (`seine
    issues` on the command line, [Vulnerability scanning](building.md#vulnerability-scanning)):
-   a findings table beside summary stats.
+   one row per source package -- CVE counts by urgency, defect counts
+   (from UDD's bug search) by severity -- beside summary stats. Clicking
+   a count swaps the matrix for that cell's own entries; `Esc` goes back
+   to the matrix. `/issues --rescan` refetches both caches in the
+   background under a progress popup that closes itself; `Esc` dismisses
+   the popup early without cancelling the scan.
  * **Remote Target** -- power, console, storage and USB control for a
    real device over mtda (github.com/siemens/mtda).
  * **Test** -- runs the active specification's own `test:` section

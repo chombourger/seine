@@ -168,11 +168,14 @@ def filter_findings(findings, package=None, min_urgency=None):
 class IssuesCmd(Cmd):
     NAME = "issues"
     SHORT_OPTIONS = "h"
-    LONG_OPTIONS = ["help", "sbom=", "filter=", "min-urgency=", "rescan"]
+    LONG_OPTIONS = ["help", "sbom=", "filter=", "min-urgency=", "rescan",
+                    "defects", "min-severity=", "bugs-rescan"]
     USAGE = """
 Usage:
   seine issues SPEC... [--filter=PKG] [--min-urgency=LEVEL] [--rescan]
+                       [--defects] [--min-severity=LEVEL] [--bugs-rescan]
   seine issues --sbom=FILE.spdx.json [--filter=PKG] [--min-urgency=LEVEL] [--rescan]
+                                     [--defects] [--min-severity=LEVEL] [--bugs-rescan]
 
 First form: scans the SBOM a previous 'seine build --sbom' of SPEC left
 behind. Second form: scans FILE directly, no specification needed.
@@ -180,11 +183,20 @@ Both check the result against debsbom's own security tracker, or a
 'sbom2cve_program' from settings.json if one is configured there.
 
   --filter=PKG          only findings against a package matching PKG
-                         (a regex, case-insensitive)
+                         (a regex, case-insensitive -- a substring of the
+                         source package name for defects)
   --min-urgency=LEVEL    only findings at or above LEVEL -- one of
                          high, medium, low, unimportant, end-of-life,
                          not-yet-assigned (the default: everything)
-  --rescan               ignore a cached scan and run a fresh one
+  --rescan               ignore a cached CVE scan and run a fresh one
+  --defects              also fetch package-level defects from UDD's bug
+                         search (one bulk request for every source the
+                         SBOM names, cached beside the SBOM for a day)
+  --min-severity=LEVEL   only defects at or above LEVEL -- one of
+                         critical, grave, serious, important, normal,
+                         minor, wishlist (the default with --defects:
+                         important)
+  --bugs-rescan          ignore a cached defects fetch and query UDD again
 """
 
     def main(self, argv):
@@ -193,8 +205,8 @@ Both check the result against debsbom's own security tracker, or a
         except getopt.GetoptError as err:
             sys.stderr.write("%s\n%s" % (err, self.USAGE))
             sys.exit(1)
-        sbom_file = package = min_urgency = None
-        rescan = False
+        sbom_file = package = min_urgency = min_severity = None
+        rescan = defects = bugs_rescan = False
         for o, a in opts:
             if o in ("-h", "--help"):
                 print(self.USAGE)
@@ -207,6 +219,12 @@ Both check the result against debsbom's own security tracker, or a
                 min_urgency = a
             elif o == "--rescan":
                 rescan = True
+            elif o == "--defects":
+                defects = True
+            elif o == "--min-severity":
+                min_severity = a
+            elif o == "--bugs-rescan":
+                bugs_rescan = True
 
         if sbom_file:
             if args:
@@ -251,7 +269,35 @@ Both check the result against debsbom's own security tracker, or a
 
         if not findings:
             print("no known CVEs found")
-            return
-        width = max(len(f.package) for f in findings)
-        for f in findings:
-            print("%-16s %-*s %-18s %s" % (f.cve, width, f.package, f.urgency, f.status))
+        else:
+            width = max(len(f.package) for f in findings)
+            for f in findings:
+                print("%-16s %-*s %-18s %s" % (f.cve, width, f.package, f.urgency, f.status))
+
+        if defects:
+            from seine import bugs as bugs_module
+            try:
+                all_bugs = bugs_module.scan(sbom_path, distro=distro, rescan=bugs_rescan)
+            except (OSError, ValueError) as e:
+                # 'urllib.error.URLError' is an OSError subclass and a bad
+                # UDD answer is a ValueError, so a dead or confused UDD
+                # lands here rather than below.
+                sys.stderr.write("error: defects fetch failed: %s\n" % e)
+                sys.exit(5)
+            try:
+                shown = bugs_module.filter_bugs(all_bugs, source=package,
+                                                min_severity=min_severity or bugs_module.DEFAULT_MIN_SEVERITY)
+            except ValueError as e:
+                sys.stderr.write("error: %s\n" % e)
+                sys.exit(1)
+            if not shown:
+                print("no defects at or above '%s' found"
+                      % (min_severity or bugs_module.DEFAULT_MIN_SEVERITY))
+                return
+            data = bugs_module.stats(shown)
+            print("defects: %d bug(s) at or above '%s' across %d source package(s)"
+                  % (data["total"], min_severity or bugs_module.DEFAULT_MIN_SEVERITY,
+                     data["sources"]))
+            for bug in shown:
+                print("#%-9d [%-9s/%s] %s: %s"
+                      % (bug.id, bug.severity, bug.status, bug.source, bug.title))
