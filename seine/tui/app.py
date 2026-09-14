@@ -71,14 +71,18 @@ class CastPane(StaticPane):
             event.stop()
             event.prevent_default()
 
-# Reads the 'log-click' marker append_logs_section() puts in a span's
-# meta, since Rich's own '@click' link style is Textual's, not ours
-# (same workaround as target_screen.py's TargetStatusStatic).
+# Reads the 'log-click'/'cast-play' markers render.py puts in a
+# span's meta, since Rich's own '@click' link style is Textual's,
+# not ours (same workaround as target_screen.py's TargetStatusStatic).
 class BodyStatic(Static):
     def on_click(self, event):
         path = event.style.meta.get("log-click")
         if path:
             self.screen.action_show_log(path)
+            return
+        cast = event.style.meta.get("cast-play")
+        if cast:
+            self.screen.action_replay_cast(cast)
 
 # The right pane's own content width, not render.py's BOX_WIDTH
 # default, which overflows the pane. A scrollbar not shown yet is
