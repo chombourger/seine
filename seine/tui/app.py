@@ -15,6 +15,7 @@ import json
 
 from textual import command
 from textual.app import App
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.css.query import NoMatches
 from textual.widgets import RichLog, Static
@@ -29,22 +30,82 @@ from seine.tui.filesystem import FilesystemScreen, FilesystemState
 from seine.tui.history import History
 from seine.tui.issues import IssuesScreen
 from seine.tui.vendor import VendorScreen, VendorState
-from seine.tui.render import (render_analyze, render_artifacts, render_cache,
-                              render_doctor, render_image_node, render_node,
-                              render_overview, render_packages, render_plan,
-                              render_root_node)
+from seine.tui.render import (append_logs_section, render_analyze,
+                              render_artifacts, render_cache, render_doctor,
+                              render_image_node, render_node, render_overview,
+                              render_packages, render_plan, render_root_node)
 from seine.tui.spectree import SpecTree
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
 from seine.tui.testing import TestState
 
+# A read failure shows inline rather than raising, same as
+# FilesystemScreen's own preview_failed() does for a bad file.
+def _read_log(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError as e:
+        return "could not read %s: %s" % (path, e)
+
+# Same widget TestScreen/BuildScreen use for '#tail'. Hidden until a
+# log link is clicked, sharing the tree's own slot.
+class LogViewer(RichLog):
+    def __init__(self, **kwargs):
+        super().__init__(markup=False, wrap=True, max_lines=20000, **kwargs)
+        self.display = False
+
+# Reads the 'log-click' marker append_logs_section() puts in a span's
+# meta, since Rich's own '@click' link style is Textual's, not ours
+# (same workaround as target_screen.py's TargetStatusStatic).
+class BodyStatic(Static):
+    def on_click(self, event):
+        path = event.style.meta.get("log-click")
+        if path:
+            self.screen.action_show_log(path)
+
+# The right pane's own content width, not render.py's BOX_WIDTH
+# default, which overflows the pane. A scrollbar not shown yet is
+# reserved for, since tall boxes always earn one once they land.
+def _body_width(screen):
+    from seine.tui.render import BOX_WIDTH
+    body = screen.query_one("#body", Static)
+    pane = screen.query_one("#cmd")
+    width = body.content_size.width
+    if width <= 0:
+        return BOX_WIDTH
+    if not pane.show_vertical_scrollbar:
+        width -= pane.scrollbar_size_vertical or 2
+    return width
+
 class OverviewScreen(BaseScreen):
+    HINT_ADD = [("complete", "logback", "Esc back (viewing a log)")]
+
+    # No-op unless a log is being viewed -- same shape as
+    # FilesystemScreen's own 'escape' -> action_close_preview.
+    BINDINGS = BaseScreen.BINDINGS + [Binding("escape", "close_log", show=False)]
+
+    # LogViewer takes over the tree's own slot rather than the right
+    # pane's: '#body' is still where node content and Logs: links live,
+    # a log's actual text goes on the left where SpecTree normally is.
+    def compose(self):
+        yield Horizontal(
+            SpecTree(id="spectree"),
+            LogViewer(id="logviewer"),
+            StaticPane(BodyStatic(id="body", markup=False), id="cmd"),
+            id="main",
+        )
+        yield from self.footer()
+
     # Not reported from SeineApp.on_mount(): the status bar isn't
     # mounted yet at that point.
     def on_mount(self):
-        # Set first: super().on_mount() refreshes at once and reads this.
+        # Set first: super().on_mount() refreshes at once and reads these.
         # Path of the picked node; None shows the full overview.
         self._selected_path = None
+        # Absolute path of the log currently shown in '#logviewer', or
+        # None when the tree is showing instead.
+        self._log_path = None
         super().on_mount()
         if self.app._startup_error:
             self.say(self.app._startup_error, error=True)
@@ -53,8 +114,40 @@ class OverviewScreen(BaseScreen):
     # reference would go stale. A dead path falls back to
     # the overview in update_body().
     def on_tree_node_selected(self, event):
-        self._selected_path = self.query_one(SpecTree).path_for(event.node)
+        self._track_selection(event.node)
+
+    # Cursor moves (up/down) re-render the pane too -- requiring Enter
+    # to see a node's content lagged one keystroke behind navigation.
+    def on_tree_node_highlighted(self, event):
+        self._track_selection(event.node)
+
+    def _track_selection(self, node):
+        self._selected_path = self.query_one(SpecTree).path_for(node)
         self.update_body()
+
+    # Swaps the tree for a log's text -- Esc (action_close_log) swaps
+    # back. resolve() turns an index.json-relative path back into
+    # something open()-able.
+    def action_show_log(self, path):
+        from seine import logindex
+        self._log_path = logindex.resolve(path)
+        self._refresh_log_pane()
+
+    def action_close_log(self):
+        if self._log_path is not None:
+            self._log_path = None
+            self._refresh_log_pane()
+
+    def _refresh_log_pane(self):
+        tree = self.query_one(SpecTree)
+        viewer = self.query_one(LogViewer)
+        showing = self._log_path is not None
+        if showing:
+            viewer.clear()
+            viewer.write(_read_log(self._log_path))
+        tree.display = not showing
+        viewer.display = showing
+        (viewer if showing else tree).focus()
 
     def update_body(self):
         tree = self.query_one(SpecTree)
@@ -75,7 +168,20 @@ class OverviewScreen(BaseScreen):
         elif node.data == "image" and node.parent is not None and node.parent.parent is tree.root:
             index = tree.root.children.index(node.parent)
             build = self.app.context.builds[index]
-            text = render_image_node(build.spec.get("image") or {})
+            text = render_image_node(build.spec.get("image") or {},
+                                     width=_body_width(self))
+            text = append_logs_section(
+                text, build.spec["distribution"]["release"],
+                build.spec["distribution"]["architecture"], ("image",))
+        elif (node.parent is not None and node.parent.parent is tree.root
+              and node.data in ("distribution", "packages", "playbook")):
+            # Task-backed branches with no dedicated renderer yet: generic
+            # fallback content, with their own logs appended below.
+            index = tree.root.children.index(node.parent)
+            build = self.app.context.builds[index]
+            text = append_logs_section(
+                render_node(node), build.spec["distribution"]["release"],
+                build.spec["distribution"]["architecture"], (node.data,))
         else:
             text = render_node(node)
         self.query_one("#body", Static).update(text)
@@ -198,15 +304,18 @@ class SeineApp(App):
     #main, #buildrow { height: 1fr; }
     /* 'round', not Input's default 'tall': 'tall' uses eighth-block
        glyphs some terminal fonts lack, breaking the border. */
-    #spectree, #tail { width: 2fr; height: 100%; }
-    #prompt, #spectree, #tail, #fslist, #previewpane { border: round $foreground 40%; }
-    #prompt:focus, #spectree:focus, #tail:focus, #fslist:focus, #previewpane:focus {
+    #spectree, #tail, #logviewer { width: 2fr; height: 100%; }
+    #prompt, #spectree, #tail, #fslist, #previewpane, #logviewer {
+        border: round $foreground 40%;
+    }
+    #prompt:focus, #spectree:focus, #tail:focus, #fslist:focus,
+    #previewpane:focus, #logviewer:focus {
         border: round $border;
     }
     #cmd, #tasks { width: 1fr; height: 100%; border: round $foreground 40%; }
     #body { padding: 1 2; }
     #tasklist { padding: 1 2; }
-    #tail { padding: 0 1; }
+    #tail, #logviewer { padding: 0 1; }
     /* Vendor screen: own ids, 1fr:1fr both rows (others are 2fr:1fr). */
     #vendormain, #vendorrow { height: 1fr; }
     #vendorspectree, #vendortail, #vendorstatspane, #vendortaskspane {

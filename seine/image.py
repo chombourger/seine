@@ -614,6 +614,17 @@ class Image:
             # 'sampled' is optional on a Reporter -- Display has none, so
             # the machine is still watched and recorded, just not pushed live.
             machine = analyze.watching(callback=getattr(reporter, "sampled", None))
+            # Announced before tasks.run() so index.json exists while the
+            # build is still running, not only after it finishes --
+            # record() below rewrites this same entry with the outcomes.
+            log_started = None
+            if self.logs:
+                log_started = logindex.begin(
+                    self.options.get("files") or [], release,
+                    self.spec["distribution"]["architecture"], self.logs,
+                    [{"name": t.name, "failed": False, "cached": False,
+                      "log": os.path.join(self.logs, "%s.log" % t.name)}
+                     for t in steps])
             try:
                 with machine, ticker:
                     tasks.run(steps, jobs=jobs, resources=resources,
@@ -636,7 +647,7 @@ class Image:
                     logindex.record(
                         self.options.get("files") or [], release,
                         self.spec["distribution"]["architecture"], self.logs,
-                        ran + cached, ok)
+                        ran + cached, ok, log_started)
 
             # Printed once at the end, as the answer to "is the cache working".
             said = cache_index.summary()
