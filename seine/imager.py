@@ -764,14 +764,19 @@ class Imager:
             # Fixed timestamp, not real mtimes: same content must give the
             # same bytes (and verity hash) across rebuilds.
             if m["type"] == "squashfs":
-                g.sh("%s %s %s -noappend -all-time %d%s" % (
+                # '-processors 1': parallel compression can place blocks
+                # and fragments in a different order every run, even for
+                # identical content.
+                g.sh("%s %s %s -noappend -all-time %d -processors 1%s" % (
                     run, m["_prefix"], scratch, FALLBACK_EPOCH,
                     " -comp %s" % comp if comp else ""))
             else:
-                # mkfs.erofs takes output before source, the reverse of mksquashfs
-                g.sh("%s%s -T%d %s %s" % (
+                # mkfs.erofs takes output before source, the reverse of
+                # mksquashfs. '-U' pins the volume UUID -- otherwise
+                # random, so /usr's own bytes would never repeat.
+                g.sh("%s%s -T%d -U %s %s %s" % (
                     run, " -z%s" % comp if comp else "", FALLBACK_EPOCH,
-                    scratch, m["_prefix"]))
+                    self._uuid_for("erofs", m["label"]), scratch, m["_prefix"]))
 
             built = g.filesize(scratch)
             built_sizes[id(m)] = built
