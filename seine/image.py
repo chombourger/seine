@@ -357,8 +357,8 @@ class Image:
         common = [
             self.targetBootstrap.task(self.hostBootstrap),
             Task("rootfs", self.rootfs,
-                needs=["bootstrap-target", needs_packages]),
-            Task("tarball", self.build_tarball, needs=["rootfs"]),
+                needs=["bootstrap-target", needs_packages], resource="io"),
+            Task("tarball", self.build_tarball, needs=["rootfs"], resource="io"),
             SBOM(distro, self.options).task(self),
         ]
 
@@ -385,7 +385,7 @@ class Image:
 
         return common + [
             Task("disk", self._prepare_disk,
-                needs=["tarball"] + self._source_task_names()),
+                needs=["tarball"] + self._source_task_names(), resource="io"),
         ] + Imager(self).tasks(needs_packages)
 
     # The rootfs tarball, made permanent -- build_tarball() leaves it a
@@ -544,6 +544,7 @@ class Image:
                 "no 'image:' section in this specification -- nothing to build")
         try:
             jobs = self.options.get("jobs", 1)
+            resources = self.options.get("resources")
             verbose = self.options.get("verbose", False)
 
             # Tracked per release, not per .deb: apt decides which cached
@@ -579,8 +580,8 @@ class Image:
             machine = analyze.watching(callback=getattr(reporter, "sampled", None))
             try:
                 with machine, ticker:
-                    tasks.run(steps, jobs=jobs, logs=self.logs, verbose=verbose,
-                              display=display)
+                    tasks.run(steps, jobs=jobs, resources=resources,
+                              logs=self.logs, verbose=verbose, display=display)
                 ok = True
             finally:
                 # Recorded even on failure: which steps ran and how long

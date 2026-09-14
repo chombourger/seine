@@ -36,6 +36,52 @@ class DefaultJobCount(avocado.Test):
         settings.save(current)
         self.assertEqual(BuildCmd().options["jobs"], 3)
 
+# 'resources' stays None until '--resource' is given, not {}.
+class ResourceOptionIsParsed(avocado.Test):
+    def setUp(self):
+        os.environ["XDG_CONFIG_HOME"] = self.workdir
+        self.spec = os.path.join(self.workdir, "spec.yaml")
+        with open(self.spec, "w") as f:
+            f.write(MINIMAL)
+
+    def test_unset_by_default(self):
+        self.assertIsNone(BuildCmd().options["resources"])
+
+    def test_one_class(self):
+        build = BuildCmd()
+        with self.assertRaises(SystemExit):
+            build.main(["--resource", "net=2", "-D", self.spec])
+        self.assertEqual(build.options["resources"], {"net": 2})
+
+    def test_repeated_flags_accumulate(self):
+        build = BuildCmd()
+        with self.assertRaises(SystemExit):
+            build.main(["--resource", "net=2", "--resource", "io=4",
+                       "-D", self.spec])
+        self.assertEqual(build.options["resources"], {"net": 2, "io": 4})
+
+    def test_not_a_number_is_rejected(self):
+        import contextlib
+        import io
+
+        build = BuildCmd()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                build.main(["--resource", "net=nope", self.spec])
+        self.assertIn("--resource expects", err.getvalue())
+
+    def test_zero_is_rejected(self):
+        import contextlib
+        import io
+
+        build = BuildCmd()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                build.main(["--resource", "net=0", self.spec])
+        self.assertIn("at least 1", err.getvalue())
+
 MINIMAL = """
 image:
     filename: simple-test.img
@@ -66,7 +112,8 @@ class RecordedDigestSurvivesTaskMutation(avocado.Test):
 
         # Stands in for what the real 'disk' task does mid-build, without
         # a real disk or a real partition table.
-        def mutating_run(steps, jobs=1, verbose=False, logs=None, display=None):
+        def mutating_run(steps, jobs=1, resources=None, verbose=False,
+                         logs=None, display=None):
             self.build.image.partitionHandler.compute_sizes()
             for step in steps:
                 step.started = step.ended = time.time()
@@ -149,7 +196,8 @@ class AnImageLessSpecificationWithSomethingToBuild(avocado.Test):
     def test_a_real_build_no_longer_crashes(self):
         build = self.parsed()
 
-        def fake_run(steps, jobs=1, verbose=False, logs=None, display=None):
+        def fake_run(steps, jobs=1, resources=None, verbose=False,
+                    logs=None, display=None):
             for step in steps:
                 step.started = step.ended = time.time()
                 step.failed = False

@@ -64,7 +64,8 @@ class ImageBuildTakesAReporter(avocado.Test):
         self.addCleanup(setattr, tasks, "run", self.real_run)
         self.calls = []
 
-        def fake_run(steps, jobs=1, verbose=False, logs=None, display=None):
+        def fake_run(steps, jobs=1, resources=None, verbose=False,
+                    logs=None, display=None):
             for step in steps:
                 if display is not None:
                     display.started(step.name)

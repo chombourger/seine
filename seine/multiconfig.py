@@ -301,6 +301,7 @@ def run(groups_files, options):
 
     all_tasks = merged_tasks(builds)
     jobs = options.get("jobs", 1)
+    resources = options.get("resources")
     verbose = options.get("verbose", False)
 
     for build in builds:
@@ -329,8 +330,8 @@ def run(groups_files, options):
         try:
             with machine, (display if display is not None
                            else contextlib.nullcontext()):
-                tasks.run(all_tasks, jobs=jobs, logs=logs, verbose=verbose,
-                         display=display)
+                tasks.run(all_tasks, jobs=jobs, resources=resources, logs=logs,
+                         verbose=verbose, display=display)
             ok = True
         finally:
             analyze.record(all_tasks, combined_digest,
