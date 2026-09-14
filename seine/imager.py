@@ -192,12 +192,19 @@ class Imager:
         g.rm("/rootfs.xattr")
 
     def _mkfs(self, g, part, dev):
-        fstype = STAGING_TYPE if part["type"] in RO_FSTYPES else part["type"]
+        ro = part["type"] in RO_FSTYPES
+        fstype = STAGING_TYPE if ro else part["type"]
         label = part.get("label")
         # For FAT this is throwaway: _normalize_fat_tree() redoes it with
         # mtools, which alone pins serial and timestamps. Just enough for
         # grub to have somewhere to write to for now.
-        g.mkfs(fstype, dev)
+        if ro:
+            # This staging mount is never rebuilt like root/var are, so
+            # its own random htree hash seed would reorder directory
+            # entries -- and so the RO image built from it -- every run.
+            g.mkfs(fstype, dev, features="^dir_index")
+        else:
+            g.mkfs(fstype, dev)
         if label:
             g.set_label(dev, label)
         # Not every fstype supports a UUID. Report it if this one fails,
