@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import avocado
+import contextlib
 import io
 import os
 import sys
+import unittest.mock
 
 path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
@@ -98,6 +100,56 @@ class FailuresAreCounted(avocado.Test):
         shown.started("two")
         shown.finished("two", failed=True)
         self.assertIn("2/2 done, 1 failed", stream.getvalue())
+
+class ALongNameNeverWrapsTheLiveLine(avocado.Test):
+    def test(self):
+        # A wrapped line breaks the erase math above it. Nothing
+        # written may be wider than the terminal.
+        stream = Terminal()
+        shown, clock = display(stream)
+        with unittest.mock.patch.dict(os.environ, {"COLUMNS": "40", "LINES": "24"}):
+            shown.started("uki:package:a-rather-long-multiconfig-task-name-amd64")
+        written = stream.getvalue()
+        for line in written.split("\n"):
+            self.assertLessEqual(len(line), 40)
+
+# pyte needs setup.py's 'tui' extra (bundled with textual/rich);
+# cancel rather than error if it truly isn't there, same convention
+# tests/tui/target.py's _pyte_required uses.
+@contextlib.contextmanager
+def _pyte_required(test):
+    try:
+        yield
+    except ImportError as e:
+        test.cancel("pyte is not installed: %s" % e)
+
+class RedrawsNeverDriftOffColumnZero(avocado.Test):
+    def test(self):
+        # Some ptys don't reset the column after '\n'. Replay the real
+        # bytes in a VT100 emulator and check the cursor stays put.
+        with _pyte_required(self):
+            import pyte
+        screen = pyte.Screen(60, 10)
+        vt = pyte.Stream(screen)
+
+        class Recorder(Terminal):
+            def write(self, s):
+                vt.feed(s)
+                return super().write(s)
+
+        stream = Recorder()
+        shown, clock = display(stream, total=3,
+                                environment={"TERM": "xterm"})
+        shown.started("uki:package:linux-uki-amd64")
+        shown.started("image:rootfs")
+        for _ in range(5):
+            clock[0] += 1
+            shown.frame += 1
+            shown._redraw()
+
+        self.assertEqual(screen.cursor.x, 0)
+        for line in screen.display:
+            self.assertNotIn("uki:package:linux-uki-amd64  1s", line)
 
 class StepsRunningAtOnceAreAllShown(avocado.Test):
     def test(self):

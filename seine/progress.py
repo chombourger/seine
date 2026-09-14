@@ -1,6 +1,7 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+import shutil
 import sys
 import threading
 import time
@@ -136,6 +137,14 @@ class Display:
             self.lines = 0
 
     def _line(self, text):
-        self.stream.write(text + "\n")
+        # A long line wraps to a row '_erase' does not count, which
+        # leaves stale frames on screen. Clip it so it never wraps.
+        if self.interactive:
+            width = shutil.get_terminal_size((80, 24)).columns
+            if len(text) >= width:
+                text = text[:width - 1]
+        # Some ptys skip the '\r' after '\n', so lines drift right
+        # and wrap. Add it ourselves.
+        self.stream.write(text + ("\r\n" if self.interactive else "\n"))
         if self.interactive:
             self.lines += 1
