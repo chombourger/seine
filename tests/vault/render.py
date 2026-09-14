@@ -51,7 +51,29 @@ class SpecRendering(avocado.Test):
                 build = BuildCmd()
                 build.loads("password: '[[ vault(\"kv/data/a#b\") ]]'\n")
                 self.assertEqual(build.spec["password"], "dev-value")
-                dev_class.assert_called_once_with()
+                dev_class.assert_called_once_with(defaults={})
+
+    # 'defaults: vault:' sits beside the vault() ref looking it up, but
+    # the file renders before it merges -- the lookup still seeds from
+    # the spec's own throwaway, not the hardcoded fallback.
+    def test_a_files_own_default_reaches_its_own_lookup(self):
+        seen = {}
+
+        class FakeProvider:
+            def __init__(self, defaults=None):
+                seen["defaults"] = defaults
+                self._defaults = defaults or {}
+
+            def kv_read(self, ref):
+                return self._defaults.get(ref, "fallback")
+
+        with mock.patch.object(vault, "for_build",
+                               side_effect=lambda defaults=None: FakeProvider(defaults)):
+            build = BuildCmd()
+            build.loads("defaults:\n  vault:\n    kv/data/a#b: spec-throwaway\n"
+                        "password: '[[ vault(\"kv/data/a#b\") ]]'\n")
+            self.assertEqual(build.spec["password"], "spec-throwaway")
+            self.assertEqual(seen["defaults"], {"kv/data/a#b": "spec-throwaway"})
 
     def test_specs_without_vault_refs_start_no_instance(self):
         with mock.patch.dict(os.environ, {}, clear=True):
