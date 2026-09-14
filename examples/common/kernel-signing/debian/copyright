@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: kernel-signing
+
+Files: *
+Copyright: none (a generated throwaway key, not for production use)
+License: public-domain
+ This key/cert pair exists only to make seine's own kernel module
+ signing reproducible across rebuilds. It carries no rights to assert.
