@@ -7,12 +7,13 @@ import os
 import secrets
 import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
 
 from seine.container import ContainerEngine
-from seine.vault.base import VaultError, VaultProvider
+from seine.vault.base import VaultError, VaultNotFound, VaultProvider
 from seine.vault.openbao import OpenBaoProvider
 
 LABEL = "seine.vault"
@@ -22,6 +23,15 @@ CREATED_LABEL = "seine.vault.created"
 # Backstop for pid reuse: an owner that looks alive cannot be trusted
 # forever, so anything older than this is reaped whatever it claims.
 STALE_AFTER = 24 * 3600
+
+# Fixed throwaways for local development only. Documented here, never
+# fresh-random (identical specs must keep stable digests across runs),
+# and never consulted for remote (which fails closed instead).
+DEV_DEFAULTS = {
+    # Password is "welcome123".
+    "kv/data/accounts/root#hash":
+        "$6$seinedev$ccTHYIq2vYrIL7os5.9sArjOo5MONfs9SyRg.4uN.8tMy8IPezo0N7Q4olw9TkaH3weI5YYRC7NeZrbi/ZKH2/",
+}
 
 START_TIMEOUT = 120
 
@@ -101,7 +111,36 @@ class DevVault(VaultProvider):
 
     def kv_read(self, ref):
         self._ensure_started()
-        return self._inner.kv_read(ref)
+        try:
+            return self._inner.kv_read(ref)
+        except VaultNotFound:
+            return self._seed(ref)
+
+    # A miss stores the tabled throwaway and warns loudly; an unknown
+    # ref stays a miss, so typos fail closed in dev too.
+    def _seed(self, ref):
+        try:
+            value = DEV_DEFAULTS[ref]
+        except KeyError:
+            raise VaultNotFound(
+                "dev vault has no '%s' and no throwaway default for it" % ref
+            ) from None
+        sys.stderr.write(
+            "warning: dev vault has no '%s'; seeding throwaway default "
+            "(local development only, never production)\n" % ref)
+        path, _, field = ref.partition("#")
+        try:
+            reply = self._inner._request(
+                "GET", "/v1/%s" % path, None, self._token)
+            data = reply.get("data") or {}
+            current = dict(data.get("data") if isinstance(data.get("data"), dict)
+                           else data)
+        except VaultNotFound:
+            current = {}
+        current[field] = value
+        self._inner._request(
+            "PUT", "/v1/%s" % path, {"data": current}, self._token)
+        return value
 
     def running(self):
         try:
