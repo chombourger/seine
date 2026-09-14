@@ -45,3 +45,12 @@ class VaultProvider:
 
     def pgp_detach_sign(self, name, data, timestamp):
         raise NotImplementedError
+
+    # Secure Boot signing through the seine-sbsign plugin: a PE goes
+    # up, signed with the named key at the given epoch, and comes
+    # back; the certificate half is public like any trust anchor.
+    def sbsign_cert(self, name):
+        raise NotImplementedError
+
+    def sbsign_sign(self, name, pe, timestamp):
+        raise NotImplementedError

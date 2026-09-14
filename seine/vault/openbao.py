@@ -159,6 +159,27 @@ class OpenBaoProvider(VaultProvider):
         key = "signed_data" if mode == "clearsign" else "signature"
         return _b64decode(_field(reply, "data", key))
 
+    # Secure Boot signing through the seine-sbsign plugin. Unknown
+    # keys fail closed; only explicit generate/import calls create.
+    def sbsign_cert(self, name):
+        reply = self._request(
+            "GET", "/v1/seine-sbsign/keys/%s/cert" % urllib.parse.quote(name, safe=""),
+            None, token=self._token)
+        return _field(reply, "data", "cert_pem")
+
+    def sbsign_sign(self, name, pe, timestamp):
+        if not isinstance(pe, bytes):
+            raise VaultError("secure-boot signing expects bytes, got %s"
+                             % type(pe).__name__)
+        if not isinstance(timestamp, int) or timestamp < 0:
+            raise VaultError("secure-boot signing expects a unix epoch timestamp")
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
+        reply = self._request(
+            "POST", "/v1/seine-sbsign/keys/%s/sign" % urllib.parse.quote(name, safe=""),
+            {"pe_base64": base64.b64encode(pe).decode(), "signing_time": stamp},
+            token=self._token)
+        return _b64decode(_field(reply, "data", "signed_pe_base64"))
+
     def _request(self, method, url_path, body, token):
         request = urllib.request.Request(
             self.addr + url_path,

@@ -13,12 +13,16 @@ import time
 import urllib.error
 import urllib.request
 
+from unittest import mock
+
 path_to_self = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
+from seine import vault
 from seine.container import ContainerEngine
-from seine.vault.dev import CUSTOM_IMAGE, ensure_image
+from seine.imager import Imager
+from seine.vault.dev import CUSTOM_IMAGE, DevVault, ensure_image
 
 TOKEN = "sbsign-contract-token"
 EFI_FIXTURE = "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
@@ -225,6 +229,92 @@ class SbsignContract(avocado.Test):
         twice = self._sign("db", once, stamp)
         self._sbverify(os.path.join(where, "db.crt"), twice)
         self.assertEqual(once, twice)
+
+
+class VaultSbsign(avocado.Test):
+    """
+    :avocado: tags=container
+    """
+    timeout = 900
+
+    def setUp(self):
+        if shutil.which("podman") is None:
+            self.cancel("podman is needed to start a dev vault")
+        if shutil.which("sbverify") is None:
+            self.cancel("sbverify is needed to check signatures")
+        ensure_image()
+        self._tmpdirs = []
+        self._env = mock.patch.dict(os.environ, {"SEINE_VAULT_ADDR": "",
+                                                  "VAULT_ADDR": ""})
+        self._env.start()
+        self._devs = []
+
+    def tearDown(self):
+        for dev in getattr(self, "_devs", []):
+            dev.close()
+        for path in getattr(self, "_tmpdirs", []):
+            shutil.rmtree(path, ignore_errors=True)
+        vault.clear_secrets()
+        if getattr(self, "_env", None) is not None:
+            self._env.stop()
+
+    def test_sign_end_to_end(self):
+        dev = DevVault()
+        self._devs.append(dev)
+        with open(EFI_FIXTURE, "rb") as f:
+            data = f.read()
+        # Any epoch goes: CMS signing time accepts whatever it gets,
+        # so dev needs no clamping the way PGP keys do.
+        epoch = 1767225600
+        signed = dev.sbsign_sign("db", data, epoch)
+        cert = dev.sbsign_cert("db")
+        where = tempfile.mkdtemp(prefix="seine-sbsign-dev-")
+        self._tmpdirs.append(where)
+        with open(os.path.join(where, "db.crt"), "w") as f:
+            f.write(cert)
+        path = os.path.join(where, "signed.efi")
+        with open(path, "wb") as f:
+            f.write(signed)
+        verified = subprocess.run(["sbverify", "--cert",
+                                   os.path.join(where, "db.crt"), path],
+                                  capture_output=True, text=True)
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        self.assertEqual(dev.sbsign_sign("db", data, epoch), signed)
+
+
+class ImagerWiring(avocado.Test):
+    def imager(self, secure_boot):
+        imager = Imager.__new__(Imager)
+        imager.source = mock.Mock()
+        imager.source.partitionHandler.secure_boot = secure_boot
+        imager._extra_tools = mock.Mock()
+        imager._extra_tools.name = "tools"
+        return imager
+
+    def test_vault_key_calls_the_provider(self):
+        imager = self.imager({"private-key": "vault:db"})
+        with open(os.path.join(self.workdir, "rebuilt.efi"), "wb") as f:
+            f.write(b"pe-bytes")
+        provider = mock.Mock()
+        provider.sbsign_sign.return_value = b"signed-pe"
+        with mock.patch.object(vault, "for_build", return_value=provider):
+            self.assertEqual(imager._sign_uki(self.workdir, 1234), "signed.efi")
+        provider.sbsign_sign.assert_called_once_with("db", b"pe-bytes", 1234)
+        with open(os.path.join(self.workdir, "signed.efi"), "rb") as f:
+            self.assertEqual(f.read(), b"signed-pe")
+
+    def test_host_key_still_mounts_files(self):
+        key = os.path.join(self.workdir, "db.key")
+        cert = os.path.join(self.workdir, "db.crt")
+        for path in (key, cert):
+            with open(path, "w") as f:
+                f.write("x")
+        imager = self.imager({"private-key": key, "public-cert": cert})
+        with mock.patch.object(ContainerEngine, "run") as run:
+            self.assertEqual(imager._sign_uki(self.workdir, 1234), "signed.efi")
+        args = run.call_args[0][0]
+        self.assertIn("%s:/work-key:ro" % key, args)
+        self.assertIn("%s:/work-cert:ro" % cert, args)
 
 
 if __name__ == "__main__":
