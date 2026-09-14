@@ -5,6 +5,7 @@ import avocado
 import contextlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -198,6 +199,98 @@ class Rendering(avocado.Test):
         text = self.render_plan(context)
         self.assertIn("would build", text)
         self.assertIn("steps:", text)
+
+def _line_for(text, path):
+    for line in text.splitlines():
+        if line.strip().endswith(path):
+            return line
+    return None
+
+# render_root_node(): file list with git-status/lock marks, plus
+# the same stats render_overview() shows.
+class RootNodeRendering(avocado.Test):
+    """
+    :avocado: tags=tui
+    """
+    def setUp(self):
+        with _tui_required(self):
+            from seine.tui.context import Context
+            from seine.tui.render import render_root_node
+        self.Context = Context
+        self.render_root_node = render_root_node
+        os.environ["SEINE_CACHE_DIR"] = self.workdir
+
+    def test_files_are_marked_with_git_status_and_lock_icon(self):
+        repo = os.path.join(self.workdir, "repo")
+        os.makedirs(repo)
+        for cmd in (["init", "-q", repo],
+                   ["-C", repo, "config", "user.email", "t@example.com"],
+                   ["-C", repo, "config", "user.name", "t"]):
+            subprocess.run(["git"] + cmd, check=True)
+        spec_text = (
+            "distribution:\n"
+            "    release: bookworm\n"
+            "    architecture: amd64\n"
+            "    uri: http://example.com/debian\n"
+            "vendor:\n"
+            "    - name: openssl\n")
+        clean = os.path.join(repo, "clean.yaml")
+        modified = os.path.join(repo, "modified.yaml")
+        with open(clean, "w") as f:
+            f.write(spec_text)
+        with open(modified, "w") as f:
+            f.write(spec_text)
+        # modified.lock.yaml auto-pairs with modified.yaml. Use '{}',
+        # not empty -- an empty file parses as None, which merge()
+        # can't treat as a spec fragment.
+        with open(os.path.join(repo, "modified.lock.yaml"), "w") as f:
+            f.write("{}\n")
+        subprocess.run(["git", "-C", repo, "add", "clean.yaml", "modified.yaml"], check=True)
+        subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "initial"], check=True)
+        with open(modified, "a") as f:
+            f.write("# edited after commit\n")
+        untracked = os.path.join(repo, "untracked.yaml")
+        with open(untracked, "w") as f:
+            f.write(spec_text)
+
+        files = [clean, modified, untracked]
+        context = self.Context()
+        context.use(files)
+        text = self.render_root_node(files, context.builds[0])
+
+        modified_line = _line_for(text, modified)
+        self.assertIn("M", modified_line)
+        self.assertIn("\U0001F512", modified_line)
+
+        untracked_line = _line_for(text, untracked)
+        self.assertIn("??", untracked_line)
+
+        clean_line = _line_for(text, clean)
+        self.assertNotIn("M", clean_line)
+        self.assertNotIn("?", clean_line)
+        self.assertNotIn("\U0001F512", clean_line)
+
+        # The same per-build stats render_overview() shows, still there
+        # below the file list.
+        self.assertIn("spec: not built from here yet", text)
+
+    def test_a_file_outside_any_git_repo_gets_no_marker(self):
+        outside = os.path.join(self.workdir, "outside.yaml")
+        with open(outside, "w") as f:
+            f.write(
+                "distribution:\n"
+                "    release: bookworm\n"
+                "    architecture: amd64\n"
+                "    uri: http://example.com/debian\n"
+                "vendor:\n"
+                "    - name: openssl\n")
+        context = self.Context()
+        context.use([outside])
+        text = self.render_root_node([outside], context.builds[0])
+        line = _line_for(text, outside)
+        self.assertIsNotNone(line)
+        self.assertNotIn("M", line)
+        self.assertNotIn("?", line)
 
 # What the last build actually wrote: a stat-based listing of
 # 'ContainerEngine.deploy_root()/<release>/', nothing tracked separately.
@@ -847,9 +940,25 @@ class App(avocado.Test):
                 self.assertIn("would write:", _content(body))
         _run(scenario)
 
-    # Tab to the tree, move down, then Enter picks that node.
-    # The right pane must show it, not the overview text.
+    # Tab into the tree, Down twice (past the group node, tested
+    # separately below) then Enter picks a leaf. The right pane must
+    # show it, not the overview text.
     def test_selecting_a_tree_node_drives_the_right_pane(self):
+        async def scenario():
+            app = self.SeineApp(files=[NATIVE_IMAGE])
+            async with app.run_test() as pilot:
+                await pilot.press("tab")
+                await pilot.press("down")
+                await pilot.press("down")
+                await pilot.press("enter")
+                await pilot.pause()
+                body = app.screen.query_one("#body")
+                self.assertNotIn("would write:", _content(body))
+        _run(scenario)
+
+    # Tab, Down, Enter on the group node itself should show its own
+    # spec-files list, not the overview or generic fallback.
+    def test_selecting_the_group_node_shows_its_spec_files(self):
         async def scenario():
             app = self.SeineApp(files=[NATIVE_IMAGE])
             async with app.run_test() as pilot:
@@ -858,7 +967,9 @@ class App(avocado.Test):
                 await pilot.press("enter")
                 await pilot.pause()
                 body = app.screen.query_one("#body")
-                self.assertNotIn("would write:", _content(body))
+                text = _content(body)
+                self.assertIn("spec files:", text)
+                self.assertIn(NATIVE_IMAGE, text)
         _run(scenario)
 
     def test_startup_with_a_bad_spec_shows_the_error_not_a_crash(self):
