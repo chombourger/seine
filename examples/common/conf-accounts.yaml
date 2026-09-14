@@ -6,12 +6,13 @@
 redact:
     - \$6\$\S+
 
-# Fixed dev-only root hash ("welcome123"): dev vaults seed this on a
-# miss so local builds agree, remote vaults fail closed instead.
-# Obtained with: python3 -c 'import crypt; print(crypt.crypt("welcome123", crypt.mksalt(crypt.METHOD_SHA512)))'
+# Fixed dev-only root secrets ("welcome123"): dev vaults seed these
+# on a miss so local builds agree, remote vaults fail closed instead.
+# Hash obtained with: python3 -c 'import crypt; print(crypt.crypt("welcome123", crypt.mksalt(crypt.METHOD_SHA512)))'
 defaults:
     vault:
         kv/data/accounts/root#hash: $6$X1SbKPWJ2tkpDFZb$khtcnptnTxWEYA4qCq/SHioxz6cmw2GFnnVi7YE/kkT257HIXrTTiGDNuAnAfvG6xiXygf9XYSHZoU8JuvU4J0
+        kv/data/accounts/root#password: welcome123
 
 playbook:
     - name: configure user accounts
@@ -20,7 +21,7 @@ playbook:
         - name: set root password
           user: name=root update_password=always password=[[ vault("kv/data/accounts/root#hash") ]]
 
-# 'Log In' beside the password it uses, so a change to it (a new hash
+# 'Log In' beside the password it uses, so a change to it (a new password
 # above) is one edit rather than a search-and-replace across every
 # board's own test suite -- any of them reaches this keyword the same
 # way they already reach the password: 'requires:'-ing this file. Also
@@ -48,7 +49,7 @@ test:
                 - console_send: {data: "root\n"}
                 - console_wait: {pattern: "Password:", timeout: 15s, assign: GOT}
                 - should_be_true: ["${GOT}", "never asked for a password"]
-                - console_send: {data: "welcome123\n"}
+                - console_send: {data: "[[ vault('kv/data/accounts/root#password') ]]\n"}
                 # No wait for the shell's own first prompt here -- its
                 # exact text varies (the hostname, plus whatever MOTD
                 # precedes it) and a pattern matching it has already
