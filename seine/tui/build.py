@@ -205,10 +205,15 @@ def start_build(app, state, build, packages_only=False, target=None):
     previous_target = build.options.get("target")
     build.options["packages_only"] = packages_only
     build.options["target"] = target
+    # Taken before the build, which writes computed sizes back into
+    # the spec as it goes -- dumped, so '_'-keys never reach the file.
+    files = list(build.options.get("files") or [])
+    recorded = build.dump(build.spec)
     state.reset(build)
     reporter = TextualReporter(app, state)
 
     def run():
+        from seine.diffing import remember
         try:
             build.build(reporter=reporter)
         except (tasks.Failed, tasks.Interrupted) as e:
@@ -220,6 +225,8 @@ def start_build(app, state, build, packages_only=False, target=None):
         finally:
             build.options["packages_only"] = previous_packages_only
             build.options["target"] = previous_target
+        # Only a finished build moves the baseline, same as the CLI.
+        remember(files, recorded)
         app.call_from_thread(state.finished_ok)
 
     state.worker = app.run_worker(run, thread=True, exclusive=True, group="build")
