@@ -15,11 +15,30 @@ from seine.utils import redactions
 
 # A list item's own name, matched to the same fields BuildCmd.diff()
 # uses (name/label/suite/package), so an entry reads the same here.
+# A single-key dict with none of those (an 'apt:' task, a
+# 'console_wait:' step) is labelled by its one key instead.
 def _item_label(item, index):
     if isinstance(item, dict):
         for key in ("name", "label", "suite", "package"):
             if key in item:
                 return str(item[key])
+        visible = [k for k in item
+                   if not (isinstance(k, str) and k.startswith("_"))]
+        if len(visible) == 1:
+            return "[%d] %s" % (index, visible[0])
+    elif isinstance(item, list):
+        if len(item) == 1:
+            only = item[0]
+            if isinstance(only, dict):
+                # Strip the recursive call's own '[0]' prefix so it
+                # isn't doubled under the real index ('[3] [0] apt').
+                inner = _item_label(only, 0)
+                if inner.startswith("[0] "):
+                    inner = inner[len("[0] "):]
+                elif inner == "[0]":
+                    return "[%d]" % index
+                return "[%d] %s" % (index, inner)
+            return "[%d] %s" % (index, only)
     # '[0]', not '0': a bare number reads like a value, not a position.
     return "[%d]" % index
 
