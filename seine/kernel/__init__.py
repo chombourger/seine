@@ -17,7 +17,13 @@ import yaml
 # Keys accepted under 'extends: kernel:'.
 SETTINGS = ["abi-suffix", "build-files", "configs", "derived-flavours",
             "drop-patches", "featureset", "flavour", "fragments",
-            "keep-patches", "upstream", "upstream-sha256"]
+            "keep-patches", "signing-key-package", "upstream",
+            "upstream-sha256"]
+
+# Where a 'signing-key-package' installs the fixed key -o MODULE_SIG_KEY
+# is redirected to -- a seine convention, not read off the package name,
+# so any package providing one just needs to install it here.
+SIGNING_KEY_PATH = "/usr/share/seine/kernel-signing/signing_key.pem"
 
 # A literal 'CONFIG_X=value' assignment, or kconfig's own disabled form
 # '# CONFIG_X is not set'. Both are accepted in 'configs:' so a fragment
@@ -121,8 +127,8 @@ from .upstream import (SERIES_CHECK, UPSTREAM, _check_series,
                        _source_name, _touches, _upstream_args,
                        _verify_upstream, fetch_upstream, graft,
                        module_lds_patch)
-from .apply import (_abiname, _check_flavour, _kernel_packages,
-                    _record_abiname, extend)
+from .apply import (_abiname, _apply_signing_key, _check_flavour,
+                    _kernel_packages, _record_abiname, extend)
 from .flavour import (_add_derived_flavours, _defines_list,
                       _defines_replace, _defines_set, _derive_flavour_block,
                       _disable_signed, _restrict_flavour,

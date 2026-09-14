@@ -207,3 +207,11 @@ def parse(package, extends):
         if value is not None and type(value) != type(""):
             raise package._error(
                 "'extends: kernel: %s' shall be a string" % setting)
+    # The Debian package (e.g. built via 'source: file://...') a rebuilt
+    # kernel Build-Depends on for a fixed module-signing key, in place of
+    # the random one Debian's own packaging generates and discards.
+    package.kernel_signing_key_package = settings.get("signing-key-package")
+    if (package.kernel_signing_key_package is not None
+            and type(package.kernel_signing_key_package) != type("")):
+        raise package._error(
+            "'extends: kernel: signing-key-package' shall be a string")

@@ -10,6 +10,7 @@ import re
 
 from seine.utils import WORKDIR
 
+from . import SIGNING_KEY_PATH
 from .config import _write_configs
 from .flavour import (_add_derived_flavours, _disable_signed,
                       _restrict_flavour, _set_abi_suffix)
@@ -27,6 +28,9 @@ def extend(builder, package, sourcedir, architectures):
         if os.path.isfile(fragment) == False:
             raise ValueError("package '%s': no such kernel configuration "
                              "fragment: %s" % (package.source, fragment))
+
+    if package.kernel_signing_key_package is not None:
+        _apply_signing_key(package, sourcedir)
 
     for architecture in architectures:
         config = os.path.join(sourcedir, "debian", "config", architecture,
@@ -86,6 +90,40 @@ def extend(builder, package, sourcedir, architectures):
     if package.kernel_flavour is not None or package.kernel_derived_flavours:
         for architecture in architectures:
             _check_flavour(package, sourcedir, architecture)
+
+# Points Debian's module-signing at a fixed key instead of a fresh one
+# each build, and Build-Depends on the key package. Verified against
+# Debian's exact text so a packaging change raises, not silently no-ops.
+def _apply_signing_key(package, sourcedir):
+    template = os.path.join(sourcedir, "debian", "templates",
+                            "source.control.in")
+    anchor = "Build-Depends:\n debhelper-compat (= 13),\n"
+    with open(template, "r") as f:
+        contents = f.read()
+    if anchor not in contents:
+        raise ValueError(
+            "package '%s': %s has no '%s' to add "
+            "'signing-key-package' to as a Build-Depends -- Debian's "
+            "kernel packaging changed shape" % (package.source, template, anchor))
+    contents = contents.replace(
+        anchor, "Build-Depends:\n %s,\n debhelper-compat (= 13),\n"
+                % package.kernel_signing_key_package, 1)
+    with open(template, "w") as f:
+        f.write(contents)
+
+    rules_real = os.path.join(sourcedir, "debian", "rules.real")
+    anchor = 'MODULE_SIG_KEY=\\"output/signing_key.pem\\"'
+    with open(rules_real, "r") as f:
+        contents = f.read()
+    if anchor not in contents:
+        raise ValueError(
+            "package '%s': %s has no '%s' to redirect at a fixed key -- "
+            "Debian's kernel packaging changed shape"
+            % (package.source, rules_real, anchor))
+    contents = contents.replace(
+        anchor, 'MODULE_SIG_KEY=\\"%s\\"' % SIGNING_KEY_PATH, 1)
+    with open(rules_real, "w") as f:
+        f.write(contents)
 
 # The ABI this kernel ended up with, read off the just-regenerated control
 # file. Silently skipped if unreadable: a kernel with no modules built
