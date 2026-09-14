@@ -35,3 +35,18 @@ playbook:
               name: Ciphers
               algorithm: aes128-cbc
               state: present
+
+        # openssh-server's postinst generates these at install time --
+        # every image would share the same keys otherwise. Debian
+        # regenerates any missing one at first real boot.
+        - name: drop the install-time host keys
+          file:
+              path: "{{ item }}"
+              state: absent
+          loop:
+              - /etc/ssh/ssh_host_rsa_key
+              - /etc/ssh/ssh_host_rsa_key.pub
+              - /etc/ssh/ssh_host_ecdsa_key
+              - /etc/ssh/ssh_host_ecdsa_key.pub
+              - /etc/ssh/ssh_host_ed25519_key
+              - /etc/ssh/ssh_host_ed25519_key.pub
