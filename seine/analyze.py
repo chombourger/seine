@@ -23,8 +23,20 @@ KEEP = 20
 # Keyed by the merged spec, not the steps, so a build resumed after
 # a failure files under the same key as the failed run.
 # default=repr covers values json can't serialize directly.
+#
+# '_'-prefixed keys are left out: parsers and the build itself write
+# these back into the spec as it runs, so a digest taken after a run
+# would never match a fresh reload -- same reason BuildCmd.dump() hides them.
+def _cleaned(spec):
+    if isinstance(spec, dict):
+        return {key: _cleaned(value) for key, value in spec.items()
+                if not key.startswith("_")}
+    if isinstance(spec, list):
+        return [_cleaned(value) for value in spec]
+    return spec
+
 def spec_digest(spec):
-    return _digest(json.dumps(spec, sort_keys=True, default=repr))
+    return _digest(json.dumps(_cleaned(spec), sort_keys=True, default=repr))
 
 # Keyed separately from spec_digest: a resumed build can run a
 # different set of steps than the run it resumed.
