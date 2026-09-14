@@ -170,6 +170,9 @@ class ConsoleAdapter:
         # printing one character at a time. dirty is a plain flag;
         # TargetScreen's tick redraws instead, poll not push.
         self.dirty = False
+        # When the last byte arrived, so disconnect() can wait for
+        # quiet before stopping the stream mid-word. None until then.
+        self._last_byte_at = None
 
     def _cast_for_test(self, test_name):
         if not test_name:
@@ -222,9 +225,15 @@ class ConsoleAdapter:
             data = data.encode("utf-8")
         self.stream.feed(data)
         self.dirty = True
-        if self._log is not None:
-            self._log.write(data)
-            self._log.flush()
+        self._last_byte_at = time.time()
+        # A byte landing mid-teardown (after close() shut the files)
+        # is dropped rather than thrown into mtda's thread.
+        try:
+            if self._log is not None:
+                self._log.write(data)
+                self._log.flush()
+        except (OSError, ValueError):
+            pass
         # Per-test cast (if a test is running) plus the global run cast:
         # the per-test file is scoped evidence for that test, the
         # global one covers the whole run. Read under the same lock
@@ -239,10 +248,13 @@ class ConsoleAdapter:
                     w = self._cast_for_test(test)
                     if w is not None:
                         w.write(data)
-                except Exception:
+                except (OSError, ValueError):
                     pass
         if self._cast is not None:
-            self._cast.write(data)
+            try:
+                self._cast.write(data)
+            except (OSError, ValueError):
+                pass
 
     def on_event(self, event):
         self.app.target_state.on_event(event)
