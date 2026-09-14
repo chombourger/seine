@@ -1,6 +1,7 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import os
 import re
 import shutil
@@ -633,8 +634,14 @@ class Imager:
         run = "LD_LIBRARY_PATH=%s %s/veritysetup" % (tools_dir, tools_dir)
         hash_scratch = "%s/%s.verity.img" % (work_dir, hp["label"])
         roothash_file = "%s/%s.roothash" % (work_dir, hp["label"])
-        g.sh("%s format --root-hash-file=%s %s %s"
-             % (run, roothash_file, scratch, hash_scratch))
+        # Without these, verity picks a random salt and UUID each build,
+        # so even identical content gets a different root hash every time.
+        salt = hashlib.sha256(
+            ("verity-salt:%s" % self._uuid_for("verity-salt", m["label"])).encode()
+        ).hexdigest()
+        g.sh("%s format --root-hash-file=%s --salt=%s --uuid=%s %s %s"
+             % (run, roothash_file, salt, self._uuid_for("verity-uuid", m["label"]),
+                scratch, hash_scratch))
         roothash = g.read_file(roothash_file).decode().strip()
         g.rm(roothash_file)
         if len(roothash) != 64:
