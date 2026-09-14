@@ -12,6 +12,7 @@ import time
 
 from seine               import analyze
 from seine               import cache_index
+from seine               import logindex
 from seine               import packages
 from seine               import progress
 from seine               import tasks
@@ -621,6 +622,14 @@ class Image:
                     rootfs_size = os.path.getsize(self._tarball)
                 analyze.record(steps, digest, jobs=jobs, ok=ok, machine=machine,
                                rootfs_size=rootfs_size)
+                if self.logs:
+                    logindex.record(
+                        self.options.get("files") or [], release,
+                        self.spec["distribution"]["architecture"], self.logs,
+                        [{"name": t.name, "failed": t.failed, "cached": False,
+                         "log": os.path.join(self.logs, "%s.log" % t.name)}
+                        for t in steps if t.started is not None],
+                        ok)
 
             # Printed once at the end, as the answer to "is the cache working".
             said = cache_index.summary()
