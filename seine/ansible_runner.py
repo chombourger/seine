@@ -253,6 +253,10 @@ class AnsibleContainerRunner:
         # autoremove sweeps them away here without this runner needing to
         # know what TransportBootstrap actually installed.
         self._exec(["apt-get", "autoremove", "-qqy"])
+        # TargetBootstrap's cross-arch helpers (bootstrap.py) are only
+        # needed to run foreign-arch maintainer scripts up to this point
+        # -- they have no purpose in the shipped image.
+        self._exec(["sh", "-c", "rm -f /usr/bin/qemu-*-static"])
         # The rebuilt packages are installed by now; leaving apt pointed at
         # a repository that only exists on the machine that built the image
         # would break the first 'apt-get update' run on the target.
