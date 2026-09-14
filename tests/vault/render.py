@@ -42,18 +42,22 @@ class SpecRendering(avocado.Test):
             self.assertIn("<string>", str(caught.exception))
             self.assertIn("kv/data/a#b", str(caught.exception))
 
-    def test_no_vault_configured_fails_closed(self):
+    def test_an_unconfigured_addr_uses_the_dev_instance(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            build = BuildCmd()
-            with self.assertRaises(ValueError) as caught:
+            with mock.patch("seine.vault.dev.DevVault") as dev_class:
+                dev_class.return_value.kv_read.return_value = "dev-value"
+                build = BuildCmd()
                 build.loads("password: '[[ vault(\"kv/data/a#b\") ]]'\n")
-            self.assertIn("SEINE_VAULT_ADDR", str(caught.exception))
+                self.assertEqual(build.spec["password"], "dev-value")
+                dev_class.assert_called_once_with()
 
-    def test_specs_without_vault_refs_need_no_vault(self):
+    def test_specs_without_vault_refs_start_no_instance(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            build = BuildCmd()
-            build.loads("distribution:\n  release: trixie\n")
-            self.assertEqual(build.spec["distribution"]["release"], "trixie")
+            with mock.patch("seine.vault.dev.DevVault") as dev_class:
+                build = BuildCmd()
+                build.loads("distribution:\n  release: trixie\n")
+                self.assertEqual(build.spec["distribution"]["release"], "trixie")
+                dev_class.assert_not_called()
 
     def test_probing_never_calls_the_vault(self):
         provider = mock.Mock()
