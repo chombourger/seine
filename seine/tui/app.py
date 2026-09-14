@@ -30,8 +30,8 @@ from seine.tui.history import History
 from seine.tui.issues import IssuesScreen
 from seine.tui.vendor import VendorScreen, VendorState
 from seine.tui.render import (render_analyze, render_artifacts, render_cache,
-                              render_doctor, render_overview, render_packages,
-                              render_plan)
+                              render_doctor, render_node, render_overview,
+                              render_packages, render_plan)
 from seine.tui.spectree import SpecTree
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
@@ -41,12 +41,28 @@ class OverviewScreen(BaseScreen):
     # Not reported from SeineApp.on_mount(): the status bar isn't
     # mounted yet at that point.
     def on_mount(self):
+        # Set first: super().on_mount() refreshes at once and reads this.
+        # Path of the picked node; None shows the full overview.
+        self._selected_path = None
         super().on_mount()
         if self.app._startup_error:
             self.say(self.app._startup_error, error=True)
 
+    # Stored as a path: load() rebuilds all nodes, so a raw
+    # reference would go stale. A dead path falls back to
+    # the overview in update_body().
+    def on_tree_node_selected(self, event):
+        self._selected_path = self.query_one(SpecTree).path_for(event.node)
+        self.update_body()
+
     def update_body(self):
-        self.query_one("#body", Static).update(render_overview(self.app.context))
+        node = None
+        if self._selected_path is not None:
+            node = self.query_one(SpecTree).node_for(self._selected_path)
+            if node is None:
+                self._selected_path = None
+        text = render_node(node) if node is not None else render_overview(self.app.context)
+        self.query_one("#body", Static).update(text)
 
 class PlanScreen(BaseScreen):
     def update_body(self):
