@@ -1963,6 +1963,13 @@ class RealEndpoint(avocado.Test):
                     await pilot.pause()
                 self.assertFalse(app.ai_state.busy, "the real endpoint never answered")
                 self.assertIsInstance(app.screen, self.ChatScreen)
+                roles = [m["role"] for m in app.ai_state.messages]
+                # A live endpoint can hiccup (rate limit, timeout) through
+                # no fault of seine's own -- that cancels, it doesn't fail.
+                # Only a completed round trip with broken invariants fails.
+                if "assistant" not in roles and app.ai_state.errors:
+                    self.cancel("real endpoint errored: %s"
+                                % app.ai_state.errors[-1])
                 # Not "the model called a tool" -- a live model's own
                 # judgement call, and asserting on it would make this
                 # test flaky through no fault of seine's own. What is
@@ -1970,7 +1977,6 @@ class RealEndpoint(avocado.Test):
                 # auth, streaming, token accounting) actually completes;
                 # 'TheLoop' above already proves the tool-dispatch
                 # mechanics deterministically, with a fake model.
-                roles = [m["role"] for m in app.ai_state.messages]
                 self.assertEqual(roles[0], "user")
                 self.assertIn("assistant", roles)
                 self.assertGreater(app.ai_state.prompt_tokens, 0)
