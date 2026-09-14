@@ -113,6 +113,9 @@ class BuildCmd(Cmd):
         self._names = []
         self._prober = None
         self._probed = set()
+        # Lazily started on first vault() use, so specs without vault
+        # refs build with no vault configured.
+        self._vault_provider = None
         # 'multiconfig:' groups this specification declares, name -> the
         # BuildCmd that parsed it -- see _parse_multiconfig(). Empty for
         # a specification with none.
@@ -208,16 +211,33 @@ class BuildCmd(Cmd):
                 raise ValueError("%s: 'requires' cannot be templated!"
                                  % yaml_filename)
         context = self._variables if self._variables is not None else self.spec
+        from seine import vault as _vault
         try:
             template = PROBE if self._probing else TEMPLATE
             if self._probing:
                 self._names.append((yaml_filename,
                     jinja2.meta.find_undeclared_variables(
-                        template.parse(yaml_spec))))
-            return template.from_string(yaml_spec).render(context or {})
+                        template.parse(yaml_spec)) - {"vault"}))
+                return template.from_string(yaml_spec).render(
+                    dict(context or {}, vault=lambda ref: ""))
+            rendered = template.from_string(yaml_spec).render(
+                dict(context or {}, vault=self._vault_lookup))
+            return rendered
+        except _vault.VaultError as e:
+            raise ValueError("%s: %s" % (yaml_filename, e)) from e
         except jinja2.TemplateError as e:
             raise ValueError("%s:%s: %s"
                 % (yaml_filename, getattr(e, "lineno", "?"), e)) from e
+
+    # One provider per build, started on first use. Resolved values are
+    # recorded so dumps redact them and digests hide them.
+    def _vault_lookup(self, ref):
+        from seine import vault as _vault
+        if self._vault_provider is None:
+            self._vault_provider = _vault.for_build()
+        value = self._vault_provider.kv_read(ref)
+        _vault.record_secret(value if isinstance(value, str) else str(value))
+        return value
 
     # Takes raw text, not a stream, so loads() and load() can share this.
     # A YAML error while probing is swallowed (the lenient render may have

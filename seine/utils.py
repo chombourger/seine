@@ -329,6 +329,15 @@ def redactions(spec):
         except re.error as e:
             raise ValueError("redact: '%s' is not a pattern: %s"
                              % (pattern, e)) from e
+    # Vault values redact themselves: the fragment holding a secret is
+    # rarely the one that knows it is one.
+    try:
+        from seine import vault as _vault
+        for secret in _vault.secrets():
+            if secret and len(secret) >= 4:
+                patterns.append(re.compile(re.escape(secret)))
+    except ImportError:
+        pass
     return patterns
 
 # A value with every pattern match replaced, so a pattern can target just
