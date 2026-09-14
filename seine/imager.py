@@ -26,8 +26,8 @@ from seine.utils            import HOST_ARCH
 
 DEVICE = "/dev/sda"
 
-# An ext rebuild needs room for a content copy plus the new image
-# at once, more than any partition has spare. A throwaway second
+# An ext or FAT rebuild needs room for a content copy plus the new
+# image at once, more than any partition has spare. A throwaway second
 # disk gives that room without touching real partitions.
 SCRATCH_DEVICE = "/dev/sdb"
 SCRATCH_MOUNT = "/.ext-scratch-disk"
@@ -317,6 +317,22 @@ class Imager:
     def _normalize_mount_timestamps(self, g, mounts, mount_devices):
         epoch = self.source._epoch()
         started = int(self.source._started)
+        # ext2/3/4 has no syscall for ctime/crtime either, so it's
+        # rebuilt with mke2fs -d, same idea as FAT above. Deepest first:
+        # root goes last, once its children are already rebuilt.
+        ext_mounts = [m for m in mounts if m["type"] in EXT_FSTYPES]
+        fat_mounts = [m for m in mounts if m["type"] in ("vfat", "msdos")]
+        # FAT staging needs a full copy of the partition, which does not
+        # fit in root's own auto-sized slack -- use the scratch disk,
+        # mounted only when create() actually added one.
+        scratch_mounted = False
+        if ext_mounts or fat_mounts:
+            # Unmounted again by this source's own g.umount_all(), same as
+            # every other mount here -- freshly (re)mounted per source.
+            g.mkdir_p(SCRATCH_MOUNT)
+            g.mount(SCRATCH_DEVICE, SCRATCH_MOUNT)
+            scratch_mounted = True
+        staging = SCRATCH_MOUNT if scratch_mounted else ""
         for m in mounts:
             if m["type"] in RO_FSTYPES:
                 continue
@@ -325,17 +341,9 @@ class Imager:
             g.sh("find %s -xdev -newermt '@%d' -exec touch --no-dereference "
                  "--date=@%d {} +" % (m["_prefix"], started, epoch))
             if m["type"] in ("vfat", "msdos"):
-                self._normalize_fat_tree(g, m, mount_devices[id(m)])
-
-        # ext2/3/4 has no syscall for ctime/crtime either, so it's
-        # rebuilt with mke2fs -d, same idea as FAT above. Deepest first:
-        # root goes last, once its children are already rebuilt.
-        ext_mounts = [m for m in mounts if m["type"] in EXT_FSTYPES]
-        if ext_mounts:
-            # Unmounted again by this source's own g.umount_all(), same as
-            # every other mount here -- freshly (re)mounted per source.
-            g.mkdir_p(SCRATCH_MOUNT)
-            g.mount(SCRATCH_DEVICE, SCRATCH_MOUNT)
+                self._normalize_fat_tree(g, m, mount_devices[id(m)], staging=staging)
+        if scratch_mounted and not ext_mounts:
+            g.umount(SCRATCH_MOUNT)
         for m in sorted(ext_mounts, key=lambda m: m["_depth"], reverse=True):
             self._normalize_ext_mount(g, m, mounts, mount_devices)
 
@@ -508,8 +516,11 @@ class Imager:
     # FAT's volume serial and file timestamps are set once at write
     # time and can't be touched again through the mount, so the whole
     # partition is rebuilt from scratch with mtools instead.
-    def _normalize_fat_tree(self, g, m, dev):
-        scratch = "/.fat-scratch"
+    # 'staging' is the scratch disk from _normalize_mount_timestamps().
+    # Empty means no scratch device exists, so the copy goes to '/' as
+    # before.
+    def _normalize_fat_tree(self, g, m, dev, staging=""):
+        scratch = "%s/.fat-scratch" % staging
         g.mkdir_p(scratch)
         g.cp_a(m["_prefix"], scratch)
         base = "%s/%s" % (scratch, os.path.basename(m["_prefix"].rstrip("/")))
@@ -525,7 +536,7 @@ class Imager:
         # wherever this build's files don't land on the same clusters.
         g.zero_device(dev)
 
-        tools_dir = self._upload_tools(g, "/.imager-extra-tools", self._extra_tools_files)
+        tools_dir = self._upload_tools(g, "%s/.imager-extra-tools" % staging, self._extra_tools_files)
         # Set before mformat too: '-v' makes it write a volume-label
         # entry of its own, timestamped like any other.
         env = "LD_LIBRARY_PATH=%s SOURCE_DATE_EPOCH=%d" % (
@@ -948,13 +959,26 @@ class Imager:
             g = guestfs.GuestFS(python_return_dict=True)
             g.add_drive_opts(disk, format="raw", readonly=False)
             need_ext = any(m["type"] in EXT_FSTYPES for m in ph.mounts)
-            if need_ext:
-                ext_mounts = [m for m in ph.mounts if m["type"] in EXT_FSTYPES]
-                # Room for one mount's captured content plus its rebuilt
-                # image at once -- never more than twice its own biggest
-                # partition, plus a little slack for filesystem overhead.
-                largest = max(m["_size"] for m in ext_mounts)
-                scratch_size = 2 * largest + 128 * 1024 * 1024
+            need_fat = any(m["type"] in ("vfat", "msdos") for m in ph.mounts)
+            if need_ext or need_fat:
+                sizes = []
+                if need_ext:
+                    ext_mounts = [m for m in ph.mounts if m["type"] in EXT_FSTYPES]
+                    # Room for one mount's captured content plus its rebuilt
+                    # image at once -- never more than twice its own biggest
+                    # partition, plus a little slack for filesystem overhead.
+                    largest = max(m["_size"] for m in ext_mounts)
+                    sizes.append(2 * largest + 128 * 1024 * 1024)
+                if need_fat:
+                    # Room for the biggest FAT partition's own copy plus
+                    # the mtools, staged for its rebuild (see
+                    # _normalize_fat_tree()).
+                    largest_fat = max(m["_size"] for m in ph.mounts
+                                      if m["type"] in ("vfat", "msdos"))
+                    sizes.append(largest_fat + 128 * 1024 * 1024)
+                # Shared one source at a time, so the biggest single need
+                # covers every rebuild.
+                scratch_size = max(sizes)
                 scratch_disk = os.path.join(output_dir, "ext-scratch.raw")
                 with open(scratch_disk, "wb") as f:
                     f.truncate(scratch_size)
@@ -974,10 +998,10 @@ class Imager:
             before_launch()
             try:
                 g.launch()
-                if need_ext:
+                if need_ext or need_fat:
                     # No htree hashing: its read order uses a random per-build
-                    # seed, silently reordering how mke2fs -d lays out the same
-                    # rebuild (see _normalize_ext_mount()'s own capture).
+                    # seed, silently reordering mke2fs -d's layout for this
+                    # rebuild or the FAT staging area below.
                     g.mkfs("ext4", SCRATCH_DEVICE, features="^dir_index")
 
                 part_devices, part_index, hash_part_for = self._create_partitions(g, ph)
