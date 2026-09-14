@@ -465,9 +465,9 @@ class SeineApp(App):
     #previewpane:focus, #logviewer:focus, #castpane:focus {
         border: round $border;
     }
-    /* Black like the target screen's own console pane, so a replay
-       frame reads as a console rather than another text pane. */
-    #castpane { background: black; border-subtitle-align: right; border-subtitle-color: $warning; }
+    /* Black like the target screen's console pane. Scrolls
+       horizontally rather than wrapping the fixed 80-column grid. */
+    #castpane { background: black; border-subtitle-align: right; border-subtitle-color: $warning; overflow-x: auto; }
     #cast { width: 80; height: auto; max-height: 40; }
     /* While startup commands run the prompt is shut (see
        _run_startup_commands() below) with a progress line in place

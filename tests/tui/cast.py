@@ -117,6 +117,19 @@ class CastPlayer(avocado.Test):
         with self.assertRaises(ValueError):
             player.load(os.path.join(self.workdir, "gone.cast"))
 
+    # A short pane shows the newest rows, not the top ones -- the
+    # full 40-row screen never fits, and the interesting output is
+    # at the bottom.
+    def test_render_is_tail_aligned(self):
+        events = [(0.1 + i * 0.1, "o", "line-%02d\r\n" % i) for i in range(20)]
+        path = _write_cast(os.path.join(self.workdir, "t.cast"), events)
+        player = self.Player()
+        player.load(path)
+        player.tick(30.0)
+        shown = player.render(max_lines=14).plain
+        self.assertIn("line-19", shown)
+        self.assertNotIn("line-00", shown)
+
 
 if __name__ == "__main__":
     avocado.main()
