@@ -176,6 +176,30 @@ class SpecTree(Tree):
                 return child
         return None
 
+    # Label path from root to 'node'. Survives load() since it is
+    # re-resolved, not a raw node held across a rebuild.
+    # None if 'node' is not in this tree.
+    def path_for(self, node):
+        labels = []
+        current = node
+        while current is not None and current is not self.root:
+            labels.append(current.data)
+            current = current.parent
+        if current is not self.root:
+            return None
+        return list(reversed(labels))
+
+    # The inverse of path_for(): re-resolves a label path against the
+    # tree's current shape, or None if it no longer matches (a reload
+    # renamed, removed, or reordered something along the way).
+    def node_for(self, path):
+        node = self.root
+        for label in path:
+            node = self._child(node, label)
+            if node is None:
+                return None
+        return node
+
     # 'labels': a path from the single active group's root -- /build
     # only ever runs one. Resolved as far as it goes: a name with
     # nothing to match degrades to whatever prefix did match.
