@@ -43,6 +43,8 @@ class Image:
         self._output = None
         self._tarball = None
         self._verbose = options["verbose"]
+        # Used by _normalize_timestamps() to find files written by this run.
+        self._started = time.time()
         # Defaulted here so a spec with no 'image:' section still has
         # something safe to read, instead of parse()/tasks() hitting
         # an AttributeError on an unparsed spec.
@@ -208,6 +210,30 @@ class Image:
             "container it came from was empty or the export was cut short"
             % tarball)
 
+    # A fixed time to reuse instead of 'now': the newest spec file given
+    # on the command line, so editing the spec still moves it.
+    def _epoch(self):
+        files = self.options.get("files") or []
+        mtimes = [os.path.getmtime(f) for f in files if os.path.isfile(f)]
+        return int(max(mtimes)) if mtimes else packages.FALLBACK_EPOCH
+
+    # Some files (e.g. the '/bin' symlink) get stamped with the real
+    # time they were written, breaking reproducible builds. Rewrite
+    # anything timestamped during this run to a fixed epoch instead.
+    def _normalize_timestamps(self, tarball):
+        epoch = self._epoch()
+        fixed = tempfile.NamedTemporaryFile(
+            delete=False, dir=os.path.dirname(tarball))
+        fixed.close()
+        with tarfile.open(tarball, "r") as src, \
+             tarfile.open(fixed.name, "w", format=src.format) as dst:
+            for member in src.getmembers():
+                if member.mtime >= self._started:
+                    member.mtime = epoch
+                dst.addfile(member, src.extractfile(member)
+                                    if member.isfile() else None)
+        os.replace(fixed.name, tarball)
+
     def build_tarball(self):
         failed = True
         try:
@@ -220,6 +246,7 @@ class Image:
                 prefix="root-", suffix=".tar")
             ContainerEngine.run(["container", "export", "-o", image.name, self._cid], check=True)
             self._tarball = self._exported(image.name)
+            self._normalize_timestamps(self._tarball)
             failed = False
         except subprocess.CalledProcessError:
             os.unlink(image.name)
