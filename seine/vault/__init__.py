@@ -2,21 +2,25 @@
 # SPDX-License-Identifier Apache-2.0
 
 import hashlib
+import os
 
 from seine.vault.base import VaultError, VaultNotFound, VaultProvider
 from seine.vault.openbao import OpenBaoProvider
 
 __all__ = ["VaultError", "VaultNotFound", "VaultProvider",
-           "OpenBaoProvider", "for_build", "record_secret", "secrets",
-           "clear_secrets", "redacted_for_digest"]
+           "OpenBaoProvider", "DevVault", "for_build", "record_secret",
+           "secrets", "clear_secrets", "redacted_for_digest"]
 
 _SEEN = []
 
 
-# Remote-only in v1: unset ADDR fails closed. Phase 2 adds the
-# ephemeral dev instance behind this same factory.
+# Remote when configured, else a lazy per-process dev instance that
+# starts empty on first use and is removed on exit.
 def for_build():
-    return OpenBaoProvider()
+    if os.environ.get("SEINE_VAULT_ADDR") or os.environ.get("VAULT_ADDR"):
+        return OpenBaoProvider()
+    from seine.vault.dev import DevVault
+    return DevVault()
 
 
 def record_secret(value):
