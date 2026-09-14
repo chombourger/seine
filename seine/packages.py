@@ -467,7 +467,7 @@ class Builder:
     # 'redact_patterns' is optional: most callers have no 'redact:'
     # section, and passing '[]' everywhere would be pure noise.
     def __init__(self, distro, options, builderImage, redact_patterns=None,
-                vault_defaults=None):
+                 vault_defaults=None, sign_key_default=None):
         self.builderImage = builderImage
         self.distro = distro
         self.options = options
@@ -522,13 +522,14 @@ class Builder:
         self._repository = threading.Lock()
         # Asked for here so a missing signing key stops the build now,
         # not after it has compiled.
-        self.signer = signing.signer(options)
+        self._vault_defaults = vault_defaults or {}
+        self.signer = signing.signer(options, self._vault_defaults,
+                                     sign_key_default)
         if self.signer is not None:
             self.signer.fingerprint()
         # Lazy: most builds sign nothing through the vault, and it starts
         # an ephemeral container (dev.DevVault) on first real use.
         self._vault_provider = None
-        self._vault_defaults = vault_defaults or {}
 
     # Cores for one package build: --parallel, or cores divided by how
     # many builds run at once.
@@ -1698,6 +1699,20 @@ class Builder:
             entry = Index().hit(PACKAGE, key)
             say(self.options, "package %s reused, made %s"
                               % (key, since(entry.get("made"))))
+
+    # What apt checks for this repository: (release, fingerprint, origin),
+    # fingerprint None when unsigned -- None when there is no repository
+    # at all. Read back after the build for the trust recap.
+    def trust_entry(self):
+        if not has_packages(self.distro):
+            return None
+        if self.signer is None:
+            return (self.distro["release"], None, None)
+        if isinstance(self.signer, signing.VaultSigner):
+            origin = "vault:%s" % self.signer.name
+        else:
+            origin = self.signer.key
+        return (self.distro["release"], self.signer.fingerprint(), origin)
 
     # logs/index.json entries for cache-hit packages, which never got a
     # 'package:<name>' Task to find '.started' on. 'packages' narrows to

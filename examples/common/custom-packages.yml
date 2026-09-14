@@ -1,0 +1,55 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# Custom packages sign with this fixed dev-only throwaway by default
+# (SEINE_SIGN_KEY / --sign-key overrides it). Remote vaults fail closed;
+# the public half lands in the repository for apt.
+defaults:
+    sign-key: vault:custom-packages
+    vault:
+        custom-packages:
+            private_key: |
+                -----BEGIN PGP PRIVATE KEY BLOCK-----
+
+                lQVYBF4L4QABDACgkNrxkawKXSTQSuNhCY41t6G1ibm2M4qdoQ1mlWzucaEt8ysc
+                kzidiz8TX7aHv656kNojHPof/t+edXoSpZekPvpip98wxdOKD0G/UT2Q+KCvErni
+                xOpshL8LAdGwXI8VXusaS2CfoHuqGkSV6EcBeTfPRMuG04Mmx8r7WF12qYlPtyGi
+                /Z5S2RLjtbNelUQwMgxhpRqEQgVOiCI+3ZSABX18KWg2H6gPPgVVR0CiezSSa5HK
+                UBZkGAj5so1ztpsXRb0koN/wUFTgaSgmGjKAN4ijBIDhbBCD6YTE1Cto7xpR8xOK
+                Dfs6aCsT9E8BTH3dKrUWIrYK54OkwKDzVOxjs2wS0etIDL9kSG0AE12YslrUPAqm
+                wdZoYu9SPrYg4e5JAoOlq68L8FYkMhjku/Fa50xEoaYV7qHyBjRVZUns0E6o/F+n
+                7ov3eaVWHhuXjPz6n51mp6r9klmlUCnNarqKNheF8n1Ltezwi8ywGewGPzyCn9YP
+                dqmGqTp2/zjGZlEAEQEAAQAL/Ro3NGwrJNwHU66nf4L1MLEgE4jEnRv8w9XTOREl
+                9gRjbJXIRWJzvhNo7ApBfxegagAsfNUtUsBdGI0ycJUxULY6Kx7m+keoEQ8SSSGP
+                xd3Q3klfZRa7oGvJ67hEGoSxRBJQ7lFbe8HsTaya/9Y697brn/tZJ+LST3BKQB+0
+                EISCjz8C7zzBrHMp6o3fuZLIi7rTvRZHQvJTpjKpgu/hNTEG1HNsfk2R8xpT/cJr
+                8QdmVtHOOt49n75Fd1evea1qI5uOjh0DvNKHK/aCS8kJLVfnXPWNC/jAaW79g0zg
+                ussknP0+gyshPO8rNs9Mv9KaMnYKQy6+m503l0CrkNon6CaQBS0oVEmvVDyVksA+
+                /Shfkw2mVSrD7lYb1h71GqKDTmqwVwEV82v1cBCMNFYJJWbmb67/V5iV58d3yVvQ
+                GDPQJwzIvVLt2jrTEEPrpGQIBYhAC8L68uGa9vuwAteq6S6x8SzGnPR7pZl6yzG9
+                Lf00GVTKkMaufHmsKyQxYt6unQYAweaxWcfCk6irhZeSch4NBS2d8AEpFUGR2anj
+                4ICn2tfAs4ekeGPO1g2XJC4hvu81zpsbawh8Q0V3HpNa4CyI+S2a3dRYRQcCVRsJ
+                k9T70+Jj9QUAlHg5UWt0zDiIRGJKmJA2OOICuhpwPdz5WImHyA/v9WcNlKVOt/Sy
+                WofuL+HPhKKvOzPw2AYylMHEFs/BxjLrE2d6GMAb63hlR06Dj3WjZaPXrC/XM7+a
+                vdojwRmysnoVeS9YraFQcXebMDbFBgDT/RzA2F1ujPxZ4qp6zMXABUXP/d6hPe9k
+                +17TlxdMhyKMMevI8SNwv82+iSXjVEEeeLLzWp9SAJ+25dcQpTzncoKgzQtbysi0
+                6f8a4dBMUPAjQ/aKYxdKPsAt3khUyANjV9TGTAti83ZgDgip9zNIC2y2INg0yYjh
+                hYdTIUGXLpUI2p3ccmvhHTvJ7AalMk4d4TQXjbvy3+yFnxPS65jxSV2dJS+bPSL4
+                haxHQaxB0anf8LKddi+8+1WPcuhCih0F/0h7hPLvL+Qcmg97QJ+Qaqk3D14a2OHc
+                PX5Uj4IF+J6sXqSQ/q4nMGuMUjlt05vbNTR01HYnd+evOPqfyZFHBVClx644pmP6
+                p9+c5FeW0VaaQkSC8PE7qas6QQUDsF0MwwLtECwVeNz2WaRDhZh2W+pc7HIIwjHq
+                hpfbHcaUK7Y/Xk8R5mD6O8X3Wn459L+7S/t6t5T6bY4cq48wvGxPf2jhpx6YWbzh
+                ZWNdTeniN8DY34eGCJAcbLCSoze9dFdYdeYItDhzZWluZSByZXBvIGRldiB0aHJv
+                d2F3YXkga2V5IDxzZWluZS1kZXZAZXhhbXBsZS5pbnZhbGlkPokBzwQTAQoAORYh
+                BDrY5hBtqZqvDCmn13KFd/MI8xkSBQJeC+EAAxsvBAULCQgHAgYVCgkICwIEFgID
+                AQIeAQIXgAAKCRByhXfzCPMZElVnC/4j8jqgPUN90QVd9TM3xuul6VyJ+XTC9FgQ
+                mXoGuPYS5exCkeIybWj5LfYOtwkQXXAx91p94+uNjTYRd1kP+oR9qVyXZrwFH9H+
+                BiJtI2eIM+ej/tsnr7E0K9qwaLzOEodsRvEYy/Hjd13QGc93EKyFeXzZp4H1C0IK
+                lHQou76o8S8RAOZoZFsYs+fBMIvjOm6XfKabmZ9XSJAaIH52FXmIE7C30x25d4Ad
+                p197CCNlGrjhPKju6tm6gjwZROY2mc/zjLm6BduukpA8zYwnVta3yPorJ9e4Efur
+                TjehZHUMNghIXfs1S8itaJj1m56ScaA8g6FZDIUS69jOCeeLHWT1iBTxL90EykR+
+                MM8q1SDEaLr8F/cQdhIfar/i9ZPagQdeNrUQcOJYK9d51I675mKZLRCRyNiYxfhS
+                uM8broqqIJNxKYH/lbA7xlkH7UWPSUPRHWopH2bdUjQNANAYx52CN1yJ1hbNLeXs
+                GG18sdiDJUjUmi4YqGPi3yUSjQtNysI=
+                =rGZj
+                -----END PGP PRIVATE KEY BLOCK-----

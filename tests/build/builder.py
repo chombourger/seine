@@ -1973,6 +1973,115 @@ class Signing(avocado.Test):
         self.assertEqual(len(digests), 2,
                          "signing a build did not ask for it to be rebuilt")
 
+    # A spec's own fallback key, used when the machine names none.
+    def test_a_spec_default_signs_when_the_machine_names_none(self):
+        from unittest import mock
+        from seine import signing, vault
+        from seine.packages import Builder
+        provider = mock.Mock()
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        with mock.patch.object(vault, "for_build", return_value=provider):
+            builder = Builder(distro, {}, None, [],
+                              {"repo": {"private_key": "x"}}, "vault:repo")
+            self.assertIsInstance(builder.signer, signing.VaultSigner)
+            self.assertEqual(builder.signer.name, "repo")
+
+    # What apt checks for the repository: nothing without one, the
+    # unsigned truth with one, the key with a signer.
+    def test_trust_entry_answers_for_its_repository(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from seine import packages as module, vault
+        from seine.packages import Builder
+        where = os.path.join(self.workdir, "repository")
+        os.makedirs(where, exist_ok=True)
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        original = module.repository
+        module.repository = lambda d: where
+        try:
+            builder = Builder(distro, {}, None)
+            self.assertIsNone(builder.trust_entry())
+            open(os.path.join(where, "Packages"), "w").close()
+            self.assertEqual(builder.trust_entry(),
+                             ("bookworm", None, None))
+            provider = mock.Mock()
+            provider.pgp_fingerprint.return_value = "AB12CD34"
+            with mock.patch.object(vault, "for_build", return_value=provider):
+                signed = Builder(distro, {}, None, [], {}, "vault:repo")
+                self.assertEqual(signed.trust_entry(),
+                                 ("bookworm", "AB12CD34", "vault:repo"))
+        finally:
+            module.repository = original
+
+    # Said once at the very end of a successful build: shared entries
+    # print once, and nothing prints without a repository.
+    def test_the_trust_recap_prints_once(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from seine.image import Image
+        builder = mock.Mock()
+        builder.trust_entry.return_value = ("bookworm", "AB12CD34",
+                                            "vault:repo")
+        group = mock.Mock()
+        group.image._builder = builder
+        image = Image(None, {"keep": False, "verbose": False})
+        image._builder = builder
+        image.subbuilds = {"group": group}
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            image._recap_trust()
+        self.assertEqual(said.getvalue().count("AB12CD34"), 1)
+        self.assertIn("signed-by", said.getvalue())
+        builder.trust_entry.return_value = None
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            image._recap_trust()
+        self.assertEqual(said.getvalue(), "")
+        builder.trust_entry.return_value = ("bookworm", None, None)
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            image._recap_trust()
+        self.assertIn("trusted=yes", said.getvalue())
+
+    # A run that builds nothing still recaps: a build that failed late
+    # leaves a signed repository behind, and the rerun that reuses it
+    # answers from that state, not from what it built itself.
+    def test_a_rerun_that_builds_nothing_still_recaps(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from seine import packages as module, vault
+        from seine.image import Image
+        from seine.packages import Builder
+        where = os.path.join(self.workdir, "repository")
+        os.makedirs(where, exist_ok=True)
+        # Left behind by the earlier run, which failed after indexing.
+        for name in ("Packages", "InRelease", "repo.gpg"):
+            open(os.path.join(where, name), "w").close()
+        distro = {"source": "debian", "release": "bookworm",
+                  "architecture": "amd64", "uri": "http://example.com/debian"}
+        original = module.repository
+        module.repository = lambda d: where
+        try:
+            provider = mock.Mock()
+            provider.pgp_fingerprint.return_value = "AB12CD34"
+            with mock.patch.object(vault, "for_build", return_value=provider):
+                # Fresh builder, no task ever ran in this process.
+                builder = Builder(distro, {}, None, [], {}, "vault:repo")
+                image = Image(None, {"keep": False, "verbose": False})
+                image._builder = builder
+                said = io.StringIO()
+                with contextlib.redirect_stdout(said):
+                    image._recap_trust()
+                self.assertIn("AB12CD34", said.getvalue())
+                self.assertIn("vault:repo", said.getvalue())
+        finally:
+            module.repository = original
+
 # The specification content behind a build, redacted and with every file
 # path made portable -- what a person or the AI chat reads to tell what a
 # cached build actually has in it.

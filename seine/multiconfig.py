@@ -19,6 +19,7 @@ from seine import tasks
 from seine import utils
 from seine.bootstrap import HostBootstrap
 from seine.build     import BuildCmd, remember
+from seine.image     import print_trust_recap
 from seine.sbuild    import BuilderImage
 from seine.container import ContainerEngine
 from seine.utils import locked
@@ -282,6 +283,16 @@ def _prune():
     except BlockingIOError:
         pass
 
+# What apt checks for every repository built here, said once -- what
+# Image says at its own end for a single build.
+def trust_recap(builds):
+    entries = []
+    for build in builds:
+        for entry in build.image._trust_entries():
+            if entry not in entries:
+                entries.append(entry)
+    print_trust_recap(entries)
+
 # One log directory for the whole run, keyed by all groups' files
 # together rather than any single group's.
 def _logs(groups_files):
@@ -380,6 +391,10 @@ def run(groups_files, options):
     said = cache_index.summary()
     if said is not None:
         print(said)
+
+    # Once for the whole run, whatever groups it built -- what Image
+    # says at its own end for a single build.
+    trust_recap(builds)
 
     for build, files, dump in zip(builds, groups_files, recorded):
         if group_ok.get(build):

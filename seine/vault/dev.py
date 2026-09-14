@@ -308,12 +308,24 @@ class DevVault(VaultProvider):
                 self._token)
             birth = 0
         except VaultNotFound:
-            sys.stderr.write(
-                "warning: dev vault has no pgp key '%s'; generating a "
-                "throwaway (local development only, never production)\n" % name)
+            default = self._defaults.get(name)
+            if default is not None:
+                sys.stderr.write(
+                    "warning: dev vault has no pgp key '%s'; importing the "
+                    "spec's default (local development only, never "
+                    "production)\n" % name)
+                body = {"import": default}
+                # Fixed throwaways predate any build epoch, so no
+                # clamping like freshly minted keys need below.
+                birth = 0
+            else:
+                sys.stderr.write(
+                    "warning: dev vault has no pgp key '%s'; generating a "
+                    "throwaway (local development only, never production)\n" % name)
+                body = {"generate": {}}
+                birth = int(time.time())
             self._inner._request("POST", "/v1/seine-pgp/keys/%s" % quoted,
-                                 {"generate": {}}, self._token)
-            birth = int(time.time())
+                                 body, self._token)
         self._pgp_keys[name] = birth
         return birth
 

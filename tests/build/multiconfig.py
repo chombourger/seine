@@ -890,3 +890,37 @@ image:
         mounts = {m["label"]: m for m in build.image.partitionHandler.mounts}
         self.assertGreater(mounts["main-root"]["_size"], mounts["recovery-root"]["_size"],
                            "main's own file never reached its own partition")
+
+# What apt checks for every repository built here, said once for the
+# whole run -- shared entries print once, no repositories stays silent.
+class TrustRecapSaysOnceForTheWholeRun(avocado.Test):
+    def builds(self, *entries):
+        from unittest import mock
+        builds = []
+        for entry in entries:
+            build = mock.Mock()
+            build.image._trust_entries.return_value = [entry]
+            builds.append(build)
+        return builds
+
+    def said(self, builds):
+        import contextlib
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            multiconfig.trust_recap(builds)
+        return said.getvalue()
+
+    def test_shared_entries_print_once(self):
+        entry = ("bookworm", "AB12CD34", "vault:repo")
+        self.assertEqual(
+            self.said(self.builds(entry, entry)).count("AB12CD34"), 1)
+
+    def test_unsigned_says_trusted_yes(self):
+        self.assertIn("trusted=yes",
+                      self.said(self.builds(("bookworm", None, None))))
+
+    def test_no_repositories_says_nothing(self):
+        from unittest import mock
+        build = mock.Mock()
+        build.image._trust_entries.return_value = []
+        self.assertEqual(self.said([build]), "")

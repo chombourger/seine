@@ -7,6 +7,11 @@
 # architecture, a test filling a cache -- composes it the same way, by
 # listing the fragments it wants in front of this one.
 
+# Signed with the shared custom-packages key by default (see there),
+# however this fragment is composed or built.
+requires:
+    - ../common/custom-packages
+
 packages:
     - source: apt://busybox
       profiles:

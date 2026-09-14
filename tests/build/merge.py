@@ -1184,6 +1184,71 @@ class DefaultsVaultReachesTheBuiltImage(avocado.Test):
         except ValueError:
             pass
 
+# 'defaults: sign-key' names the repository signing key when neither
+# --sign-key nor SEINE_SIGN_KEY does -- read back by Image, weakest of
+# the three.
+class DefaultsSignKeyReachesTheBuiltImage(avocado.Test):
+    def loaded(self, *texts):
+        build = BuildCmd()
+        for text in texts:
+            build.loads(text)
+        build.parse()
+        return build.image._sign_key_default()
+
+    def test(self):
+        self.assertEqual(self.loaded("""
+                defaults:
+                    sign-key: vault:custom-packages
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """), "vault:custom-packages")
+
+    def test_a_second_file_wins(self):
+        self.assertEqual(self.loaded("""
+                defaults:
+                    sign-key: vault:first
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """, """
+                defaults:
+                    sign-key: vault:second
+        """), "vault:second")
+
+    def test_not_a_name_is_refused(self):
+        build = BuildCmd()
+        build.loads("""
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        try:
+            build.loads("""
+                defaults:
+                    sign-key: {not: a name}
+            """)
+            self.fail("a non-string 'defaults: sign-key' was accepted")
+        except ValueError:
+            pass
+
+    # The shared fragment carries the default, the example reaches it --
+    # however it is built, composed or fragment-direct.
+    def test_rebuild_busybox_signs_with_the_shared_key(self):
+        for name in ("main.yaml", "busybox.yaml"):
+            build = BuildCmd()
+            build.load(os.path.join(path_to_sources, "examples",
+                                    "rebuild-busybox", name))
+            build.parse()
+            self.assertEqual(build.image._sign_key_default(),
+                             "vault:custom-packages")
+
 class SettingsRememberWhichFileWroteThem(avocado.Test):
     def test(self):
         # An overlay of the shape the examples use: the suite file pins
