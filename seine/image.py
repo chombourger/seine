@@ -49,6 +49,10 @@ class Image:
         # something safe to read, instead of parse()/tasks() hitting
         # an AttributeError on an unparsed spec.
         self.packages = []
+        # Set by shared_tasks(), read back after tasks.run() by build()'s
+        # logindex.record() call -- cache-hit packages never got a Task,
+        # so this is the only place their entries can come from.
+        self._builder = None
         self.spec = None
         # 'multiconfig:' groups: name -> the BuildCmd that parsed it.
         self.subbuilds = {}
@@ -368,6 +372,7 @@ class Image:
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options),
             redactions(self.spec))
+        self._builder = builder
         # 'bootstrap-host' waits on 'vendor' only when there is one:
         # its apt-get would otherwise look for a repo not built yet.
         shared = [self.hostBootstrap.task(
@@ -623,13 +628,15 @@ class Image:
                 analyze.record(steps, digest, jobs=jobs, ok=ok, machine=machine,
                                rootfs_size=rootfs_size)
                 if self.logs:
+                    ran = [{"name": t.name, "failed": t.failed, "cached": False,
+                           "log": os.path.join(self.logs, "%s.log" % t.name)}
+                          for t in steps if t.started is not None]
+                    cached = (self._builder.cached_task_entries()
+                             if self._builder is not None else [])
                     logindex.record(
                         self.options.get("files") or [], release,
                         self.spec["distribution"]["architecture"], self.logs,
-                        [{"name": t.name, "failed": t.failed, "cached": False,
-                         "log": os.path.join(self.logs, "%s.log" % t.name)}
-                        for t in steps if t.started is not None],
-                        ok)
+                        ran + cached, ok)
 
             # Printed once at the end, as the answer to "is the cache working".
             said = cache_index.summary()
