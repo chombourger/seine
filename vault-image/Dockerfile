@@ -20,6 +20,18 @@ COPY seine-sbsign/ ./
 RUN go test ./... ../seine-pkcs7/ && \
     go build -o /out/seine-sbsign.so . && chmod 755 /out/seine-sbsign.so
 
+FROM docker.io/library/golang:1.26.6 AS kmod-build
+ENV GOTOOLCHAIN=local
+WORKDIR /src/seine-kmod
+COPY seine-pkcs7/go.mod ../seine-pkcs7/
+COPY seine-kmod/go.mod seine-kmod/go.sum ./
+RUN go mod download
+COPY seine-pkcs7/ ../seine-pkcs7/
+COPY seine-kmod/ ./
+RUN go test ./... ../seine-pkcs7/ && \
+    go build -o /out/seine-kmod.so . && chmod 755 /out/seine-kmod.so
+
 FROM docker.io/openbao/openbao:2.6.2
 COPY --from=pgp-build /out/seine-pgp.so /vault/plugins/seine-pgp.so
 COPY --from=sbsign-build /out/seine-sbsign.so /vault/plugins/seine-sbsign.so
+COPY --from=kmod-build /out/seine-kmod.so /vault/plugins/seine-kmod.so

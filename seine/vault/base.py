@@ -54,3 +54,12 @@ class VaultProvider:
 
     def sbsign_sign(self, name, pe, timestamp):
         raise NotImplementedError
+
+    # Kernel module signing through the seine-kmod plugin: a .ko goes
+    # up, signed with the named key, and comes back; strip-then-sign
+    # like sign-file, so signed and unsigned modules share the path.
+    def kmod_cert(self, name):
+        raise NotImplementedError
+
+    def kmod_sign(self, name, ko):
+        raise NotImplementedError

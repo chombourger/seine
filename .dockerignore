@@ -12,4 +12,8 @@
 !seine-sbsign/go.mod
 !seine-sbsign/go.sum
 !seine-sbsign/*.go
+!seine-kmod/
+!seine-kmod/go.mod
+!seine-kmod/go.sum
+!seine-kmod/*.go
 !vault-image/Dockerfile

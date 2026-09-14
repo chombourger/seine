@@ -180,6 +180,24 @@ class OpenBaoProvider(VaultProvider):
             token=self._token)
         return _b64decode(_field(reply, "data", "signed_pe_base64"))
 
+    # Kernel module signing through the seine-kmod plugin. Unknown
+    # keys fail closed; only explicit generate/import calls create.
+    def kmod_cert(self, name):
+        reply = self._request(
+            "GET", "/v1/seine-kmod/keys/%s/cert" % urllib.parse.quote(name, safe=""),
+            None, token=self._token)
+        return _field(reply, "data", "cert_pem")
+
+    def kmod_sign(self, name, ko):
+        if not isinstance(ko, bytes):
+            raise VaultError("module signing expects bytes, got %s"
+                             % type(ko).__name__)
+        reply = self._request(
+            "POST", "/v1/seine-kmod/keys/%s/sign" % urllib.parse.quote(name, safe=""),
+            {"ko_base64": base64.b64encode(ko).decode()},
+            token=self._token)
+        return _b64decode(_field(reply, "data", "signed_ko_base64"))
+
     def _request(self, method, url_path, body, token):
         request = urllib.request.Request(
             self.addr + url_path,

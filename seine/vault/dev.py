@@ -169,6 +169,7 @@ class DevVault(VaultProvider):
         self._transit_keys = set()
         self._pgp_keys = {}
         self._sbsign_keys = set()
+        self._kmod_keys = set()
         self._lock = threading.Lock()
         self._closed = False
 
@@ -380,6 +381,7 @@ class DevVault(VaultProvider):
                                  {"type": "transit"}, self._token)
         self._mount_plugin(mounts, "seine-pgp")
         self._mount_plugin(mounts, "seine-sbsign")
+        self._mount_plugin(mounts, "seine-kmod")
 
     def _mount_plugin(self, mounts, name):
         if "%s/" % name in mounts:
@@ -428,6 +430,40 @@ class DevVault(VaultProvider):
             self._inner._request("POST", "/v1/seine-sbsign/keys/%s" % quoted,
                                  {"generate": {}}, self._token)
         self._sbsign_keys.add(name)
+
+    # Kernel module signing through the plugin. Missing keys are
+    # minted on first use like sbsign keys; no timestamp exists to
+    # pin, the CMS carries none.
+    def kmod_cert(self, name):
+        self._ensure_started()
+        with self._lock:
+            self._ensure_kmod_key(name)
+            return self._inner.kmod_cert(name)
+
+    def kmod_sign(self, name, ko):
+        self._ensure_started()
+        if not isinstance(ko, bytes):
+            raise VaultError("module signing expects bytes, got %s"
+                             % type(ko).__name__)
+        with self._lock:
+            self._ensure_kmod_key(name)
+            return self._inner.kmod_sign(name, ko)
+
+    def _ensure_kmod_key(self, name):
+        if name in self._kmod_keys:
+            return
+        quoted = urllib.parse.quote(name, safe="")
+        try:
+            self._inner._request(
+                "GET", "/v1/seine-kmod/keys/%s/cert" % quoted, None,
+                self._token)
+        except VaultNotFound:
+            sys.stderr.write(
+                "warning: dev vault has no kmod key '%s'; generating a "
+                "throwaway (local development only, never production)\n" % name)
+            self._inner._request("POST", "/v1/seine-kmod/keys/%s" % quoted,
+                                 {"generate": {}}, self._token)
+        self._kmod_keys.add(name)
 
     # SIGTERM never runs atexit handlers; chained so whatever was there
     # (tasks.py's own SIGINT handling, ...) still gets its turn.
