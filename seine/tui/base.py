@@ -400,10 +400,55 @@ class BaseScreen(Screen):
         pass
 
     def say(self, text, error=False, warning=False):
+        # Bump the token so a delayed copy-notice clear can't wipe a
+        # newer message that lands after it (e.g. an error after a copy).
+        self._copy_notice_token = getattr(self, "_copy_notice_token", 0) + 1
         status = self.query_one("#status", Static)
         status.set_class(error, "error")
         status.set_class(warning, "warning")
         status.update(text)
+
+    # A plain click selects nothing here -- Textual clears the
+    # selection before this bubbles -- so it stays a no-op.
+    def on_mouse_up(self, event):
+        text = None
+        try:
+            text = self.get_selected_text()
+        except Exception:
+            text = None
+        if not text or not text.strip():
+            # Prompt/Input keeps its own selection apart from the
+            # screen's -- selecting prompt text must copy too.
+            try:
+                for widget in self.query(Input):
+                    try:
+                        selected = widget.selected_text
+                    except Exception:
+                        continue
+                    if selected and selected.strip():
+                        text = selected
+                        break
+            except Exception:
+                pass
+        if not text or not text.strip():
+            return
+        try:
+            self.app.copy_to_clipboard(text)
+        except Exception:
+            return
+        count = len(text)
+        self.say("copied %d character%s to clipboard" % (count, "" if count == 1 else "s"))
+        token = getattr(self, "_copy_notice_token", 0) + 1
+        self._copy_notice_token = token
+
+        def _clear(expected=token):
+            if getattr(self, "_copy_notice_token", None) == expected:
+                try:
+                    self.say("")
+                except Exception:
+                    pass
+
+        self.set_timer(2.5, _clear)
 
     async def on_input_submitted(self, event):
         line = event.value
