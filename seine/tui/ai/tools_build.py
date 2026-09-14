@@ -29,6 +29,14 @@ def _tool_cache(app, arguments):
 # Chunked the same way spec-dump/docs are (SPEC_DUMP_CHUNK_LINES) --
 # a full vendor summary can run to one line per suite plus per-package
 # reasons, too much to hand back whole.
+def _tool_cache_why(app, arguments):
+    name = arguments.get("package")
+    if not name:
+        return "give 'package', a source package name from 'packages:'"
+    from seine.tui import render
+    architecture = arguments.get("architecture") or None
+    return render.render_cache_why(app.context, name, architecture=architecture)
+
 def _tool_vendor(app, arguments):
     from seine.tui import render
     text = render.render_vendor(app.context, suite=arguments.get("suite"))
@@ -393,6 +401,27 @@ TOOLS = [
                                                     "package name"}},
          "required": []},
         False, _tool_cache),
+    Tool("cache-why", "Why one 'packages:' entry was not served from the "
+        "cache -- runs the same stamp lookup a real build would, then "
+        "names every labelled input (a spec field, a patch/fragment "
+        "file, a dependency's own digest, an apt-source/signer/kernel "
+        "setting) whose hash differs from the last build recorded for "
+        "it, so 'why did this rebuild' has a real answer instead of a "
+        "guess from re-reading the spec. Says 'cached' if it turns out "
+        "not to be a miss, and 'no earlier build recorded' for a "
+        "package built here for the first time.",
+        {"type": "object",
+         "properties": {"package": {"type": "string",
+                                    "description": "a source package name "
+                                                   "from 'packages:'"},
+                        "architecture": {"type": "string",
+                                        "description": "narrow to one "
+                                                       "architecture; omit "
+                                                       "to check every one "
+                                                       "this package builds "
+                                                       "for"}},
+         "required": ["package"]},
+        False, _tool_cache_why),
     Tool("audit-log", "Every gated tool call this session's AI has made "
         "today, oldest first: when, which tool, approved or denied, its "
         "arguments, and what it returned. Ungated -- reading the trail "
