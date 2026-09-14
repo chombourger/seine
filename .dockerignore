@@ -5,4 +5,11 @@
 !seine-pgp/go.mod
 !seine-pgp/go.sum
 !seine-pgp/*.go
+!seine-pkcs7/
+!seine-pkcs7/go.mod
+!seine-pkcs7/*.go
+!seine-sbsign/
+!seine-sbsign/go.mod
+!seine-sbsign/go.sum
+!seine-sbsign/*.go
 !vault-image/Dockerfile

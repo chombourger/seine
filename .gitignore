@@ -9,6 +9,9 @@ seine.egg-info
 # host -- a locally built one is working-tree noise, not a deliverable.
 seine-pgp/seine-pgp.so
 seine-pgp/seine-pgp
+seine-pkcs7/seine-pkcs7
+seine-sbsign/seine-sbsign.so
+seine-sbsign/seine-sbsign
 # Copied in from docs/ by setup.py's build_py override -- generated,
 # not committed.
 seine/data/docs

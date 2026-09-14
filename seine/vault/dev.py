@@ -109,10 +109,13 @@ def _sources_digest():
         os.path.dirname(os.path.abspath(__file__))))
     digest = hashlib.sha256()
     paths = [os.path.join("vault-image", "Dockerfile")]
-    plugindir = os.path.join(root, "seine-pgp")
-    paths += [os.path.join("seine-pgp", name)
-              for name in sorted(os.listdir(plugindir))
-              if name.endswith(".go") or name in ("go.mod", "go.sum")]
+    for plugindir in ("seine-pgp", "seine-pkcs7", "seine-sbsign"):
+        full = os.path.join(root, plugindir)
+        if not os.path.isdir(full):
+            continue
+        paths += [os.path.join(plugindir, name)
+                  for name in sorted(os.listdir(full))
+                  if name.endswith(".go") or name in ("go.mod", "go.sum")]
     for path in paths:
         with open(os.path.join(root, path), "rb") as f:
             digest.update(f.read())
