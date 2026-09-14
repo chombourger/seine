@@ -271,6 +271,22 @@ def _git_remote(toplevel):
         return None
     return _normalize_remote(url)
 
+# git status --porcelain's two-letter code for one file, or None
+# outside a repo or when clean. Never cached, unlike the git
+# helpers above, since it must reflect live edits.
+def git_status(path):
+    abspath = os.path.abspath(path)
+    toplevel = _git_toplevel(os.path.dirname(abspath))
+    if toplevel is None:
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", toplevel, "status", "--porcelain", "--", abspath],
+            capture_output=True, text=True, check=True).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return out[:2] if out else None
+
 # Collapses the ssh and https forms of the same remote to one string --
 # 'git@github.com:org/repo.git' and 'https://github.com/org/repo.git' both
 # become 'github.com/org/repo' -- so cloning method doesn't change digest().

@@ -31,7 +31,7 @@ from seine.tui.issues import IssuesScreen
 from seine.tui.vendor import VendorScreen, VendorState
 from seine.tui.render import (render_analyze, render_artifacts, render_cache,
                               render_doctor, render_node, render_overview,
-                              render_packages, render_plan)
+                              render_packages, render_plan, render_root_node)
 from seine.tui.spectree import SpecTree
 from seine.tui.target import TargetState
 from seine.tui.target_screen import TargetScreen
@@ -56,12 +56,23 @@ class OverviewScreen(BaseScreen):
         self.update_body()
 
     def update_body(self):
+        tree = self.query_one(SpecTree)
         node = None
         if self._selected_path is not None:
-            node = self.query_one(SpecTree).node_for(self._selected_path)
+            node = tree.node_for(self._selected_path)
             if node is None:
                 self._selected_path = None
-        text = render_node(node) if node is not None else render_overview(self.app.context)
+        if node is None:
+            text = render_overview(self.app.context)
+        elif node.parent is tree.root and node.children:
+            # A group node always has children; the no-active-spec
+            # leaf under tree.root does not. That tells them apart
+            # here.
+            index = tree.root.children.index(node)
+            context = self.app.context
+            text = render_root_node(context.groups[index], context.builds[index])
+        else:
+            text = render_node(node)
         self.query_one("#body", Static).update(text)
 
 class PlanScreen(BaseScreen):
