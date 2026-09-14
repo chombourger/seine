@@ -1,5 +1,0 @@
-kernel-signing (1) unstable; urgency=low
-
-  * Fixed key for reproducible kernel module signing.
-
- -- seine <seine@localhost>  Sun, 13 Sep 2026 00:00:00 +0000

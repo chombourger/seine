@@ -17,13 +17,13 @@ import yaml
 # Keys accepted under 'extends: kernel:'.
 SETTINGS = ["abi-suffix", "build-files", "configs", "derived-flavours",
             "drop-patches", "featureset", "flavour", "fragments",
-            "keep-patches", "signing-key-package", "upstream",
+            "keep-patches", "signing-key", "upstream",
             "upstream-sha256"]
 
-# Where a 'signing-key-package' installs the fixed key -o MODULE_SIG_KEY
-# is redirected to -- a seine convention, not read off the package name,
-# so any package providing one just needs to install it here.
-SIGNING_KEY_PATH = "/usr/share/seine/kernel-signing/signing_key.pem"
+# Relative path (from the extracted source root) the vault's module-signing
+# certificate is written to, so 'debian/rules.real' can point
+# 'CONFIG_MODULE_SIG_KEY' at it with '$(CURDIR)'.
+TRUSTED_CERT_PATH = "debian/vault-signing-cert.pem"
 
 # A literal 'CONFIG_X=value' assignment, or kconfig's own disabled form
 # '# CONFIG_X is not set'. Both are accepted in 'configs:' so a fragment
@@ -127,7 +127,7 @@ from .upstream import (SERIES_CHECK, UPSTREAM, _check_series,
                        _source_name, _touches, _upstream_args,
                        _verify_upstream, fetch_upstream, graft,
                        module_lds_patch)
-from .apply import (_abiname, _apply_signing_key, _check_flavour,
+from .apply import (_abiname, _apply_trusted_cert, _check_flavour,
                     _kernel_packages, _record_abiname, extend)
 from .flavour import (_add_derived_flavours, _defines_list,
                       _defines_replace, _defines_set, _derive_flavour_block,

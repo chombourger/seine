@@ -86,17 +86,17 @@ class KernelFeatureset(avocado.Test):
         """)
         self.assertEqual(build.image.packages[0].kernel_featureset, "rt")
 
-class SigningKeyPackageParsed(avocado.Test):
+class SigningKeyParsed(avocado.Test):
     def test(self):
         build = parse("""
                 packages:
                     - source: apt://linux
                       extends:
                           kernel:
-                              signing-key-package: kernel-signing
+                              signing-key: vault:kernel-modules
         """)
-        self.assertEqual(build.image.packages[0].kernel_signing_key_package,
-                         "kernel-signing")
+        self.assertEqual(build.image.packages[0].kernel_signing_key,
+                         "kernel-modules")
 
     def test_defaults_to_none(self):
         build = parse("""
@@ -106,9 +106,9 @@ class SigningKeyPackageParsed(avocado.Test):
                           kernel:
                               flavour: amd64
         """)
-        self.assertEqual(build.image.packages[0].kernel_signing_key_package, None)
+        self.assertEqual(build.image.packages[0].kernel_signing_key, None)
 
-class SigningKeyPackageNotAString(avocado.Test):
+class SigningKeyNotAString(avocado.Test):
     def test(self):
         try:
             parse("""
@@ -116,9 +116,23 @@ class SigningKeyPackageNotAString(avocado.Test):
                     - source: apt://linux
                       extends:
                           kernel:
-                              signing-key-package: [kernel-signing]
+                              signing-key: [kernel-modules]
             """)
-            self.fail("a non-string 'signing-key-package' was accepted")
+            self.fail("a non-string 'signing-key' was accepted")
+        except ValueError:
+            pass
+
+class SigningKeyWithoutVaultPrefixIsRejected(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              signing-key: kernel-modules
+            """)
+            self.fail("a 'signing-key' without 'vault:' was accepted")
         except ValueError:
             pass
 
@@ -1651,62 +1665,78 @@ class KernelConfigsWrittenAsFragment(avocado.Test):
         with open(path, "r") as f:
             self.assertEqual(f.read(), "CONFIG_ALREADY_THERE=y\n")
 
-# _apply_signing_key() edits two vendored files it does not own, so this
+# _apply_trusted_cert() edits a vendored file it does not own, so this
 # checks it against a minimal synthetic fixture shaped like the exact
 # text Debian's own packaging is known to carry -- not a real sourcedir.
-class SigningKeyFixture(avocado.Test):
-    def sourcedir(self, control_text, rules_text):
+class TrustedCertFixture(avocado.Test):
+    def sourcedir(self, rules_text):
         sourcedir = os.path.join(self.workdir, "linux")
-        os.makedirs(os.path.join(sourcedir, "debian", "templates"))
-        with open(os.path.join(sourcedir, "debian", "templates",
-                               "source.control.in"), "w") as f:
-            f.write(control_text)
+        os.makedirs(os.path.join(sourcedir, "debian"))
         with open(os.path.join(sourcedir, "debian", "rules.real"), "w") as f:
             f.write(rules_text)
         return sourcedir
 
-    CONTROL = ("Build-Depends:\n debhelper-compat (= 13),\n"
-              " python3:native,\n")
     RULES = ("\tdebian/bin/kconfig.py '$@' $(KCONFIG) \\\n"
-            "\t\t-o MODULE_SIG_KEY=\\\"output/signing_key.pem\\\" \\\n")
+            "\t\t-o MODULE_SIG_KEY=\\\"output/signing_key.pem\\\" \\\n"
+            "\t\t$(call if_profile, pkg.linux.quick,-o X=y)\n"
+            "\n"
+            "\t+$(MAKE_CLEAN) -C $(DIR) modules_install \\\n"
+            "\t\tDEPMOD='$(CURDIR)/debian/bin/no-depmod' \\\n"
+            "\t\tINSTALL_MOD_PATH='$(CURDIR)/$(OUTPUT_DIR)' \\\n"
+            "\t\tINSTALL_MOD_STRIP=1\n"
+            "\n"
+            "\t+$(MAKE_CLEAN) -C $(DIR) modules_install \\\n"
+            "\t\tcmd_sign= \\\n"
+            "\t\tsuffix-y= \\\n"
+            "\t\tDEPMOD='$(CURDIR)/debian/bin/no-depmod' \\\n"
+            "\t\tINSTALL_MOD_PATH='$(CURDIR)/$(OUTPUT_DIR_DBG)'\n")
 
-class SigningKeyIsAppliedToBothFiles(SigningKeyFixture):
+class TrustedCertIsWrittenAndRulesPatched(TrustedCertFixture):
     def test(self):
-        sourcedir = self.sourcedir(self.CONTROL, self.RULES)
-        package = types.SimpleNamespace(
-            source="linux", kernel_signing_key_package="kernel-signing")
-        seine.kernel._apply_signing_key(package, sourcedir)
+        sourcedir = self.sourcedir(self.RULES)
+        package = types.SimpleNamespace(source="linux")
+        seine.kernel._apply_trusted_cert(package, sourcedir, "-- a cert --\n")
 
-        with open(os.path.join(sourcedir, "debian", "templates",
-                               "source.control.in")) as f:
-            control = f.read()
-        self.assertIn("Build-Depends:\n kernel-signing,\n"
-                     " debhelper-compat (= 13),\n", control)
+        with open(os.path.join(sourcedir, seine.kernel.TRUSTED_CERT_PATH)) as f:
+            self.assertEqual(f.read(), "-- a cert --\n")
 
         with open(os.path.join(sourcedir, "debian", "rules.real")) as f:
             rules = f.read()
+        # Redirected: this is what both signs (kbuild leaves it alone,
+        # see below) and gets embedded as the kernel's trusted cert.
         self.assertIn(
-            'MODULE_SIG_KEY=\\"%s\\"' % seine.kernel.SIGNING_KEY_PATH, rules)
+            'MODULE_SIG_KEY=\\"$(CURDIR)/%s\\"' % seine.kernel.TRUSTED_CERT_PATH,
+            rules)
         self.assertNotIn("output/signing_key.pem", rules)
+        # The real modules_install pass gets 'cmd_sign=' too -- no
+        # private key exists at the redirected path to sign with.
+        self.assertIn(
+            "modules_install \\\n\t\tcmd_sign= \\\n"
+            "\t\tDEPMOD='$(CURDIR)/debian/bin/no-depmod' \\\n"
+            "\t\tINSTALL_MOD_PATH='$(CURDIR)/$(OUTPUT_DIR)' \\\n"
+            "\t\tINSTALL_MOD_STRIP=1\n", rules)
+        # The debug pass already carries its own 'cmd_sign=' and is
+        # left exactly as it was -- not doubled.
+        self.assertEqual(rules.count("cmd_sign="), 2)
 
-class SigningKeyMissingControlAnchorIsRejected(SigningKeyFixture):
+class TrustedCertMissingSigKeyAnchorIsRejected(TrustedCertFixture):
     def test(self):
-        sourcedir = self.sourcedir("Build-Depends: something-else\n", self.RULES)
-        package = types.SimpleNamespace(
-            source="linux", kernel_signing_key_package="kernel-signing")
+        sourcedir = self.sourcedir("\t# no MODULE_SIG_KEY here\n")
+        package = types.SimpleNamespace(source="linux")
         try:
-            seine.kernel._apply_signing_key(package, sourcedir)
-            self.fail("a control template that changed shape was accepted")
+            seine.kernel._apply_trusted_cert(package, sourcedir, "-- a cert --\n")
+            self.fail("a rules.real that changed shape was accepted")
         except ValueError as e:
-            self.assertIn("source.control.in", str(e))
+            self.assertIn("rules.real", str(e))
 
-class SigningKeyMissingRulesAnchorIsRejected(SigningKeyFixture):
+class TrustedCertMissingModulesInstallAnchorIsRejected(TrustedCertFixture):
     def test(self):
-        sourcedir = self.sourcedir(self.CONTROL, "\t# no MODULE_SIG_KEY here\n")
-        package = types.SimpleNamespace(
-            source="linux", kernel_signing_key_package="kernel-signing")
+        sourcedir = self.sourcedir(
+            "\t\t-o MODULE_SIG_KEY=\\\"output/signing_key.pem\\\" \\\n"
+            "\t# no modules_install pass here\n")
+        package = types.SimpleNamespace(source="linux")
         try:
-            seine.kernel._apply_signing_key(package, sourcedir)
+            seine.kernel._apply_trusted_cert(package, sourcedir, "-- a cert --\n")
             self.fail("a rules.real that changed shape was accepted")
         except ValueError as e:
             self.assertIn("rules.real", str(e))
