@@ -25,6 +25,9 @@ class Context:
         for files in groups:
             build = BuildCmd()
             build.options = dict(build.options, ansible_library=[])
+            # Without this, a TUI build logs to a bare mkdtemp() and
+            # catalogs under a digest of no files at all.
+            build.options["files"] = files
             build.load_all(files)
             build.parse()
             builds.append(build)
