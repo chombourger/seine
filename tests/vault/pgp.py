@@ -53,6 +53,8 @@ class PgpContract(avocado.Test):
         if shutil.which("gpg") is None or shutil.which("gpgv") is None:
             self.cancel("gpg is needed to verify plugin signatures")
         image()
+        self.cname = None
+        self._tmpdirs = []
         self.cname = "seine-pgp-test-%s" % os.urandom(4).hex()
         ContainerEngine.check_output([
             "run", "-d", "--name", self.cname,
@@ -60,7 +62,6 @@ class PgpContract(avocado.Test):
             "-e", 'BAO_LOCAL_CONFIG={"plugin_directory":"/vault/plugins"}',
             "-e", "BAO_DEV_ROOT_TOKEN_ID=" + TOKEN,
             IMAGE, "server", "-dev", "-dev-listen-address=0.0.0.0:8200"])
-        self.addCleanup(forget, self.cname)
         self.addr = self._wait_ready()
         sha = ContainerEngine.check_output(
             ["run", "--rm", IMAGE, "sha256sum",
@@ -68,6 +69,14 @@ class PgpContract(avocado.Test):
         self._api("PUT", "/v1/sys/plugins/catalog/secret/seine-pgp",
                   {"sha_256": sha, "command": "seine-pgp.so"})
         self._api("POST", "/v1/sys/mounts/seine-pgp", {"type": "seine-pgp"})
+
+    # Explicit teardown: avocado never runs addCleanup cleanups, so a
+    # container left here would outlive the test process.
+    def tearDown(self):
+        for path in getattr(self, "_tmpdirs", []):
+            shutil.rmtree(path, ignore_errors=True)
+        if getattr(self, "cname", None) is not None:
+            forget(self.cname)
 
     def _wait_ready(self):
         port = int(ContainerEngine.check_output(
@@ -104,7 +113,7 @@ class PgpContract(avocado.Test):
 
     def _gpg_home(self, public_armor):
         home = tempfile.mkdtemp(prefix="seine-pgp-verify-")
-        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        self._tmpdirs.append(home)
         subprocess.run(["gpg", "--batch", "--yes", "--homedir", home,
                         "--import"], input=public_armor.encode(),
                        capture_output=True, check=True)
@@ -135,7 +144,7 @@ class PgpContract(avocado.Test):
 
     def _gpg_keygen(self):
         home = tempfile.mkdtemp(prefix="seine-pgp-gen-")
-        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        self._tmpdirs.append(home)
         params = ("Key-Type: RSA\nKey-Length: 3072\n"
                   "Name-Real: import me\nName-Email: import@example.invalid\n"
                   "Expire-Date: 0\n%no-protection\n%commit\n")

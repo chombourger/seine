@@ -19,7 +19,9 @@ from seine.vault import VaultNotFound
 class SpecRendering(avocado.Test):
     def setUp(self):
         vault.clear_secrets()
-        self.addCleanup(vault.clear_secrets)
+
+    def tearDown(self):
+        vault.clear_secrets()
 
     def fake(self, values):
         provider = mock.Mock()
@@ -77,7 +79,9 @@ class RedactionAndDigest(avocado.Test):
 
     def setUp(self):
         vault.clear_secrets()
-        self.addCleanup(vault.clear_secrets)
+
+    def tearDown(self):
+        vault.clear_secrets()
 
     def loaded(self, value=None):
         provider = mock.Mock()
