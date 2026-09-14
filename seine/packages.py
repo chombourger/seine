@@ -45,7 +45,8 @@ from seine.utils  import redactions
 #   apt://busybox[=1:1.37.0-6]     the distro's own source package
 #   https://.../busybox_1.dsc      a .dsc published elsewhere
 #   git://host/busybox.git;rev=..  a tree with its own debian/ directory
-SCHEMES = ["apt", "git", "https"]
+#   file://../local-package        an unpacked tree checked into this repo
+SCHEMES = ["apt", "file", "git", "https"]
 
 # Who a rebuild is for: 'target' (installed on the image, the default) or
 # 'host' (a build tool, e.g. a code generator another package needs).
@@ -168,6 +169,7 @@ class Package:
         self.version = None
         self.parameters = {}
         self.source_name = None
+        self.file_path = None
 
         if source is None:
             return
@@ -209,6 +211,11 @@ class Package:
                     "git sources shall be pinned with ';rev=<commit>' so the "
                     "same specification always rebuilds the same source")
             self.name = os.path.basename(location).removesuffix(".git")
+        elif self.scheme == "file":
+            self.file_path = rest
+            self.name = os.path.basename(rest.rstrip("/"))
+            if len(self.name) == 0:
+                raise self._error("'file://' names no directory")
 
         # What the URI names, kept apart from 'name' -- fetching uses this,
         # the specification/repository use 'name'.
@@ -550,6 +557,16 @@ class Builder:
             os.makedirs(sourcedir)
             return sourcedir
 
+        # file:// is already an unpacked tree on disk -- a host-side copy,
+        # not a container fetch, keeps symlinks the way dpkg-source needs.
+        if package.scheme == "file":
+            if os.path.isdir(package.file_path) == False:
+                raise ValueError("package '%s': no such directory: %s"
+                                 % (package.source, package.file_path))
+            sourcedir = os.path.join(workdir, package.name)
+            self._copy_into(package.file_path, sourcedir)
+            return sourcedir
+
         ssh_volumes, environment = self._ssh(package)
         args, volumes = self._offline_fetch(
             self._fetch_args(package), package, volumes + ssh_volumes)
@@ -619,6 +636,12 @@ class Builder:
 
 
     def _fetch_args(self, package):
+        # Not run through a container (fetch() copies it directly), but
+        # _fetch_key() still needs something identifying the source to
+        # share a fetch between two packages pointed at the same tree.
+        if package.scheme == "file":
+            return ["file", package.file_path]
+
         if package.scheme == "apt":
             source = package.source_name
             if package.version is not None:
@@ -2173,6 +2196,8 @@ def integrity(package):
         return "the archive's signed index"
     if package.scheme == "git":
         return "the revision it is pinned to"
+    if package.scheme == "file":
+        return "being checked into this repository"
     return "a declared sha256" if package.sha256 is not None else None
 
 def upstream_integrity(package):

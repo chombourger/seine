@@ -72,6 +72,31 @@ class SupportedSources(avocado.Test):
         self.assertEqual(packages[2].scheme, "https")
         self.assertEqual(packages[3].parameters["rev"], "deadbeef")
 
+# 'file://' names an already-unpacked tree, given relative to the YAML
+# file that lists it -- 'loads()' has no file of its own, so dirname("")
+# and an absolute path stand in for that resolution here.
+class LocalFileSource(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: file://%s/kernel-signing
+        """ % self.workdir)
+        package = build.image.packages[0]
+        self.assertEqual(package.scheme, "file")
+        self.assertEqual(package.name, "kernel-signing")
+        self.assertEqual(package.file_path, "%s/kernel-signing" % self.workdir)
+
+class LocalFileSourceNamesNoDirectory(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: file:///
+            """)
+            self.fail("a file:// source naming no directory was accepted")
+        except ValueError as e:
+            self.assertIn("names no directory", str(e))
+
 class PackagesOrderedByPriority(avocado.Test):
     def test(self):
         build = parse("""
