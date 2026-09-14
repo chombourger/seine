@@ -319,16 +319,44 @@ REDACTED = "<redacted:%s>"
 def _redacted_match(match):
     return REDACTED % hashlib.sha256(match.group(0).encode()).hexdigest()[:8]
 
-# The 'redact' section, compiled to regexes here so a bad pattern is
-# reported against the spec, not as a traceback mid-dump.
+def _redacted_value(value):
+    return REDACTED % hashlib.sha256(str(value).encode()).hexdigest()[:8]
+
+# Hides a value whole (a path rule), unlike a pattern which only takes
+# out what it matches inside it.
+def _redact_whole(value):
+    if type(value) == type({}):
+        return {k: _redact_whole(v) for k, v in value.items()}
+    if type(value) == type([]):
+        return [_redact_whole(v) for v in value]
+    if type(value) == type(""):
+        return _redacted_value(value)
+    return value
+
+def _redact_path(entry):
+    path = entry.get("path")
+    if not isinstance(path, str) or not path:
+        raise ValueError("redact: a path entry needs a non-empty 'path'")
+    return tuple(path.split("."))
+
+# Always hidden, even if the spec's own 'redact:' doesn't ask.
+ALWAYS_REDACTED_PATHS = [("defaults", "vault")]
+
+# Builds the 'redact' rules: a plain string is a regex (matched anywhere
+# in a string), a '{path: ...}' mapping is a dotted location whose value
+# is hidden whole. Returns a '(patterns, paths)' pair for redact().
 def redactions(spec):
     patterns = []
-    for pattern in (spec or {}).get("redact") or []:
+    paths = list(ALWAYS_REDACTED_PATHS)
+    for entry in (spec or {}).get("redact") or []:
+        if isinstance(entry, dict):
+            paths.append(_redact_path(entry))
+            continue
         try:
-            patterns.append(re.compile(pattern))
+            patterns.append(re.compile(entry))
         except re.error as e:
             raise ValueError("redact: '%s' is not a pattern: %s"
-                             % (pattern, e)) from e
+                             % (entry, e)) from e
     # Vault values redact themselves: the fragment holding a secret is
     # rarely the one that knows it is one.
     try:
@@ -338,15 +366,18 @@ def redactions(spec):
                 patterns.append(re.compile(re.escape(secret)))
     except ImportError:
         pass
-    return patterns
+    return patterns, paths
 
-# A value with every pattern match replaced, so a pattern can target just
-# the secret inside a larger string and leave the rest readable.
-def redact(value, patterns):
+# Applies patterns and path rules to 'value'. 'path' is where 'value'
+# sits in the spec -- pass a starting point when walking a subtree.
+def redact(value, rules, path=()):
+    patterns, paths = rules
+    if any(path[:len(p)] == p for p in paths):
+        return _redact_whole(value)
     if type(value) == type({}):
-        return {k: redact(v, patterns) for k, v in value.items()}
+        return {k: redact(v, rules, path + (k,)) for k, v in value.items()}
     if type(value) == type([]):
-        return [redact(v, patterns) for v in value]
+        return [redact(v, rules, path) for v in value]
     if type(value) == type(""):
         for pattern in patterns:
             value = pattern.sub(_redacted_match, value)

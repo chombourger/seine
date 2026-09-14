@@ -948,15 +948,13 @@ class BuildCmd(Cmd):
             self.spec["initrd"] = spec["initrd"]
 
     # Gathered from every file, not just the last: the fragment holding a
-    # secret is the one that knows it's a secret, rarely the top file.
-    #
-    # direction: additive, deduplicated -- order doesn't matter
-    # (docs/merging.md).
+    # secret is the one that knows it's a secret. An entry is a pattern
+    # or a path rule; both merge the same way (docs/merging.md).
     def _merge_redact(self, spec):
-        for pattern in spec.get("redact") or []:
-            patterns = self.spec.setdefault("redact", [])
-            if pattern not in patterns:
-                patterns.append(pattern)
+        for entry in spec.get("redact") or []:
+            entries = self.spec.setdefault("redact", [])
+            if entry not in entries:
+                entries.append(entry)
 
     # 'peer' is True for a file with nothing reaching for it -- a
     # top-level CLI file after the first, or a side-loaded fragment --
@@ -1081,10 +1079,10 @@ class BuildCmd(Cmd):
         # Redacts everywhere the patterns appear, but leaves the 'redact'
         # section itself alone -- its patterns describe what's hidden, and
         # matching itself would hide that.
-        patterns = redactions(spec)
+        rules = redactions(spec)
         for section in spec:
             if section != "redact":
-                spec[section] = redact(spec[section], patterns)
+                spec[section] = redact(spec[section], rules, path=(section,))
 
         # return the spec in YAML format
         return yaml.dump(spec)

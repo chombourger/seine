@@ -49,7 +49,8 @@ def _item_label(item, index):
 NO_DIFF = object()
 MISSING = object()
 
-def _populate(node, key, value, old, changed, redact):
+def _populate(node, key, value, old, changed, redact, path=()):
+    path = path + (key,)
     diffing = old is not NO_DIFF
     if isinstance(value, dict):
         branch = node.add(str(key), data=str(key))
@@ -63,7 +64,7 @@ def _populate(node, key, value, old, changed, redact):
             if isinstance(k, str) and k.startswith("_"):
                 continue
             child_old = old.get(k, MISSING) if diffing else NO_DIFF
-            _populate(branch, k, v, child_old, changed, redact)
+            _populate(branch, k, v, child_old, changed, redact, path)
     elif isinstance(value, list):
         branch = node.add(str(key), data=str(key))
         # Matched by the same label as _item_label(), so reordering or
@@ -79,9 +80,9 @@ def _populate(node, key, value, old, changed, redact):
             if isinstance(item, (dict, list)):
                 label = _item_label(item, index)
                 child_old = old_by_label.get(label, MISSING) if diffing else NO_DIFF
-                _populate(branch, label, item, child_old, changed, redact)
+                _populate(branch, label, item, child_old, changed, redact, path)
             else:
-                text = str(redact(item))
+                text = str(redact(item, path))
                 leaf = branch.add_leaf(text, data=text)
                 if diffing and str(item) not in old_by_label:
                     changed.append(leaf)
@@ -89,7 +90,7 @@ def _populate(node, key, value, old, changed, redact):
         # Diffed on the real value, redacted only for display: a
         # changed secret still shows as changed even though both sides
         # render the same '<redacted:...>' placeholder.
-        text = "%s: %s" % (key, redact(value))
+        text = "%s: %s" % (key, redact(value, path))
         leaf = node.add_leaf(text, data=text)
         if diffing and (old is MISSING or old != value):
             changed.append(leaf)
@@ -103,12 +104,12 @@ def _populate_multiconfig(node, subbuilds, changed):
     for name, subbuild in subbuilds.items():
         label = multiconfig._label(subbuild, name=name)
         subgroup = branch.add(label, expand=True, data=label)
-        patterns = redactions(subbuild.spec)
-        redact = lambda value, patterns=patterns: redact_value(value, patterns)
+        rules = redactions(subbuild.spec)
+        redact = lambda value, path, rules=rules: redact_value(value, rules, path)
         for key, value in subbuild.spec.items():
             if isinstance(key, str) and key.startswith("_"):
                 continue
-            section_redact = (lambda v: v) if key == "redact" else redact
+            section_redact = (lambda v, path: v) if key == "redact" else redact
             _populate(subgroup, key, value, NO_DIFF, changed, section_redact)
 
 # Prefixed onto a node's label while a running build is touching it, a
@@ -187,10 +188,10 @@ class SpecTree(Tree):
             # single root would need an extra Enter to show anything.
             label = multiconfig._label(build)
             group = self.root.add(label, expand=True, data=label)
-            # Same redact patterns/substitution 'seine plan'/'--dump'
+            # Same redact rules/substitution 'seine plan'/'--dump'
             # apply: one redaction rule, not a second invented for the TUI.
-            patterns = redactions(build.spec)
-            redact = lambda value, patterns=patterns: redact_value(value, patterns)
+            rules = redactions(build.spec)
+            redact = lambda value, path, rules=rules: redact_value(value, rules, path)
             old = previous_spec if (previous_spec is not None and index == 0) else NO_DIFF
             for key, value in build.spec.items():
                 if isinstance(key, str) and key.startswith("_"):
@@ -204,7 +205,7 @@ class SpecTree(Tree):
                 child_old = old.get(key, MISSING) if old is not NO_DIFF else NO_DIFF
                 # 'redact' itself is shown as written, same exclusion
                 # BuildCmd.dump() makes.
-                section_redact = (lambda v: v) if key == "redact" else redact
+                section_redact = (lambda v, path: v) if key == "redact" else redact
                 _populate(group, key, value, child_old, changed, section_redact)
         for node in changed:
             self._changed.add(node)
