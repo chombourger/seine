@@ -42,9 +42,10 @@ def _content(widget):
         return widget._content
     return getattr(widget, "_Static__content", "")
 
-from tests.native_image import native_image
+from tests.native_image import _EXAMPLES, native_image
 
 NATIVE_IMAGE = native_image()
+PC_UKI_IMAGE = os.path.join(_EXAMPLES, "pc-uki-image", "main.yaml")
 PC_IMAGE = os.path.join(path_to_sources, "examples", "pc-image", "main.yaml")
 
 # A minimal vendor-only specification -- no 'image:' section at all, the
@@ -1208,6 +1209,24 @@ class AnalyzeCacheDoctorRendering(avocado.Test):
         context.use([NATIVE_IMAGE])
         text = self.render_cache_why(context, "not-a-real-package")
         self.assertIn("not in", text)
+
+    # 'linux-uki-amd64' is declared in the 'uki' multiconfig: group's
+    # own 'packages:', not the top-level image's.
+    def test_cache_why_finds_a_package_in_a_multiconfig_subgroup(self):
+        # Relative paths resolve against the process's cwd, not
+        # main.yaml's -- same as 'seine build' needs the repository
+        # root. Kept for the call: stamp() opens fragments lazily.
+        root = os.path.dirname(_EXAMPLES)
+        previous = os.getcwd()
+        os.chdir(root)
+        try:
+            context = self.Context()
+            context.use([PC_UKI_IMAGE])
+            text = self.render_cache_why(context, "linux-uki-amd64")
+        finally:
+            os.chdir(previous)
+        self.assertNotIn("not in this specification", text)
+        self.assertIn("linux-uki-amd64/amd64", text)
 
     def test_doctor_lists_every_group(self):
         text = self.render_doctor()
