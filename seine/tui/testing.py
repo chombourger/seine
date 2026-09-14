@@ -32,6 +32,12 @@ class TestState:
         self.run_id = 0
         # Set by SeineApp.__init__, same shape as BuildState.on_finished.
         self.on_finished = None
+        # Same, for the start edge: a fresh run clears the previous
+        # per-test states, so whatever is on screen is stale.
+        self.on_started = None
+        # Same, for every test's own start/finish: one mark flips,
+        # so a listing of them is one mark behind.
+        self.on_changed = None
 
     @property
     def running(self):
@@ -49,6 +55,8 @@ class TestState:
         self.test_paths = spectree.test_paths(spec) if spec else {}
         self.output_lines = []
         self.run_id += 1
+        if self.on_started:
+            self.on_started()
 
     # Reporter sink: named task_started/task_finished/sampled to match
     # TextualReporter's calls, not the Reporter protocol's own names.
@@ -57,10 +65,14 @@ class TestState:
         self.rows[name]["state"] = "running"
         if name not in self.order:
             self.order.append(name)
+        if self.on_changed:
+            self.on_changed()
 
     def task_finished(self, name, failed=False):
         self.rows.setdefault(name, {"state": "pending"})
         self.rows[name]["state"] = "failed" if failed else "done"
+        if self.on_changed:
+            self.on_changed()
 
     def say(self, text):
         self.message = text

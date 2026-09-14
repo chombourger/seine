@@ -188,8 +188,25 @@ class OverviewScreen(BaseScreen):
             # Anything under the spec's 'test:' branch lists with the
             # same marks the Test screen uses. A scalar field below a
             # case (no test of its own) falls back to the generic listing.
+            state = self.app.test_state
+            if not getattr(state, "test_paths", None):
+                # No run yet this session: derive the paths from the
+                # selected group's own spec so unexecuted tests still
+                # list with ○ rather than falling back to plain names.
+                try:
+                    index = next(i for i, c in enumerate(tree.root.children)
+                                 if c.data == self._selected_path[0])
+                except StopIteration:
+                    index = 0
+                builds = self.app.context.builds
+                if 0 <= index < len(builds):
+                    import types
+                    from seine.tui.spectree import test_paths as _test_paths
+                    state = types.SimpleNamespace(
+                        test_paths=_test_paths(builds[index].spec),
+                        rows={}, result=None)
             text = render_test_node(
-                node, self._selected_path[1:], self.app.test_state)
+                node, self._selected_path[1:], state)
             if text is None:
                 text = render_node(node)
         else:
@@ -381,6 +398,8 @@ class SeineApp(App):
         self.target_state = TargetState()
         self.test_state = TestState()
         self.test_state.on_finished = self._test_finished
+        self.test_state.on_started = self._test_started
+        self.test_state.on_changed = self._test_changed
         self.diff_text = None
         # Set by commands.py's _issues() right before app.show("issues");
         # IssuesScreen.update_body() reads these back.
@@ -608,10 +627,29 @@ class SeineApp(App):
                 self.show("chat")
             ai.notify_vendor_finished(self)
 
+    def _test_started(self):
+        # A fresh run clears the previous per-test states, so
+        # whatever is on screen (overview, test) is stale -- same
+        # reason _test_finished() refreshes after a run.
+        if isinstance(self.screen, BaseScreen):
+            self.screen.refresh_data()
+
+    def _test_changed(self):
+        # Repaint right away so the overview's marks don't lag a
+        # whole run behind. Pane only: the spec tree doesn't change
+        # mid-run, so selection and expansion stay put.
+        if isinstance(self.screen, OverviewScreen):
+            self.screen.update_body()
+
     def _test_finished(self):
         self._socket_send({"type": "test_finished",
                            "error": self.test_state.error,
                            "message": self.test_state.message})
+        # A finished test leaves new per-test states behind, so
+        # whatever is on screen (overview, test) is stale -- same
+        # reason _build_finished() refreshes after a build.
+        if isinstance(self.screen, BaseScreen):
+            self.screen.refresh_data()
 
     def show(self, name):
         target = SCREENS[name]
