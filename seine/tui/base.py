@@ -402,11 +402,14 @@ class BaseScreen(Screen):
     def say(self, text, error=False, warning=False):
         # Bump the token so a delayed copy-notice clear can't wipe a
         # newer message that lands after it (e.g. an error after a copy).
+        from seine.tui.sanitize import sanitize
         self._copy_notice_token = getattr(self, "_copy_notice_token", 0) + 1
         status = self.query_one("#status", Static)
         status.set_class(error, "error")
         status.set_class(warning, "warning")
-        status.update(text)
+        # The status line is a Static, not a terminal: escape sequences
+        # (e.g. from a test failure message) would escape their widget.
+        status.update(sanitize(text))
 
     # A plain click selects nothing here -- Textual clears the
     # selection before this bubbles -- so it stays a no-op.
