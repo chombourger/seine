@@ -322,6 +322,11 @@ class Image:
         image.close()
         self._image = image.name
 
+    # The spec's own dev-vault seeds, by name/ref -- see
+    # seine/vault/dev.py's DevVault.__init__.
+    def _vault_defaults(self):
+        return (self.spec.get("defaults") or {}).get("vault") or {}
+
     # Resolves/fetches/indexes 'vendor:' before 'packages:' needs it.
     # Skipped when there's nothing to do, or a vendor repo already
     # exists for this release. Narrowed to this build's own release
@@ -371,7 +376,7 @@ class Image:
         vendor_task = self._vendor_task(distro)
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options),
-            redactions(self.spec))
+            redactions(self.spec), vault_defaults=self._vault_defaults())
         self._builder = builder
         # 'bootstrap-host' waits on 'vendor' only when there is one:
         # its apt-get would otherwise look for a repo not built yet.
@@ -539,7 +544,7 @@ class Image:
 
         builder = packages.Builder(
             distro, self.options, BuilderImage(distro, self.options),
-            redactions(self.spec))
+            redactions(self.spec), vault_defaults=self._vault_defaults())
         current = builder.current(self.packages)
         if len(current) > 0:
             print("\nalready built, and not built again:")

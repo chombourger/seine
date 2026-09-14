@@ -627,6 +627,11 @@ class BuildCmd(Cmd):
     # rebuild). Last file wins here, unlike 'packages:' -- so a board
     # file overrides the architecture file it sits on.
     #
+    # 'defaults: vault:' is unrelated to packages: fixed dev-only
+    # key/secret material so independent dev-vault builds of the same
+    # spec agree instead of each generating their own (vault/dev.py).
+    # Merged by name, later files overriding same-named entries.
+    #
     # direction: most-specific file wins (docs/merging.md).
     def _merge_defaults(self, spec):
         if "defaults" not in spec:
@@ -635,9 +640,10 @@ class BuildCmd(Cmd):
         if type(defaults) != type({}):
             raise ValueError("'defaults' shall be a dictionary!")
         for setting in defaults:
-            if setting != "packages":
+            if setting not in ("packages", "vault"):
                 raise ValueError(
-                    "'defaults' holds package entries only, not '%s'" % setting)
+                    "'defaults' holds package entries or 'vault', not '%s'"
+                    % setting)
 
         merged = self.spec.setdefault("defaults", {}).setdefault("packages", [])
         for package in defaults.get("packages") or []:
@@ -647,6 +653,12 @@ class BuildCmd(Cmd):
                 merged.append(package)
             else:
                 self._override_package(existing[0], package)
+
+        vault = defaults.get("vault")
+        if vault is not None:
+            if type(vault) != type({}):
+                raise ValueError("'defaults: vault' shall be a dictionary")
+            self.spec["defaults"].setdefault("vault", {}).update(vault)
 
     # As _merge_package(), with the two files the other way round: what the
     # later one says replaces what the earlier one did.
@@ -678,7 +690,12 @@ class BuildCmd(Cmd):
     def _apply_defaults(self):
         from seine.packages import Package
 
-        defaults = (self.spec.pop("defaults", None) or {}).get("packages") or []
+        held = self.spec.get("defaults") or {}
+        defaults = held.pop("packages", None) or []
+        # 'vault' stays: Builder/Imager read it later, once the vault is
+        # actually needed. Only drop 'defaults' once nothing is left.
+        if len(held) == 0:
+            self.spec.pop("defaults", None)
         for index, default in enumerate(defaults):
             Package(default, index)
             self._drop_unbuilt_kernels(default)

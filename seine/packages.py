@@ -466,7 +466,8 @@ def extend_digest(digest, recipe, label, value):
 class Builder:
     # 'redact_patterns' is optional: most callers have no 'redact:'
     # section, and passing '[]' everywhere would be pure noise.
-    def __init__(self, distro, options, builderImage, redact_patterns=None):
+    def __init__(self, distro, options, builderImage, redact_patterns=None,
+                vault_defaults=None):
         self.builderImage = builderImage
         self.distro = distro
         self.options = options
@@ -527,6 +528,7 @@ class Builder:
         # Lazy: most builds sign nothing through the vault, and it starts
         # an ephemeral container (dev.DevVault) on first real use.
         self._vault_provider = None
+        self._vault_defaults = vault_defaults or {}
 
     # Cores for one package build: --parallel, or cores divided by how
     # many builds run at once.
@@ -548,7 +550,7 @@ class Builder:
     def _vault(self):
         if self._vault_provider is None:
             from seine import vault as _vault
-            self._vault_provider = _vault.for_build()
+            self._vault_provider = _vault.for_build(self._vault_defaults)
         return self._vault_provider
 
     # Re-signs every module this build produced and fixes up .changes

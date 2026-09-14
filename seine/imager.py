@@ -806,7 +806,7 @@ class Imager:
     # timestamp is pinned to the build epoch, not faked.
     def _sign_uki_vault(self, workdir, epoch, name):
         from seine import vault as _vault
-        provider = _vault.for_build()
+        provider = _vault.for_build(self.source._vault_defaults())
         with open(os.path.join(workdir, "rebuilt.efi"), "rb") as f:
             signed = provider.sbsign_sign(name, f.read(), epoch)
         with open(os.path.join(workdir, "signed.efi"), "wb") as f:

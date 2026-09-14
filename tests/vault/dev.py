@@ -216,6 +216,18 @@ class DevSeeding(avocado.Test):
         self.assertEqual(said.getvalue(), "")
         self.assertEqual([call for call in calls if call[0] == "PUT"], [])
 
+    # A spec's 'defaults: vault:' overrides the hardcoded table, so a
+    # project can pin its own dev-only root password (or any other KV
+    # secret) instead of the tabled "welcome123".
+    def test_specs_own_default_overrides_the_hardcoded_one(self):
+        dev, calls = self.seeded()
+        dev._defaults = {self.REF: "project-specific-throwaway"}
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dev._seed(self.REF), "project-specific-throwaway")
+        puts = [call for call in calls if call[0] == "PUT"]
+        self.assertEqual(puts[0][2],
+                         {"data": {"hash": "project-specific-throwaway"}})
+
 
 class TransitKeyMint(avocado.Test):
     def minted(self, present=()):
@@ -391,6 +403,64 @@ class SbsignKeyMint(avocado.Test):
         said = io.StringIO()
         with contextlib.redirect_stderr(said):
             self.assertEqual(dev.sbsign_sign("db", b"pe", self.EPOCH), b"signed")
+        self.assertEqual(said.getvalue(), "")
+        self.assertEqual([call for call in calls if call[0] == "POST"], [])
+
+    # A spec's 'defaults: vault: db:' is imported instead of generated,
+    # so two independent dev instances building the same spec sign
+    # with the same key -- see _seed_crypto_key().
+    def test_specs_own_default_is_imported_not_generated(self):
+        dev, calls = self.minted()
+        dev._defaults = {"db": {"key_pem": "-- key --", "cert_pem": "-- cert --"}}
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(dev.sbsign_sign("db", b"pe", self.EPOCH), b"signed")
+        self.assertIn("importing", said.getvalue())
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(posts[0][2],
+                         {"import": {"key_pem": "-- key --", "cert_pem": "-- cert --"}})
+
+
+# Kernel-module signing shares _seed_crypto_key() with sbsign, so this
+# only re-checks the plugin-specific plumbing (URL, method name) --
+# import-vs-generate is covered once, above.
+class KmodKeyMint(avocado.Test):
+    def minted(self, present=False):
+        dev = DevVault()
+        inner = mock.Mock()
+        calls = []
+
+        def fake(method, path, body, token):
+            calls.append((method, path, body))
+            if method == "GET":
+                if present:
+                    return {"data": {"cert_pem": "cert"}}
+                raise VaultNotFound("no key")
+            return {"data": {"cert_pem": "cert"}}
+
+        inner._request.side_effect = fake
+        inner.kmod_sign.return_value = b"signed-ko"
+        dev._inner = inner
+        return dev, calls
+
+    def test_missing_key_generated_once_and_warned(self):
+        dev, calls = self.minted()
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(dev.kmod_sign("kernel-modules", b"ko"), b"signed-ko")
+            self.assertEqual(dev.kmod_sign("kernel-modules", b"ko"), b"signed-ko")
+        self.assertIn("warning", said.getvalue())
+        self.assertIn("kernel-modules", said.getvalue())
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0][1].endswith("/v1/seine-kmod/keys/kernel-modules"))
+        self.assertEqual(posts[0][2], {"generate": {}})
+
+    def test_existing_key_neither_regenerated_nor_warned(self):
+        dev, calls = self.minted(present=True)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(dev.kmod_sign("kernel-modules", b"ko"), b"signed-ko")
         self.assertEqual(said.getvalue(), "")
         self.assertEqual([call for call in calls if call[0] == "POST"], [])
 
