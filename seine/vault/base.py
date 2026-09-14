@@ -12,11 +12,12 @@ class VaultNotFound(VaultError):
 
 
 class VaultProvider:
+    # A "kv/data/path#field" value, as a string.
     def kv_read(self, ref):
         raise NotImplementedError
 
-    # Crypto lands in phase 4; declared here so callers stay
-    # backend-agnostic from the start.
+    # Bytes up, ciphertext back; keys never leave the vault. Plaintext
+    # and signatures travel base64 inside the API, bytes outside it.
     def encrypt(self, key, plaintext):
         raise NotImplementedError
 
@@ -26,5 +27,6 @@ class VaultProvider:
     def sign(self, key, data):
         raise NotImplementedError
 
+    # True on a match, False on a mismatch -- never raises for one.
     def verify(self, key, data, signature):
         raise NotImplementedError

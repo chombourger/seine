@@ -211,6 +211,80 @@ class DevSeeding(avocado.Test):
         self.assertEqual([call for call in calls if call[0] == "PUT"], [])
 
 
+class TransitKeyMint(avocado.Test):
+    def minted(self, present=()):
+        dev = DevVault()
+        inner = mock.Mock()
+        calls = []
+
+        def fake(method, path, body, token):
+            calls.append((method, path, body))
+            if method == "GET":
+                if path in present:
+                    return {"data": {"name": "mykey"}}
+                raise VaultNotFound("no key")
+            return {}
+
+        inner._request.side_effect = fake
+        inner.encrypt.return_value = "vault:v1:ct"
+        inner.sign.return_value = "vault:v1:sig"
+        dev._inner = inner
+        return dev, calls
+
+    def test_missing_key_generated_once_and_warned(self):
+        dev, calls = self.minted()
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(dev.encrypt("mykey", b"hello"), "vault:v1:ct")
+            self.assertEqual(dev.encrypt("mykey", b"again"), "vault:v1:ct")
+        self.assertIn("warning", said.getvalue())
+        self.assertIn("mykey", said.getvalue())
+        self.assertIn("aes256-gcm96", said.getvalue())
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0][1].endswith("/v1/transit/keys/mykey"))
+        self.assertEqual(posts[0][2], {"type": "aes256-gcm96"})
+
+    def test_signing_key_is_rsa(self):
+        dev, calls = self.minted()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dev.sign("sigkey", b"data"), "vault:v1:sig")
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0][2], {"type": "rsa-2048"})
+
+    def test_existing_key_neither_recreated_nor_warned(self):
+        dev, calls = self.minted(present={"/v1/transit/keys/mykey"})
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(dev.encrypt("mykey", b"hello"), "vault:v1:ct")
+        self.assertEqual(said.getvalue(), "")
+        self.assertEqual([call for call in calls if call[0] == "POST"], [])
+
+
+class TransitConsumer(ContainerSetup):
+    """
+    :avocado: tags=container
+    """
+    timeout = 900
+
+    def test_encrypt_decrypt_roundtrip(self):
+        dev = self.started()
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            ciphertext = dev.encrypt("seine-test-enc", b"secret-bytes")
+        self.assertTrue(ciphertext.startswith("vault:v"))
+        self.assertNotIn("secret-bytes", ciphertext)
+        self.assertIn("warning", said.getvalue())
+        self.assertEqual(dev.decrypt("seine-test-enc", ciphertext), b"secret-bytes")
+
+    def test_sign_verify_roundtrip(self):
+        dev = self.started()
+        signature = dev.sign("seine-test-signer", b"data-bytes")
+        self.assertTrue(dev.verify("seine-test-signer", b"data-bytes", signature))
+        self.assertFalse(dev.verify("seine-test-signer", b"other-bytes", signature))
+
+
 class VaultSelection(avocado.Test):
     def test_remote_when_configured(self):
         env = {"SEINE_VAULT_ADDR": "https://vault:8200", "VAULT_ADDR": "",

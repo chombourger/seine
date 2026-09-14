@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import avocado
+import base64
 import io
 import json
 import os
@@ -89,6 +90,75 @@ class RemoteReads(avocado.Test):
                                            "VAULT_ADDR": ""}):
             with self.assertRaises(VaultError):
                 OpenBaoProvider()
+
+
+class TransitMapping(avocado.Test):
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, {"SEINE_VAULT_ADDR": "https://vault:8200",
+                                                 "SEINE_VAULT_TOKEN": "tok"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.calls = []
+
+    def serving(self, payloads):
+        def fake(request, *args, **kwargs):
+            self.calls.append((request.get_method(), request.full_url,
+                               json.loads(request.data.decode() or "{}")))
+            for suffix, payload in payloads.items():
+                if request.full_url.endswith(suffix):
+                    if isinstance(payload, Exception):
+                        raise payload
+                    return FakeReply(payload)
+            raise AssertionError("unexpected vault call %s" % request.full_url)
+
+        return mock.patch("urllib.request.urlopen", side_effect=fake)
+
+    def test_encrypt_posts_base64(self):
+        routes = {"/v1/transit/encrypt/mykey":
+                  {"data": {"ciphertext": "vault:v1:abc"}}}
+        with self.serving(routes):
+            self.assertEqual(OpenBaoProvider().encrypt("mykey", b"hello"),
+                             "vault:v1:abc")
+        self.assertEqual(self.calls,
+                         [("POST", "https://vault:8200/v1/transit/encrypt/mykey",
+                           {"plaintext": base64.b64encode(b"hello").decode()})])
+
+    def test_decrypt_returns_bytes(self):
+        encoded = base64.b64encode(b"hello").decode()
+        routes = {"/v1/transit/decrypt/mykey": {"data": {"plaintext": encoded}}}
+        with self.serving(routes):
+            self.assertEqual(OpenBaoProvider().decrypt("mykey", "vault:v1:abc"),
+                             b"hello")
+
+    def test_sign_and_verify(self):
+        routes = {"/v1/transit/sign/mykey": {"data": {"signature": "vault:v1:sig"}},
+                  "/v1/transit/verify/mykey": {"data": {"valid": True}}}
+        with self.serving(routes):
+            provider = OpenBaoProvider()
+            signature = provider.sign("mykey", b"hello")
+            self.assertEqual(signature, "vault:v1:sig")
+            self.assertTrue(provider.verify("mykey", b"hello", signature))
+
+    def test_verify_is_false_on_mismatch(self):
+        routes = {"/v1/transit/verify/mykey": {"data": {"valid": False}}}
+        with self.serving(routes):
+            self.assertFalse(OpenBaoProvider().verify(
+                "mykey", b"tampered", "vault:v1:sig"))
+
+    def test_missing_key_fails_closed_without_creating(self):
+        missing = urllib.error.HTTPError("https://vault:8200/v1/transit/encrypt/x",
+                                         400, "Bad Request", None, io.BytesIO(b"{}"))
+        with self.serving({"/v1/transit/encrypt/x": missing}):
+            with self.assertRaises(VaultError):
+                OpenBaoProvider().encrypt("x", b"hello")
+        self.assertEqual([url for _, url, _ in self.calls
+                          if "/transit/keys/" in url], [])
+
+    def test_non_bytes_plaintext_is_refused(self):
+        with self.serving({}):
+            with self.assertRaises(VaultError):
+                OpenBaoProvider().encrypt("mykey", "hello")
+        self.assertEqual(self.calls, [])
 
 
 class RemoteAuth(avocado.Test):

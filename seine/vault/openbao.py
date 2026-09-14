@@ -1,9 +1,11 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
+import base64
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from seine.vault.base import VaultError, VaultNotFound, VaultProvider
@@ -15,6 +17,29 @@ def _env(*names):
         if value:
             return value
     return None
+
+
+# Transit takes base64 in, returns base64 out; bytes outside the API.
+def _b64(data):
+    if not isinstance(data, bytes):
+        raise VaultError("transit expects bytes, got %s" % type(data).__name__)
+    return base64.b64encode(data).decode()
+
+
+def _b64decode(text):
+    try:
+        return base64.b64decode(text, validate=True)
+    except (ValueError, TypeError) as e:
+        raise VaultError("vault answered with bad base64: %s" % e) from e
+
+
+def _field(reply, *names):
+    try:
+        for name in names:
+            reply = reply[name]
+        return reply
+    except (KeyError, TypeError) as e:
+        raise VaultError("vault answered unexpectedly: %s" % e) from e
 
 
 # Remote OpenBao over HTTP. Fail closed: any error raises, never an
@@ -70,6 +95,36 @@ class OpenBaoProvider(VaultProvider):
             raise VaultNotFound("vault has no '%s'" % ref)
         value = fields[field]
         return value if isinstance(value, str) else str(value)
+
+    # Native Transit: bytes up, ciphertext/signature back. Missing keys
+    # fail closed here; the dev backend mints its own instead.
+    def encrypt(self, key, plaintext):
+        reply = self._request(
+            "POST", "/v1/transit/encrypt/%s" % urllib.parse.quote(key, safe=""),
+            {"plaintext": _b64(plaintext)}, token=self._token)
+        return _field(reply, "data", "ciphertext")
+
+    def decrypt(self, key, ciphertext):
+        if not isinstance(ciphertext, str):
+            raise VaultError("decrypt expects a ciphertext string")
+        reply = self._request(
+            "POST", "/v1/transit/decrypt/%s" % urllib.parse.quote(key, safe=""),
+            {"ciphertext": ciphertext}, token=self._token)
+        return _b64decode(_field(reply, "data", "plaintext"))
+
+    def sign(self, key, data):
+        reply = self._request(
+            "POST", "/v1/transit/sign/%s" % urllib.parse.quote(key, safe=""),
+            {"input": _b64(data)}, token=self._token)
+        return _field(reply, "data", "signature")
+
+    def verify(self, key, data, signature):
+        if not isinstance(signature, str):
+            raise VaultError("verify expects a signature string")
+        reply = self._request(
+            "POST", "/v1/transit/verify/%s" % urllib.parse.quote(key, safe=""),
+            {"input": _b64(data), "signature": signature}, token=self._token)
+        return bool(_field(reply, "data", "valid"))
 
     def _request(self, method, url_path, body, token):
         request = urllib.request.Request(
