@@ -168,6 +168,7 @@ class DevVault(VaultProvider):
         self._inner = None
         self._transit_keys = set()
         self._pgp_keys = {}
+        self._sbsign_keys = set()
         self._lock = threading.Lock()
         self._closed = False
 
@@ -377,15 +378,56 @@ class DevVault(VaultProvider):
         if "transit/" not in mounts:
             self._inner._request("POST", "/v1/sys/mounts/transit",
                                  {"type": "transit"}, self._token)
-        if "seine-pgp/" not in mounts:
-            digest = ContainerEngine.check_output(
-                ["run", "--rm", CUSTOM_IMAGE, "sha256sum",
-                 "/vault/plugins/seine-pgp.so"]).decode().split()[0]
+        self._mount_plugin(mounts, "seine-pgp")
+        self._mount_plugin(mounts, "seine-sbsign")
+
+    def _mount_plugin(self, mounts, name):
+        if "%s/" % name in mounts:
+            return
+        digest = ContainerEngine.check_output(
+            ["run", "--rm", CUSTOM_IMAGE, "sha256sum",
+             "/vault/plugins/%s.so" % name]).decode().split()[0]
+        self._inner._request(
+            "PUT", "/v1/sys/plugins/catalog/secret/%s" % name,
+            {"sha_256": digest, "command": "%s.so" % name}, self._token)
+        self._inner._request("POST", "/v1/sys/mounts/%s" % name,
+                             {"type": name}, self._token)
+
+    # Secure Boot signing through the plugin. Missing keys are minted
+    # on first use like PGP keys; the timestamp needs no clamping
+    # since CMS signing time accepts any moment.
+    def sbsign_cert(self, name):
+        self._ensure_started()
+        with self._lock:
+            self._ensure_sbsign_key(name)
+            return self._inner.sbsign_cert(name)
+
+    def sbsign_sign(self, name, pe, timestamp):
+        self._ensure_started()
+        if not isinstance(pe, bytes):
+            raise VaultError("secure-boot signing expects bytes, got %s"
+                             % type(pe).__name__)
+        if not isinstance(timestamp, int) or timestamp < 0:
+            raise VaultError("secure-boot signing expects a unix epoch timestamp")
+        with self._lock:
+            self._ensure_sbsign_key(name)
+            return self._inner.sbsign_sign(name, pe, timestamp)
+
+    def _ensure_sbsign_key(self, name):
+        if name in self._sbsign_keys:
+            return
+        quoted = urllib.parse.quote(name, safe="")
+        try:
             self._inner._request(
-                "PUT", "/v1/sys/plugins/catalog/secret/seine-pgp",
-                {"sha_256": digest, "command": "seine-pgp.so"}, self._token)
-            self._inner._request("POST", "/v1/sys/mounts/seine-pgp",
-                                 {"type": "seine-pgp"}, self._token)
+                "GET", "/v1/seine-sbsign/keys/%s/cert" % quoted, None,
+                self._token)
+        except VaultNotFound:
+            sys.stderr.write(
+                "warning: dev vault has no sbsign key '%s'; generating a "
+                "throwaway (local development only, never production)\n" % name)
+            self._inner._request("POST", "/v1/seine-sbsign/keys/%s" % quoted,
+                                 {"generate": {}}, self._token)
+        self._sbsign_keys.add(name)
 
     # SIGTERM never runs atexit handlers; chained so whatever was there
     # (tasks.py's own SIGINT handling, ...) still gets its turn.

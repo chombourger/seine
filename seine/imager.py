@@ -776,27 +776,47 @@ class Imager:
         secure_boot = self.source.partitionHandler.secure_boot
         result = "rebuilt.efi"
         if secure_boot is not None:
-            # sbsign stamps its own signing time, ignoring SOURCE_DATE_EPOCH --
-            # libfaketime pins what it (and any clock call) sees instead.
-            when = datetime.datetime.fromtimestamp(
-                epoch, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            faketime = (
-                "libfaketime=$(dpkg -L libfaketime | grep -E '/libfaketime\\.so\\.[0-9]+$') && "
-                "LD_PRELOAD=$libfaketime FAKETIME='@%s' "
-                "sbsign --key /work-key --cert /work-cert "
-                "--output signed.efi rebuilt.efi" % when)
-            ContainerEngine.run(
-                ["container", "run", "--rm", "-v", "%s:/work" % workdir,
-                 "-v", "%s:/work-key:ro" % os.path.abspath(secure_boot["private-key"]),
-                 "-v", "%s:/work-cert:ro" % os.path.abspath(secure_boot["public-cert"]),
-                 "-w", "/work", self._extra_tools.name,
-                 "sh", "-c", faketime], check=True)
-            result = "signed.efi"
+            result = self._sign_uki(workdir, epoch)
 
         g.upload(os.path.join(workdir, result), efi_path)
         # g.upload() stamps the real time, unlike the mtools rebuild
         # the rest of this FAT tree already went through.
         g.utimens(efi_path, epoch, 0, epoch, 0)
+
+    # Signs a rebuilt UKI, by vault reference or by mounted host key.
+    # Returns the signed file's name within workdir.
+    def _sign_uki(self, workdir, epoch):
+        secure_boot = self.source.partitionHandler.secure_boot
+        key = secure_boot["private-key"]
+        if key.startswith("vault:"):
+            return self._sign_uki_vault(workdir, epoch, key[len("vault:"):])
+        # sbsign stamps its own signing time, ignoring SOURCE_DATE_EPOCH --
+        # libfaketime pins what it (and any clock call) sees instead.
+        when = datetime.datetime.fromtimestamp(
+            epoch, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        faketime = (
+            "libfaketime=$(dpkg -L libfaketime | grep -E '/libfaketime\\.so\\.[0-9]+$') && "
+            "LD_PRELOAD=$libfaketime FAKETIME='@%s' "
+            "sbsign --key /work-key --cert /work-cert "
+            "--output signed.efi rebuilt.efi" % when)
+        ContainerEngine.run(
+            ["container", "run", "--rm", "-v", "%s:/work" % workdir,
+             "-v", "%s:/work-key:ro" % os.path.abspath(secure_boot["private-key"]),
+             "-v", "%s:/work-cert:ro" % os.path.abspath(secure_boot["public-cert"]),
+             "-w", "/work", self._extra_tools.name,
+             "sh", "-c", faketime], check=True)
+        return "signed.efi"
+
+    # Bytes up, signed PE back; the key never leaves the vault. The
+    # timestamp is pinned to the build epoch, not faked.
+    def _sign_uki_vault(self, workdir, epoch, name):
+        from seine import vault as _vault
+        provider = _vault.for_build()
+        with open(os.path.join(workdir, "rebuilt.efi"), "rb") as f:
+            signed = provider.sbsign_sign(name, f.read(), epoch)
+        with open(os.path.join(workdir, "signed.efi"), "wb") as f:
+            f.write(signed)
+        return "signed.efi"
 
     # Deepest mount first, so a mount's children are already unmounted
     # (empty dir, not live content) when read. 'mounts' is one group's

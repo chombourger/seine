@@ -496,5 +496,31 @@ class VerityWithNoHashPartitionIsAnError(avocado.Test):
         except ValueError as e:
             self.assertIn("no 'verity-hash' partition names", str(e))
 
+# A 'private-key' starting with 'vault:' names a vault sbsign key:
+# the certificate stays in the vault with it, so 'public-cert' may
+# be missing, while plain paths still need both.
+class SecureBootVaultKey(avocado.Test):
+    def parsed(self, secure_boot):
+        handler = PartitionHandler()
+        handler.parse({
+            "image": {
+                "filename": "disk.img",
+                "partitions": [{"label": "rootfs", "where": "/"}],
+                "secure-boot": secure_boot,
+            },
+        })
+        return handler.secure_boot
+
+    def test_a_vault_key_needs_no_cert_file(self):
+        parsed = self.parsed({"private-key": "vault:db"})
+        self.assertEqual(parsed["private-key"], "vault:db")
+
+    def test_plain_paths_still_need_both(self):
+        try:
+            self.parsed({"private-key": "db.key"})
+            self.fail("a key with no certificate was accepted!")
+        except ValueError as e:
+            self.assertIn("public-cert", str(e))
+
 if __name__ == "__main__":
     avocado.main()

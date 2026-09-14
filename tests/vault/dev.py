@@ -352,6 +352,49 @@ class PgpKeyMint(avocado.Test):
         self.assertEqual(dev._pgp_keys["repo"], 0)
 
 
+class SbsignKeyMint(avocado.Test):
+    EPOCH = 1767225600
+
+    def minted(self, present=False):
+        dev = DevVault()
+        inner = mock.Mock()
+        calls = []
+
+        def fake(method, path, body, token):
+            calls.append((method, path, body))
+            if method == "GET":
+                if present:
+                    return {"data": {"cert_pem": "cert"}}
+                raise VaultNotFound("no key")
+            return {"data": {"cert_pem": "cert"}}
+
+        inner._request.side_effect = fake
+        inner.sbsign_sign.return_value = b"signed"
+        dev._inner = inner
+        return dev, calls
+
+    def test_missing_key_generated_once_and_warned(self):
+        dev, calls = self.minted()
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(dev.sbsign_sign("db", b"pe", self.EPOCH), b"signed")
+            self.assertEqual(dev.sbsign_sign("db", b"pe", self.EPOCH), b"signed")
+        self.assertIn("warning", said.getvalue())
+        self.assertIn("db", said.getvalue())
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0][1].endswith("/v1/seine-sbsign/keys/db"))
+        self.assertEqual(posts[0][2], {"generate": {}})
+
+    def test_existing_key_neither_regenerated_nor_warned(self):
+        dev, calls = self.minted(present=True)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(dev.sbsign_sign("db", b"pe", self.EPOCH), b"signed")
+        self.assertEqual(said.getvalue(), "")
+        self.assertEqual([call for call in calls if call[0] == "POST"], [])
+
+
 class VaultSelection(avocado.Test):
     def test_remote_when_configured(self):
         env = {"SEINE_VAULT_ADDR": "https://vault:8200", "VAULT_ADDR": "",

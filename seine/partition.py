@@ -92,20 +92,26 @@ class PartitionHandler:
 
         return bootlet
 
-    # Disk-wide signing key/cert, used for any UKI the imager anchors.
-    # Paths resolve relative to the build's working directory, like
-    # 'multiconfig: files:', not like 'patches:'.
+    # Disk-wide signing key/cert for any UKI the imager anchors. Paths
+    # resolve like 'multiconfig: files:'; a 'private-key' starting
+    # with 'vault:' names a vault sbsign key instead, cert included.
     def _parse_secure_boot(self, secure_boot):
         if type(secure_boot) != type({}):
             raise ValueError("'image: secure-boot' shall be a mapping")
+        if "private-key" not in secure_boot:
+            raise ValueError(
+                "'image: secure-boot' needs 'private-key' and "
+                "'public-cert' -- 'private-key' is missing")
         for field in ("private-key", "public-cert"):
-            if field not in secure_boot:
-                raise ValueError(
-                    "'image: secure-boot' needs both 'private-key' and "
-                    "'public-cert' -- '%s' is missing" % field)
-            if type(secure_boot[field]) != type(""):
+            if field in secure_boot and type(secure_boot[field]) != type(""):
                 raise ValueError(
                     "'image: secure-boot: %s' shall be a string" % field)
+        if secure_boot["private-key"].startswith("vault:"):
+            return secure_boot
+        if "public-cert" not in secure_boot:
+            raise ValueError(
+                "'image: secure-boot' needs both 'private-key' and "
+                "'public-cert' -- 'public-cert' is missing")
         return secure_boot
 
     def _parse_common(self, part):

@@ -241,6 +241,68 @@ class PgpMapping(avocado.Test):
         self.assertEqual(self.calls, [])
 
 
+class SbsignMapping(avocado.Test):
+    EPOCH = 1767225600
+
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, {"SEINE_VAULT_ADDR": "https://vault:8200",
+                                                 "SEINE_VAULT_TOKEN": "tok"})
+        self.env.start()
+        self.calls = []
+
+    def tearDown(self):
+        vault.clear_secrets()
+        self.env.stop()
+
+    def serving(self, payloads):
+        def fake(request, *args, **kwargs):
+            self.calls.append((request.get_method(), request.full_url,
+                               json.loads((request.data or b"{}").decode() or "{}")))
+            for suffix, payload in payloads.items():
+                if request.full_url.endswith(suffix):
+                    if isinstance(payload, Exception):
+                        raise payload
+                    return FakeReply(payload)
+            raise AssertionError("unexpected vault call %s" % request.full_url)
+
+        return mock.patch("urllib.request.urlopen", side_effect=fake)
+
+    def test_sign_pins_the_timestamp(self):
+        routes = {"/v1/seine-sbsign/keys/db/sign":
+                  {"data": {"signed_pe_base64": base64.b64encode(b"signed").decode()}}}
+        with self.serving(routes):
+            self.assertEqual(OpenBaoProvider().sbsign_sign(
+                "db", b"pe", self.EPOCH), b"signed")
+        self.assertEqual(self.calls,
+                         [("POST", "https://vault:8200/v1/seine-sbsign/keys/db/sign",
+                           {"pe_base64": base64.b64encode(b"pe").decode(),
+                            "signing_time": "2026-01-01T00:00:00Z"})])
+
+    def test_cert(self):
+        routes = {"/v1/seine-sbsign/keys/db/cert":
+                  {"data": {"cert_pem": "cert"}}}
+        with self.serving(routes):
+            self.assertEqual(OpenBaoProvider().sbsign_cert("db"), "cert")
+
+    def test_unknown_key_fails_closed_without_creating(self):
+        missing = urllib.error.HTTPError("https://vault:8200/v1/seine-sbsign/keys/x/sign",
+                                         404, "missing", None, io.BytesIO(b"{}"))
+        with self.serving({"/v1/seine-sbsign/keys/x/sign": missing}):
+            with self.assertRaises(VaultNotFound):
+                OpenBaoProvider().sbsign_sign("x", b"pe", self.EPOCH)
+        self.assertEqual([body for _, _, body in self.calls
+                          if "generate" in body], [])
+
+    def test_bad_arguments_are_refused(self):
+        with self.serving({}):
+            provider = OpenBaoProvider()
+            with self.assertRaises(VaultError):
+                provider.sbsign_sign("db", "pe", self.EPOCH)
+            with self.assertRaises(VaultError):
+                provider.sbsign_sign("db", b"pe", -1)
+        self.assertEqual(self.calls, [])
+
+
 class RemoteAuth(avocado.Test):
     def test_userpass_logs_in_once(self):
         env = {"SEINE_VAULT_ADDR": "https://vault:8200",

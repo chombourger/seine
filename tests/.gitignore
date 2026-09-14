@@ -1,0 +1,3 @@
+# tests/build/ holds test sources, not build output: undo the
+# root 'build' rule for this directory.
+!build
