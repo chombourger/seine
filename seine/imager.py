@@ -1,11 +1,13 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier: Apache-2.0
 
+import datetime
 import hashlib
 import os
 import re
 import shutil
 import stat
+import struct
 import tarfile
 import tempfile
 import uuid
@@ -686,6 +688,39 @@ class Imager:
                 if name.endswith(".efi"):
                     self._anchor_one_uki(g, efi_dir, name, roothash)
 
+    # TimeDateStamp sits 8 bytes into the PE header ('e_lfanew' at 0x3c
+    # points to it). CheckSum covers the whole file, so it needs redoing too.
+    def _pin_pe_timestamp(self, path, epoch):
+        with open(path, "r+b") as f:
+            f.seek(0x3c)
+            pe_offset = struct.unpack("<I", f.read(4))[0]
+            f.seek(pe_offset + 8)
+            f.write(struct.pack("<I", epoch))
+        self._recompute_pe_checksum(path, pe_offset + 88)
+
+    # Microsoft's CheckSumMappedFile algorithm: sum the file as 32-bit
+    # words (the checksum field itself counted as zero), fold overflow
+    # back in, then add the file's own length.
+    def _recompute_pe_checksum(self, path, checksum_offset):
+        with open(path, "rb") as f:
+            data = f.read()
+        size = len(data)
+        if size % 4:
+            data += b"\0" * (4 - size % 4)
+        total = 0
+        for i in range(0, len(data), 4):
+            if checksum_offset <= i < checksum_offset + 4:
+                continue
+            total += struct.unpack_from("<I", data, i)[0]
+            if total > 0xffffffff:
+                total = (total & 0xffffffff) + (total >> 32)
+        total = (total & 0xffff) + (total >> 16)
+        total = (total & 0xffff) + (total >> 16)
+        total = (total + size) & 0xffffffff
+        with open(path, "r+b") as f:
+            f.seek(checksum_offset)
+            f.write(struct.pack("<I", total))
+
     # objcopy/ukify/sbsign run as container commands, not inside the
     # appliance, on a copy of the '.efi' downloaded to a scratch dir.
     def _anchor_one_uki(self, g, efi_dir, name, roothash):
@@ -695,9 +730,14 @@ class Imager:
         original = os.path.join(workdir, "original.efi")
         g.download(efi_path, original)
 
+        # ukify stamps the PE header's build time from this unless told
+        # otherwise, which would make the .efi differ build to build.
+        epoch = self.source._epoch()
+
         def run(args):
             ContainerEngine.run(
                 ["container", "run", "--rm", "-v", "%s:/work" % workdir,
+                 "-e", "SOURCE_DATE_EPOCH=%d" % epoch,
                  "-w", "/work", self._extra_tools.name] + args, check=True)
 
         # One objcopy dumps all three sections byte-identical to build time.
@@ -717,20 +757,35 @@ class Imager:
         # a future PCR-policy pass only extends 'extra' here instead of a
         # second code path.
         run(ukify_argv("linux.bin", "initrd.bin", cmdline, "rebuilt.efi"))
+        # ukify stamps the PE header with the real build time regardless
+        # of SOURCE_DATE_EPOCH -- pin it directly, before signing folds
+        # it into the signature.
+        self._pin_pe_timestamp(os.path.join(workdir, "rebuilt.efi"), epoch)
 
         secure_boot = self.source.partitionHandler.secure_boot
         result = "rebuilt.efi"
         if secure_boot is not None:
+            # sbsign stamps its own signing time, ignoring SOURCE_DATE_EPOCH --
+            # libfaketime pins what it (and any clock call) sees instead.
+            when = datetime.datetime.fromtimestamp(
+                epoch, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            faketime = (
+                "libfaketime=$(dpkg -L libfaketime | grep -E '/libfaketime\\.so\\.[0-9]+$') && "
+                "LD_PRELOAD=$libfaketime FAKETIME='@%s' "
+                "sbsign --key /work-key --cert /work-cert "
+                "--output signed.efi rebuilt.efi" % when)
             ContainerEngine.run(
                 ["container", "run", "--rm", "-v", "%s:/work" % workdir,
                  "-v", "%s:/work-key:ro" % os.path.abspath(secure_boot["private-key"]),
                  "-v", "%s:/work-cert:ro" % os.path.abspath(secure_boot["public-cert"]),
                  "-w", "/work", self._extra_tools.name,
-                 "sbsign", "--key", "/work-key", "--cert", "/work-cert",
-                 "--output", "signed.efi", "rebuilt.efi"], check=True)
+                 "sh", "-c", faketime], check=True)
             result = "signed.efi"
 
         g.upload(os.path.join(workdir, result), efi_path)
+        # g.upload() stamps the real time, unlike the mtools rebuild
+        # the rest of this FAT tree already went through.
+        g.utimens(efi_path, epoch, 0, epoch, 0)
 
     # Deepest mount first, so a mount's children are already unmounted
     # (empty dir, not live content) when read. 'mounts' is one group's
