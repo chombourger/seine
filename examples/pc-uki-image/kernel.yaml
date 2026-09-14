@@ -6,12 +6,27 @@
 # so kernel and initrd modules keep the same ABI.
 
 packages:
+    # A fixed key, so module signing is reproducible across rebuilds
+    # instead of a fresh random one every time (docs/kernels.md,
+    # 'signing-key-package').
+    - source: file://../common/kernel-signing
+      before:
+          - linux
+
     - source: apt://linux
       extends:
           kernel:
               fragments:
                   - ../configs/slim-common.fragment
                   - ../configs/slim-amd64.fragment
+              configs:
+                  # ECDSA (Debian's default) is a randomized signature
+                  # scheme: the same key signs the same module
+                  # differently every time. RSA is deterministic.
+                  deterministic-module-signing:
+                      - CONFIG_MODULE_SIG_KEY_TYPE_RSA=y
+                      - '# CONFIG_MODULE_SIG_KEY_TYPE_ECDSA is not set'
+              signing-key-package: kernel-signing
       profiles:
           - pkg.linux.nokerneldbginfo
           - pkg.linux.mintools

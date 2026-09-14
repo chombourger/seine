@@ -81,6 +81,27 @@ fragment is written, since kconfig itself does not understand `=n` as an
 assignment; a fragment excerpt already written the other way can be
 pasted into a group unchanged.
 
+`signing-key-package` points module signing at a fixed key instead of the
+random one Debian's own packaging generates and discards on every build,
+so a rebuilt kernel signs its modules the same way every time:
+
+```
+          kernel:
+              configs:
+                  deterministic-module-signing:
+                      - CONFIG_MODULE_SIG_KEY_TYPE_RSA=y
+                      - '# CONFIG_MODULE_SIG_KEY_TYPE_ECDSA is not set'
+              signing-key-package: kernel-signing
+```
+
+The named package has to actually provide the key, installed at
+`/usr/share/seine/kernel-signing/signing_key.pem` -- a `source:
+file://...` package built alongside the kernel does, see
+`examples/common/kernel-signing/`. A fixed key alone is not enough: RSA
+also has to replace Debian's default ECDSA, which signs the same module
+differently every time even with the same key -- randomized by design,
+not a weakness fixed some other way.
+
 `flavour` cuts the build down to one kernel. Debian builds every kernel an
 architecture has -- on amd64 that is a cloud flavour and a realtime kernel
 besides the ordinary one -- and each is a full build.
