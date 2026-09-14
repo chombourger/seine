@@ -106,6 +106,7 @@ def run_spec(files, tags=None, outdir=None, reporter=None, dryrun=False, spec=No
     if outdir is None:
         outdir = default_outdir()
     os.makedirs(outdir, exist_ok=True)
+    started = time.time()
 
     if spec is None:
         spec = _load_spec(files)
@@ -126,6 +127,15 @@ def run_spec(files, tags=None, outdir=None, reporter=None, dryrun=False, spec=No
                  listener=[_Listener(reporter, outcomes), context])
 
         _write_interactions(context)
+
+    # A dry run resolves keywords without running them -- PASS there
+    # says nothing about the target, so it stays out of the index.
+    if not dryrun:
+        try:
+            from seine.testing import testindex
+            testindex.record(files, outdir, outcomes, started)
+        except (OSError, ValueError):
+            pass
 
     return SuiteResult(outcomes, output_xml)
 
