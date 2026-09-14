@@ -9,6 +9,7 @@ import os
 
 from seine.testing import runner
 from seine.tui.reporter import TextualReporter
+from seine.tui.sanitize import sanitize
 
 class TestState:
     def __init__(self):
@@ -81,7 +82,10 @@ class TestState:
         pass
 
     def output(self, name, line):
-        self.output_lines.append("%s| %s" % (name, line))
+        # Robot keyword messages can carry the target's own escape
+        # sequences (colours, cursor moves); a RichLog is not a
+        # terminal, so they'd escape its pane -- sanitize first.
+        self.output_lines.append("%s| %s" % (name, sanitize(line)))
 
     def finished_ok(self, result):
         self.done = True
@@ -110,7 +114,7 @@ class TestState:
             lines.append("%s %s" % (marks[self.rows[name]["state"]], name))
             outcome = by_name.get(name)
             if outcome is not None and outcome.failed and outcome.message:
-                lines.append("    %s" % outcome.message)
+                lines.append("    %s" % sanitize(outcome.message))
         if self.result is not None:
             outdir = os.path.dirname(self.result.output_xml)
             lines.append("")
