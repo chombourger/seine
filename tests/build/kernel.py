@@ -86,6 +86,42 @@ class KernelFeatureset(avocado.Test):
         """)
         self.assertEqual(build.image.packages[0].kernel_featureset, "rt")
 
+class SigningKeyPackageParsed(avocado.Test):
+    def test(self):
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              signing-key-package: kernel-signing
+        """)
+        self.assertEqual(build.image.packages[0].kernel_signing_key_package,
+                         "kernel-signing")
+
+    def test_defaults_to_none(self):
+        build = parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              flavour: amd64
+        """)
+        self.assertEqual(build.image.packages[0].kernel_signing_key_package, None)
+
+class SigningKeyPackageNotAString(avocado.Test):
+    def test(self):
+        try:
+            parse("""
+                packages:
+                    - source: apt://linux
+                      extends:
+                          kernel:
+                              signing-key-package: [kernel-signing]
+            """)
+            self.fail("a non-string 'signing-key-package' was accepted")
+        except ValueError:
+            pass
+
 class UnknownKernelSetting(avocado.Test):
     def test(self):
         try:
@@ -1614,3 +1650,63 @@ class KernelConfigsWrittenAsFragment(avocado.Test):
         seine.kernel._write_configs(package, path)
         with open(path, "r") as f:
             self.assertEqual(f.read(), "CONFIG_ALREADY_THERE=y\n")
+
+# _apply_signing_key() edits two vendored files it does not own, so this
+# checks it against a minimal synthetic fixture shaped like the exact
+# text Debian's own packaging is known to carry -- not a real sourcedir.
+class SigningKeyFixture(avocado.Test):
+    def sourcedir(self, control_text, rules_text):
+        sourcedir = os.path.join(self.workdir, "linux")
+        os.makedirs(os.path.join(sourcedir, "debian", "templates"))
+        with open(os.path.join(sourcedir, "debian", "templates",
+                               "source.control.in"), "w") as f:
+            f.write(control_text)
+        with open(os.path.join(sourcedir, "debian", "rules.real"), "w") as f:
+            f.write(rules_text)
+        return sourcedir
+
+    CONTROL = ("Build-Depends:\n debhelper-compat (= 13),\n"
+              " python3:native,\n")
+    RULES = ("\tdebian/bin/kconfig.py '$@' $(KCONFIG) \\\n"
+            "\t\t-o MODULE_SIG_KEY=\\\"output/signing_key.pem\\\" \\\n")
+
+class SigningKeyIsAppliedToBothFiles(SigningKeyFixture):
+    def test(self):
+        sourcedir = self.sourcedir(self.CONTROL, self.RULES)
+        package = types.SimpleNamespace(
+            source="linux", kernel_signing_key_package="kernel-signing")
+        seine.kernel._apply_signing_key(package, sourcedir)
+
+        with open(os.path.join(sourcedir, "debian", "templates",
+                               "source.control.in")) as f:
+            control = f.read()
+        self.assertIn("Build-Depends:\n kernel-signing,\n"
+                     " debhelper-compat (= 13),\n", control)
+
+        with open(os.path.join(sourcedir, "debian", "rules.real")) as f:
+            rules = f.read()
+        self.assertIn(
+            'MODULE_SIG_KEY=\\"%s\\"' % seine.kernel.SIGNING_KEY_PATH, rules)
+        self.assertNotIn("output/signing_key.pem", rules)
+
+class SigningKeyMissingControlAnchorIsRejected(SigningKeyFixture):
+    def test(self):
+        sourcedir = self.sourcedir("Build-Depends: something-else\n", self.RULES)
+        package = types.SimpleNamespace(
+            source="linux", kernel_signing_key_package="kernel-signing")
+        try:
+            seine.kernel._apply_signing_key(package, sourcedir)
+            self.fail("a control template that changed shape was accepted")
+        except ValueError as e:
+            self.assertIn("source.control.in", str(e))
+
+class SigningKeyMissingRulesAnchorIsRejected(SigningKeyFixture):
+    def test(self):
+        sourcedir = self.sourcedir(self.CONTROL, "\t# no MODULE_SIG_KEY here\n")
+        package = types.SimpleNamespace(
+            source="linux", kernel_signing_key_package="kernel-signing")
+        try:
+            seine.kernel._apply_signing_key(package, sourcedir)
+            self.fail("a rules.real that changed shape was accepted")
+        except ValueError as e:
+            self.assertIn("rules.real", str(e))
