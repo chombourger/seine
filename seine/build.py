@@ -116,6 +116,10 @@ class BuildCmd(Cmd):
         # Lazily started on first vault() use, so specs without vault
         # refs build with no vault configured.
         self._vault_provider = None
+        # 'defaults: vault:' seeds collected so far, shared with the
+        # provider so a miss seeds the spec's throwaway. Remote vaults
+        # never see them.
+        self._vault_defaults = {}
         # 'multiconfig:' groups this specification declares, name -> the
         # BuildCmd that parsed it -- see _parse_multiconfig(). Empty for
         # a specification with none.
@@ -220,6 +224,7 @@ class BuildCmd(Cmd):
                         template.parse(yaml_spec)) - {"vault"}))
                 return template.from_string(yaml_spec).render(
                     dict(context or {}, vault=lambda ref: ""))
+            self._collect_vault_defaults(yaml_spec)
             rendered = template.from_string(yaml_spec).render(
                 dict(context or {}, vault=self._vault_lookup))
             return rendered
@@ -229,15 +234,46 @@ class BuildCmd(Cmd):
             raise ValueError("%s:%s: %s"
                 % (yaml_filename, getattr(e, "lineno", "?"), e)) from e
 
+    # A file renders before it merges, so its own defaults would miss
+    # the vault() refs beside them without this.
+    def _collect_vault_defaults(self, yaml_spec):
+        try:
+            parsed = yaml.safe_load(yaml_spec)
+        except yaml.YAMLError:
+            return
+        if type(parsed) == type({}):
+            vault = (parsed.get("defaults") or {}).get("vault") if \
+                type(parsed.get("defaults")) == type({}) else None
+            if type(vault) == type({}):
+                self._vault_defaults.update(vault)
+        if type(self.spec) == type({}):
+            vault = (self.spec.get("defaults") or {}).get("vault") if \
+                type(self.spec.get("defaults")) == type({}) else None
+            if type(vault) == type({}):
+                self._vault_defaults.update(vault)
+
     # One provider per build, started on first use. Resolved values are
     # recorded so dumps redact them and digests hide them.
     def _vault_lookup(self, ref):
         from seine import vault as _vault
+        self._collect_vault_defaults_from_spec()
         if self._vault_provider is None:
-            self._vault_provider = _vault.for_build()
+            self._vault_provider = _vault.for_build(self._vault_defaults)
+        else:
+            defaults = getattr(self._vault_provider, "_defaults", None)
+            if type(defaults) == type({}) and defaults is not self._vault_defaults:
+                defaults.update(self._vault_defaults)
         value = self._vault_provider.kv_read(ref)
         _vault.record_secret(value if isinstance(value, str) else str(value))
         return value
+
+    # Picks up defaults merged since the current file was collected.
+    def _collect_vault_defaults_from_spec(self):
+        if type(self.spec) == type({}):
+            vault = (self.spec.get("defaults") or {}).get("vault") if \
+                type(self.spec.get("defaults")) == type({}) else None
+            if type(vault) == type({}):
+                self._vault_defaults.update(vault)
 
     # Takes raw text, not a stream, so loads() and load() can share this.
     # A YAML error while probing is swallowed (the lenient render may have
