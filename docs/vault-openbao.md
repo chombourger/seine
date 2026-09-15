@@ -1,4 +1,4 @@
-## Running a vault for seine
+# Running a vault for seine
 
 seine can sign build output (root/account passwords, kernel modules, Secure
 Boot UKIs, apt repositories) through a vault instead of a key on the build
@@ -15,7 +15,7 @@ before trusting this with anything real. Treat what follows as a starting
 point for an admin who already knows how to run OpenBao/Vault in
 production, not as a hardening guide.
 
-### 1. Get the vault image
+## 1. Get the vault image
 
 Either install the prebuilt package:
 
@@ -35,7 +35,7 @@ podman load -i /tmp/out/vault/images.tar.gz
 Either way this gives you `localhost/seine-vault:latest`: upstream OpenBao
 plus the three signing plugins, under `/vault/plugins`.
 
-### 2. Configure and start the server
+## 2. Configure and start the server
 
 Pick a TLS certificate for the listener -- one from your own CA, or a
 self-signed one for a first try:
@@ -83,7 +83,7 @@ podman run -d --name seine-vault \
   server -config=/vault/config/config.hcl
 ```
 
-### 3. Initialize and unseal
+## 3. Initialize and unseal
 
 ```
 podman exec -e BAO_ADDR=https://127.0.0.1:8200 -e BAO_SKIP_VERIFY=1 seine-vault \
@@ -100,7 +100,7 @@ podman exec -e BAO_ADDR=https://127.0.0.1:8200 -e BAO_SKIP_VERIFY=1 seine-vault 
 ```
 (repeat with two more distinct keys)
 
-### 4. Enable the secrets engines seine expects
+## 4. Enable the secrets engines seine expects
 
 The commands below run `bao` directly rather than through `podman exec`.
 Get it onto the admin machine without a separate apt repo by copying it out
@@ -132,7 +132,7 @@ done
 (`bao` here needs `BAO_ADDR`/`BAO_TOKEN` pointing at your vault -- export
 them, or pass `-address`/`-token` on each command.)
 
-### 5. Create the secrets and keys your specs need
+## 5. Create the secrets and keys your specs need
 
 Which names to create depends on what your specs reference. Check each
 spec's own `defaults: vault:` block (the dev-only fallback names) and any
@@ -152,7 +152,7 @@ A key's creation time matters: the plugins refuse to sign at a timestamp
 before the key existed, and seine signs at the build's own epoch (the
 newest spec file's mtime). Create keys before you build with them.
 
-#### Worked example: `examples/pc-uki-image`
+### Worked example: `examples/pc-uki-image`
 
 The exact commands used to provision that spec's four vault-backed
 secrets, `bao write PATH -` reading the JSON body from stdin:
@@ -177,7 +177,7 @@ echo '{"generate": {"name": "seine pc-uki-image repo", "email": "seine-demo@exam
 `{"import": {"private_key": ...}}` for pgp) to bring in a key you already
 hold rather than trusting the vault to mint one.
 
-### 6. Point a build at it
+## 6. Point a build at it
 
 ```
 export SEINE_VAULT_ADDR=https://<your-host>:8200
@@ -189,7 +189,7 @@ seine build your-spec.yaml
 
 See `docs/environment.md` for the full list of `SEINE_VAULT_*` variables.
 
-### Where to go from here
+## Where to go from here
 
 None of the above is a finished production setup:
 

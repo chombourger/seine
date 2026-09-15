@@ -68,8 +68,8 @@ Building an embedded Linux system involves two different problems:
 
 ```text
 source ────────────────> Debian package
-                              │
-                              │
+                             │
+                             │
 packages + configuration ────┴───> target system
                                       │
                                       ▼
@@ -174,7 +174,7 @@ This is an important distinction:
 
 If a file has never been indexed by snapshot.debian.org, seine does not pretend otherwise: the lock still retains the file's own hash, and the vendor operation continues to require those bytes to match.
 
-This is particularly useful for embedded systems, where an image may need to stay buildable long after the development environment -- and the corresponding Debian archive -- have moved on. A vendor lock pins and preserves the inputs to that future build; it does not, by itself, guarantee that the build reproduces byte-identical output. Package builds are given a fixed `SOURCE_DATE_EPOCH` and a fixed build path (see [Reproducibility](docs/building.md#reproducibility)), but reproducibility of a finished image is not currently tested or guaranteed by seine.
+This is particularly useful for embedded systems, where an image may need to stay buildable long after the development environment -- and the corresponding Debian archive -- have moved on. A vendor lock pins and preserves the inputs to that future build. Package builds are given a fixed `SOURCE_DATE_EPOCH` and a fixed build path (see [Reproducibility](docs/building.md#reproducibility)); snapshot-pinned root filesystem and disk image builds are tested byte-for-byte reproducible.
 
 ## Debian packages remain Debian packages
 
@@ -225,6 +225,17 @@ packages:
 When Debian's kernel source is not appropriate, a kernel can instead be grafted from another source tree.
 
 In either case, the result is packaged as a Debian kernel and installed in the usual way.
+
+## Signing with a vault
+
+seine can get passwords and signing keys from an OpenBao vault instead of
+keeping them on the build machine. It can sign package repositories, kernel
+modules and Secure Boot UKIs there, so the private signing keys do not leave
+the vault.
+
+See [Running a vault for seine](docs/vault-openbao.md) for setup and the
+[specification reference](docs/specification.md#signing) for the `vault:`
+forms.
 
 ## How a build runs
 

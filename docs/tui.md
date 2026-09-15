@@ -1,4 +1,4 @@
-## TUI
+# TUI
 
 `seine tui` is an interactive alternative to typing `seine build`/`seine plan`/
 etc. one at a time -- the same engine, driven from a `/command` prompt instead
@@ -10,12 +10,12 @@ seine tui [SPEC...] [-- SPEC...]...
 
 Needs the `tui` extra (`pip install seine[tui]`, or the `seine-tui` package) --
 everything else about seine works without it. Given no `SPEC`, it opens on
-[Doctor](#doctor): nothing to build without one yet, so what the machine
+the Doctor screen: nothing to build without one yet, so what the machine
 itself can build at all is the more useful first thing to see.
 
 ![seine tui: Doctor, Overview, /side-load, Plan, browsing a built image, and Help](images/tui-demo.gif)
 
-### The prompt
+## The prompt
 
 Every screen keeps the same prompt at the bottom. A line starting with `/` is
 a command (`/build`, `/plan`, ...); `/help` lists them, with a full page per
@@ -31,7 +31,7 @@ command (see [Help](#help) below). A few other things work from any screen:
    fills the prompt rather than running it.
  * `↑`/`↓` recall previous lines, the same as a shell's own history.
 
-### Focus and keyboard navigation
+## Focus and keyboard navigation
 
 Every screen has (at least) two focusable panes -- the prompt, and the spec
 tree beside it -- cycled with `Tab`, each getting the same highlighted
@@ -42,7 +42,7 @@ or the Issues matrix (arrows move, `Enter` opens a count's details).
 from, a command's own detail page to the list, Help itself to whatever
 screen was open before it.
 
-### Screens
+## Screens
 
 Reached with the matching `/command` (`/help` gives the full list, with
 every argument each one takes):
@@ -73,7 +73,7 @@ every argument each one takes):
  * **Test** -- runs the active specification's own `test:` section
    (Robot Framework) against a real target reached the same way.
 
-### Composing with `/side-load`
+## Composing with `/side-load`
 
 A specification is layered rather than monolithic -- `requires` pulls in
 what a release or board already sets, and `/side-load FRAGMENT.yaml` adds
@@ -91,7 +91,7 @@ the new merged file, go find the difference yourself":
 
 ![Overview screen: '/side-load' highlighting what a fragment changed, auto-expanded down to the leaf](images/tui-side-load.svg)
 
-### Talking to a model
+## Talking to a model
 
 With `llm_model`/`llm_api_base` set (`/settings`, or `SEINE_LLM_MODEL`/
 `SEINE_LLM_API_BASE` as environment overrides), any prompt that doesn't
@@ -107,7 +107,7 @@ a new file, loading a fragment onto the active spec:
 See [ai.md](ai.md) for the full tool list and the trust model behind
 what it's allowed to read.
 
-### Building
+## Building
 
 `/build` opens a live cockpit: a scrolling log tail beside a per-step
 task list, the spec tree auto-expanding and highlighting whatever it is
@@ -117,7 +117,7 @@ target's own playbook runs:
 
 ![Build screen: the spec tree live-tracking a running Ansible task, matching the log tail](images/tui-build.gif)
 
-### Vendoring
+## Vendoring
 
 `/vendor` runs a specification's own `vendor:` section the same way
 `seine vendor` does on the command line: every source package it names,
@@ -131,7 +131,7 @@ section at all -- vendoring pins a package set, it does not build one.
 `/build` and `/vendor` never run at once; starting one while the other
 is running is refused, and `/cancel` stops whichever is.
 
-### Driving a real target
+## Driving a real target
 
 `/target` opens a live console + status pane for a device reached through
 mtda -- the same connection `/test` (below) uses under the hood. No spec
@@ -151,7 +151,7 @@ Nothing here works without mtda installed (`seine doctor` reports it);
 see [docs/testing.md](testing.md) for how `/test` drives the same
 connection automatically.
 
-### Testing on a real target
+## Testing on a real target
 
 `/test [--tags=TAG,...]` runs the active specification's own `test:`
 section (see [docs/testing.md](testing.md)) -- Robot Framework driven
@@ -167,7 +167,7 @@ A failed test's own message surfaces right under its row, not only in
 the final summary -- the same reason a failure needs to be visible
 without scrolling back. `/cancel` doesn't reach a running test yet.
 
-### Browsing a built image
+## Browsing a built image
 
 `/filesystem` opens a read-only browser of the *last built* image for the
 active specification (not the specification itself -- it needs an image
@@ -184,7 +184,7 @@ on the status line without disturbing the listing already on screen:
 
 ![Filesystem screen: a text file shown with line numbers](images/tui-preview.svg)
 
-### Help
+## Help
 
 `/help` opens as a modal overlay -- a dimmed backdrop over whatever screen
 was open, not a screen navigated to, so `Esc` leaves it exactly where it
@@ -200,7 +200,7 @@ was underneath. `←`/`→` switch between two tabs:
    prompt with that command, ready to type on; `Esc` goes back to the
    list rather than closing Help outright.
 
-### External control
+## External control
 
 `seine tui --interaction-socket PATH [SPEC...]` opens a UNIX domain socket
 alongside the normal terminal UI -- for driving and observing the TUI from
@@ -235,7 +235,7 @@ instead of polling rendered text:
    "target_storage_on_host"}` / `{"type": "target_storage_write_completed",
    "path"}` -- `/target` actions completing.
 
-### Other screenshots
+## Other screenshots
 
 <table>
 <tr><td><img src="images/tui-overview.svg" alt="Overview screen"></td>

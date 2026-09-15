@@ -1,4 +1,4 @@
-## Specification files
+# Specification files
 
 A system specification may be written in one or several YAML files comprised
 of the following sections:
@@ -32,7 +32,7 @@ either the `.yml` or `.yaml` suffix shall be found in the folder of the yaml
 file requiring them. See [docs/merging.md](merging.md) for how two files
 touching the same section combine.
 
-### Variables
+## Variables
 
 A file may read what the specification sets, written `[[ ... ]]`, so that
 what is true of any architecture or any release is written once instead of
@@ -78,7 +78,7 @@ specification carries ansible tasks, and ansible templates those itself, on
 the target, when the playbook runs. `{{ ansible_facts.hostname }}` in a task
 is passed through untouched.
 
-### Redacting what should not be printed
+## Redacting what should not be printed
 
 `seine plan` and `seine build --dump` print the specification these files
 merge into, and a specification holds passwords, tokens and keys. A file
@@ -141,7 +141,7 @@ redacted under its own path whether or not a spec's `redact:` section asks
 for it -- a spec need not remember to protect what it already marked as a
 secret by putting it there.
 
-### distribution
+## distribution
 
 The `distribution` section will be used to specify the primary source of the
 packages that will make the end system. The following attributes are supported:
@@ -162,7 +162,7 @@ packages that will make the end system. The following attributes are supported:
  * components: archive components every feed carries (`main` by default)
  * feeds: apt feeds to build from (see below)
 
-#### feeds
+### feeds
 
 Without `feeds`, a system is built from the `release` alone. That is
 rarely what is wanted: it leaves out the updates accumulated since the
@@ -225,7 +225,7 @@ none, for vendor archives that ship binaries alone:
           sources: false
 ```
 
-#### Building from a snapshot
+### Building from a snapshot
 
 A suite moves: the same specification built a week apart is built from
 different packages. To pin what a build sees, point the feeds at an
@@ -268,7 +268,7 @@ bytes for a timestamp for ever, so nothing there can go stale.
 
 When multiple YAML files are parsed, the last parsed value will be used.
 
-#### apt-pull-mode: offline
+### apt-pull-mode: offline
 
 ```
 apt-pull-mode: offline
@@ -331,7 +331,7 @@ mode, or `seine vendor`'s own resolve and fetch containers (never
 themselves offline, whatever the specification says -- see above), that
 still depend on a repository having been built some other way first.
 
-### defaults
+## defaults
 
 An entry under `packages` means *build this*. `defaults` holds package
 entries that only describe a package, and are used if something else asks
@@ -372,7 +372,7 @@ a `sign-key` fallback for repository signing. Playbooks and tests already
 merge by name (see [`playbook`](#playbook)/[`test`](#test)), and the other
 sections are merged by key.
 
-### packages
+## packages
 
 The `packages` section lists Debian source packages to rebuild before the
 image is composed, for instance to carry a patch the distribution does not
@@ -472,7 +472,7 @@ Four kinds of `source` are understood:
    package with no upstream at all, authored and committed alongside the
    specification that builds it (e.g. `examples/common/kernel-signing/`).
 
-#### Fetching over ssh
+### Fetching over ssh
 
 A `git://` source whose remote wants an ssh key says so with
 `;protocol=ssh`, and names the user to log in as -- the clone happens in a
@@ -565,7 +565,7 @@ when that one changes, so a change to a library rebuilds what `before`
 and `after` say is built on it, however many packages down the chain.
 Use `--rebuild` to force one.
 
-#### What the repository holds
+### What the repository holds
 
 Everything a rebuild produced: the binary packages, the `.changes` and
 `.buildinfo` that say how they were made, sbuild's build log, and the
@@ -589,7 +589,7 @@ It is not free: the orig tarball is carried with them, which for busybox
 is a couple of megabytes and for a kernel is a couple of hundred.
 `seine cache clear packages` is what takes it back.
 
-#### Local versions
+### Local versions
 
 Every rebuilt package is given a version of its own: a changelog entry is
 added marking the source `UNRELEASED` and appending `revision` to the
@@ -620,7 +620,7 @@ own -- Debian derives it from the changelog, so `6.1.0-50` becomes
 `6.1.0-51` -- which is what keeps a reconfigured kernel from being
 mistaken for the distribution's.
 
-#### Signing
+### Signing
 
 `--sign-key` signs what a build produced, with a key seine never sees:
 
@@ -682,7 +682,7 @@ signature is not ours to publish.
 Signing needs `gnupg` on the host, alongside the other host
 prerequisites.
 
-#### Pinning a build
+### Pinning a build
 
 A rebuild is compiled against whatever apt hands its chroot, which is not
 always what it should be. The clearest case is a specification that
@@ -756,7 +756,7 @@ anything here.
 
 [apt_preferences(5)]: https://manpages.debian.org/stable/apt/apt_preferences.5.en.html
 
-#### Host packages
+### Host packages
 
 A rebuild is for the image by default. `scope` says otherwise:
 
@@ -848,7 +848,7 @@ name of its flavour, so one entry cannot describe two; list the
 architectures as separate packages, each with the flavour that
 architecture has.
 
-### vendor
+## vendor
 
 `packages:` rebuilds what a specification changes; `vendor:` is for
 everything else it depends on -- directly or by way of a build
@@ -1015,7 +1015,7 @@ entries cost nothing extra: the same resolve-is-frozen rule above
 applies, so a rerun that changed nothing just re-signs what an earlier
 resolve found.
 
-### imager
+## imager
 
 Producing the disk image (partitioning, formatting, installing the boot
 loader) is done by booting a throwaway [libguestfs](https://libguestfs.org/)
@@ -1040,7 +1040,7 @@ architecture under emulation to build the appliance once, then caches it --
 the first cross-arch build is noticeably slower than same-arch builds, but
 that cost isn't paid again on subsequent builds.
 
-### playbook
+## playbook
 
 Ansible playbooks will be used to add packages to the system or configure them.
 The `playbook` section is a list of `name` / `tasks` pairs:
@@ -1080,7 +1080,7 @@ Frequently used tasks include:
  * `apt`
  * `debconf`
 
-#### Ansible Galaxy collections
+### Ansible Galaxy collections
 
 `ansible-core` alone covers `apt`, `debconf`, `user` and the rest of the
 tasks above. Two Galaxy collections are worth installing alongside
@@ -1138,7 +1138,7 @@ playbook:
                     - vim
 ```
 
-#### Writing your own module
+### Writing your own module
 
 A `library/` directory beside a specification file is found automatically
 and handed to `ansible-playbook`, the same way a kconfig fragment is found
@@ -1230,7 +1230,7 @@ have `apt` pre-installed (and `qemu-user-static` binaries for the host
 architecture when building images for a foreign architecture).
  
 
-### image
+## image
 
 Last but not least, the 'image' section defines the partition and volumes to be
 created in the disk image. The following top-level attributes are supported:
@@ -1248,7 +1248,7 @@ specified. The `size` of the disk `image` may be omitted and it will then be
 estimated (as the sum of the various partition sizes plus some overhead). The
 partition `table` may either be `gpt` or `msdos`.
 
-#### secure-boot
+### secure-boot
 
 A disk's signing identity, used to sign a UKI the imager finds and
 anchors for dm-verity (see [Protecting a read-only partition with
@@ -1269,7 +1269,7 @@ unsigned -- correct for a board that has Secure Boot turned off, which
 any board using this today has to (nothing here enrolls a certificate
 into real firmware).
 
-#### bootlets
+### bootlets
 
 Bootlets are binary firmware files placed at specific locations on the boot
 media so they can be found by the hardware boot ROM. Examples include: u-boot,
@@ -1285,7 +1285,7 @@ The following attributes are supported:
 (*) The specified file will be copied from the image created by the `playbook`,
     a package should therefore install it.
 
-#### partitions
+### partitions
 
 Disk partitions are defined with the following attributes:
 
@@ -1316,7 +1316,7 @@ its own copy of `mksquashfs`/`mkfs.erofs`, transiently -- the specification
 does not need `squashfs-tools`/`erofs-utils` installed, and nothing from
 building them is left in the produced image.
 
-##### Protecting a read-only partition with dm-verity
+#### Protecting a read-only partition with dm-verity
 
 `verity: true` on a `/` or `/usr` partition (the only mountpoints the
 [Discoverable Partitions Specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/)
@@ -1377,7 +1377,7 @@ A `group` shall be defined for every single partition using the `lvm` flag and
 may have one or several partitions attached to it. Groups implicitly defined
 in the `partitions` section may be referenced by `volumes` (see below).
 
-#### volumes
+### volumes
 
 Logical volumes share many of the attributes defined above for `partitions` but
 more specifically:
@@ -1398,7 +1398,7 @@ don't apply here. Unlike a plain partition, an LVM volume's `size` is not
 grown to fit a built `squashfs`/`erofs` image -- it must already be large
 enough, or the build fails.
 
-#### Example: a read-only `/usr`
+### Example: a read-only `/usr`
 
 ```yaml
 image:
@@ -1422,7 +1422,7 @@ image:
       size: 128MiB
 ```
 
-#### Example: a dm-verity-protected `/usr`
+### Example: a dm-verity-protected `/usr`
 
 ```yaml
 image:
@@ -1445,7 +1445,7 @@ image:
       size: 64MiB          # must be given -- unknown until the hash tree is built
 ```
 
-### test
+## test
 
 A specification carries its own tests the same way it carries its
 `packages`/`playbook`/`image`: `test` is a list of entries, composed
@@ -1459,4 +1459,3 @@ with `if`/`for`/`while`/`try`, reusable named keywords and assertions
 built on [Robot Framework](https://robotframework.org/). See
 [docs/testing.md](testing.md) for the full step grammar, the keywords
 available, and `seine test`/`seine tui`'s own `/test`.
-
