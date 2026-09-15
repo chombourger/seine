@@ -1,4 +1,4 @@
-## Kernels
+# Kernels
 
 Debian's kernel is built to boot anything, which makes it large for an
 appliance that knows what it runs on -- and the kernel it is built from
@@ -7,7 +7,7 @@ can change: the first by reconfiguring the distribution's own kernel,
 the second by building a tree Debian does not package at all, under the
 distribution's packaging.
 
-### Rebuilding the kernel
+## Rebuilding the kernel
 
 Settings that only mean something for one kind of package go under
 `extends`, named after that kind:
@@ -277,7 +277,7 @@ part of what decides whether a package needs rebuilding, by content, so
 editing one is enough to ask for a new kernel -- and not editing one means
 the hours are paid once.
 
-### Bring your own kernel
+## Bring your own kernel
 
 `upstream` builds a tree the distribution does not package -- a stable
 release from kernel.org, a release candidate, or a vendor's BSP -- under
@@ -350,7 +350,7 @@ A setting already given wins, and `requires` loads what it names after
 the file that asked for it -- so the specification reaching for a
 fragment is the one that gets to override it.
 
-#### What is kept of Debian's patches
+### What is kept of Debian's patches
 
 Debian's series is not applied whole. What is taken automatically is the
 *packaging*: the patches without which the build does not work. What is
@@ -448,7 +448,7 @@ reports *every* patch that fails at once, with the files each one wanted
 matching nothing is an error rather than a no-op, so a list does not
 quietly go stale when the packaging is moved forward.
 
-#### Bringing your own patches
+### Bringing your own patches
 
 `keep-patches` takes the decision over. It is a list of globs matched
 against the series, and naming it replaces the content-derived selection
@@ -501,7 +501,7 @@ specification overrides. And signed code is turned off for a grafted
 kernel, since the Secure Boot signature is issued by a key nobody outside
 Debian holds.
 
-#### What you do not get
+### What you do not get
 
 Worth being plain about, since the aim here is a true replacement:
 
@@ -537,7 +537,7 @@ Worth being plain about, since the aim here is a true replacement:
    the kernel and the image itself get its headers. Usually what you
    want; worth knowing when it is not.
 
-### Bring your own modules
+## Bring your own modules
 
 A driver that lives outside the kernel tree is a package like any
 other, built by `extends: module:`:
@@ -595,7 +595,7 @@ out what kbuild needs, is skipped entirely otherwise -- and skipped
 quietly, leaving a build that succeeded and a package with no modules
 in it.
 
-#### Naming the kernels
+### Naming the kernels
 
 Kernels are named per architecture, by their **headers** package:
 
@@ -625,7 +625,7 @@ that names no kernels for an architecture it is built for is refused
 when the specification is parsed, rather than producing an image that
 boots and carries none of the modules asked for.
 
-#### What comes out
+### What comes out
 
 One binary package per kernel, named for the kernel the modules will
 load into, and a metapackage beside it named for the flavour:
@@ -638,7 +638,7 @@ nvidia-open-modules-amd64
 A playbook installs the second. The first is renamed by every kernel
 update; the flavour is not.
 
-#### What the build is told
+### What the build is told
 
 A tree left to itself asks `uname` which machine it is building for,
 which answers for the builder rather than for the package. So the
@@ -663,7 +663,7 @@ compiling against it needs the first; kbuild needs the second. Given
 only one, such a tree concludes the kernel is missing headers it has,
 and fails much later and somewhere else.
 
-#### Cross-compiling modules
+### Cross-compiling modules
 
 Modules cross-compile like everything else. It takes some arranging,
 which seine does without being asked: a kernel's headers reach for
@@ -679,4 +679,3 @@ it lands in the local repository like anything else.
 Nothing about a specification changes for it. `cross: false` still
 means what it means elsewhere -- build under emulation, for packaging
 that has to run what it just built.
-

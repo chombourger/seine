@@ -1,7 +1,7 @@
-## Getting started
+# Getting started
 
 
-### Installation
+## Installation
 
 The easiest way to get started is to install the following packages, all
 available from your distribution:
@@ -104,7 +104,7 @@ seine build spec.yaml
 `seine --help` lists the commands it has, and `seine COMMAND --help` says
 what one of them takes.
 
-### Using an HTTP proxy
+## Using an HTTP proxy
 
 If `http_proxy` / `https_proxy` (and optionally `no_proxy`) are set in your
 environment, they are used for every network access a build makes: base image
@@ -157,7 +157,7 @@ avocado run --filter-by-tags='-container' --filter-by-tags-include-empty tests/*
 `--filter-by-tags-include-empty` is needed because avocado otherwise drops
 every test that carries no tag at all, which is all the others.
 
-### The full plan
+## The full plan
 
 `tests/image/images.py` builds images for real -- `pc-image` and
 `rpi4-image`, each for bookworm and for trixie, each with the 6.18 kernel
@@ -200,4 +200,3 @@ the container images the same ones by id. The busybox rebuild rather than a
 kernel: it is a real package build, patch and stamp included, without
 spending an evening compiling. Both spaces are the test's own, so nothing
 it does touches the caches of whoever runs it.
-

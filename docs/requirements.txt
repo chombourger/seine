@@ -1,0 +1,4 @@
+# Dependencies used only to build the published documentation.
+sphinx>=7,<9
+myst-parser>=2,<5
+sphinx-book-theme>=1,<2

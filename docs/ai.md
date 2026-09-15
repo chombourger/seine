@@ -1,11 +1,11 @@
-## The AI chat
+# The AI chat
 
 `seine tui`'s Chat screen lets a real model answer questions about the
 active specification and, with explicit approval, act on it. It is
 entirely optional -- everything else in the TUI works without it -- and
 off by default.
 
-### Enabling it
+## Enabling it
 
 Set `llm_model` (`/settings`, or `SEINE_LLM_MODEL` as an environment
 override) and, usually, `llm_api_base`/`SEINE_LLM_API_BASE` to point at
@@ -29,7 +29,7 @@ setups:
 litellm supports a good many other providers the same way -- its own
 model-name prefix is the thing to check for one not listed here.
 
-### The tools
+## The tools
 
 The model never invents what it knows -- every answer is grounded in a
 tool call, the same information every screen already renders. Most are
@@ -95,7 +95,7 @@ red) and waits for "Yes"/"No" before doing anything:
 * `gist-delete` -- permanently removes one. Never touches a project
   that already `side-load`ed it -- only the gist itself.
 
-### Trust model
+## Trust model
 
 Every read-only tool above is scoped to files this build *itself*
 already vouches for -- never an arbitrary path, and never the whole
@@ -145,7 +145,7 @@ is still just a spec fragment, the same shape `read` already shows for
 a referenced file, so nothing new is exposed -- only *where* it can
 come from is different.
 
-### The system prompt
+## The system prompt
 
 `seine/data/system_prompt.txt` is read fresh every turn -- editing it
 needs no code change or restart. Two things worth knowing before
