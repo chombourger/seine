@@ -63,4 +63,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace seine-pkcs7 => ../seine-pkcs7
+replace seine-pkcs7 => ../pkcs7

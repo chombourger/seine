@@ -25,7 +25,8 @@ Depends: ${misc:Depends},
          passt,
          podman,
          python3-guestfs,
-         qemu-kvm
+         qemu-kvm,
+         seine-vault-image
 Recommends: gnupg
 Suggests: qemu-user-static
 Description: slim embedded images, now easy
@@ -62,8 +63,11 @@ Package: seine-vault-openbao
 Architecture: amd64 arm64
 Depends: seine (= ${binary:Version}),
          ${misc:Depends}
+Provides: seine-vault-image
 Description: prebuilt vault image (openbao plus seine's signing plugins)
  The custom OpenBao image (upstream plus seine's seine-pgp,
  seine-sbsign and seine-kmod signing plugins) for this package's own
  architecture, imported into podman on first use instead of building
  the plugins from source.
+ .
+ Provides the seine-vault-image virtual package that seine depends on.

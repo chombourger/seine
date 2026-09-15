@@ -20,7 +20,7 @@ from seine.container import ContainerEngine
 from seine.utils import HOST_ARCH
 from seine.vault.dev import CUSTOM_IMAGE, SOURCES_LABEL, _sources_digest
 
-DOCKERFILE = os.path.join(HERE, "vault-image", "Dockerfile")
+DOCKERFILE = os.path.join(HERE, "vault", "openbao", "image", "Dockerfile")
 
 HOSTARCH = os.environ.get("HOSTARCH", HOST_ARCH)
 REFRESH = os.environ.get("REFRESH") == "1"

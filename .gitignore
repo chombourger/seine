@@ -7,13 +7,13 @@ seine.egg-info
 .seine
 # Plugin binaries compile inside the vault image build, never on the
 # host -- a locally built one is working-tree noise, not a deliverable.
-seine-pgp/seine-pgp.so
-seine-pgp/seine-pgp
-seine-pkcs7/seine-pkcs7
-seine-sbsign/seine-sbsign.so
-seine-sbsign/seine-sbsign
-seine-kmod/seine-kmod.so
-seine-kmod/seine-kmod
+vault/openbao/plugins/pgp/seine-pgp.so
+vault/openbao/plugins/pgp/seine-pgp
+vault/openbao/plugins/pkcs7/seine-pkcs7
+vault/openbao/plugins/sbsign/seine-sbsign.so
+vault/openbao/plugins/sbsign/seine-sbsign
+vault/openbao/plugins/kmod/seine-kmod.so
+vault/openbao/plugins/kmod/seine-kmod
 # Copied in from docs/ by setup.py's build_py override -- generated,
 # not committed.
 seine/data/docs
