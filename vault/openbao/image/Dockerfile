@@ -4,31 +4,31 @@
 FROM docker.io/library/golang:1.26.6 AS pgp-build
 ENV GOTOOLCHAIN=local
 WORKDIR /src
-COPY seine-pgp/go.mod seine-pgp/go.sum ./
+COPY vault/openbao/plugins/pgp/go.mod vault/openbao/plugins/pgp/go.sum ./
 RUN go mod download
-COPY seine-pgp/ ./
+COPY vault/openbao/plugins/pgp/ ./
 RUN go build -o /out/seine-pgp.so . && chmod 755 /out/seine-pgp.so
 
 FROM docker.io/library/golang:1.26.6 AS sbsign-build
 ENV GOTOOLCHAIN=local
-WORKDIR /src/seine-sbsign
-COPY seine-pkcs7/go.mod ../seine-pkcs7/
-COPY seine-sbsign/go.mod seine-sbsign/go.sum ./
+WORKDIR /src/sbsign
+COPY vault/openbao/plugins/pkcs7/go.mod ../pkcs7/
+COPY vault/openbao/plugins/sbsign/go.mod vault/openbao/plugins/sbsign/go.sum ./
 RUN go mod download
-COPY seine-pkcs7/ ../seine-pkcs7/
-COPY seine-sbsign/ ./
-RUN go test ./... ../seine-pkcs7/ && \
+COPY vault/openbao/plugins/pkcs7/ ../pkcs7/
+COPY vault/openbao/plugins/sbsign/ ./
+RUN go test ./... ../pkcs7/ && \
     go build -o /out/seine-sbsign.so . && chmod 755 /out/seine-sbsign.so
 
 FROM docker.io/library/golang:1.26.6 AS kmod-build
 ENV GOTOOLCHAIN=local
-WORKDIR /src/seine-kmod
-COPY seine-pkcs7/go.mod ../seine-pkcs7/
-COPY seine-kmod/go.mod seine-kmod/go.sum ./
+WORKDIR /src/kmod
+COPY vault/openbao/plugins/pkcs7/go.mod ../pkcs7/
+COPY vault/openbao/plugins/kmod/go.mod vault/openbao/plugins/kmod/go.sum ./
 RUN go mod download
-COPY seine-pkcs7/ ../seine-pkcs7/
-COPY seine-kmod/ ./
-RUN go test ./... ../seine-pkcs7/ && \
+COPY vault/openbao/plugins/pkcs7/ ../pkcs7/
+COPY vault/openbao/plugins/kmod/ ./
+RUN go test ./... ../pkcs7/ && \
     go build -o /out/seine-kmod.so . && chmod 755 /out/seine-kmod.so
 
 FROM docker.io/openbao/openbao:2.6.2

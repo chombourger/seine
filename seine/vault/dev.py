@@ -86,7 +86,7 @@ def _remove(name):
 def ensure_image():
     root = os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__))))
-    dockerfile = os.path.join(root, "vault-image", "Dockerfile")
+    dockerfile = os.path.join(root, "vault", "openbao", "image", "Dockerfile")
     if not os.path.isfile(dockerfile):
         # Installed package, no source checkout to build or hash from:
         # trust whatever the bundled tarball imported.
@@ -121,8 +121,9 @@ def _sources_digest():
     root = os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__))))
     digest = hashlib.sha256()
-    paths = [os.path.join("vault-image", "Dockerfile")]
-    for plugindir in ("seine-pgp", "seine-pkcs7", "seine-sbsign"):
+    paths = [os.path.join("vault", "openbao", "image", "Dockerfile")]
+    for plugindir in ("pgp", "pkcs7", "sbsign"):
+        plugindir = os.path.join("vault", "openbao", "plugins", plugindir)
         full = os.path.join(root, plugindir)
         if not os.path.isdir(full):
             continue
