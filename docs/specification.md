@@ -225,6 +225,57 @@ none, for vendor archives that ship binaries alone:
           sources: false
 ```
 
+### Trusting a feed
+
+A feed like that one is someone else's archive, and apt trusts it
+outright unless told otherwise. `signed-by` names the key to check it
+against:
+
+```
+        - suite: vendor
+          uri: https://packages.example.com/apt
+          components: non-free
+          sources: false
+          signed-by: vault:vendor-repo-key
+```
+
+It takes three forms. `vault:<name>` reads the public key from a
+vault's `seine-pgp` plugin (see
+[Running a vault for seine](vault-openbao.md)) -- a token that can only
+read that one key is enough, no signing rights needed. The other two are
+a path to a keyring file:
+
+```
+          signed-by: keys/vendor-repo.gpg
+```
+
+or the key itself, pasted in:
+
+```
+          signed-by: |
+              -----BEGIN PGP PUBLIC KEY BLOCK-----
+              mQINBGN...
+              -----END PGP PUBLIC KEY BLOCK-----
+```
+
+A downloaded key is only as trustworthy as the server it came from.
+`fingerprint` checks it against a value pinned in the specification, so
+a wrong or rotated key fails the build instead of being trusted:
+
+```
+          signed-by: vault:vendor-repo-key
+          fingerprint: "5B89 F388 1234 5678 9ABC DEF0 1234 5678 9ABC DEF0"
+```
+
+For `vault:`, the fingerprint is asked of the vault itself, not read off
+the downloaded key -- so a key swapped at the vault is still caught.
+For the other two forms, it is read off the key that was given.
+
+Reading a vault or a file for this only happens where a build actually
+runs something -- never while a rebuild stamp or a cache digest is just
+being computed, which stay offline and do not need a vault to be
+reachable.
+
 ### Building from a snapshot
 
 A suite moves: the same specification built a week apart is built from

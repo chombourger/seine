@@ -2,10 +2,13 @@
 
 seine can sign build output (root/account passwords, kernel modules, Secure
 Boot UKIs, apt repositories) through a vault instead of a key on the build
-machine, via `vault:<name>` and `vault('<path>#<field>')` in a spec. This
-page shows how to stand up that vault: [OpenBao](https://openbao.org/) plus
-seine's own signing plugins (`seine-pgp`, `seine-sbsign`, `seine-kmod`),
-running as a container on a server of your choice.
+machine, via `vault:<name>` and `vault('<path>#<field>')` in a spec. A
+feed's `signed-by: vault:<name>` (see [feeds](specification.md#feeds)) only
+reads a key rather than signing with it, so a token scoped to that one read
+is enough. This page shows how to stand up that vault:
+[OpenBao](https://openbao.org/) plus seine's own signing plugins
+(`seine-pgp`, `seine-sbsign`, `seine-kmod`), running as a container on a
+server of your choice.
 
 **Security disclaimer.** This page gets a vault running and reachable --
 nothing more. It makes no claim about how secure that instance is. Network
