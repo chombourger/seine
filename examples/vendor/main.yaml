@@ -28,6 +28,70 @@
 # 'seine vendor' does not need it either: which suites to vendor comes
 # from 'vendor:'s own entries and '--suite', not from 'distribution:
 # release:'.
+#
+# Unsigned unless SEINE_VENDOR_SIGN_KEY/--vendor-sign-key names a key
+# ('vault:seine-vendor-repo' against a real vault signs with the fixed
+# dev-only throwaway below; a remote vault ignores it and fails closed
+# on a miss instead, same as any other 'defaults: vault:' -- see
+# docs/vault-openbao.md):
+#   export SEINE_VAULT_ADDR=https://<your-host>:8200
+#   export SEINE_VAULT_TOKEN=<a token that can read+sign seine-pgp/keys/seine-vendor-repo>
+#   export SEINE_VENDOR_SIGN_KEY=vault:seine-vendor-repo
+#   seine vendor examples/vendor/main.yaml
+#
+# Its own key, independent from 'packages:'/'sign-key''s
+# (examples/common/custom-packages.yml: 'defaults: sign-key:
+# vault:custom-packages') -- vendored packages were never built or
+# audited by seine, so a compromise of one repository's key never lets
+# an attacker slip something into the other.
+defaults:
+    vault:
+        seine-vendor-repo:
+            private_key: |
+                -----BEGIN PGP PRIVATE KEY BLOCK-----
+
+                lQVYBGqq7q0BDAC3ui1o9+odLxCFn1PHWRYBMkVK+fEoGN08agdhSkZdD4/mzSa5
+                TpanOrPlLxrdkfF4smXgDYu9lT8zH1nEfj81i4PbdhHka1nEhy2mLL2BZDTpaBP7
+                ZnGoklXLVJAVQ6qWwTmCTpagj3z/w8VQZ7e7AOoRl40TzkW7bLsHB3D/P6wRNl6G
+                aAYx8B4YA8mSdqqfU/4Ilo+AwbCwSkyEhoNIXu5kN6Hqg6saC+zvWJYVWivZ6XZz
+                y1DH8JHuhKYgJT2BTPdq8s+MC9aBWECioqHeBszt0o6klYzPcS8j7JAm/VEmJW32
+                Smhg/xeCew+ZLtkpBN4+EWNle+OpwXxZc58QfykwytlPk/tq3AHr6KxHFcRsA+J4
+                TmAf3Co5DutzrFfwBAkTHqkR0WZt3L+lQP0oEzJrGxDZDqOrEpDyk/i6vNPV0q0C
+                jy9BAt5/D7TTUMJwBDgn/dj5DKNm9mOfOvrfgKDnJgA/Vqrko7xBMBXDrxInVgE4
+                7jMWtLS5FSwPNiUAEQEAAQAL/RgG0mpwRV8EqSH4WJHwzgZhBxvLfOST/9anPQjV
+                mEcSQmzZ9k70fpInBKCbnOVN8SiqF9WJn/Uuf+HVHz2pjuWXNaqtEaDwAwDG9srM
+                /gleS+ccM8TEPGfhnzOkfuUxAK2PXlByq5MawKuH9BVUQvxDHdkoGwx0hL0CdqDw
+                MbBHqN5lYE4ua2T7dEwKrsEnIKAOcWG5ItIhQlSDmucX2jJMK9vSRKvxBR62YYlZ
+                aeMn9CUeuV1iQNGs3cC1+y2oAN7ey2XV/upDwv5Vv2xd/Oem3Jb793KTNwiOG+0c
+                qkfqdV6/KIl26REdiSIJAqOBzeIfU/GopBtoZwivs3myTveSg58mZuZfiRjspmBM
+                Sie3IV8vWAcVLkP62i1C5dxzvDJGTHiaj2L0AyACtqOdYk5YMoSlmxLnfxofliSu
+                qpoc4zGtokVjqDECQIiLOmII9Wn7LKMhn/gQgl40H7DWtGhUkU/9t6hW/IrI8Tyf
+                Ujztr8Yyi0qmzZ5Rx0fXq9KI0QYA1z5N0/QnTgO97JMrDdWD4hSoYmqaBzes0B6h
+                /e4BVMLqTKW/CxLXFrB6kit6B0JQRnfnOT9S37egsPI932HWRpWkf/MbOQVZC+wm
+                hH+c5jtwhIMiR6Y31XTOkJ1q5odQtfVfrOH18Kumbm8D/AA0k5WC1l8lOLB5nmoN
+                KQzGGZ2pm8k2SC/peWtXHkD4xaIAMWVqKaXJ11C7ykhpDSTF4Abg3zGehkPkF/0B
+                Wq3USqOF0yngsg1qsFWpyM4+5gNZBgDahCmjYQa2iVXbOcsRPe14pQ5mj1N686Oy
+                ZzjN3EkOwJlDjQ54DiMVoOHchI2nasSoJg+ln2Wx8aaSCP4gDExeg/hEeVomb1iu
+                2LLqtqnZsqxABBUVICJmxtFMFVmPiAcP7QkqSYtIWs/A4snqCknKWKa6rhlXjs6k
+                2s7IUvY1i6xStvMe204QSDFvAL0uPt4dcnlkkN5g4S80LhQ64nrc08YT9h/q93qf
+                gN6MWENJlYav1WZueLU/5uNXqIGnK60GAL5DUxLTzf6qdzA1k+MPO/k5OBlLqXfT
+                WxB2aFHYvlJiBX5UZhg/1PPesmRW20nm3IKkQe2QA9iiIoT6Hey4zd8lje7+kQFK
+                sN1OlA8RS0HqLupjnCwWR+eMp6zuhyN8pVpQT+QYtruERF+eUairz4HUwuFQWXBK
+                /vbAqcShX0WMPHMDfUbCy5xm8UMq2ozYE8leToY+a2U/WNaFOD+KA/0lbfzvLb1D
+                OlB0s/Dk276bXChAFdWIxlMhYRL/RL52gt2etD9zZWluZSB2ZW5kb3IgcmVwbyBk
+                ZXYgdGhyb3dhd2F5IGtleSA8c2VpbmUtZGV2QGV4YW1wbGUuaW52YWxpZD6JAc8E
+                EwEKADkWIQTZod50kMir8nNNqjsjJm88TAbBvgUCaqrurQMbLwQFCwkIBwIGFQoJ
+                CAsCBBYCAwECHgECF4AACgkQIyZvPEwGwb6KhQwAmW0nlK2cI/dId34b9aGm2Ulx
+                luZjXOGn0zMExYrfv1B4YpokChQCH3YccKFTVafavdueCy5ydbMeS+RaGofDitpt
+                bMk4rzfGdsiYa1F2EctQG9qveI2rm/8ykopPOYm01R13NlaQvj2u2txcsmu0ZjaT
+                /grObQCWYPLnFGfcacPy4p8l66JD8LIE68TOeTloRnq2NwrWir1Ip9NcOrpRvlhs
+                pWw0cbIWytj/x3cfwHGZx3NOImbrZUP2o/HjDcwtP0NJQsRgc9gXpY+E7N8hMqAi
+                L8ZMXQ/E8Li2twhNrG+hd9/sl1uQQNPj2U+HB7jJrGQrPBPndc9apPR5V/j5771T
+                j7ck9IOTX5WCy8Te8wDItTcAOf4eNA08icChLqrfp7pTPdzXDU34bVAq4IEu9pgc
+                y2/0v6ZRYhDv+7Ts+4pW7HmdXkgbszq8KApxgasUDo3xeniuLL19LzzP+EpFDbmG
+                DyfDexiaOVfLATbv+OljUGR3SRqYIOwwcP8YVrqr
+                =LTMh
+                -----END PGP PRIVATE KEY BLOCK-----
 
 requires:
     - ../common/amd64

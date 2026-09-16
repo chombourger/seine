@@ -367,10 +367,12 @@ class VendorCmd(Cmd):
                 % (", ".join(unknown), "has" if len(unknown) == 1 else "have"))
             sys.exit(3)
 
+        vault_defaults = (build.spec.get("defaults") or {}).get("vault") or {}
         try:
             sys.exit(self._run(distro, entries, exclude, wanted, refresh, archs,
                                extra_archs, vendor_lock=vendor_lock,
-                               lock_path=lock_path, check=check))
+                               lock_path=lock_path, check=check,
+                               vault_defaults=vault_defaults))
         except OSError as e:
             sys.stderr.write("error: %s\n" % e)
             sys.exit(2)
@@ -390,7 +392,7 @@ class VendorCmd(Cmd):
     # also feeds manifest_digest(), so naming a new one re-resolves.
     def _run(self, distro, entries, exclude, wanted, refresh, archs=None,
              extra_archs=(), display=None, vendor_lock=None, lock_path=None,
-             check=False):
+             check=False, vault_defaults=None):
         # Qualified: tests patch 'seine.vendor.HostBootstrap'.
         from seine import vendor
         hostBootstrap = vendor.HostBootstrap(distro, self.options, force_online=True)
@@ -476,7 +478,7 @@ class VendorCmd(Cmd):
                                         hostBootstrap, archs)
         self._run_wave(fetch, retryable=True, display=display)
 
-        signer = signing.vendor_signer(self.options)
+        signer = signing.vendor_signer(self.options, vault_defaults)
         self._run_wave(
             vendor.index_tasks(distro, wanted, self.options, hostBootstrap, signer,
                                manifests, entries),

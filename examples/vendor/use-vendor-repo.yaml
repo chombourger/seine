@@ -1,0 +1,41 @@
+# seine - Slim Embedded Images Now Easy
+# SPDX-License-Identifier: Apache-2.0
+
+# A developer's own build, pulling packages from the vendor repository
+# examples/vendor/main.yaml built and published elsewhere -- not
+# vendoring it itself, just trusting somebody else's copy over the
+# network. 'uri' below is localhost, so this runs standalone: after
+# 'seine vendor examples/vendor/main.yaml', serve its output with
+#   cd build/deploy/vendor && python3 -m http.server 8000
+# (or wherever SEINE_VENDOR_DIR points it). A real deployment instead
+# points 'uri' at wherever the group actually rsync'd
+# deploy_repository()'s output to.
+#
+# 'signed-by: vault:seine-vendor-repo' names the same key
+# examples/vendor/main.yaml signs with -- a token that can only read
+# it is enough here, no signing rights needed (docs/vault-openbao.md).
+# Against a real vault this fails closed on any miss; against a bare
+# dev vault (no SEINE_VAULT_ADDR set) it seeds the very same fixed
+# throwaway key that spec's own 'defaults: vault:' carries, so this
+# works out of the box for a local try.
+#
+# 'fingerprint' pins the key independently of whatever the http
+# server itself hands out -- a wrong or rotated key fails the build
+# instead of being trusted (docs/specification.md: "Trusting a feed").
+# The value below is that same fixed dev throwaway key's own
+# fingerprint; a real deployment pins the real vault key's fingerprint
+# instead ('bao read seine-pgp/keys/seine-vendor-repo/public').
+distribution:
+    feeds:
+        - suite: bookworm
+          uri: http://localhost:8000/bookworm
+          components: main extra
+          sources: false
+          signed-by: vault:seine-vendor-repo
+          fingerprint: "D9A1 DE74 90C8 ABF2 734D AA3B 2326 6F3C 4C06 C1BE"
+        - suite: trixie
+          uri: http://localhost:8000/trixie
+          components: main extra
+          sources: false
+          signed-by: vault:seine-vendor-repo
+          fingerprint: "D9A1 DE74 90C8 ABF2 734D AA3B 2326 6F3C 4C06 C1BE"

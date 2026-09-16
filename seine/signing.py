@@ -118,28 +118,30 @@ class Signer:
             said = (e.stderr or b"").decode(errors="replace").strip()
             raise ValueError("%s\n%s" % (complaint, said))
 
-# Builds the signer for this build, or None. Key comes from options,
-# then SEINE_SIGN_KEY, then the spec's own default (weakest -- the
-# spec only suggests, the machine always wins). 'vault:' names a
-# vault PGP key instead of a gpg one.
-def signer(options, vault_defaults=None, sign_key_default=None):
-    key = options.get("sign_key") or os.environ.get("SEINE_SIGN_KEY") \
-        or sign_key_default
+# 'vault:' names a vault PGP key instead of a gpg one; shared by signer()
+# and vendor_signer() now that both take a 'vault_defaults' to pass through.
+def _key_to_signer(key, options, vault_defaults):
     if key is None or len(key) == 0:
         return None
     if key.startswith("vault:"):
         return vault_signer(options, key[len("vault:"):], vault_defaults)
     return Signer(key)
 
+# Builds the signer for this build, or None. Key comes from options,
+# then SEINE_SIGN_KEY, then the spec's own default (weakest -- the
+# spec only suggests, the machine always wins).
+def signer(options, vault_defaults=None, sign_key_default=None):
+    key = options.get("sign_key") or os.environ.get("SEINE_SIGN_KEY") \
+        or sign_key_default
+    return _key_to_signer(key, options, vault_defaults)
+
 # Signer for the vendor repository, kept separate from signer() so
 # vendor packages (not built by seine) never share a key with ours.
-def vendor_signer(options):
+# 'vault_defaults' is the spec's own 'defaults: vault:' -- same dev-only
+# fallback mechanism signer() gets, just never wired through before.
+def vendor_signer(options, vault_defaults=None):
     key = options.get("vendor_sign_key") or os.environ.get("SEINE_VENDOR_SIGN_KEY")
-    if key is None or len(key) == 0:
-        return None
-    if key.startswith("vault:"):
-        return vault_signer(options, key[len("vault:"):])
-    return Signer(key)
+    return _key_to_signer(key, options, vault_defaults)
 
 
 # Same shape as Signer, but the private key never leaves the vault:
