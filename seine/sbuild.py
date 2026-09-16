@@ -13,6 +13,7 @@ from seine.utils     import apt_sources
 from seine.utils     import apt_sources_dockerfile
 from seine.utils     import APT_CLEANUP
 from seine.utils     import feeds
+from seine.utils     import feed_keyrings_script
 from seine.utils     import locked
 from seine.utils     import offline_suites
 from seine.utils     import vendor_mountpoint
@@ -218,6 +219,14 @@ class SbuildChroot:
             from seine import vendor
             volumes += [(vendor.deploy_repository(suite), vendor_mountpoint(suite))
                        for suite in offline_suites(self.distro)]
+        # mmdebstrap is exec'd directly (no shell), so a feed's own
+        # 'signed-by' needs a shell preamble in front of it to write the
+        # keyring out first -- only built (and only reaches the vault)
+        # once the cache-hit check above has already said this chroot
+        # needs making.
+        install = feed_keyrings_script(feeds(self.distro), offline=offline)
+        if install:
+            args = ["sh", "-c", install + '; exec "$@"', "sh"] + args
         try:
             # Not 'architecture=self.architecture': that would mount
             # builderImage's own distro chroot cache, which differs from
