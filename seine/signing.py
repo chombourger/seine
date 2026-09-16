@@ -9,6 +9,16 @@ import subprocess
 
 from seine.vault.base import VaultError
 
+# The first key's fingerprint out of gpg's own '--with-colons' output --
+# shared by whatever lists a secret key (Signer.fingerprint()) and
+# whatever reads a public one (utils.py's feed 'fingerprint' check).
+def _first_fingerprint(colons_output):
+    for line in colons_output.decode(errors="replace").split("\n"):
+        fields = line.split(":")
+        if fields[0] == "fpr" and len(fields) > 9 and fields[9]:
+            return fields[9]
+    return None
+
 # ASCII armor to packets: apt reads the exported keyring with gpgv,
 # which takes binary like host gpg's --export, while the vault answers
 # armored.
@@ -45,14 +55,12 @@ class Signer:
 
         listed = self._gpg(["--with-colons", "--list-secret-keys", self.key],
                            "no secret key for '%s'" % self.key)
-        for line in listed.decode(errors="replace").split("\n"):
-            fields = line.split(":")
-            if fields[0] == "fpr" and len(fields) > 9 and len(fields[9]) > 0:
-                self._fingerprint = fields[9]
-                return self._fingerprint
-        raise ValueError(
-            "gpg found a secret key for '%s' but did not say its fingerprint"
-            % self.key)
+        self._fingerprint = _first_fingerprint(listed)
+        if self._fingerprint is None:
+            raise ValueError(
+                "gpg found a secret key for '%s' but did not say its "
+                "fingerprint" % self.key)
+        return self._fingerprint
 
     # Keyring filename, named after the key's short id so it stays
     # identifiable next to other keyrings in the image.

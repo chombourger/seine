@@ -2,16 +2,21 @@
 
 import atexit
 import avocado
+import base64
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+
+from unittest import mock
 
 path_to_self    = os.path.realpath(__file__)
 path_to_sources = os.path.join(os.path.dirname(path_to_self), "..", "..")
 sys.path.append(path_to_sources)
 
-from seine.utils import apt_sources, base_feed, feeds, offline_apt_script
+from seine.utils import (apt_sources, apt_sources_dockerfile, base_feed,
+                         feeds, feed_keyrings_script, offline_apt_script)
 
 # Nothing under here may write into the machine's own cache. These build
 # Builder objects directly, and asking one for a stamp or an index makes
@@ -524,3 +529,182 @@ class TargetBootstrapNameFoldsInTheBaseFeed(avocado.Test):
         self.assertEqual(
             self.tag([{"suite": "bookworm"}, {"suite": "bookworm-security"}]),
             self.tag([{"suite": "bookworm"}, {"suite": "bookworm-backports"}]))
+
+class FingerprintNeedsASignedBy(avocado.Test):
+    def test(self):
+        try:
+            feeds(distro([{"suite": "bookworm", "fingerprint": "ABCD"}]))
+            self.fail("parsing succeeded for a fingerprint with no signed-by!")
+        except ValueError as e:
+            self.assertIn("fingerprint", str(e))
+
+# apt_sources() only ever emits the fixed, deterministic path a feed's
+# keyring will land at -- it must never itself read a vault or a file, so
+# a rebuild stamp built from its output stays offline and never depends
+# on a vault being reachable. feed_keyrings_script() is what actually
+# resolves 'signed-by', called separately by whatever is about to run a
+# shell.
+class SignedByAddsTheOptionWithoutResolvingAnything(avocado.Test):
+    def test(self):
+        os.environ["SEINE_VAULT_ADDR"] = "https://vault.invalid:0"
+        try:
+            lines = apt_sources(distro([
+                {"suite": "bookworm", "signed-by": "vault:vendor-repo-key"}]))
+        finally:
+            del os.environ["SEINE_VAULT_ADDR"]
+        self.assertEqual(lines, [
+            "deb [signed-by=/etc/apt/keyrings/bookworm.gpg] "
+            "http://example.com/debian bookworm main"])
+
+# A fake-but-well-formed armored block: _dearmor() only needs valid
+# base64 between the BEGIN/END markers, not a real OpenPGP key, so a
+# vault-backed feed can be exercised without gpg or a real vault.
+def _fake_armored(payload=b"fake-key-bytes"):
+    return ("-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n%s\n"
+            "-----END PGP PUBLIC KEY BLOCK-----\n"
+            % base64.b64encode(payload).decode())
+
+class FeedKeyringsScriptReadsAVaultKeyReadOnly(avocado.Test):
+    def test(self):
+        provider = mock.Mock()
+        provider.pgp_public_key.return_value = _fake_armored()
+        with mock.patch("seine.vault.for_build", return_value=provider):
+            script = feed_keyrings_script([
+                {"suite": "vendor", "signed_by": "vault:vendor-repo-key",
+                 "fingerprint": None}])
+        # Only the public key is ever asked for -- nothing here signs.
+        provider.pgp_public_key.assert_called_once_with("vendor-repo-key")
+        provider.pgp_fingerprint.assert_not_called()
+        self.assertIn("mkdir -p /etc/apt/keyrings", script)
+        self.assertIn("/etc/apt/keyrings/vendor.gpg", script)
+        self.assertIn(base64.b64encode(b"fake-key-bytes").decode(), script)
+
+    # The whole point of pinning one: caught independently of whatever
+    # bytes the vault's own export happened to hand back.
+    def test_a_vault_fingerprint_mismatch_is_rejected(self):
+        provider = mock.Mock()
+        provider.pgp_public_key.return_value = _fake_armored()
+        provider.pgp_fingerprint.return_value = "OTHERKEY"
+        with mock.patch("seine.vault.for_build", return_value=provider):
+            try:
+                feed_keyrings_script([
+                    {"suite": "vendor", "signed_by": "vault:vendor-repo-key",
+                     "fingerprint": "DEADBEEF"}])
+                self.fail("a vault fingerprint mismatch was accepted")
+            except ValueError as e:
+                self.assertIn("fingerprint mismatch", str(e))
+
+    def test_a_matching_vault_fingerprint_is_accepted(self):
+        provider = mock.Mock()
+        provider.pgp_public_key.return_value = _fake_armored()
+        provider.pgp_fingerprint.return_value = "dead beef"
+        with mock.patch("seine.vault.for_build", return_value=provider):
+            script = feed_keyrings_script([
+                {"suite": "vendor", "signed_by": "vault:vendor-repo-key",
+                 "fingerprint": "DEAD BEEF"}])
+        self.assertIn("/etc/apt/keyrings/vendor.gpg", script)
+
+class FeedKeyringsScriptNoOpsWhenOffline(avocado.Test):
+    def test(self):
+        # Offline feeds trust the vendor's own key instead
+        # (_offline_feed()) -- this must not reach the vault at all.
+        with mock.patch("seine.vault.for_build") as for_build:
+            script = feed_keyrings_script(
+                [{"suite": "bookworm", "signed_by": "vault:whatever",
+                 "fingerprint": None}], offline=True)
+        self.assertEqual(script, "")
+        for_build.assert_not_called()
+
+# The path and inline forms never touch a vault -- real gpg is enough to
+# exercise them and the fingerprint check against real key bytes.
+class SignedByFileFormsNeedGpg(avocado.Test):
+    def setUp(self):
+        if shutil.which("gpg") is None:
+            self.cancel("gpg is needed to generate a test key")
+        self.home = tempfile.mkdtemp(prefix="seine-feed-trust-")
+
+    def tearDown(self):
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def _gen_key(self):
+        params = ("Key-Type: RSA\nKey-Length: 1024\n"
+                  "Name-Real: vendor repo\nName-Email: vendor@example.invalid\n"
+                  "Expire-Date: 0\n%no-protection\n%commit\n")
+        subprocess.run(["gpg", "--batch", "--yes", "--homedir", self.home,
+                        "--gen-key"], input=params.encode(),
+                       capture_output=True, check=True)
+        armored = subprocess.run(
+            ["gpg", "--batch", "--homedir", self.home, "--armor",
+             "--export", "vendor repo"],
+            capture_output=True, check=True).stdout.decode()
+        listed = subprocess.run(
+            ["gpg", "--batch", "--homedir", self.home, "--with-colons",
+             "--list-keys", "vendor repo"],
+            capture_output=True, check=True).stdout.decode()
+        fingerprint = next(line.split(":")[9] for line in listed.split("\n")
+                           if line.startswith("fpr"))
+        return armored, fingerprint
+
+    def test_a_path_is_read_and_dearmored(self):
+        armored, fingerprint = self._gen_key()
+        keyfile = os.path.join(self.home, "vendor-repo.asc")
+        with open(keyfile, "w") as f:
+            f.write(armored)
+        script = feed_keyrings_script(
+            [{"suite": "vendor", "signed_by": keyfile, "fingerprint": None}])
+        # base64 has nothing shlex needs to quote, so the token is bare.
+        encoded = script.split("printf '%s' ", 1)[1].split(" ", 1)[0]
+        installed = base64.b64decode(encoded)
+        expected = subprocess.run(
+            ["gpg", "--batch", "--homedir", self.home, "--export"],
+            capture_output=True, check=True).stdout
+        self.assertEqual(installed, expected)
+
+    def test_an_inline_key_is_accepted(self):
+        armored, fingerprint = self._gen_key()
+        script = feed_keyrings_script(
+            [{"suite": "vendor", "signed_by": armored, "fingerprint": fingerprint}])
+        self.assertIn("/etc/apt/keyrings/vendor.gpg", script)
+
+    def test_a_wrong_fingerprint_is_rejected(self):
+        armored, fingerprint = self._gen_key()
+        try:
+            feed_keyrings_script([
+                {"suite": "vendor", "signed_by": armored,
+                 "fingerprint": "0000000000000000000000000000000000AAAA"}])
+            self.fail("a wrong fingerprint was accepted")
+        except ValueError as e:
+            self.assertIn("fingerprint mismatch", str(e))
+
+class DockerfileAndScriptFeedsInstallTheKeyringFirst(avocado.Test):
+    def test_dockerfile(self):
+        provider = mock.Mock()
+        provider.pgp_public_key.return_value = _fake_armored()
+        spec = distro([{"suite": "vendor",
+                        "uri": "https://packages.example.com/apt",
+                        "signed-by": "vault:vendor-repo-key"}])
+        with mock.patch("seine.vault.for_build", return_value=provider):
+            made = apt_sources_dockerfile(spec, feeds(spec))
+        self.assertIn("mkdir -p /etc/apt/keyrings", made)
+        self.assertIn("[signed-by=/etc/apt/keyrings/vendor.gpg]", made)
+        self.assertLess(made.index("mkdir -p"), made.index("echo 'deb"))
+
+    def test_offline_apt_script(self):
+        provider = mock.Mock()
+        provider.pgp_public_key.return_value = _fake_armored()
+        spec = distro([{"suite": "vendor",
+                        "uri": "https://packages.example.com/apt",
+                        "signed-by": "vault:vendor-repo-key"}])
+        with mock.patch("seine.vault.for_build", return_value=provider):
+            made = offline_apt_script(spec, feeds(spec),
+                                      "/etc/apt/sources.list.d/seine.list")
+        self.assertIn("mkdir -p /etc/apt/keyrings", made)
+        self.assertLess(made.index("mkdir -p"), made.index("echo 'deb"))
+
+    # sbuild's chroot creation execs mmdebstrap directly, no shell -- a
+    # signed-by feed there is proven by sbuild.py's own wrap, not here;
+    # this only pins that a plain (no signed-by) build stays untouched.
+    def test_nothing_is_installed_without_signed_by(self):
+        spec = distro([{"suite": "bookworm"}])
+        made = apt_sources_dockerfile(spec, feeds(spec))
+        self.assertNotIn("/etc/apt/keyrings", made)

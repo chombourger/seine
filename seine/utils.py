@@ -1,6 +1,7 @@
 # seine - Slim Embedded Images Now Easy
 # SPDX-License-Identifier Apache-2.0
 
+import base64
 import contextlib
 import fcntl
 import functools
@@ -8,6 +9,7 @@ import hashlib
 import os
 import platform
 import re
+import shlex
 import subprocess
 
 # Debian arch of the machine seine runs on. Anything else is a cross build.
@@ -66,7 +68,10 @@ def distribution(spec):
 # false' is for archives meant to stay expired (snapshot.debian.org,
 # frozen mirrors). 'release:' groups a pocket (e.g. 'bookworm-backports')
 # with its base release; never guessed from the suite name, since that
-# could silently mix releases in a build-dependency closure.
+# could silently mix releases in a build-dependency closure. 'signed-by'
+# is the feed's own trust anchor -- 'vault:<name>' (read-only, verified
+# independently of whatever the feed's own server hands out), an armored
+# key inline, or a path to one; 'fingerprint' pins it against rotation.
 def feeds(distro):
     entries = distro.get("feeds")
     if entries is None:
@@ -82,11 +87,16 @@ def feeds(distro):
             raise ValueError("feed #%d has no 'suite' specified!" % (index + 1))
         for setting in entry:
             if setting not in ["components", "release", "sources", "suite",
-                               "uri", "valid-until"]:
+                               "uri", "valid-until", "signed-by", "fingerprint"]:
                 raise ValueError(
                     "feed #%d ('%s') has no '%s' setting, expected one of "
-                    "components, release, sources, suite, uri, valid-until"
+                    "components, release, sources, suite, uri, valid-until, "
+                    "signed-by, fingerprint"
                     % (index + 1, entry["suite"], setting))
+        if "fingerprint" in entry and "signed-by" not in entry:
+            raise ValueError(
+                "feed #%d ('%s') has a 'fingerprint' but no 'signed-by' to "
+                "check it against" % (index + 1, entry["suite"]))
         parsed.append({
             "uri":         entry.get("uri", distro["uri"]),
             "suite":       entry["suite"],
@@ -96,6 +106,8 @@ def feeds(distro):
                                      distro.get("components", "main")),
             "sources":     entry.get("sources", True),
             "valid_until": entry.get("valid-until", True),
+            "signed_by":   entry.get("signed-by"),
+            "fingerprint": entry.get("fingerprint"),
         })
     return parsed
 
@@ -108,6 +120,25 @@ def base_feed(distro):
             return feed
     raise ValueError("no feed for suite '%s'!" % release)
 
+# Where a feed's own resolved trust anchor lands, installed by
+# feed_keyrings_script() before anything reads from it. Named by suite,
+# so it never collides with packages.py's own KEYRINGS use of the same
+# directory (a rebuilt repository's key, named by fingerprint).
+FEED_KEYRINGS = "/etc/apt/keyrings"
+
+# Just the string -- no vault/file I/O here, so a caller that only wants
+# apt's own sources.list text (e.g. a rebuild stamp) never pays for or
+# depends on reaching a vault. Resolving the bytes behind it is
+# feed_keyrings_script()'s job, called separately by whatever actually
+# runs a shell.
+def _feed_options(feed):
+    options = []
+    if feed["signed_by"] is not None:
+        options.append("signed-by=%s/%s.gpg" % (FEED_KEYRINGS, feed["suite"]))
+    if not feed["valid_until"]:
+        options.append("check-valid-until=no")
+    return "[%s] " % " ".join(options) if options else ""
+
 # Those feeds as apt would write them down. 'sources' adds deb-src lines
 # for feeds that carry them. 'entries' overrides which feeds to use (else
 # all of them). 'offline' must be passed explicitly by the one caller that
@@ -119,8 +150,7 @@ def apt_sources(distro, sources=False, entries=None, offline=False):
         if offline:
             lines += _offline_feed(feed, sources)
             continue
-        feed = dict(feed, options="" if feed["valid_until"]
-                                    else "[check-valid-until=no] ")
+        feed = dict(feed, options=_feed_options(feed))
         lines.append("deb %(options)s%(uri)s %(suite)s %(components)s" % feed)
         if sources and feed["sources"]:
             lines.append("deb-src %(options)s%(uri)s %(suite)s %(components)s" % feed)
@@ -141,6 +171,95 @@ APT_LISTS_CLEANUP = "rm -rf /var/lib/apt/lists/*"
 APT_CLEANUP = "rm -rf /usr/share/doc /usr/share/info /usr/share/man && " \
              + APT_LISTS_CLEANUP
 
+# Turns a feed's own 'signed-by' into the actual keyring bytes: a vault
+# read (the whole point -- verified independently of whatever the feed's
+# own https server hands out), an inline armored block, or a path to
+# one. Always returns a binary (dearmored) keyring, the form apt's
+# 'signed-by' wants -- gpg's own '--export' shape, not the ASCII-armored
+# one a vault or a pasted block naturally comes in.
+def _resolve_signed_by(value):
+    from seine.signing import _dearmor
+    if value.startswith("vault:"):
+        from seine import vault
+        name = value[len("vault:"):]
+        provider = vault.for_build()
+        try:
+            armored = provider.pgp_public_key(name)
+        except vault.VaultError as e:
+            raise ValueError(
+                "feed signed-by: no vault pgp key '%s': %s" % (name, e)) from e
+        return _dearmor(armored)
+    if value.lstrip().startswith("-----BEGIN PGP PUBLIC KEY BLOCK-----"):
+        return _dearmor(value)
+    try:
+        with open(value, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise ValueError("feed signed-by: cannot read '%s': %s" % (value, e)) from e
+    if data.lstrip().startswith(b"-----BEGIN PGP PUBLIC KEY BLOCK-----"):
+        return _dearmor(data.decode())
+    return data
+
+# The fingerprint of an already-resolved keyring, without ever writing it
+# to a real gpg keyring -- 'import-show' only parses and reports, never
+# imports. Used for the path/inline forms; the vault form asks the vault
+# itself instead (_verify_fingerprint below) -- stronger, since it is
+# independent of the exported bytes and catches a vault-side key swap the
+# export alone would not.
+def _gpg_fingerprint_of(data):
+    from seine.signing import _first_fingerprint
+    try:
+        out = subprocess.check_output(
+            ["gpg", "--batch", "--with-colons", "--dry-run",
+             "--import-options", "import-show", "--import"],
+            input=data, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise ValueError(
+            "feed signed-by: checking a 'fingerprint' needs gpg on this machine")
+    except subprocess.CalledProcessError as e:
+        raise ValueError("feed signed-by: gpg could not read the key: %s"
+                         % (e.stderr or b"").decode(errors="replace").strip())
+    fingerprint = _first_fingerprint(out)
+    if fingerprint is None:
+        raise ValueError("feed signed-by: gpg did not report a fingerprint for the key")
+    return fingerprint
+
+def _verify_fingerprint(value, data, expected):
+    if value.startswith("vault:"):
+        from seine import vault
+        actual = vault.for_build().pgp_fingerprint(value[len("vault:"):])
+    else:
+        actual = _gpg_fingerprint_of(data)
+    if actual.replace(" ", "").upper() != expected.replace(" ", "").upper():
+        raise ValueError(
+            "feed signed-by: fingerprint mismatch -- expected %s, got %s"
+            % (expected, actual))
+
+# Shell fragment installing every 'entries' feed's own resolved keyring
+# under FEED_KEYRINGS, to run before anything reads from it. Does real
+# I/O (a vault call, a file read) unlike apt_sources() itself -- called
+# only by whatever is about to actually run a shell, never by a
+# stamp/digest, which must stay offline and deterministic. Offline feeds
+# trust the vendor's own key instead (_offline_feed()), so this is a
+# no-op for them.
+def feed_keyrings_script(entries, offline=False):
+    if offline:
+        return ""
+    commands = []
+    for feed in entries:
+        signed_by = feed.get("signed_by")
+        if signed_by is None:
+            continue
+        data = _resolve_signed_by(signed_by)
+        fingerprint = feed.get("fingerprint")
+        if fingerprint is not None:
+            _verify_fingerprint(signed_by, data, fingerprint)
+        encoded = base64.b64encode(data).decode()
+        commands.append(
+            "mkdir -p %s && printf '%%s' %s | base64 -d > %s/%s.gpg"
+            % (FEED_KEYRINGS, shlex.quote(encoded), FEED_KEYRINGS, feed["suite"]))
+    return " && ".join(commands)
+
 # Shell fragment a Dockerfile RUN chains before 'apt-get update': writes
 # 'entries' so the image uses the spec's own feeds instead of the base
 # image's. 'true' when there's nothing to add, so callers can chain it
@@ -149,8 +268,10 @@ def apt_sources_dockerfile(distro, entries, sources=False, offline=False):
     lines = apt_sources(distro, sources=sources, entries=entries, offline=offline)
     if len(lines) == 0:
         return "true"
-    return " && ".join("echo '%s' >> %s" % (line, DOCKERFILE_SOURCES_LIST)
-                       for line in lines)
+    install = feed_keyrings_script(entries, offline=offline)
+    echoes = " && ".join("echo '%s' >> %s" % (line, DOCKERFILE_SOURCES_LIST)
+                         for line in lines)
+    return " && ".join(part for part in [install, echoes] if part)
 
 # base_feed()'s uri/components as a short tag, so two specs that differ
 # only there don't collide on one image tag.
@@ -203,6 +324,9 @@ def offline_apt_script(distro, entries, target, offline=False):
         script += ("rm -f /etc/apt/sources.list "
                   "/etc/apt/sources.list.d/*.sources "
                   "/etc/apt/sources.list.d/*.list; ")
+    install = feed_keyrings_script(entries, offline=offline)
+    if install:
+        script += install + "; "
     script += "".join("echo '%s' >> %s; " % (line, target) for line in lines)
     return script
 
