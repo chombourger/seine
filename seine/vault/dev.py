@@ -45,6 +45,10 @@ DEV_DEFAULTS = {
 
 START_TIMEOUT = 120
 
+# UKI/kernel signing sends the whole file inline as base64 JSON, well
+# past OpenBao's ~32MiB defaults, so the dev listener raises both caps.
+REQUEST_LIMIT = 256 * 1024 * 1024
+
 
 def _alive(pid):
     try:
@@ -362,20 +366,32 @@ class DevVault(VaultProvider):
             reap_stale()
             try:
                 ensure_image()
+                # Dev mode always binds its own listener on 8200 with
+                # fixed limits; a second listener on 8201 is the only way
+                # to raise them, so that is the one actually published.
+                local_config = json.dumps({
+                    "plugin_directory": "/vault/plugins",
+                    "listener": [{"tcp": {
+                        "address": "0.0.0.0:8201",
+                        "tls_disable": True,
+                        "max_request_size": REQUEST_LIMIT,
+                        "max_request_json_memory": REQUEST_LIMIT,
+                    }}],
+                })
                 ContainerEngine.check_output([
                     "run", "-d", "--name", self._name,
                     "--label", "%s=ephemeral" % LABEL,
                     "--label", "%s=%d" % (OWNER_LABEL, self._pid),
                     "--label", "%s=%d" % (CREATED_LABEL, int(time.time())),
-                    "-p", "127.0.0.1::8200",
-                    "-e", 'BAO_LOCAL_CONFIG={"plugin_directory":"/vault/plugins"}',
+                    "-p", "127.0.0.1::8201",
+                    "-e", "BAO_LOCAL_CONFIG=" + local_config,
                     "-e", "BAO_DEV_ROOT_TOKEN_ID=" + self._token,
                     CUSTOM_IMAGE,
                     "server", "-dev",
                     "-dev-listen-address=0.0.0.0:8200",
                     "-dev-no-store-token"])
                 out = ContainerEngine.check_output(
-                    ["port", self._name, "8200"]).decode()
+                    ["port", self._name, "8201"]).decode()
                 self._port = int(out.strip().splitlines()[0].rsplit(":", 1)[1])
                 self._wait_ready()
                 self._inner = OpenBaoProvider(
