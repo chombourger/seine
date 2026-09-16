@@ -3,6 +3,7 @@
 
 import hashlib
 import os
+import threading
 
 from seine.vault.base import VaultError, VaultNotFound, VaultProvider
 from seine.vault.openbao import OpenBaoProvider
@@ -12,17 +13,22 @@ __all__ = ["VaultError", "VaultNotFound", "VaultProvider",
            "secrets", "clear_secrets", "redacted_for_digest"]
 
 _SEEN = []
+_dev_vault = None
+_dev_vault_lock = threading.Lock()
 
 
-# Remote when configured, else a lazy per-process dev instance that
-# starts empty on first use and is removed on exit. 'defaults' is a
-# spec's 'defaults: vault:' -- fixed dev-only material a miss seeds
-# with; a remote vault ignores it and always fails closed on a miss.
+# Remote when configured, else one shared per-process dev instance,
+# started on first use and removed on exit. 'defaults' is a spec's
+# 'defaults: vault:' -- a remote vault ignores it and fails closed on a miss.
 def for_build(defaults=None):
     if os.environ.get("SEINE_VAULT_ADDR") or os.environ.get("VAULT_ADDR"):
         return OpenBaoProvider()
-    from seine.vault.dev import DevVault
-    return DevVault(defaults=defaults)
+    global _dev_vault
+    with _dev_vault_lock:
+        if _dev_vault is None:
+            from seine.vault.dev import DevVault
+            _dev_vault = DevVault(defaults=defaults)
+        return _dev_vault
 
 
 def record_secret(value):
