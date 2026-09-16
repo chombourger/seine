@@ -323,6 +323,30 @@ class AnUnknownCacheIsRefused(Caches):
         self.assertNotEqual(caught.exception.code, 0)
         self.assertTrue(os.path.isdir(self.paths["downloads"]))
 
+# root() is podman's storage, the one dir a copy-on-write filesystem hurts
+# most (overlayfs layers) -- it can move apart from the rest of build_dir()
+# for that reason, unlike the caches above.
+class ContainerStorageCanMoveApartFromBuildDir(avocado.Test):
+    def setUp(self):
+        self.environment = dict(os.environ)
+        os.environ["SEINE_BUILD_DIR"] = os.path.join(self.workdir, "build")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.environment)
+
+    def test(self):
+        from seine.container import ContainerEngine
+        os.environ["SEINE_CONTAINERS_DIR"] = os.path.join(self.workdir, "containers")
+        self.assertEqual(ContainerEngine.root(),
+                         os.path.join(self.workdir, "containers"))
+        self.assertTrue(os.path.isdir(ContainerEngine.root()))
+
+    def test_falls_back_under_build_dir_otherwise(self):
+        from seine.container import ContainerEngine
+        self.assertEqual(ContainerEngine.root(),
+                         os.path.join(self.workdir, "build", "containers"))
+
 if __name__ == "__main__":
     avocado.main()
 

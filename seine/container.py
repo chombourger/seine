@@ -90,10 +90,15 @@ class ContainerEngine:
     # Rootless podman's default graph-root is shared machine-wide; move
     # it under our own dir so concurrent builds don't collide with other
     # podman use. Its own method since external tools (ansible's podman
-    # plugin) need to point at the same path.
+    # plugin) need to point at the same path. SEINE_CONTAINERS_DIR moves
+    # it apart from the rest of build_dir() on its own, for a machine that
+    # wants this one piece (podman's overlayfs storage) on another volume.
     @staticmethod
     def root():
-        return os.path.join(ContainerEngine.build_dir(), "containers")
+        path = os.environ.get("SEINE_CONTAINERS_DIR") \
+               or os.path.join(ContainerEngine.build_dir(), "containers")
+        os.makedirs(path, exist_ok=True)
+        return path
     # Large short-lived build files. Not /tmp (often tmpfs/RAM -- a
     # multi-GB kernel tree can OOM the machine), not the checkout either.
     @staticmethod

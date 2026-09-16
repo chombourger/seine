@@ -34,14 +34,15 @@ which lays out:
 Each has a variable of its own too, which moves that one thing on its own
 and wins over `SEINE_BUILD_DIR` when both are set:
 
-| Variable           | What it moves | Under `SEINE_BUILD_DIR` |
-|---------------------|---------------|-------------------------------------|
-| `SEINE_CACHE_DIR`   | Rebuilt packages, buildd chroots | `cache/` |
-| `SEINE_DL_DIR`      | Packages fetched from the feeds  | `downloads/` |
-| `SEINE_LOG_DIR`     | A build's step output            | `logs/`, as `logs/<digest>/<run>/` |
-| `SEINE_DEPLOY_DIR`  | A spec's own image, if its `filename` is relative | `deploy/`, as `deploy/<release>/` |
-| `SEINE_VENDOR_DIR`  | `vendor:` repositories            | `deploy/vendor/`, as `deploy/vendor/<suite>/` |
-| `SEINE_TMP_DIR`     | Scratch space                    | `tmp/` |
+| Variable              | What it moves | Under `SEINE_BUILD_DIR` |
+|------------------------|---------------|-------------------------------------|
+| `SEINE_CONTAINERS_DIR` | podman storage: the images seine built, and the state of what is running | `containers/` |
+| `SEINE_CACHE_DIR`      | Rebuilt packages, buildd chroots | `cache/` |
+| `SEINE_DL_DIR`         | Packages fetched from the feeds  | `downloads/` |
+| `SEINE_LOG_DIR`        | A build's step output            | `logs/`, as `logs/<digest>/<run>/` |
+| `SEINE_DEPLOY_DIR`     | A spec's own image, if its `filename` is relative | `deploy/`, as `deploy/<release>/` |
+| `SEINE_VENDOR_DIR`     | `vendor:` repositories            | `deploy/vendor/`, as `deploy/vendor/<suite>/` |
+| `SEINE_TMP_DIR`        | Scratch space                    | `tmp/` |
 
 ```
 export SEINE_CACHE_DIR=/drive/seine/cache
@@ -59,10 +60,8 @@ other, per-machine `deploy/` artifact onto that same mount:
 export SEINE_VENDOR_DIR=/mnt/shared/seine-vendor
 ```
 
-Storage (podman's, containing the images and the running state) has no
-variable of its own; it only follows `SEINE_BUILD_DIR`. Scratch space is
-never `/tmp`, which is usually a tmpfs, and unpacking a kernel tree into
-memory has been known to take the machine down with it.
+Scratch space is never `/tmp`, which is usually a tmpfs, and unpacking a
+kernel tree into memory has been known to take the machine down with it.
 
 A spec's `image: filename:` is a deliverable, not build output, the way a
 compiler writes to the `-o` it was given: it is redirected under
