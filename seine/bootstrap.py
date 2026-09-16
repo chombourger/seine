@@ -20,6 +20,7 @@ from seine.utils import apt_sources_dockerfile
 from seine.utils import APT_CLEANUP
 from seine.utils import base_feed
 from seine.utils import feed_digest
+from seine.utils import feed_keyrings_script
 from seine.utils import locked
 from seine.utils import TOOLING_KIND
 from seine.utils import vendor_mountpoint
@@ -204,7 +205,8 @@ class TargetBootstrap(Bootstrap):
             " ".join("'%s'" % source for source in
                      apt_sources(self.distro, entries=[base_feed(self.distro)])),
             "mmdebstrap-{}".format(self.distro["release"]),
-            FALLBACK_EPOCH)
+            FALLBACK_EPOCH,
+            feed_keyrings_script([base_feed(self.distro)]) or "true")
 
     def defaultName(self):
         return os.path.join(
@@ -277,6 +279,7 @@ RUN --mount=type=cache,target=/var/cache/mmdebstrap,id={4},sharing=locked \
     export container=lxc;                                            \
     touch /.bootstrap-marker &&                                      \
     mkdir -p rootfs &&                                               \
+    {6} &&                                                           \
     mmdebstrap --mode=root --variant=minbase                         \
         --include=zstd,ca-certificates                               \
         --skip=essential/unlink                                      \
