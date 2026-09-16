@@ -34,6 +34,20 @@ def spawn_own_pgroup(cmd, **kwargs):
     return proc
 
 class ContainerEngine:
+    # Marks a dir copy-on-write-exempt on btrfs; a silent no-op elsewhere.
+    # Cached per path so repeated calls don't fork 'chattr' each time.
+    _nodatacow_done = set()
+
+    @staticmethod
+    def _nodatacow(path):
+        if path in ContainerEngine._nodatacow_done:
+            return
+        ContainerEngine._nodatacow_done.add(path)
+        try:
+            subprocess.run(["chattr", "+C", path], check=False,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
     @staticmethod
     def hasImage(name):
         result = ContainerEngine.run(["image", "exists", name], check=False)
@@ -86,7 +100,10 @@ class ContainerEngine:
     # Absolute, so a step that chdirs (podman, ansible) still finds it.
     @staticmethod
     def build_dir():
-        return os.path.abspath(os.environ.get("SEINE_BUILD_DIR") or "./build")
+        path = os.path.abspath(os.environ.get("SEINE_BUILD_DIR") or "./build")
+        os.makedirs(path, exist_ok=True)
+        ContainerEngine._nodatacow(path)
+        return path
     # Rootless podman's default graph-root is shared machine-wide; move
     # it under our own dir so concurrent builds don't collide with other
     # podman use. Its own method since external tools (ansible's podman
@@ -98,6 +115,7 @@ class ContainerEngine:
         path = os.environ.get("SEINE_CONTAINERS_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "containers")
         os.makedirs(path, exist_ok=True)
+        ContainerEngine._nodatacow(path)
         return path
     # Large short-lived build files. Not /tmp (often tmpfs/RAM -- a
     # multi-GB kernel tree can OOM the machine), not the checkout either.
@@ -106,6 +124,7 @@ class ContainerEngine:
         path = os.environ.get("SEINE_TMP_DIR") \
                or os.path.join(ContainerEngine.build_dir(), "tmp")
         os.makedirs(path, exist_ok=True)
+        ContainerEngine._nodatacow(path)
         return path
     # Things kept across builds to save re-doing work, all under one
     # root so 'seine cache' has one place to look and to empty.

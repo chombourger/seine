@@ -5,6 +5,7 @@ import io
 import contextlib
 import json
 import os
+import subprocess
 import sys
 import tarfile
 
@@ -346,6 +347,43 @@ class ContainerStorageCanMoveApartFromBuildDir(avocado.Test):
         from seine.container import ContainerEngine
         self.assertEqual(ContainerEngine.root(),
                          os.path.join(self.workdir, "build", "containers"))
+
+# Checks the 'chattr' call is attempted, not a real btrfs -- there is no
+# way to assert the filesystem attribute itself from here.
+class NoDataCowIsAttemptedOnPerfSensitiveDirs(avocado.Test):
+    def setUp(self):
+        from seine.container import ContainerEngine
+        self.environment = dict(os.environ)
+        os.environ["SEINE_BUILD_DIR"] = os.path.join(self.workdir, "build")
+        ContainerEngine._nodatacow_done = set()
+        self.calls = []
+        self.real_run = subprocess.run
+        def fake_run(cmd, **kwargs):
+            self.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        subprocess.run = fake_run
+
+    def tearDown(self):
+        subprocess.run = self.real_run
+        os.environ.clear()
+        os.environ.update(self.environment)
+
+    def chattred(self):
+        return [cmd[-1] for cmd in self.calls if cmd[:2] == ["chattr", "+C"]]
+
+    def test_build_dir_root_and_scratch(self):
+        from seine.container import ContainerEngine
+        self.assertIn(ContainerEngine.build_dir(), self.chattred())
+        self.assertIn(ContainerEngine.root(), self.chattred())
+        self.assertIn(ContainerEngine.scratch(), self.chattred())
+
+    # Every getter above calls build_dir() on each use; forking 'chattr'
+    # that often would be needless overhead once the first call landed.
+    def test_only_once_per_path(self):
+        from seine.container import ContainerEngine
+        ContainerEngine.build_dir()
+        ContainerEngine.build_dir()
+        self.assertEqual(self.chattred().count(ContainerEngine.build_dir()), 1)
 
 if __name__ == "__main__":
     avocado.main()

@@ -60,8 +60,12 @@ other, per-machine `deploy/` artifact onto that same mount:
 export SEINE_VENDOR_DIR=/mnt/shared/seine-vendor
 ```
 
-Scratch space is never `/tmp`, which is usually a tmpfs, and unpacking a
-kernel tree into memory has been known to take the machine down with it.
+Storage, scratch space, and `SEINE_BUILD_DIR` itself are marked
+copy-on-write-exempt (`chattr +C`) as they are created, best-effort and a
+no-op off btrfs: overlayfs storage and large rewritten build files
+fragment badly under CoW there. Scratch space is also never `/tmp`, which
+is usually a tmpfs, and unpacking a kernel tree into memory has been known
+to take the machine down with it.
 
 A spec's `image: filename:` is a deliverable, not build output, the way a
 compiler writes to the `-o` it was given: it is redirected under
