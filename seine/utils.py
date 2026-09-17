@@ -330,6 +330,29 @@ def offline_apt_script(distro, entries, target, offline=False):
     script += "".join("echo '%s' >> %s; " % (line, target) for line in lines)
     return script
 
+# Deletes every /usr/share/locale/<code> and non-English man page dir
+# not in 'locales'. Run once, after all installs, so it also covers the
+# base rootfs's own packages, not just ones a filter could have caught.
+def locale_purge_script(locales):
+    keep = set()
+    for locale in locales:
+        code = locale.split(".")[0]
+        keep.add(code)
+        keep.add(code.split("_")[0])
+    keep_pattern = "|".join(sorted(keep))
+
+    return (
+        "for d in /usr/share/locale/*/; do "
+        "d=${d%/}; d=${d##*/}; "
+        f'case "$d" in {keep_pattern}) ;; *) rm -rf "/usr/share/locale/$d";; esac; '
+        "done; "
+        "for d in /usr/share/man/*/; do "
+        "d=${d%/}; d=${d##*/}; "
+        "case \"$d\" in [a-z][a-z]|[a-z][a-z]_[A-Z][A-Z]) "
+        'rm -rf "/usr/share/man/$d";; esac; '
+        "done"
+    )
+
 # One build at a time for a cache two builds share, so two writers don't
 # race and leave a half-written file behind. The lock sits beside the
 # thing it guards.

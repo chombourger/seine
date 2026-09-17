@@ -21,6 +21,7 @@ atexit.register(shutil.rmtree, os.environ["SEINE_CACHE_DIR"], ignore_errors=True
 atexit.register(shutil.rmtree, os.environ["SEINE_DEPLOY_DIR"], ignore_errors=True)
 
 from seine.ansible_runner import AnsibleContainerRunner
+from seine.utils import locale_purge_script
 from seine import vendor
 
 def offline_distro():
@@ -81,3 +82,27 @@ class ConfigureFeedsWritesOneVendorEntryForTheRelease(avocado.Test):
         with patch.object(cmd, "_exec", lambda args, check=True: written.append(args)):
             cmd._configure_feeds()
         self.assertEqual(len(written), 0)
+
+# _finalize() calls locale_purge_script(self.locales) once, after every
+# install is done -- a dpkg extraction filter alone would miss the base
+# rootfs's own packages, unpacked before any filter could exist.
+class FinalizeSweepsLocalesOnceEverythingIsInstalled(avocado.Test):
+    def test_the_locales_default_is_used(self):
+        cmd = runner(online_distro())
+        self.assertEqual(cmd.locales, ["en"])
+
+    def test_a_spec_can_ask_for_more(self):
+        cmd = AnsibleContainerRunner(None, online_distro(), {}, locales=["en", "fr"])
+        self.assertEqual(cmd.locales, ["en", "fr"])
+
+# locale_purge_script() -- keeps both the bare and regional form of
+# whatever is asked for, since a package's own translations live under
+# the bare code (e.g. /usr/share/locale/fr/, not .../fr_FR/).
+class LocalePurgeScriptKeepsOnlyWhatWasAskedFor(avocado.Test):
+    def test_a_regional_code_keeps_its_bare_language_too(self):
+        script = locale_purge_script(["fr_FR"])
+        self.assertIn('case "$d" in fr|fr_FR)', script)
+
+    def test_default_is_english_alone(self):
+        script = locale_purge_script(["en"])
+        self.assertIn('case "$d" in en)', script)

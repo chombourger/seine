@@ -418,10 +418,30 @@ A default is parsed whether or not anything uses it: a misspelt setting
 in an architecture file is reported by the file that holds it rather than
 waiting for the one image that rebuilds a kernel.
 
-`defaults` holds package entries, `vault` seeds for the dev vault, and
-a `sign-key` fallback for repository signing. Playbooks and tests already
-merge by name (see [`playbook`](#playbook)/[`test`](#test)), and the other
-sections are merged by key.
+`defaults` holds package entries, `vault` seeds for the dev vault, and a
+`sign-key` fallback for repository signing. Playbooks and tests already
+merge by name (see [`playbook`](#playbook)/[`test`](#test)), and the
+other sections are merged by key.
+
+## overrides
+
+Where `defaults` stands in for a value found elsewhere (a real package
+build, the machine's `--sign-key`, the real vault), `overrides` changes
+seine's own default behaviour instead -- there is nothing else for it
+to defer to, so the spec is the only place it is ever set. The last
+file loaded wins, same direction as `defaults`.
+
+`overrides: locales:` names which locales a package install may leave
+UI translations and man pages for; everything else is swept away once
+every package is installed, so a spec never has to install and remove
+a locale-purging package of its own. Defaults to `[en]`:
+
+```
+overrides:
+    locales:
+        - en
+        - fr
+```
 
 ## packages
 

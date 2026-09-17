@@ -1238,6 +1238,105 @@ class DefaultsSignKeyReachesTheBuiltImage(avocado.Test):
         except ValueError:
             pass
 
+# 'overrides', unlike 'defaults', stands in for nothing else -- there
+# is no CLI flag or external source it could ever lose to, so a spec
+# using it is the one and only place the setting is made.
+class OverridesLocalesReachesTheBuiltImage(avocado.Test):
+    def loaded(self, *texts):
+        build = BuildCmd()
+        for text in texts:
+            build.loads(text)
+        build.parse()
+        return build.image._locales_override()
+
+    def test(self):
+        self.assertEqual(self.loaded("""
+                overrides:
+                    locales: [en]
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """), ["en"])
+
+    def test_a_second_file_wins(self):
+        self.assertEqual(self.loaded("""
+                overrides:
+                    locales: [en]
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """, """
+                overrides:
+                    locales: [en, fr]
+        """), ["en", "fr"])
+
+    def test_unset_is_none_not_an_empty_list(self):
+        self.assertIsNone(self.loaded("""
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """))
+
+    def test_not_a_list_is_refused(self):
+        build = BuildCmd()
+        build.loads("""
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        try:
+            build.loads("""
+                overrides:
+                    locales: en
+            """)
+            self.fail("a non-list 'overrides: locales' was accepted")
+        except ValueError:
+            pass
+
+    def test_an_unknown_setting_is_refused(self):
+        build = BuildCmd()
+        build.loads("""
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        try:
+            build.loads("""
+                overrides:
+                    typo: en
+            """)
+            self.fail("an unknown 'overrides' setting was accepted")
+        except ValueError:
+            pass
+
+    def test_locales_under_defaults_is_refused(self):
+        build = BuildCmd()
+        build.loads("""
+                image:
+                    filename: t.img
+                    partitions:
+                        - label: rootfs
+                          where: /
+        """)
+        try:
+            build.loads("""
+                defaults:
+                    locales: [en]
+            """)
+            self.fail("'defaults: locales' was accepted -- it moved to 'overrides'")
+        except ValueError:
+            pass
+
     # The shared fragment carries the default, the example reaches it --
     # however it is built, composed or fragment-direct.
     def test_rebuild_busybox_signs_with_the_shared_key(self):

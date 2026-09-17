@@ -706,6 +706,25 @@ class BuildCmd(Cmd):
                 raise ValueError("'defaults: sign-key' shall be a key name")
             self.spec["defaults"]["sign-key"] = sign_key
 
+    # 'overrides' changes seine's own default behaviour (e.g. installing
+    # every locale) rather than standing in for a value found elsewhere.
+    # Last file wins, same direction as 'defaults'.
+    def _merge_overrides(self, spec):
+        if "overrides" not in spec:
+            return
+        overrides = spec["overrides"]
+        if type(overrides) != type({}):
+            raise ValueError("'overrides' shall be a dictionary!")
+        for setting in overrides:
+            if setting not in ("locales",):
+                raise ValueError("'overrides' holds 'locales', not '%s'" % setting)
+
+        locales = overrides.get("locales")
+        if locales is not None:
+            if type(locales) != type([]):
+                raise ValueError("'overrides: locales' shall be a list")
+            self.spec.setdefault("overrides", {})["locales"] = locales
+
     # As _merge_package(), with the two files the other way round: what the
     # later one says replaces what the earlier one did.
     def _override_package(self, package, newpackage):
@@ -965,6 +984,7 @@ class BuildCmd(Cmd):
         self._merge_imager(spec)
         self._merge_multiconfig(spec)
         self._merge_defaults(spec)
+        self._merge_overrides(spec)
         self._merge_packages(spec, peer=peer)
         self._merge_vendor(spec, peer=peer)
         self._merge_vendor_exclude(spec)

@@ -206,7 +206,8 @@ class Image:
         runner = AnsibleContainerRunner(
             self._from, distro, self.options, verbose=self._verbose,
             vendor_digest=vendor.offline_dockerfile_digest(self.spec, distro),
-            epoch=self._epoch(), host_image=self.hostBootstrap.name)
+            epoch=self._epoch(), host_image=self.hostBootstrap.name,
+            locales=self._locales_override())
         self._cid = runner.run(self.spec["playbook"])
 
     # 'check=True' only catches podman failing, not an export that exits
@@ -343,6 +344,11 @@ class Image:
     # SEINE_SIGN_KEY -- see signing.signer().
     def _sign_key_default(self):
         return (self.spec.get("defaults") or {}).get("sign-key")
+
+    # Which locales a package install may leave translations/man pages
+    # for -- see AnsibleContainerRunner._finalize().
+    def _locales_override(self):
+        return (self.spec.get("overrides") or {}).get("locales")
 
     # What apt checks for the repositories built here: (release,
     # fingerprint, origin), fingerprint None when unsigned. Every

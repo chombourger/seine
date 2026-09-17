@@ -11,6 +11,7 @@ from seine.transport_bootstrap import TransportBootstrap
 from seine import tasks
 from seine.container import ContainerEngine, spawn_own_pgroup
 from seine.utils                import feeds
+from seine.utils                import locale_purge_script
 from seine.utils                import offline_apt_script
 from seine.utils                import vendor_mountpoint
 
@@ -40,12 +41,11 @@ ACTION_PLUGINS = os.path.join(os.path.dirname(__file__), "data", "ansible",
 # into the (possibly foreign-arch) target container over containers.podman,
 # instead of running ansible inside the target under qemu emulation.
 class AnsibleContainerRunner:
-    # vendor_digest comes from offline_dockerfile_digest() and is passed
-    # through to TransportBootstrap. host_image is HostBootstrap's own
-    # image: always host-arch, used by the 'apt' action plugin to run
-    # apt-get natively against a foreign-arch target.
+    # vendor_digest is passed through to TransportBootstrap. host_image
+    # (always host-arch) is what the 'apt' action plugin runs natively.
+    # locales is 'overrides: locales:', defaulting to English alone.
     def __init__(self, baseline, distro, options, verbose=False, vendor_digest=None,
-                epoch=None, host_image=None):
+                epoch=None, host_image=None, locales=None):
         self.baseline = baseline
         self.distro = distro
         self.options = options
@@ -53,6 +53,7 @@ class AnsibleContainerRunner:
         self.vendor_digest = vendor_digest
         self.epoch = epoch
         self.host_image = host_image
+        self.locales = locales or ["en"]
         self.cid = None
 
     def _exec(self, args, check=True):
@@ -269,6 +270,7 @@ class AnsibleContainerRunner:
         # autoremove sweeps them away here without this runner needing to
         # know what TransportBootstrap actually installed.
         self._exec(["apt-get", "autoremove", "-qqy"])
+        self._exec(["sh", "-c", locale_purge_script(self.locales)])
         # TargetBootstrap's cross-arch helpers (bootstrap.py) are only
         # needed to run foreign-arch maintainer scripts up to this point
         # -- they have no purpose in the shipped image.
