@@ -206,7 +206,7 @@ class Image:
         runner = AnsibleContainerRunner(
             self._from, distro, self.options, verbose=self._verbose,
             vendor_digest=vendor.offline_dockerfile_digest(self.spec, distro),
-            epoch=self._epoch())
+            epoch=self._epoch(), host_image=self.hostBootstrap.name)
         self._cid = runner.run(self.spec["playbook"])
 
     # 'check=True' only catches podman failing, not an export that exits

@@ -33,19 +33,26 @@ ARCHIVES = "/var/cache/apt/archives"
 # don't have to parse/rewrite what mmdebstrap already wrote there.
 FEEDS_LIST = "/etc/apt/sources.list.d/seine-feeds.list"
 
+ACTION_PLUGINS = os.path.join(os.path.dirname(__file__), "data", "ansible",
+                              "action_plugins")
+
 # Runs the spec's playbooks with a host-side ansible-playbook connecting
 # into the (possibly foreign-arch) target container over containers.podman,
 # instead of running ansible inside the target under qemu emulation.
 class AnsibleContainerRunner:
     # vendor_digest comes from offline_dockerfile_digest() and is passed
-    # through to TransportBootstrap.
-    def __init__(self, baseline, distro, options, verbose=False, vendor_digest=None, epoch=None):
+    # through to TransportBootstrap. host_image is HostBootstrap's own
+    # image: always host-arch, used by the 'apt' action plugin to run
+    # apt-get natively against a foreign-arch target.
+    def __init__(self, baseline, distro, options, verbose=False, vendor_digest=None,
+                epoch=None, host_image=None):
         self.baseline = baseline
         self.distro = distro
         self.options = options
         self.verbose = verbose
         self.vendor_digest = vendor_digest
         self.epoch = epoch
+        self.host_image = host_image
         self.cid = None
 
     def _exec(self, args, check=True):
@@ -209,6 +216,15 @@ class AnsibleContainerRunner:
         # callback's own PLAY/TASK lines from the log to highlight the
         # spec tree.
         env["ANSIBLE_STDOUT_CALLBACK"] = "default"
+        # Shadows ansible.builtin.apt so 'apt:' tasks run natively on the
+        # build host against the target root file-system, instead of
+        # emulated inside it -- see seine/data/ansible/action_plugins/apt.py.
+        env["ANSIBLE_ACTION_PLUGINS"] = ACTION_PLUGINS
+        env["SEINE_ROOTFS_CID"] = self.cid.decode()
+        env["SEINE_CONTAINER_ROOT"] = ContainerEngine.root()
+        env["SEINE_CONTAINER_RUNROOT"] = ContainerEngine.runroot()
+        env["SEINE_APT_ARCH"] = self.distro["architecture"]
+        env["SEINE_APT_HOST_IMAGE"] = self.host_image
 
         try:
             # To the task's file when one is capturing, so a playbook's
