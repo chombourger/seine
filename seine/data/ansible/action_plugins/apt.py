@@ -69,6 +69,9 @@ def _apt_get(merged_dir, action, names):
               f"-o Dir::Cache={MERGED}/var/cache/apt "
               f"-o Dir::Etc={MERGED}/etc/apt "
               f"-o DPkg::Chroot-Directory={MERGED} "
+              # This root is a throwaway podman overlay: durability from
+              # fsync buys nothing and dpkg's unpack is faster without it.
+              f"-o DPkg::Options::=--force-unsafe-io "
               f"-o APT::Architecture={arch} "
               f"-o APT::Architectures::={arch} "
               f"-qqy {action} {' '.join(names)}")
