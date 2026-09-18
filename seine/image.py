@@ -639,13 +639,11 @@ class Image:
             release = self.spec["distribution"]["release"]
             cache_index.Index().hit(cache_index.DOWNLOADS, release)
 
-            # Each step's output goes to its own log file unless verbose
-            # and single-job (one terminal, one step at a time). A
-            # caller's own reporter always gets log files too.
-            self.logs = None
-            if verbose == False or jobs > 1 or reporter is not None:
-                self.logs = self._logs()
-                print("output under %s" % self.logs)
+            # Each step always logs to its own file. '--verbose' also
+            # echoes it live, unless a caller's own reporter owns the terminal.
+            self.logs = self._logs()
+            print("output under %s" % self.logs)
+            echo = verbose and reporter is None
 
             steps = self.tasks()
             # Digest taken before any task runs: 'disk' mutates the
@@ -678,7 +676,8 @@ class Image:
             try:
                 with machine, ticker:
                     tasks.run(steps, jobs=jobs, resources=resources,
-                              logs=self.logs, verbose=verbose, display=display)
+                              logs=self.logs, verbose=verbose, display=display,
+                              echo=echo)
                 ok = True
             finally:
                 # Recorded even on failure: which steps ran and how long

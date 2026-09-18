@@ -32,6 +32,57 @@ class capture:
         _local.output = self.previous
         return False
 
+# Like a file, but every byte written also goes to the terminal, for
+# '--verbose'. Podman writes to this stream's fd directly, so a thread
+# reads the pipe and copies each chunk to both the log file and the terminal.
+class Tee:
+    def __init__(self, path, terminal):
+        self.path = path
+        self.terminal = terminal
+
+    def __enter__(self):
+        self.file = open(self.path, "w")
+        self._r, self._w = os.pipe()
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+        return self
+
+    def _pump(self):
+        # os.read(), not a buffered file's -- that one tries to fill
+        # 65536 bytes before returning, so a line at a time would sit
+        # unseen until the pipe filled or closed.
+        while True:
+            chunk = os.read(self._r, 65536)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", "replace")
+            self.file.write(text)
+            self.file.flush()
+            self.terminal.write(text)
+            self.terminal.flush()
+        os.close(self._r)
+
+    # So subprocess.run(stdout=...) can take this like a plain file.
+    def fileno(self):
+        return self._w
+
+    @property
+    def name(self):
+        return self.path
+
+    def write(self, text):
+        os.write(self._w, text.encode())
+        return len(text)
+
+    def flush(self):
+        pass
+
+    def __exit__(self, *args):
+        os.close(self._w)
+        self._thread.join()
+        self.file.close()
+        return False
+
 # Replaces sys.stdout while a build runs. Writes go to the current task's
 # stream if it has one, else to the real terminal.
 class _Stdout:
@@ -263,7 +314,7 @@ def _age(now, since):
 # other classes, e.g. {"net": 1}, else they fall back to
 # 'jobs'. Ready order ages by wait; 'clock' is a test hook.
 def run(tasks, jobs=1, resources=None, verbose=False, logs=None, display=None,
-        clock=time.monotonic):
+        echo=False, clock=time.monotonic):
     global _display
     tasks = ordered(tasks)
     if logs is not None:
@@ -272,26 +323,28 @@ def run(tasks, jobs=1, resources=None, verbose=False, logs=None, display=None,
     try:
         with _interruptible():
             if jobs <= 1 and not resources:
-                _sequential(tasks, verbose, logs, display)
+                _sequential(tasks, verbose, logs, display, echo)
                 return
 
             install()
             classes = {t.resource for t in tasks}
             workers = max(1, sum(_capacity(c, jobs, resources) for c in classes))
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                _parallel(tasks, pool, jobs, resources, verbose, logs, display, clock)
+                _parallel(tasks, pool, jobs, resources, verbose, logs, display,
+                         echo, clock)
     finally:
         _display = None
 
-def _sequential(tasks, verbose, logs, display):
+def _sequential(tasks, verbose, logs, display, echo=False):
     for index, task in enumerate(tasks):
         if _interrupted.is_set():
             raise Interrupted([t.name for t in tasks[index:]])
-        _run_one(task, verbose, logs, display)
+        _run_one(task, verbose, logs, display, echo=echo)
     if _interrupted.is_set():
         raise Interrupted([])
 
-def _parallel(tasks, pool, jobs, resources, verbose, logs, display, clock=time.monotonic):
+def _parallel(tasks, pool, jobs, resources, verbose, logs, display, echo=False,
+             clock=time.monotonic):
     done = set()
     failures = []
     running = {}
@@ -318,7 +371,8 @@ def _parallel(tasks, pool, jobs, resources, verbose, logs, display, clock=time.m
                     continue
                 waiting.remove(task)
                 used[task.resource] = spoken_for + task.cost
-                running[pool.submit(_run_one, task, verbose, logs, display)] = task
+                running[pool.submit(_run_one, task, verbose, logs, display,
+                                    echo=echo)] = task
 
         if len(running) == 0:
             break
@@ -339,7 +393,7 @@ def _parallel(tasks, pool, jobs, resources, verbose, logs, display, clock=time.m
     if _interrupted.is_set():
         raise Interrupted([t.name for t in waiting])
 
-def _run_one(task, verbose, logs, display=None):
+def _run_one(task, verbose, logs, display=None, echo=False):
     started = time.time()
     task.started = started
     if display is not None:
@@ -350,6 +404,10 @@ def _run_one(task, verbose, logs, display=None):
     try:
         if logs is None:
             task.run()
+        elif echo:
+            with Tee(os.path.join(logs, "%s.log" % task.name),
+                     sys.stdout.terminal) as t, capture(t):
+                task.run()
         else:
             path = os.path.join(logs, "%s.log" % task.name)
             with open(path, "w") as f, capture(f):
