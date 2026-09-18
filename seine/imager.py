@@ -5,6 +5,7 @@ import datetime
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import stat
 import struct
@@ -381,22 +382,26 @@ class Imager:
                           if e != scratch_prefix and not e.startswith(scratch_prefix + "/"))
         if self.verbose:
             print("  copying %d entries..." % len(entries))
-        dirs = []
-        for i, e in enumerate(entries):
-            if self.verbose and i and i % 2000 == 0:
-                print("  copied %d/%d entries..." % (i, len(entries)))
-            src = "%s%s" % (root, e)
-            dst = "%s%s" % (content, e)
-            if g.is_dir(src):
-                g.mkdir_p(dst)
-                dirs.append(dst)
-            else:
-                g.cp_a(src, dst)
-        # Fixed up only now that nothing more will be added under them:
-        # creating a file bumps its parent directory's own mtime, and
-        # 'mkdir' (unlike 'cp -a' for files) never preserved it anyway.
-        for dst in dirs:
-            g.utimens(dst, epoch, 0, epoch, 0)
+        # One RPC per entry used to mean tens of thousands of round-trips
+        # for a real rootfs. Batch it into one script, one g.sh() call.
+        tools_dir = self._upload_tools(g, "%s/tools" % SCRATCH_MOUNT, self._extra_tools_files)
+        # Uploaded cp/mkdir/find/touch, not the target's own -- same
+        # behaviour (flags, GNU semantics) no matter what the target ships.
+        lines = ["set -e"]
+        for e in entries:
+            src = shlex.quote("%s%s" % (root, e))
+            dst = shlex.quote("%s%s" % (content, e))
+            lines.append("if [ -d %s ]; then %s/mkdir -p %s; else %s/cp -a %s %s; fi"
+                          % (src, tools_dir, dst, tools_dir, src, dst))
+        # Directory mtimes only now, after every copy: creating a file
+        # bumps its parent directory's own mtime, and 'mkdir' (unlike
+        # 'cp -a' for files) never preserved it anyway.
+        lines.append("%s/find %s -mindepth 1 -type d -exec %s/touch -d @%d {} +"
+                      % (tools_dir, shlex.quote(content), tools_dir, epoch))
+        script_path = "%s/copy-%s.sh" % (SCRATCH_MOUNT, tag)
+        g.write(script_path, ("\n".join(lines) + "\n").encode())
+        g.sh("LD_LIBRARY_PATH=%s sh %s" % (tools_dir, script_path))
+        g.rm(script_path)
 
         # Capture is done -- remount 'children' so g.sh() below (it
         # chroots via '/bin/sh' at 'prefix') still finds a shell on a
@@ -410,7 +415,6 @@ class Imager:
         # volumes up to its extent size, so the two can differ.
         size = g.blockdev_getsize64(dev)
         image = "%s/image-%s.img" % (SCRATCH_MOUNT, tag)
-        tools_dir = self._upload_tools(g, "%s/tools" % SCRATCH_MOUNT, self._extra_tools_files)
         # SOURCE_DATE_EPOCH fixes file timestamps, E2FSPROGS_FAKE_TIME
         # fixes the superblock's own creation time; the htree hash seed
         # isn't time-based, so it needs its own fixed value here.

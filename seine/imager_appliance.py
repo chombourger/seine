@@ -29,7 +29,7 @@ ARCH_INFO = {
 
 # Run as container commands, not extracted like BINARIES below.
 APT_PACKAGES = ["squashfs-tools", "erofs-utils", "binutils", "sbsigntool",
-                "cryptsetup-bin", "mtools", "e2fsprogs"]
+                "cryptsetup-bin", "mtools", "e2fsprogs", "findutils"]
 # Needed inside the built appliance itself (LVM_WRAPPER_SCRIPT's
 # interpreter and LD_PRELOAD library). Listed both here, so supermin can
 # resolve them, and in its own hint directory, so it bundles them in.
@@ -44,6 +44,9 @@ BINARIES = [
     # Rebuild an ext2/3/4 partition deterministically, see
     # imager.py's _normalize_ext_mount().
     "/usr/sbin/mke2fs", "/usr/sbin/debugfs",
+    # Capture a mount's content deterministically, see
+    # imager.py's _normalize_ext_mount().
+    "/usr/bin/cp", "/usr/bin/mkdir", "/usr/bin/find", "/usr/bin/touch",
 ]
 
 # UKI needs systemd 257; not available for bookworm.
