@@ -10,6 +10,7 @@ from seine                      import packages
 from seine.transport_bootstrap import TransportBootstrap
 from seine import tasks
 from seine.container import ContainerEngine, spawn_own_pgroup
+from seine.utils                import base_feed
 from seine.utils                import feeds
 from seine.utils                import locale_purge_script
 from seine.utils                import offline_apt_script
@@ -102,12 +103,13 @@ class AnsibleContainerRunner:
                     '    mv "%(to)s/.$name.$$" "%(to)s/$name"; '
                     'done; true' % {"from": ARCHIVES, "to": DOWNLOADS}], check=False)
 
-    # Adds the feeds beyond base_feed() (already baked in by
-    # TargetBootstrap). Offline mode instead replaces all feeds outright
-    # with the vendor repo, so apt never falls back to the network.
+    # Adds the feeds beyond base_feed() (already baked in by TargetBootstrap).
+    # Match by value, not feeds()[1:]: base_feed() picks by suite, and it
+    # is not always first (e.g. debian-feeds.yaml lists other releases too).
     def _configure_feeds(self):
         if self.distro.get("apt-pull-mode") != "offline":
-            extra = feeds(self.distro)[1:]
+            base = base_feed(self.distro)
+            extra = [feed for feed in feeds(self.distro) if feed != base]
             if len(extra) == 0:
                 return
             script = offline_apt_script(self.distro, extra, FEEDS_LIST)

@@ -76,12 +76,28 @@ class ConfigureFeedsWritesOneVendorEntryForTheRelease(avocado.Test):
         self.assertEqual(script.count("deb-src "), 1)
         self.assertIn("file:/vendor-repo/bookworm bookworm main extra", script)
 
-    def test_online_keeps_every_feed_but_the_first(self):
+    def test_online_keeps_every_feed_but_base_feed(self):
         cmd = runner(online_distro())
         written = []
         with patch.object(cmd, "_exec", lambda args, check=True: written.append(args)):
             cmd._configure_feeds()
         self.assertEqual(len(written), 0)
+
+    # base_feed() can be anywhere in the list, not just first (e.g. another
+    # release's suites listed before it) -- it must still drop out of 'extra'.
+    def test_online_base_feed_not_first_is_still_excluded(self):
+        distro = online_distro()
+        distro["feeds"] = [{"suite": "trixie"}, {"suite": "bookworm"},
+                           {"suite": "bookworm-security"}]
+        cmd = runner(distro)
+        written = []
+        with patch.object(cmd, "_exec", lambda args, check=True: written.append(args)):
+            cmd._configure_feeds()
+        self.assertEqual(len(written), 1)
+        script = written[0][-1]
+        self.assertIn(" trixie ", script)
+        self.assertIn("bookworm-security", script)
+        self.assertNotIn(" bookworm ", script)
 
 # _finalize() calls locale_purge_script(self.locales) once, after every
 # install is done -- a dpkg extraction filter alone would miss the base
