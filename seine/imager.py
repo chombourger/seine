@@ -385,14 +385,25 @@ class Imager:
         # One RPC per entry used to mean tens of thousands of round-trips
         # for a real rootfs. Batch it into one script, one g.sh() call.
         tools_dir = self._upload_tools(g, "%s/tools" % SCRATCH_MOUNT, self._extra_tools_files)
-        # Uploaded cp/mkdir/find/touch, not the target's own -- same
-        # behaviour (flags, GNU semantics) no matter what the target ships.
-        lines = ["set -e"]
+        # A fork per entry (~20k execs) is slow under an emulated CPU.
+        # Classify with shell builtins (free), then batch each list
+        # through one xargs call -- same order, same destination paths.
+        dirlist = "%s/dirs-%s.list" % (SCRATCH_MOUNT, tag)
+        filelist = "%s/files-%s.list" % (SCRATCH_MOUNT, tag)
+        lines = ["set -e", "cd %s" % shlex.quote(root or "/"),
+                 ": > %s" % shlex.quote(dirlist), ": > %s" % shlex.quote(filelist)]
         for e in entries:
             src = shlex.quote("%s%s" % (root, e))
             dst = shlex.quote("%s%s" % (content, e))
-            lines.append("if [ -d %s ]; then %s/mkdir -p %s; else %s/cp -a %s %s; fi"
-                          % (src, tools_dir, dst, tools_dir, src, dst))
+            rel = shlex.quote(e.lstrip("/"))
+            lines.append("if [ -d %s ]; then printf '%%s\\0' %s >> %s; "
+                          "else printf '%%s\\0' %s >> %s; fi"
+                          % (src, dst, shlex.quote(dirlist), rel, shlex.quote(filelist)))
+        lines.append("if [ -s %s ]; then xargs -0 %s/mkdir -p -- < %s; fi"
+                      % (shlex.quote(dirlist), tools_dir, shlex.quote(dirlist)))
+        lines.append("if [ -s %s ]; then xargs -0 %s/cp -a --parents -t %s -- < %s; fi"
+                      % (shlex.quote(filelist), tools_dir, shlex.quote(content), shlex.quote(filelist)))
+        lines.append("rm -f %s %s" % (shlex.quote(dirlist), shlex.quote(filelist)))
         # Directory mtimes only now, after every copy: creating a file
         # bumps its parent directory's own mtime, and 'mkdir' (unlike
         # 'cp -a' for files) never preserved it anyway.

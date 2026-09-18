@@ -47,6 +47,7 @@ BINARIES = [
     # Capture a mount's content deterministically, see
     # imager.py's _normalize_ext_mount().
     "/usr/bin/cp", "/usr/bin/mkdir", "/usr/bin/find", "/usr/bin/touch",
+    "/usr/bin/xargs",
 ]
 
 # UKI needs systemd 257; not available for bookworm.
