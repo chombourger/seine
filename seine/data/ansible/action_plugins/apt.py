@@ -41,27 +41,19 @@ def _names(value):
         return [n.strip() for n in value.replace(",", " ").split()]
     return list(value)
 
-# dpkg-query needs no chroot: it only reads the target's status file, and
-# that format is architecture-independent.
-def _installed(merged_dir, names):
-    proc = _podman(["run", "--rm", "-v", f"{merged_dir}:{MERGED}",
-                    _env(ENV_HOST_IMAGE), "dpkg-query",
-                    f"--admindir={MERGED}/var/lib/dpkg",
-                    "-W", "-f=${Package} ${Status}\n"] + names)
-    installed = set()
-    for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 4 and parts[-1] == "installed":
-            installed.add(parts[0])
-    return installed
-
 # A maintainer script (e.g. a kernel package's postinst) chroots into
 # MERGED and expects a live /proc, /sys and /dev there, not empty dirs.
 MOUNT_LIVE_FS = (f"mount -t proc proc {MERGED}/proc && "
                 f"mount -t sysfs sys {MERGED}/sys && "
                 f"mount --rbind /dev {MERGED}/dev && ")
 
-def _apt_get(merged_dir, action, names):
+CHANGED_MARKER = "SEINE_APT_CHANGED"
+
+# One podman run does both the change check and, unless simulating, the
+# real install/remove: apt-get's own '-s' already answers "would this
+# change anything", so a separate dpkg-query pass (and container) buys
+# nothing a second apt-get invocation doesn't already tell us.
+def _apt_get(merged_dir, action, names, simulate):
     arch = _env(ENV_ARCH)
     apt_get = (f"apt-get "
               f"-o Dir::State={MERGED}/var/lib/apt "
@@ -75,10 +67,16 @@ def _apt_get(merged_dir, action, names):
               f"-o APT::Architecture={arch} "
               f"-o APT::Architectures::={arch} "
               f"-qqy {action} {' '.join(names)}")
-    return _podman(["run", "--rm", "--cap-add=sys_admin",
-                    "-v", f"{merged_dir}:{MERGED}",
-                    _env(ENV_HOST_IMAGE), "sh", "-c",
-                    MOUNT_LIVE_FS + apt_get])
+    script = (
+        f"if {apt_get} -s | grep -Eq '^(Inst|Remv) '; then "
+        f"echo {CHANGED_MARKER}; "
+        + ("true; " if simulate else MOUNT_LIVE_FS + apt_get + "; ") +
+        "fi")
+    # Simulating never mounts anything, so it needs no extra capability.
+    caps = [] if simulate else ["--cap-add=sys_admin"]
+    return _podman(["run", "--rm"] + caps +
+                   ["-v", f"{merged_dir}:{MERGED}",
+                    _env(ENV_HOST_IMAGE), "sh", "-c", script])
 
 class ActionModule(ActionBase):
     def run(self, tmp=None, task_vars=None):
@@ -94,17 +92,12 @@ class ActionModule(ActionBase):
         names = _names(args["name"])
 
         merged_dir = _merged_dir(_env(ENV_CID))
-        installed = _installed(merged_dir, names)
-        wanted_change = ([n for n in names if n not in installed] if state == "present"
-                         else [n for n in names if n in installed])
-
-        result["changed"] = len(wanted_change) > 0
-        if not wanted_change or self._task.check_mode:
-            return result
-
         action = "install" if state == "present" else "remove"
-        proc = _apt_get(merged_dir, action, wanted_change)
+        proc = _apt_get(merged_dir, action, names, self._task.check_mode)
         if proc.returncode != 0:
             result["failed"] = True
             result["msg"] = f"apt-get {action} failed: {proc.stderr.strip()}"
+            return result
+
+        result["changed"] = CHANGED_MARKER in proc.stdout
         return result

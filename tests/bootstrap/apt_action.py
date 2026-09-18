@@ -36,24 +36,53 @@ class NamesAcceptAStringOrAList(avocado.Test):
     def test_a_comma_or_space_separated_string_is_split(self):
         self.assertEqual(apt_action._names("vim, curl"), ["vim", "curl"])
 
-class InstalledParsesDpkgQueryOutput(avocado.Test):
-    def test_only_fully_installed_packages_are_reported(self):
-        class Proc:
-            stdout = ("vim install ok installed\n"
-                     "curl deinstall ok config-files\n")
-        with patch.dict(os.environ, ENV), patch("subprocess.run", return_value=Proc()):
-            self.assertEqual(apt_action._installed("/merged", ["vim", "curl"]),
-                            {"vim"})
-
 class ApptGetBuildsTheChrootRecipe(avocado.Test):
     def test_the_command_names_dpkg_chroot_directory_not_rootdir(self):
         with patch.dict(os.environ, ENV), patch("subprocess.run") as run:
-            apt_action._apt_get("/merged", "install", ["vim"])
+            apt_action._apt_get("/merged", "install", ["vim"], False)
         script = run.call_args.args[0][-1]
         self.assertIn("DPkg::Chroot-Directory=/rootfs", script)
         self.assertNotIn("RootDir", script)
         self.assertIn("APT::Architecture=arm64", script)
         self.assertIn("install vim", script)
+
+    def test_simulating_skips_the_real_install_and_the_mounts(self):
+        with patch.dict(os.environ, ENV), patch("subprocess.run") as run:
+            apt_action._apt_get("/merged", "install", ["vim"], True)
+        args, script = run.call_args.args[0], run.call_args.args[0][-1]
+        self.assertNotIn("--cap-add=sys_admin", args)
+        self.assertNotIn("mount -t proc", script)
+        # Still simulated once, so a would-be change is still reported.
+        self.assertIn("-s | grep", script)
+
+class ChangedIsReadFromAptGetsOwnOutput(avocado.Test):
+    def test_an_inst_or_remv_line_marks_the_task_changed(self):
+        class Proc:
+            returncode = 0
+            stdout = apt_action.CHANGED_MARKER + "\n"
+        action = apt_action.ActionModule.__new__(apt_action.ActionModule)
+        action._task = type("Task", (), {"args": {"name": "vim"},
+                                         "check_mode": False})()
+        with patch.dict(os.environ, ENV), \
+             patch.object(apt_action.ActionBase, "run", return_value={}), \
+             patch.object(apt_action, "_merged_dir", return_value="/merged"), \
+             patch.object(apt_action, "_apt_get", return_value=Proc()):
+            result = action.run()
+        self.assertTrue(result["changed"])
+
+    def test_no_marker_means_nothing_changed(self):
+        class Proc:
+            returncode = 0
+            stdout = ""
+        action = apt_action.ActionModule.__new__(apt_action.ActionModule)
+        action._task = type("Task", (), {"args": {"name": "vim"},
+                                         "check_mode": False})()
+        with patch.dict(os.environ, ENV), \
+             patch.object(apt_action.ActionBase, "run", return_value={}), \
+             patch.object(apt_action, "_merged_dir", return_value="/merged"), \
+             patch.object(apt_action, "_apt_get", return_value=Proc()):
+            result = action.run()
+        self.assertFalse(result["changed"])
 
 class RunFailsClosedOnAnUnsupportedState(avocado.Test):
     def test_state_latest_is_rejected(self):
