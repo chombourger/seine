@@ -222,6 +222,10 @@ class AnsibleContainerRunner:
         # callback's own PLAY/TASK lines from the log to highlight the
         # spec tree.
         env["ANSIBLE_STDOUT_CALLBACK"] = "default"
+        # No 'become' in these plays, so piping each module's code over
+        # the existing connection is safe and skips a separate put_file
+        # round-trip (podman cp/mount) per task.
+        env["ANSIBLE_PIPELINING"] = "True"
         # Shadows ansible.builtin.apt so 'apt:' tasks run natively on the
         # build host against the target root file-system, instead of
         # emulated inside it -- see seine/data/ansible/action_plugins/apt.py.
