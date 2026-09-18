@@ -36,9 +36,12 @@ class capture:
 # '--verbose'. Podman writes to this stream's fd directly, so a thread
 # reads the pipe and copies each chunk to both the log file and the terminal.
 class Tee:
-    def __init__(self, path, terminal):
+    def __init__(self, path, terminal, task, started):
         self.path = path
         self.terminal = terminal
+        self.task = task
+        self.started = started
+        self._pending = ""
 
     def __enter__(self):
         self.file = open(self.path, "w")
@@ -58,9 +61,19 @@ class Tee:
             text = chunk.decode("utf-8", "replace")
             self.file.write(text)
             self.file.flush()
-            self.terminal.write(text)
-            self.terminal.flush()
+            self._echo(text)
         os.close(self._r)
+
+    # Prefixed lines only go to the terminal, never the log file -- a
+    # chunk may end mid-line, so an unfinished line waits for the next one.
+    def _echo(self, text):
+        text = self._pending + text
+        lines = text.split("\n")
+        self._pending = lines.pop()
+        for line in lines:
+            self.terminal.write("[%s+%.2fs] %s\n" % (
+                self.task, time.time() - self.started, line))
+        self.terminal.flush()
 
     # So subprocess.run(stdout=...) can take this like a plain file.
     def fileno(self):
@@ -80,6 +93,8 @@ class Tee:
     def __exit__(self, *args):
         os.close(self._w)
         self._thread.join()
+        if self._pending:
+            self._echo("\n")
         self.file.close()
         return False
 
@@ -406,7 +421,7 @@ def _run_one(task, verbose, logs, display=None, echo=False):
             task.run()
         elif echo:
             with Tee(os.path.join(logs, "%s.log" % task.name),
-                     sys.stdout.terminal) as t, capture(t):
+                     sys.stdout.terminal, task.name, started) as t, capture(t):
                 task.run()
         else:
             path = os.path.join(logs, "%s.log" % task.name)
