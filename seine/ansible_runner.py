@@ -184,6 +184,10 @@ class AnsibleContainerRunner:
             # Individual package installs skip their own initramfs regen,
             # _finalize() does one pass instead.
             playbook["environment"] = {"INITRD": "No"}
+            # Facts are never used except 'ansible_distribution_release'
+            # (set as an inventory var below), so skip the qemu-emulated
+            # 'setup' module this would otherwise run once per play.
+            playbook["gather_facts"] = False
             run.append(playbook)
 
         ansiblefile = tempfile.NamedTemporaryFile(mode="w", delete=False)
@@ -198,8 +202,9 @@ class AnsibleContainerRunner:
         inventoryfile.write(
             "%s ansible_connection=containers.podman.podman "
             "ansible_podman_extra_args='%s' "
-            "ansible_python_interpreter=/usr/bin/python3\n" % (
-                self.cid.decode(), storage))
+            "ansible_python_interpreter=/usr/bin/python3 "
+            "ansible_distribution_release=%s\n" % (
+                self.cid.decode(), storage, self.distro["release"]))
         inventoryfile.close()
 
         cmd = ["ansible-playbook", "-i", inventoryfile.name, ansiblefile.name]
