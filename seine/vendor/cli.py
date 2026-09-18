@@ -594,8 +594,18 @@ class VendorCmd(Cmd):
                                 print("warning: '%s' does not match any of "
                                      "snapshot.debian.org's own checksums for "
                                      "it -- not recording a snapshot URL" % fname)
-                            # else: the mirror has never heard of this
-                            # filename -- not a mismatch, just nothing yet.
+                            else:
+                                # Not a mismatch -- the mirror has never
+                                # heard of this filename at all, likely
+                                # because it has not indexed this upload
+                                # yet. Worth a warning anyway: this source
+                                # has no snapshot fallback until the next
+                                # '--refresh' catches up, so a slow plain
+                                # 'seine vendor' can still lose it to the
+                                # live feed moving past this version.
+                                print("warning: '%s' not yet on "
+                                     "snapshot.debian.org -- no fallback "
+                                     "recorded" % fname)
                         _save_source_snapshot_cache(src_key, cached)
                         snap_results[name] = {fname: h for fname, h in cached.items()
                                               if local_hashes.get(fname) == h}
@@ -650,6 +660,10 @@ class VendorCmd(Cmd):
                                      "snapshot.debian.org's own checksums for it "
                                      "-- not recording a snapshot URL"
                                      % (binpkg, arch))
+                            else:
+                                print("warning: '%s:%s' not yet on "
+                                     "snapshot.debian.org -- no fallback "
+                                     "recorded" % (binpkg, arch))
                     tasks.append(Task(
                         "snapshot-bin:%s:%s:%s:%d"
                         % (suite, binpkg, version, len(tasks)), run))
