@@ -336,6 +336,8 @@ class Imager:
         for m in mounts:
             if m["type"] in RO_FSTYPES:
                 continue
+            if self.verbose:
+                print("  normalizing timestamps under '%s'..." % m["_prefix"])
             # '-xdev': skip /proc and /sys, mounted here too but not
             # part of the disk image.
             g.sh("find %s -xdev -newermt '@%d' -exec touch --no-dereference "
@@ -351,6 +353,7 @@ class Imager:
         dev = mount_devices[id(m)]
         prefix = m["_prefix"]
         epoch = self.source._epoch()
+        print("Rebuilding %s file-system for '%s'..." % (m["type"], m.get("label") or dev))
         # A parent (usually root) must let go of any mounted child
         # before capturing its own content, or the capture would
         # wrongly include that child's own, separately-rebuilt files.
@@ -376,8 +379,12 @@ class Imager:
         raw = (e if e.startswith("/") else "/" + e for e in g.find(prefix))
         entries = sorted(e for e in raw
                           if e != scratch_prefix and not e.startswith(scratch_prefix + "/"))
+        if self.verbose:
+            print("  copying %d entries..." % len(entries))
         dirs = []
-        for e in entries:
+        for i, e in enumerate(entries):
+            if self.verbose and i and i % 2000 == 0:
+                print("  copied %d/%d entries..." % (i, len(entries)))
             src = "%s%s" % (root, e)
             dst = "%s%s" % (content, e)
             if g.is_dir(src):
@@ -410,6 +417,8 @@ class Imager:
         hash_seed = self._uuid_for("fs-hash-seed", label or dev)
         env = ("SOURCE_DATE_EPOCH=%d E2FSPROGS_FAKE_TIME=%d LD_LIBRARY_PATH=%s"
                % (epoch, epoch, tools_dir))
+        if self.verbose:
+            print("  running mke2fs...")
         # lazy_itable_init/lazy_journal_init default to an SSD-vs-not
         # guess, deferring (and randomizing) group descriptor state.
         g.sh("%s %s/mke2fs -q -F -t %s -b 4096 -U %s "
@@ -432,6 +441,8 @@ class Imager:
         script = "\n".join(lines)
         script_path = "%s/ctimefix-%s" % (SCRATCH_MOUNT, tag)
         g.write(script_path, script.encode())
+        if self.verbose:
+            print("  fixing up inode timestamps...")
         # debugfs echoes every command it runs -- for root's ~15000
         # entries that reply can exceed the guestfs protocol's own
         # message-size limit, so it's discarded rather than returned.
@@ -458,6 +469,8 @@ class Imager:
         for c in children:
             g.umount(c["_prefix"])
         g.umount(prefix)
+        if self.verbose:
+            print("  writing image back (%s)..." % self.source.partitionHandler._to_human_size(size))
         # pwrite_device's RPC has a hard message-size cap well under 32M.
         chunk_size = 1024 * 1024
         with open(host_copy.name, "rb") as f:
@@ -468,6 +481,8 @@ class Imager:
                     break
                 g.pwrite_device(dev, chunk, offset)
                 offset = offset + len(chunk)
+                if self.verbose and offset % (100 * chunk_size) == 0:
+                    print("  wrote %s..." % self.source.partitionHandler._to_human_size(offset))
         os.remove(host_copy.name)
         # Read-only: fstab and grub are already written, and a
         # read-write mount would stamp the superblock's own mount/write
